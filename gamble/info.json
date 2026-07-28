@@ -1,0 +1,9 @@
+{
+    "author": ["Fareed"],
+    "min_bot_version": "3.5.0",
+    "description": "Per-user gambling threads to keep the shared bot channel clean. Users open a private thread with .gamble, play normally, and it auto-closes after inactivity or .endgambling.",
+    "hidden": false,
+    "disabled": false,
+    "short": "Per-user private gambling threads with auto-timeout.",
+    "tags": ["economy", "utility", "threads"]
+}

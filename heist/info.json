@@ -1,0 +1,9 @@
+{
+    "author": ["Fareed"],
+    "min_bot_version": "3.5.0",
+    "description": "Cooperative bank heist minigame: signup window, wagering, jail penalties for going too greedy.",
+    "hidden": false,
+    "install_msg": "Heist cog installed. Use `[p]heistset` to configure and `[p]heist` to start a heist.",
+    "short": "Cooperative bank heist minigame.",
+    "end_user_data_statement": "This cog stores each member's current jail-release timestamp for gameplay purposes only. No other personal data is stored."
+}
