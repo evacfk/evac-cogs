@@ -1,0 +1,9 @@
+{
+    "author": ["evacfk"],
+    "min_bot_version": "3.5.0",
+    "description": "One-off admin utility to mass-strip all roles (except one target role) from every member holding that role.",
+    "hidden": false,
+    "disabled": false,
+    "short": "Mass role strip by target role",
+    "end_user_data_statement": "This cog does not store any user data."
+}
