@@ -23,6 +23,10 @@ class Lurker(commands.Cog):
     - Rejoining resets their clock.
     """
 
+    BACKFILL_TTL = 86400  # 24h — dry-run scan stays valid for one day, survives restarts
+    UNDO_TTL = 86400
+    CHECKPOINT_EVERY = 25  # persist progress every N members processed
+
     def __init__(self, bot):
         self.bot = bot
         self.config = Config.get_conf(self, identifier=928374651, force_registration=True)
@@ -35,6 +39,8 @@ class Lurker(commands.Cog):
             last_active={},  # str(user_id) -> unix timestamp; periodically flushed from cache
             enabled=False,   # automatic daily sweep is OFF until explicitly enabled
             last_sweep_ts=0,  # persisted so a cog reload never re-triggers an early sweep
+            backfill_scan={},  # {"remaining_ids": [...], "exempt_ids": [...], "ts": float, "total": int}
+            undo_scan={},      # {"remaining_ids": [...], "ts": float, "total": int}
         )
         self.config.register_member(
             stored_roles=[],
@@ -48,9 +54,6 @@ class Lurker(commands.Cog):
         # ExtendedModLog logs an INFO line per role-change audit-reason lookup, which
         # floods the logs when we bulk-strip/restore roles. Quiet it to WARNING+ only.
         logging.getLogger("red.trusty-cogs.ExtendedModLog").setLevel(logging.WARNING)
-
-        # caches the most recent dry-run scan per guild so confirm doesn't re-scan
-        self._backfill_cache: Dict[int, dict] = {}
 
         self._flush_task = self.bot.loop.create_task(self._flush_loop())
         self._daily_task = self.bot.loop.create_task(self._daily_loop())
@@ -151,6 +154,20 @@ class Lurker(commands.Cog):
 
     async def _flag_member(self, member: discord.Member, lurker_role: discord.Role, exempt_ids: Set[int]):
         guild = member.guild
+
+        # Idempotency guard: if this member already has the Lurker role, do NOT
+        # process them again. Re-running this would treat their current
+        # (post-flag) role set as "prior roles" and overwrite stored_roles,
+        # permanently destroying their real original roles. This is the bug
+        # that made a resumed/rerun backfill unsafe — fixed here at the source
+        # so no call path (backfill, sweep, manual) can trigger it.
+        if lurker_role in member.roles:
+            log.warning(
+                f"_flag_member called on {member} ({member.id}) in {guild} who already "
+                f"has the Lurker role — skipping to avoid corrupting stored_roles."
+            )
+            return
+
         removable = [
             r for r in member.roles
             if r != guild.default_role
@@ -440,6 +457,8 @@ class Lurker(commands.Cog):
 
         await ctx.send(f"Restored {member}'s roles and removed Lurker.")
 
+    # ------------------------------------------------------------ undo-all
+
     @checks.admin_or_permissions(manage_roles=True)
     @commands.command(name="lurkerundoall")
     async def lurker_undo_all(self, ctx):
@@ -454,19 +473,28 @@ class Lurker(commands.Cog):
             return
 
         flagged_members = [m for m in ctx.guild.members if lurker_role in m.roles]
-        self._undo_cache = {"ids": [m.id for m in flagged_members], "ts": datetime.now(timezone.utc).timestamp()}
+        await self.config.guild(ctx.guild).undo_scan.set({
+            "remaining_ids": [m.id for m in flagged_members],
+            "ts": datetime.now(timezone.utc).timestamp(),
+            "total": len(flagged_members),
+        })
         await ctx.send(
             f"{len(flagged_members)} members currently have the Lurker role.\n"
-            f"Run `.lurkerundoallconfirm` within the hour to restore all of their prior roles and remove Lurker from everyone."
+            f"Run `.lurkerundoallconfirm` within 24h to restore all of their prior roles and "
+            f"remove Lurker from everyone. This is safe to resume if interrupted."
         )
 
     @checks.admin_or_permissions(manage_roles=True)
     @commands.command(name="lurkerundoallconfirm")
     async def lurker_undo_all_confirm(self, ctx):
-        """Execute the most recent .lurkerundoall check (must be within the last hour)."""
-        cached = getattr(self, "_undo_cache", None)
-        if not cached or (datetime.now(timezone.utc).timestamp() - cached["ts"]) >= 3600:
-            await ctx.send("No recent check found (or it's over an hour old). Run `.lurkerundoall` first.")
+        """Execute (or resume) the most recent .lurkerundoall check."""
+        scan = await self.config.guild(ctx.guild).undo_scan()
+        if not scan:
+            await ctx.send("No recent check found. Run `.lurkerundoall` first.")
+            return
+        if (datetime.now(timezone.utc).timestamp() - scan.get("ts", 0)) >= self.UNDO_TTL:
+            await self.config.guild(ctx.guild).undo_scan.set({})
+            await ctx.send("Check expired (older than 24h). Run `.lurkerundoall` again.")
             return
 
         role_id = await self.config.guild(ctx.guild).lurker_role_id()
@@ -475,12 +503,24 @@ class Lurker(commands.Cog):
             await ctx.send("Configured Lurker role no longer exists.")
             return
 
-        members = [ctx.guild.get_member(uid) for uid in cached["ids"]]
-        members = [m for m in members if m and lurker_role in m.roles]
+        remaining_ids = list(scan["remaining_ids"])
+        total = scan.get("total", len(remaining_ids))
+        already_done = total - len(remaining_ids)
 
-        await ctx.send(f"Restoring {len(members)} members. I'll report back when done.")
+        if already_done:
+            await ctx.send(
+                f"Resuming: {already_done}/{total} already restored in a previous run, "
+                f"{len(remaining_ids)} left. I'll report back when done."
+            )
+        else:
+            await ctx.send(f"Restoring {len(remaining_ids)} members. I'll report back when done.")
+
         restored = 0
-        for member in members:
+        for i, member_id in enumerate(list(remaining_ids)):
+            member = ctx.guild.get_member(member_id)
+            if not member or lurker_role not in member.roles:
+                remaining_ids.remove(member_id)
+                continue
             try:
                 await self._unflag_member(member, lurker_role)
                 restored += 1
@@ -488,10 +528,19 @@ class Lurker(commands.Cog):
                 log.warning(f"Missing permissions to restore {member}")
             except Exception:
                 log.exception(f"Failed to restore {member} during undo-all")
+            remaining_ids.remove(member_id)
+
+            if (i + 1) % self.CHECKPOINT_EVERY == 0:
+                await self.config.guild(ctx.guild).undo_scan.set({
+                    "remaining_ids": remaining_ids,
+                    "ts": datetime.now(timezone.utc).timestamp(),  # refresh TTL on progress
+                    "total": total,
+                })
+
             await asyncio.sleep(1.2)  # rate limit pacing
 
-        self._undo_cache = None
-        await ctx.send(f"Done. Restored {restored}/{len(members)} members.")
+        await self.config.guild(ctx.guild).undo_scan.set({})
+        await ctx.send(f"Done. Restored {restored} members this run ({total} total).")
 
     # ------------------------------------------------------------ backfill
 
@@ -526,7 +575,7 @@ class Lurker(commands.Cog):
                 log.exception(f"Error scanning {channel}")
 
         exempt_ids = set(await self.config.guild(ctx.guild).exempt_role_ids())
-        to_flag = []
+        to_flag_ids = []
         for member in ctx.guild.members:
             if member.bot:
                 continue
@@ -536,28 +585,50 @@ class Lurker(commands.Cog):
                 continue
             if exempt_ids & {r.id for r in member.roles}:
                 continue
-            to_flag.append(member)
+            to_flag_ids.append(member.id)
 
-        self._backfill_cache[ctx.guild.id] = {
-            "to_flag": to_flag,
-            "exempt_ids": exempt_ids,
+        await self.config.guild(ctx.guild).backfill_scan.set({
+            "remaining_ids": to_flag_ids,
+            "exempt_ids": list(exempt_ids),
             "ts": datetime.now(timezone.utc).timestamp(),
-        }
+            "total": len(to_flag_ids),
+        })
 
         await ctx.send(
             f"Dry run complete.\n"
             f"Active in last 30 days: {len(active_ids)}\n"
-            f"Would be flagged as Lurkers: {len(to_flag)}\n"
-            f"Run `.lurkerbackfillconfirm` within the hour to execute using this scan."
+            f"Would be flagged as Lurkers: {len(to_flag_ids)}\n"
+            f"Run `.lurkerbackfillconfirm` within 24h to execute using this scan. "
+            f"If interrupted (restart/reload), just run it again to resume — it's idempotent."
+        )
+
+    @checks.admin_or_permissions(manage_roles=True)
+    @commands.command(name="lurkerbackfillstatus")
+    async def lurker_backfill_status(self, ctx):
+        """Show remaining progress on the current backfill scan, if any."""
+        scan = await self.config.guild(ctx.guild).backfill_scan()
+        if not scan:
+            await ctx.send("No backfill scan in progress.")
+            return
+        remaining = len(scan.get("remaining_ids", []))
+        total = scan.get("total", remaining)
+        age_min = (datetime.now(timezone.utc).timestamp() - scan.get("ts", 0)) / 60
+        await ctx.send(
+            f"Backfill scan: {total - remaining}/{total} done, {remaining} remaining. "
+            f"Last checkpoint {age_min:.1f} min ago (expires after 24h of no progress)."
         )
 
     @checks.admin_or_permissions(manage_roles=True)
     @commands.command(name="lurkerbackfillconfirm")
     async def lurker_backfill_confirm(self, ctx):
-        """Execute the most recent .lurkerbackfill dry run (must be within the last hour)."""
-        cached = self._backfill_cache.get(ctx.guild.id)
-        if not cached or (datetime.now(timezone.utc).timestamp() - cached["ts"]) >= 3600:
-            await ctx.send("No recent scan found (or it's over an hour old). Run `.lurkerbackfill` first.")
+        """Execute (or resume) the most recent .lurkerbackfill dry run."""
+        scan = await self.config.guild(ctx.guild).backfill_scan()
+        if not scan:
+            await ctx.send("No recent scan found. Run `.lurkerbackfill` first.")
+            return
+        if (datetime.now(timezone.utc).timestamp() - scan.get("ts", 0)) >= self.BACKFILL_TTL:
+            await self.config.guild(ctx.guild).backfill_scan.set({})
+            await ctx.send("Scan expired (older than 24h with no progress). Run `.lurkerbackfill` again.")
             return
 
         role_id = await self.config.guild(ctx.guild).lurker_role_id()
@@ -566,12 +637,31 @@ class Lurker(commands.Cog):
             await ctx.send("Configured Lurker role no longer exists.")
             return
 
-        to_flag = cached["to_flag"]
-        exempt_ids = cached["exempt_ids"]
+        remaining_ids = list(scan["remaining_ids"])
+        exempt_ids = set(scan.get("exempt_ids", []))
+        total = scan.get("total", len(remaining_ids))
+        already_done = total - len(remaining_ids)
 
-        await ctx.send(f"Flagging {len(to_flag)} members using the earlier scan. I'll report back when done.")
+        if already_done:
+            await ctx.send(
+                f"Resuming backfill: {already_done}/{total} already flagged in a previous run, "
+                f"{len(remaining_ids)} left. I'll report back when done."
+            )
+        else:
+            await ctx.send(f"Flagging {len(remaining_ids)} members. I'll report back when done.")
+
         flagged_count = 0
-        for member in to_flag:
+        for i, member_id in enumerate(list(remaining_ids)):
+            member = ctx.guild.get_member(member_id)
+            if member is None:
+                remaining_ids.remove(member_id)
+                continue
+            if lurker_role in member.roles:
+                # Already flagged, e.g. left over from an interrupted prior run.
+                # Do NOT reflag — _flag_member also guards this, but skip early
+                # here so we don't burn a rate-limit slot on a no-op.
+                remaining_ids.remove(member_id)
+                continue
             try:
                 await self._flag_member(member, lurker_role, exempt_ids)
                 self._cache.setdefault(ctx.guild.id, {})[member.id] = 0  # long-inactive marker
@@ -580,8 +670,18 @@ class Lurker(commands.Cog):
                 log.warning(f"Missing permissions to flag {member}")
             except Exception:
                 log.exception(f"Failed to flag {member} during backfill")
+            remaining_ids.remove(member_id)
+
+            if (i + 1) % self.CHECKPOINT_EVERY == 0:
+                await self.config.guild(ctx.guild).backfill_scan.set({
+                    "remaining_ids": remaining_ids,
+                    "exempt_ids": list(exempt_ids),
+                    "ts": datetime.now(timezone.utc).timestamp(),  # refresh TTL on progress
+                    "total": total,
+                })
+
             await asyncio.sleep(1.2)  # rate limit pacing
 
         await self._flush_all()
-        self._backfill_cache.pop(ctx.guild.id, None)
-        await ctx.send(f"Backfill complete. Flagged {flagged_count}/{len(to_flag)} members.")
+        await self.config.guild(ctx.guild).backfill_scan.set({})
+        await ctx.send(f"Backfill complete. Flagged {flagged_count} members this run ({total} total).")
