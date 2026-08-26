@@ -43,6 +43,10 @@ class Lurker(commands.Cog):
         self._cache: Dict[int, Dict[int, float]] = {}
         self._loaded_guilds: Set[int] = set()
 
+        # ExtendedModLog logs an INFO line per role-change audit-reason lookup, which
+        # floods the logs when we bulk-strip/restore roles. Quiet it to WARNING+ only.
+        logging.getLogger("red.trusty-cogs.ExtendedModLog").setLevel(logging.WARNING)
+
         self._flush_task = self.bot.loop.create_task(self._flush_loop())
         self._daily_task = self.bot.loop.create_task(self._daily_loop())
 
@@ -191,7 +195,17 @@ class Lurker(commands.Cog):
                     await message.delete()
                 except (discord.Forbidden, discord.NotFound):
                     pass
-                await self._unflag_member(message.author, lurker_role)
+                try:
+                    await self._unflag_member(message.author, lurker_role)
+                except discord.Forbidden as e:
+                    log.error(
+                        f"FORBIDDEN restoring roles for {message.author} ({message.author.id}) "
+                        f"in {guild}: {e}. Check bot role position vs the stored roles."
+                    )
+                except Exception:
+                    log.exception(
+                        f"Failed to unflag {message.author} ({message.author.id}) in {guild}"
+                    )
             return
 
         self._touch(guild.id, message.author.id)
@@ -284,6 +298,36 @@ class Lurker(commands.Cog):
 
         await self._flag_member(member, lurker_role, exempt_ids)
         await ctx.send(f"{member} flagged as a Lurker. Have them post in the reactivation channel to test recovery.")
+
+    @checks.mod_or_permissions(manage_roles=True)
+    @commands.command(name="lurkerstatus")
+    async def lurker_status(self, ctx, member: discord.Member):
+        """Show a member's Lurker state for debugging."""
+        role_id = await self.config.guild(ctx.guild).lurker_role_id()
+        lurker_role = ctx.guild.get_role(role_id) if role_id else None
+        flagged = await self.config.member(member).flagged()
+        stored_ids = await self.config.member(member).stored_roles()
+
+        resolved, missing = [], []
+        for rid in stored_ids:
+            role = ctx.guild.get_role(rid)
+            (resolved if role else missing).append(role.name if role else str(rid))
+
+        has_lurker_role = bool(lurker_role and lurker_role in member.roles)
+        bot_top = ctx.guild.me.top_role
+        above_bot = [r.name for r in member.roles if r.position >= bot_top.position and r != ctx.guild.default_role]
+
+        msg = (
+            f"**{member}** ({member.id})\n"
+            f"Flagged in config: {flagged}\n"
+            f"Has Lurker role right now: {has_lurker_role}\n"
+            f"Stored roles to restore: {humanize_list(resolved) if resolved else 'none'}\n"
+            f"Stored role IDs no longer valid: {humanize_list(missing) if missing else 'none'}\n"
+            f"Bot's top role: {bot_top.name} (position {bot_top.position})\n"
+            f"Member's current roles at/above bot's position (can't be touched by bot): "
+            f"{humanize_list(above_bot) if above_bot else 'none'}"
+        )
+        await ctx.send(msg)
 
     # ------------------------------------------------------------ backfill
 
