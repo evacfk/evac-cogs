@@ -33,6 +33,8 @@ class Lurker(commands.Cog):
             exempt_role_ids=[],
             threshold_days=30,
             last_active={},  # str(user_id) -> unix timestamp; periodically flushed from cache
+            enabled=False,   # automatic daily sweep is OFF until explicitly enabled
+            last_sweep_ts=0,  # persisted so a cog reload never re-triggers an early sweep
         )
         self.config.register_member(
             stored_roles=[],
@@ -93,10 +95,15 @@ class Lurker(commands.Cog):
                 return
             except Exception:
                 log.exception("Lurker daily sweep error")
-            await asyncio.sleep(86400)  # 24 hours
+            await asyncio.sleep(3600)  # check hourly; actual 24h gating happens inside _run_sweep
 
     async def _run_sweep(self):
+        now = datetime.now(timezone.utc).timestamp()
         for guild in self.bot.guilds:
+            enabled = await self.config.guild(guild).enabled()
+            if not enabled:
+                continue
+
             role_id = await self.config.guild(guild).lurker_role_id()
             if not role_id:
                 continue
@@ -104,10 +111,14 @@ class Lurker(commands.Cog):
             if not lurker_role:
                 continue
 
+            last_sweep_ts = await self.config.guild(guild).last_sweep_ts()
+            if now - last_sweep_ts < 86400:
+                continue  # not due yet — survives reloads, only a real 24h gap triggers a run
+
             await self._ensure_loaded(guild.id)
             threshold_days = await self.config.guild(guild).threshold_days()
             exempt_ids = set(await self.config.guild(guild).exempt_role_ids())
-            cutoff = datetime.now(timezone.utc).timestamp() - threshold_days * 86400
+            cutoff = now - threshold_days * 86400
             cache = self._cache.get(guild.id, {})
 
             for member in guild.members:
@@ -130,6 +141,8 @@ class Lurker(commands.Cog):
                     except Exception:
                         log.exception(f"Failed to flag {member} in {guild}")
                     await asyncio.sleep(1)  # gentle pacing against rate limits
+
+            await self.config.guild(guild).last_sweep_ts.set(now)
 
     # ------------------------------------------------------- flag/unflag
 
@@ -257,6 +270,22 @@ class Lurker(commands.Cog):
         await self.config.guild(ctx.guild).threshold_days.set(days)
         await ctx.send(f"Inactivity threshold set to {days} days.")
 
+    @lurkerset.command(name="enable")
+    async def lurkerset_enable(self, ctx):
+        """Turn ON the automatic daily inactivity sweep for this server."""
+        await self.config.guild(ctx.guild).enabled.set(True)
+        await self.config.guild(ctx.guild).last_sweep_ts.set(datetime.now(timezone.utc).timestamp())
+        await ctx.send(
+            "Automatic daily sweep enabled. First run will happen in ~24 hours, "
+            "not immediately, and every 24h after that regardless of reloads."
+        )
+
+    @lurkerset.command(name="disable")
+    async def lurkerset_disable(self, ctx):
+        """Turn OFF the automatic daily inactivity sweep for this server."""
+        await self.config.guild(ctx.guild).enabled.set(False)
+        await ctx.send("Automatic daily sweep disabled. Manual commands (.lurker, .lurkerbackfill) still work.")
+
     @lurkerset.command(name="settings")
     async def lurkerset_settings(self, ctx):
         """Show current configuration."""
@@ -269,9 +298,56 @@ class Lurker(commands.Cog):
             f"Role: {role.mention if role else 'not set'}\n"
             f"Reactivation channel: {channel.mention if channel else 'not set'}\n"
             f"Threshold: {data['threshold_days']} days\n"
+            f"Automatic sweep: {'ENABLED' if data['enabled'] else 'disabled'}\n"
             f"Exempt roles: {humanize_list(exempt) if exempt else 'none'}"
         )
         await ctx.send(msg)
+
+    @lurkerset.command(name="postinfo")
+    async def lurkerset_postinfo(self, ctx):
+        """Post and pin the explainer embed in the configured lurker channel."""
+        channel_id = await self.config.guild(ctx.guild).lurker_channel_id()
+        if not channel_id:
+            await ctx.send("Set the lurker channel first with `.lurkerset channel`.")
+            return
+        channel = ctx.guild.get_channel(channel_id)
+        if not channel:
+            await ctx.send("Configured lurker channel no longer exists.")
+            return
+
+        threshold_days = await self.config.guild(ctx.guild).threshold_days()
+        embed = discord.Embed(
+            title="You've been moved here for inactivity",
+            description=(
+                f"You haven't posted or reacted anywhere in the server for {threshold_days}+ days, "
+                "so you've been moved here to keep things tidy for active members. This channel is "
+                "the only thing you can see right now."
+            ),
+            color=discord.Color.blurple(),
+        )
+        embed.add_field(
+            name="Are my roles gone?",
+            value="No. Every role you had is safely stored — nothing was deleted.",
+            inline=False,
+        )
+        embed.add_field(
+            name="How do I get everything back?",
+            value=(
+                "Just type anything in this channel. Your roles are restored instantly and "
+                "automatically — no need to ping anyone."
+            ),
+            inline=False,
+        )
+        embed.set_footer(text="This process is fully automatic.")
+
+        try:
+            msg = await channel.send(embed=embed)
+            await msg.pin()
+        except discord.Forbidden:
+            await ctx.send("Missing permissions to send or pin a message in that channel.")
+            return
+
+        await ctx.send(f"Posted and pinned in {channel.mention}.")
 
     # ------------------------------------------------------- manual test
 
@@ -360,6 +436,42 @@ class Lurker(commands.Cog):
             return
 
         await ctx.send(f"Restored {member}'s roles and removed Lurker.")
+
+    @checks.admin_or_permissions(manage_roles=True)
+    @commands.command(name="lurkerundoall")
+    async def lurker_undo_all(self, ctx, confirm: Optional[str] = None):
+        """Restore every currently-flagged member's roles and remove Lurker from all of them."""
+        role_id = await self.config.guild(ctx.guild).lurker_role_id()
+        if not role_id:
+            await ctx.send("Lurker role not configured.")
+            return
+        lurker_role = ctx.guild.get_role(role_id)
+        if not lurker_role:
+            await ctx.send("Configured Lurker role no longer exists.")
+            return
+
+        flagged_members = [m for m in ctx.guild.members if lurker_role in m.roles]
+
+        if confirm != "confirm":
+            await ctx.send(
+                f"{len(flagged_members)} members currently have the Lurker role.\n"
+                f"Run `.lurkerundoall confirm` to restore all of their prior roles and remove Lurker from everyone."
+            )
+            return
+
+        await ctx.send(f"Restoring {len(flagged_members)} members. I'll report back when done.")
+        restored = 0
+        for member in flagged_members:
+            try:
+                await self._unflag_member(member, lurker_role)
+                restored += 1
+            except discord.Forbidden:
+                log.warning(f"Missing permissions to restore {member}")
+            except Exception:
+                log.exception(f"Failed to restore {member} during undo-all")
+            await asyncio.sleep(1.2)  # rate limit pacing
+
+        await ctx.send(f"Done. Restored {restored}/{len(flagged_members)} members.")
 
     # ------------------------------------------------------------ backfill
 
