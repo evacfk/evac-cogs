@@ -329,6 +329,38 @@ class Lurker(commands.Cog):
         )
         await ctx.send(msg)
 
+    @checks.mod_or_permissions(manage_roles=True)
+    @commands.command(name="lurkerunflag")
+    async def lurker_unflag(self, ctx, member: discord.Member):
+        """Manually restore a lurker's roles without them needing to post."""
+        role_id = await self.config.guild(ctx.guild).lurker_role_id()
+        if not role_id:
+            await ctx.send("Lurker role not configured. Use `.lurkerset role` first.")
+            return
+        lurker_role = ctx.guild.get_role(role_id)
+        if not lurker_role:
+            await ctx.send("Configured Lurker role no longer exists.")
+            return
+
+        stored_ids = await self.config.member(member).stored_roles()
+        await ctx.send(f"Attempting restore for {member}. Stored role IDs: {stored_ids or 'none'}")
+
+        try:
+            await self._unflag_member(member, lurker_role)
+        except discord.Forbidden as e:
+            await ctx.send(
+                f"**Forbidden** restoring roles for {member}: `{e}`\n"
+                f"This means the bot's role sits below one of the roles it's trying to restore. "
+                f"Move the bot's role higher in Server Settings > Roles."
+            )
+            return
+        except Exception as e:
+            await ctx.send(f"**Unexpected error** restoring roles for {member}: `{type(e).__name__}: {e}`")
+            log.exception(f"lurkerunflag failed for {member} in {ctx.guild}")
+            return
+
+        await ctx.send(f"Restored {member}'s roles and removed Lurker.")
+
     # ------------------------------------------------------------ backfill
 
     @checks.admin_or_permissions(manage_roles=True)
