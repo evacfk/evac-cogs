@@ -49,6 +49,9 @@ class Lurker(commands.Cog):
         # floods the logs when we bulk-strip/restore roles. Quiet it to WARNING+ only.
         logging.getLogger("red.trusty-cogs.ExtendedModLog").setLevel(logging.WARNING)
 
+        # caches the most recent dry-run scan per guild so confirm doesn't re-scan
+        self._backfill_cache: Dict[int, dict] = {}
+
         self._flush_task = self.bot.loop.create_task(self._flush_loop())
         self._daily_task = self.bot.loop.create_task(self._daily_loop())
 
@@ -439,8 +442,8 @@ class Lurker(commands.Cog):
 
     @checks.admin_or_permissions(manage_roles=True)
     @commands.command(name="lurkerundoall")
-    async def lurker_undo_all(self, ctx, confirm: Optional[str] = None):
-        """Restore every currently-flagged member's roles and remove Lurker from all of them."""
+    async def lurker_undo_all(self, ctx):
+        """Show how many members currently have the Lurker role."""
         role_id = await self.config.guild(ctx.guild).lurker_role_id()
         if not role_id:
             await ctx.send("Lurker role not configured.")
@@ -451,17 +454,33 @@ class Lurker(commands.Cog):
             return
 
         flagged_members = [m for m in ctx.guild.members if lurker_role in m.roles]
+        self._undo_cache = {"ids": [m.id for m in flagged_members], "ts": datetime.now(timezone.utc).timestamp()}
+        await ctx.send(
+            f"{len(flagged_members)} members currently have the Lurker role.\n"
+            f"Run `.lurkerundoallconfirm` within the hour to restore all of their prior roles and remove Lurker from everyone."
+        )
 
-        if confirm != "confirm":
-            await ctx.send(
-                f"{len(flagged_members)} members currently have the Lurker role.\n"
-                f"Run `.lurkerundoall confirm` to restore all of their prior roles and remove Lurker from everyone."
-            )
+    @checks.admin_or_permissions(manage_roles=True)
+    @commands.command(name="lurkerundoallconfirm")
+    async def lurker_undo_all_confirm(self, ctx):
+        """Execute the most recent .lurkerundoall check (must be within the last hour)."""
+        cached = getattr(self, "_undo_cache", None)
+        if not cached or (datetime.now(timezone.utc).timestamp() - cached["ts"]) >= 3600:
+            await ctx.send("No recent check found (or it's over an hour old). Run `.lurkerundoall` first.")
             return
 
-        await ctx.send(f"Restoring {len(flagged_members)} members. I'll report back when done.")
+        role_id = await self.config.guild(ctx.guild).lurker_role_id()
+        lurker_role = ctx.guild.get_role(role_id) if role_id else None
+        if not lurker_role:
+            await ctx.send("Configured Lurker role no longer exists.")
+            return
+
+        members = [ctx.guild.get_member(uid) for uid in cached["ids"]]
+        members = [m for m in members if m and lurker_role in m.roles]
+
+        await ctx.send(f"Restoring {len(members)} members. I'll report back when done.")
         restored = 0
-        for member in flagged_members:
+        for member in members:
             try:
                 await self._unflag_member(member, lurker_role)
                 restored += 1
@@ -471,19 +490,15 @@ class Lurker(commands.Cog):
                 log.exception(f"Failed to restore {member} during undo-all")
             await asyncio.sleep(1.2)  # rate limit pacing
 
-        await ctx.send(f"Done. Restored {restored}/{len(flagged_members)} members.")
+        self._undo_cache = None
+        await ctx.send(f"Done. Restored {restored}/{len(members)} members.")
 
     # ------------------------------------------------------------ backfill
 
     @checks.admin_or_permissions(manage_roles=True)
     @commands.command(name="lurkerbackfill")
-    async def lurker_backfill(self, ctx, confirm: Optional[str] = None):
-        """
-        Scan the last 30 days of messages and flag everyone else as a Lurker.
-
-        Run with no arguments for a dry-run report.
-        Run `.lurkerbackfill confirm` to actually execute.
-        """
+    async def lurker_backfill(self, ctx):
+        """Dry run: scan the last 30 days of messages and report who would be flagged."""
         role_id = await self.config.guild(ctx.guild).lurker_role_id()
         if not role_id:
             await ctx.send("Lurker role not configured. Use `.lurkerset role` first.")
@@ -523,16 +538,38 @@ class Lurker(commands.Cog):
                 continue
             to_flag.append(member)
 
-        if confirm != "confirm":
-            await ctx.send(
-                f"Dry run complete.\n"
-                f"Active in last 30 days: {len(active_ids)}\n"
-                f"Would be flagged as Lurkers: {len(to_flag)}\n"
-                f"Run `.lurkerbackfill confirm` to execute."
-            )
+        self._backfill_cache[ctx.guild.id] = {
+            "to_flag": to_flag,
+            "exempt_ids": exempt_ids,
+            "ts": datetime.now(timezone.utc).timestamp(),
+        }
+
+        await ctx.send(
+            f"Dry run complete.\n"
+            f"Active in last 30 days: {len(active_ids)}\n"
+            f"Would be flagged as Lurkers: {len(to_flag)}\n"
+            f"Run `.lurkerbackfillconfirm` within the hour to execute using this scan."
+        )
+
+    @checks.admin_or_permissions(manage_roles=True)
+    @commands.command(name="lurkerbackfillconfirm")
+    async def lurker_backfill_confirm(self, ctx):
+        """Execute the most recent .lurkerbackfill dry run (must be within the last hour)."""
+        cached = self._backfill_cache.get(ctx.guild.id)
+        if not cached or (datetime.now(timezone.utc).timestamp() - cached["ts"]) >= 3600:
+            await ctx.send("No recent scan found (or it's over an hour old). Run `.lurkerbackfill` first.")
             return
 
-        await ctx.send(f"Flagging {len(to_flag)} members. I'll report back when done.")
+        role_id = await self.config.guild(ctx.guild).lurker_role_id()
+        lurker_role = ctx.guild.get_role(role_id) if role_id else None
+        if not lurker_role:
+            await ctx.send("Configured Lurker role no longer exists.")
+            return
+
+        to_flag = cached["to_flag"]
+        exempt_ids = cached["exempt_ids"]
+
+        await ctx.send(f"Flagging {len(to_flag)} members using the earlier scan. I'll report back when done.")
         flagged_count = 0
         for member in to_flag:
             try:
@@ -546,4 +583,5 @@ class Lurker(commands.Cog):
             await asyncio.sleep(1.2)  # rate limit pacing
 
         await self._flush_all()
+        self._backfill_cache.pop(ctx.guild.id, None)
         await ctx.send(f"Backfill complete. Flagged {flagged_count}/{len(to_flag)} members.")
