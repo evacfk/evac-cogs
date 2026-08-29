@@ -19,7 +19,9 @@ from .engine import (
     is_blackjack,
     is_bust,
     play_dealer,
+    running_count,
     settle_hand,
+    true_count,
 )
 from .models import Card, Hand, Rank, Suit
 
@@ -194,3 +196,55 @@ def test_shoe_raises_when_empty():
         shoe.draw()
     with pytest.raises(RuntimeError):
         shoe.draw()
+
+
+# ---- card counting (Hi-Lo) -------------------------------------------------
+
+def test_running_count_low_cards_positive():
+    cards = [C(Rank.TWO, Suit.SPADES), C(Rank.FIVE, Suit.HEARTS), C(Rank.SIX, Suit.CLUBS)]
+    assert running_count(cards) == 3
+
+
+def test_running_count_high_cards_negative():
+    cards = [C(Rank.KING, Suit.SPADES), C(Rank.ACE, Suit.HEARTS), C(Rank.TEN, Suit.CLUBS)]
+    assert running_count(cards) == -3
+
+
+def test_running_count_neutral_cards_zero():
+    cards = [C(Rank.SEVEN, Suit.SPADES), C(Rank.EIGHT, Suit.HEARTS), C(Rank.NINE, Suit.CLUBS)]
+    assert running_count(cards) == 0
+
+
+def test_running_count_mixed():
+    # 2,3,4,5,6 (+1 each = +5), 7,8,9 (0), 10,J,Q,K,A (-1 each = -5) -> net 0
+    one_of_each = [
+        C(Rank.TWO, Suit.SPADES), C(Rank.THREE, Suit.SPADES), C(Rank.FOUR, Suit.SPADES),
+        C(Rank.FIVE, Suit.SPADES), C(Rank.SIX, Suit.SPADES), C(Rank.SEVEN, Suit.SPADES),
+        C(Rank.EIGHT, Suit.SPADES), C(Rank.NINE, Suit.SPADES), C(Rank.TEN, Suit.SPADES),
+        C(Rank.JACK, Suit.SPADES), C(Rank.QUEEN, Suit.SPADES), C(Rank.KING, Suit.SPADES),
+        C(Rank.ACE, Suit.SPADES),
+    ]
+    assert running_count(one_of_each) == 0
+
+
+def test_running_count_empty_is_zero():
+    assert running_count([]) == 0
+
+
+def test_true_count_one_full_deck_remaining():
+    assert true_count(running=4, cards_remaining_in_shoe=52) == 4.0
+
+
+def test_true_count_two_decks_remaining():
+    assert true_count(running=4, cards_remaining_in_shoe=104) == 2.0
+
+
+def test_true_count_floors_at_half_deck():
+    # Only a handful of cards left in the shoe -- true count shouldn't
+    # explode to something meaningless right before a reshuffle.
+    result = true_count(running=4, cards_remaining_in_shoe=5)
+    assert result == pytest.approx(4 / 0.5)
+
+
+def test_true_count_zero_running_is_zero():
+    assert true_count(running=0, cards_remaining_in_shoe=200) == 0.0

@@ -58,6 +58,8 @@ def make_table(rng_seed: int = 0, **kwargs) -> tuple[Table, FakeBank]:
         bank=bank,
         min_bet=kwargs.pop("min_bet", 10),
         max_bet=kwargs.pop("max_bet", 1000),
+        deck_count=kwargs.pop("deck_count", 2),
+        penetration_pct=kwargs.pop("penetration_pct", 0.75),
         rng=random.Random(rng_seed),
     )
     return table, bank
@@ -99,18 +101,48 @@ def test_empty_table_cannot_start():
     assert table.can_start() is False
 
 
-def test_cannot_join_after_betting_opens():
+def test_can_join_during_betting():
+    """Relaxed on purpose: once the table is dealing continuously (the
+    round loop reopens straight into betting between hands, see
+    blackjacktable.py), a new player showing up shouldn't have to wait for
+    a full lobby window -- they can seat themselves in time for the next
+    bet. Their bet starts at 0 like everyone else's."""
     table, _ = make_table()
     table.add_seat(100, "evac")
     table.open_betting()
+    table.add_seat(200, "latecomer")
+    assert len(table.seats) == 2
+    assert table.seats[1].hand.bet == 0
+
+
+def test_can_leave_during_betting():
+    """Also relaxed: no money has left anyone's balance yet at this point
+    (withdrawal happens in deal()), so leaving mid-betting costs nothing."""
+    table, _ = make_table()
+    table.add_seat(100, "evac")
+    table.open_betting()
+    table.remove_seat(100)
+    assert len(table.seats) == 0
+
+
+@pytest.mark.asyncio
+async def test_cannot_join_after_deal():
+    table, _ = make_table(rng_seed=1)
+    table.add_seat(100, "evac")
+    table.open_betting()
+    await table.place_bet(100, 50)
+    await table.deal()
     with pytest.raises(TableError):
-        table.add_seat(200, "latecomer")
+        table.add_seat(200, "toolate")
 
 
-def test_cannot_leave_after_betting_opens():
-    table, _ = make_table()
+@pytest.mark.asyncio
+async def test_cannot_leave_after_deal():
+    table, _ = make_table(rng_seed=1)
     table.add_seat(100, "evac")
     table.open_betting()
+    await table.place_bet(100, 50)
+    await table.deal()
     with pytest.raises(TableError):
         table.remove_seat(100)
 
@@ -313,3 +345,94 @@ async def test_reopen_lobby_after_round_closes():
     assert len(table.seats) == 1  # still seated, just no hand yet
     with pytest.raises(IndexError):
         _ = table.seats[0].hand  # no hand dealt until betting reopens
+
+
+# ---- shoe persistence / reshuffle / card counting -------------------------
+
+async def _play_one_round(table: Table, member_id: int, bet: int = 10) -> None:
+    """Test helper: bet, deal, then Stand as soon as it's this player's
+    turn (keeps rounds short and deterministic for shoe-lifecycle tests
+    that don't care about the specific outcome)."""
+    table.open_betting()
+    await table.place_bet(member_id, bet)
+    await table.deal()
+    if table.state == "player_turns":
+        await table.stand(member_id)
+    table.reopen_lobby()
+
+
+@pytest.mark.asyncio
+async def test_shoe_persists_across_rounds_without_reshuffling():
+    """The whole point of card counting: the shoe should NOT reset every
+    hand. With a 2-deck shoe (104 cards) and one solo player drawing a
+    handful of cards a round, several rounds in a row should all draw from
+    the same shoe -- cards_remaining should just keep dropping, never
+    jump back up to 104 between hands."""
+    table, _ = make_table(rng_seed=3, deck_count=2, penetration_pct=0.75)
+    table.add_seat(100, "evac")
+
+    remaining_after_each_round = []
+    for _ in range(5):
+        await _play_one_round(table, 100)
+        remaining_after_each_round.append(table.cards_remaining)
+
+    # Strictly non-increasing -- never jumps back up mid-sequence, which
+    # would mean a reshuffle happened when it shouldn't have.
+    for earlier, later in zip(remaining_after_each_round, remaining_after_each_round[1:]):
+        assert later <= earlier, remaining_after_each_round
+    # And it did actually go down at least once -- proves cards were drawn
+    # from a persistent shoe rather than a fresh one appearing each round.
+    assert remaining_after_each_round[-1] < remaining_after_each_round[0]
+
+
+@pytest.mark.asyncio
+async def test_running_count_accumulates_across_rounds():
+    """seen_cards, and therefore running_count, should keep growing round
+    over round within the same shoe -- not reset to whatever one hand's
+    cards add up to."""
+    table, _ = make_table(rng_seed=11, deck_count=2, penetration_pct=0.75)
+    table.add_seat(100, "evac")
+
+    seen_counts = []
+    for _ in range(4):
+        await _play_one_round(table, 100)
+        seen_counts.append(len(table.seen_cards))
+
+    for earlier, later in zip(seen_counts, seen_counts[1:]):
+        assert later > earlier, seen_counts  # strictly grows every round
+
+
+@pytest.mark.asyncio
+async def test_reshuffle_resets_count_and_is_reported():
+    """Force a reshuffle by using a tiny 1-deck shoe with shallow (10%)
+    penetration -- a handful of rounds will blow past that fast. deal()
+    should report reshuffled=True on the round that triggers it, and
+    seen_cards/running_count should reset to empty/zero at that point."""
+    table, _ = make_table(rng_seed=17, deck_count=1, penetration_pct=0.10)
+    table.add_seat(100, "evac")
+
+    reshuffled_flags = []
+    for _ in range(8):
+        table.open_betting()
+        await table.place_bet(100, 10)
+        reshuffled = await table.deal()
+        reshuffled_flags.append(reshuffled)
+        if table.state == "player_turns":
+            await table.stand(100)
+        table.reopen_lobby()
+
+    # First deal always "reshuffles" (shoe starts out empty/None).
+    assert reshuffled_flags[0] is True
+    # With only 10% penetration on a single deck, at least one later round
+    # should also have triggered a reshuffle.
+    assert any(reshuffled_flags[1:]), reshuffled_flags
+
+
+@pytest.mark.asyncio
+async def test_count_properties_available_before_any_round():
+    """A freshly created table (no deal() called yet) shouldn't blow up if
+    something asks for its count -- should read as a full, untouched shoe."""
+    table, _ = make_table(deck_count=2)
+    assert table.cards_remaining == 104
+    assert table.running_count == 0
+    assert table.true_count == 0.0

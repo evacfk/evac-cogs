@@ -22,7 +22,7 @@ from .constants import (
     BLACKJACK_PAYOUT_DENOMINATOR,
     BLACKJACK_PAYOUT_NUMERATOR,
     DEALER_STAND_TOTAL,
-    DECK_COUNT,
+    DEFAULT_DECK_COUNT,
 )
 from .models import RANK_VALUES, Card, Hand, Rank, Suit
 
@@ -31,7 +31,7 @@ class Shoe:
     """A shuffled multi-deck shoe. Reshuffled fresh per round in v1 --
     no cut-card/penetration tracking yet (see design doc, v2 candidates)."""
 
-    def __init__(self, deck_count: int = DECK_COUNT, rng: random.Random | None = None) -> None:
+    def __init__(self, deck_count: int = DEFAULT_DECK_COUNT, rng: random.Random | None = None) -> None:
         self._rng = rng or random.Random()
         self._cards: list[Card] = self._build(deck_count)
         self._rng.shuffle(self._cards)
@@ -151,3 +151,44 @@ def can_double(hand: Hand) -> bool:
     """Double down is only offered on a fresh two-card hand in v1 (no
     double-after-split since splits don't exist yet)."""
     return len(hand.cards) == 2 and hand.status == "playing"
+
+
+# ---------------------------------------------------------------------------
+# Card counting (Hi-Lo) -- pure math, no notion of "who's allowed to see this".
+# table.py tracks which cards have actually been exposed to players (seen_cards)
+# and calls these against that list; blackjacktable.py's `.blackjack count`
+# command decides whether to reveal the result, gated by the show_count
+# admin setting. This module doesn't know or care about that gate.
+# ---------------------------------------------------------------------------
+
+HI_LO_VALUES: dict[Rank, int] = {
+    Rank.TWO: 1,
+    Rank.THREE: 1,
+    Rank.FOUR: 1,
+    Rank.FIVE: 1,
+    Rank.SIX: 1,
+    Rank.SEVEN: 0,
+    Rank.EIGHT: 0,
+    Rank.NINE: 0,
+    Rank.TEN: -1,
+    Rank.JACK: -1,
+    Rank.QUEEN: -1,
+    Rank.KING: -1,
+    Rank.ACE: -1,
+}
+
+
+def running_count(seen_cards: list[Card]) -> int:
+    """The standard Hi-Lo running count over every card that's actually
+    been exposed face-up so far in the current shoe's life -- NOT every
+    card physically drawn from the shoe (a dealt-but-still-hidden hole
+    card doesn't count until it's revealed, same as a real table)."""
+    return sum(HI_LO_VALUES[card.rank] for card in seen_cards)
+
+
+def true_count(running: int, cards_remaining_in_shoe: int) -> float:
+    """Running count divided by decks remaining. Decks remaining is
+    floored at half a deck (26 cards) so a nearly-exhausted shoe doesn't
+    produce a wild, meaningless spike right before it gets reshuffled."""
+    decks_remaining = max(cards_remaining_in_shoe / 52, 0.5)
+    return running / decks_remaining

@@ -19,9 +19,24 @@ MIN_SEATS: int = 1
 MAX_SEATS: int = 7
 
 # Real casino tables deal from a multi-deck shoe rather than a single reshuffled
-# deck -- flattens card-counting edges and matches the "real casino" ruleset call.
-# Reshuffled fresh every round in v1 (no penetration/cut-card tracking yet).
-DECK_COUNT: int = 6
+# deck. The shoe now persists across multiple rounds (see table.py) and only
+# reshuffles once dealt past the penetration depth below -- this is what
+# makes card counting meaningful instead of resetting every hand.
+DEFAULT_DECK_COUNT: int = 2  # admin-adjustable per guild via .blackjackset decks
+MIN_DECK_COUNT: int = 1
+MAX_DECK_COUNT: int = 8
+
+# Fraction of the shoe dealt before a reshuffle -- 0.75 means a fresh
+# reshuffle once 75% of the shoe has been dealt (25% remaining), matching
+# standard casino cut-card depth. Admin-adjustable via .blackjackset penetration.
+DEFAULT_PENETRATION_PCT: float = 0.75
+MIN_PENETRATION_PCT: float = 0.10
+MAX_PENETRATION_PCT: float = 0.95
+
+# Whether `.blackjack count` reveals the running/true count to anyone who
+# asks. Off by default -- an admin opts a server into the count-checking
+# learning aid explicitly via .blackjackset showcount.
+DEFAULT_SHOW_COUNT: bool = False
 
 LOBBY_TIMEOUT_SECONDS: int = 45
 BET_TIMEOUT_SECONDS: int = 30

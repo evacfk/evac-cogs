@@ -102,14 +102,17 @@ class BetModal(discord.ui.Modal, title="Place Your Bet"):
 class BettingView(discord.ui.View):
     """One shared 'Place Bet' button -- every seated player can click it
     (each gets their own private modal), so bets are entered in parallel
-    rather than turn by turn."""
+    rather than turn by turn. Also doubles as the between-hands lobby once
+    the shoe is dealing continuously: Join/Leave stay available here too,
+    so the table doesn't need to drop back to the slower full LobbyView
+    every single round just to let someone sit down or cash out."""
 
     def __init__(self, table: Table, bank, timeout: float) -> None:
         super().__init__(timeout=timeout)
         self.table = table
         self.bank = bank
 
-    @discord.ui.button(label="Place Bet", style=discord.ButtonStyle.primary)
+    @discord.ui.button(label="Place Bet", style=discord.ButtonStyle.primary, row=0)
     async def place_bet(self, interaction: discord.Interaction, _button: discord.ui.Button) -> None:
         seated = any(s.member_id == interaction.user.id for s in self.table.seats)
         if not seated:
@@ -118,6 +121,29 @@ class BettingView(discord.ui.View):
             )
             return
         await interaction.response.send_modal(BetModal(self.table, self, self.bank))
+
+    @discord.ui.button(label="Join Table", style=discord.ButtonStyle.success, row=1)
+    async def join(self, interaction: discord.Interaction, _button: discord.ui.Button) -> None:
+        try:
+            self.table.add_seat(interaction.user.id, interaction.user.display_name)
+        except TableError as exc:
+            await interaction.response.send_message(str(exc), ephemeral=True)
+            return
+        embed = await render_betting_embed(self.table, self.bank)
+        await interaction.response.edit_message(embed=embed, view=self)
+
+    @discord.ui.button(label="Leave Table", style=discord.ButtonStyle.danger, row=1)
+    async def leave(self, interaction: discord.Interaction, _button: discord.ui.Button) -> None:
+        try:
+            self.table.remove_seat(interaction.user.id)
+        except TableError as exc:
+            await interaction.response.send_message(str(exc), ephemeral=True)
+            return
+        embed = await render_betting_embed(self.table, self.bank)
+        await interaction.response.edit_message(embed=embed, view=self)
+        if not self.table.seats:
+            # Nobody left to bet -- no point waiting out the rest of the timer.
+            self.stop()
 
 
 class ActionView(discord.ui.View):

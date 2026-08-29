@@ -13,12 +13,25 @@ from redbot.core.bot import Red
 from .constants import (
     BET_TIMEOUT_SECONDS,
     DEFAULT_CHANNEL_ID,
+    DEFAULT_DECK_COUNT,
+    DEFAULT_PENETRATION_PCT,
+    DEFAULT_SHOW_COUNT,
     LOBBY_TIMEOUT_SECONDS,
+    MAX_DECK_COUNT,
+    MAX_PENETRATION_PCT,
     MAX_SEATS,
+    MIN_DECK_COUNT,
+    MIN_PENETRATION_PCT,
     MIN_SEATS,
     TURN_TIMEOUT_SECONDS,
 )
-from .embeds import render_betting_embed, render_hand_embed, render_lobby_embed, render_results_embed
+from .embeds import (
+    render_betting_embed,
+    render_count_embed,
+    render_hand_embed,
+    render_lobby_embed,
+    render_results_embed,
+)
 from .table import Table, TableError
 from .views import ActionView, BettingView, LobbyView
 
@@ -72,6 +85,12 @@ class BlackjackTable(commands.Cog):
             lobby_timeout=LOBBY_TIMEOUT_SECONDS,
             bet_timeout=BET_TIMEOUT_SECONDS,
             turn_timeout=TURN_TIMEOUT_SECONDS,
+            deck_count=DEFAULT_DECK_COUNT,
+            # Stored as a whole-number percent (1-99) rather than a float --
+            # Red/Discord command args are cleaner as plain ints, and it
+            # avoids float-precision noise round-tripping through Config.
+            penetration_pct=int(DEFAULT_PENETRATION_PCT * 100),
+            show_count=DEFAULT_SHOW_COUNT,
         )
         # channel_id -> Table, only ever one entry given the single hardcoded channel.
         self.active_tables: dict[int, Table] = {}
@@ -121,6 +140,8 @@ class BlackjackTable(commands.Cog):
             bank=bank_adapter,
             min_bet=settings["min_bet"],
             max_bet=settings["max_bet"],
+            deck_count=settings["deck_count"],
+            penetration_pct=settings["penetration_pct"] / 100,
         )
         table.add_seat(ctx.author.id, ctx.author.display_name)  # host sits down automatically
 
@@ -128,14 +149,7 @@ class BlackjackTable(commands.Cog):
         message = await ctx.send(embed=render_lobby_embed(table))
 
         try:
-            await self._run_round(
-                message,
-                table,
-                bank_adapter,
-                lobby_timeout=settings["lobby_timeout"],
-                bet_timeout=settings["bet_timeout"],
-                turn_timeout=settings["turn_timeout"],
-            )
+            await self._run_table_session(ctx, message, table, bank_adapter, settings)
         except Exception:
             await ctx.send(
                 "Something went wrong running that table -- it's closed now. "
@@ -146,62 +160,89 @@ class BlackjackTable(commands.Cog):
         finally:
             self.active_tables.pop(ctx.channel.id, None)
 
-    async def _run_round(
+    async def _run_table_session(
         self,
+        ctx: commands.Context,
         message: discord.Message,
         table: Table,
         bank_adapter: RedBankAdapter,
-        lobby_timeout: int,
-        bet_timeout: int,
-        turn_timeout: int,
+        settings: dict,
     ) -> None:
-        # --- Lobby ---
-        lobby_view = LobbyView(table, timeout=lobby_timeout)
+        """Runs the table for as long as anyone keeps playing: one initial
+        lobby window, then continuous betting -> deal -> turns -> dealer ->
+        results rounds, dealing from the SAME shoe (only reshuffling once
+        it's dealt past the configured penetration depth -- see
+        Table._ensure_shoe). This persistence across rounds is what makes
+        card counting mean anything; a shoe that reset every hand would
+        make counting pointless. Ends when nobody's left seated, or nobody
+        places a bet before the timeout."""
+        lobby_view = LobbyView(table, timeout=settings["lobby_timeout"])
         await message.edit(embed=render_lobby_embed(table), view=lobby_view)
         await lobby_view.wait()
 
         if not table.can_start():
-            await message.edit(
-                embed=discord.Embed(
-                    description="Table closed — no players seated.",
-                    color=discord.Color.greyple(),
-                ),
-                view=None,
-            )
+            await message.edit(embed=self._closed_embed("No players seated — table closed."), view=None)
             return
 
-        # --- Betting ---
-        table.open_betting()
-        betting_view = BettingView(table, bank_adapter, timeout=bet_timeout)
-        await message.edit(embed=await render_betting_embed(table, bank_adapter), view=betting_view)
-        await betting_view.wait()
-
-        table.drop_unbet_seats()
-        if not table.seats:
+        while True:
+            table.open_betting()
+            betting_view = BettingView(table, bank_adapter, timeout=settings["bet_timeout"])
             await message.edit(
-                embed=discord.Embed(
-                    description="No bets placed in time — table closed.",
-                    color=discord.Color.greyple(),
-                ),
-                view=None,
+                embed=await render_betting_embed(table, bank_adapter), view=betting_view
             )
+            await betting_view.wait()
+
+            table.drop_unbet_seats()
+            if not table.seats:
+                await message.edit(
+                    embed=self._closed_embed("No bets placed — table closed."), view=None
+                )
+                return
+
+            reshuffled = await table.deal()
+            if reshuffled:
+                await ctx.send(
+                    f"🔀 New {table.deck_count}-deck shoe shuffled in "
+                    f"(previous shoe reached {table.penetration_pct:.0%} penetration)."
+                )
+
+            while table.state == "player_turns":
+                seat = table.current_seat()
+                action_view = ActionView(table, timeout=settings["turn_timeout"])
+                await message.edit(embed=render_hand_embed(table), view=action_view)
+                timed_out = await action_view.wait()
+                if timed_out and table.state == "player_turns" and table.current_seat() is seat:
+                    # AFK player: forced stand rather than freezing the whole
+                    # table (locked decision #7).
+                    await table.stand(seat.member_id)
+
+            await message.edit(embed=await render_results_embed(table, bank_adapter), view=None)
+
+            # Loop back into another round from the same shoe, same seats.
+            table.reopen_lobby()
+            if not table.seats:
+                return
+
+    @staticmethod
+    def _closed_embed(description: str) -> discord.Embed:
+        return discord.Embed(description=description, color=discord.Color.greyple())
+
+    @blackjack.command(name="count")
+    @commands.guild_only()
+    async def blackjack_count(self, ctx: commands.Context) -> None:
+        """Check the current running/true count -- only works if an admin
+        has turned this on with `.blackjackset showcount true`."""
+        if ctx.channel.id != DEFAULT_CHANNEL_ID:
+            await ctx.send(f"Blackjack can only be played in <#{DEFAULT_CHANNEL_ID}>.")
             return
-
-        # --- Dealing + player turns ---
-        await table.deal()
-
-        while table.state == "player_turns":
-            seat = table.current_seat()
-            action_view = ActionView(table, timeout=turn_timeout)
-            await message.edit(embed=render_hand_embed(table), view=action_view)
-            timed_out = await action_view.wait()
-            if timed_out and table.state == "player_turns" and table.current_seat() is seat:
-                # AFK player: forced stand rather than freezing the whole table
-                # (locked decision #7).
-                await table.stand(seat.member_id)
-
-        # --- Results ---
-        await message.edit(embed=await render_results_embed(table, bank_adapter), view=None)
+        if not await self.config.guild(ctx.guild).show_count():
+            await ctx.send("Count checking isn't enabled on this server.")
+            return
+        table = self.active_tables.get(ctx.channel.id)
+        if table is None:
+            await ctx.send("No table is currently in progress.")
+            return
+        await ctx.send(embed=render_count_embed(table))
 
     # ------------------------------------------------------------------
     # Admin commands
@@ -243,6 +284,54 @@ class BlackjackTable(commands.Cog):
         await self.config.guild(ctx.guild).max_bet.set(amount)
         await ctx.send(f"Maximum bet set to {amount}.")
 
+    @blackjackset.command(name="decks")
+    async def blackjackset_decks(self, ctx: commands.Context, count: int) -> None:
+        """Set how many decks the shoe uses (1-8).
+
+        Fewer decks = a faster, more obvious count -- easier to learn on.
+        More decks = closer to a real casino floor, harder to track. This
+        only takes effect on the NEXT shoe shuffle (an in-progress shoe
+        keeps dealing at its current size until it hits penetration).
+        """
+        if not (MIN_DECK_COUNT <= count <= MAX_DECK_COUNT):
+            await ctx.send(f"Deck count must be between {MIN_DECK_COUNT} and {MAX_DECK_COUNT}.")
+            return
+        await self.config.guild(ctx.guild).deck_count.set(count)
+        await ctx.send(
+            f"Shoe size set to {count} deck(s). Takes effect next time the shoe reshuffles."
+        )
+
+    @blackjackset.command(name="penetration")
+    async def blackjackset_penetration(self, ctx: commands.Context, percent: int) -> None:
+        """Set how deep into the shoe to deal before reshuffling (1-99, as a percent).
+
+        75 (the default) matches standard casino cut-card depth. Lower
+        means shorter counting runs that reset more often; higher means
+        longer runs before a reshuffle. Also only takes effect on the next
+        shuffle, same as deck count.
+        """
+        min_pct, max_pct = int(MIN_PENETRATION_PCT * 100), int(MAX_PENETRATION_PCT * 100)
+        if not (min_pct <= percent <= max_pct):
+            await ctx.send(f"Penetration must be between {min_pct} and {max_pct} percent.")
+            return
+        await self.config.guild(ctx.guild).penetration_pct.set(percent)
+        await ctx.send(
+            f"Penetration set to {percent}%. Takes effect next time the shoe reshuffles."
+        )
+
+    @blackjackset.command(name="showcount")
+    async def blackjackset_showcount(self, ctx: commands.Context, on_off: bool) -> None:
+        """Turn `.blackjack count` on or off for this server.
+
+        When on, anyone can run `.blackjack count` during an active table
+        to see the current running/true count -- meant as a way to check
+        your own manual count while learning, not something shown
+        automatically or publicly on the table itself.
+        """
+        await self.config.guild(ctx.guild).show_count.set(on_off)
+        state = "enabled" if on_off else "disabled"
+        await ctx.send(f"Count checking (`.blackjack count`) {state}.")
+
     @blackjackset.command(name="settings")
     async def blackjackset_settings(self, ctx: commands.Context) -> None:
         """Show the current blackjack table settings for this server."""
@@ -253,6 +342,9 @@ class BlackjackTable(commands.Cog):
         embed.add_field(name="Max bet", value=str(settings["max_bet"]))
         embed.add_field(name="Channel", value=f"<#{DEFAULT_CHANNEL_ID}>")
         embed.add_field(name="Seats", value=f"{MIN_SEATS}-{MAX_SEATS}")
+        embed.add_field(name="Decks", value=str(settings["deck_count"]))
+        embed.add_field(name="Penetration", value=f"{settings['penetration_pct']}%")
+        embed.add_field(name="Count checking", value=str(settings["show_count"]))
         embed.add_field(name="Lobby timeout", value=f"{settings['lobby_timeout']}s")
         embed.add_field(name="Bet timeout", value=f"{settings['bet_timeout']}s")
         embed.add_field(name="Turn timeout", value=f"{settings['turn_timeout']}s")

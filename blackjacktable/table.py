@@ -21,9 +21,11 @@ import random
 from dataclasses import dataclass
 from typing import Optional, Protocol
 
-from .constants import DECK_COUNT, MAX_SEATS, MIN_SEATS
+from .constants import DEFAULT_DECK_COUNT, DEFAULT_PENETRATION_PCT, MAX_SEATS, MIN_SEATS
 from .engine import Shoe, can_double, hand_value, is_blackjack, play_dealer, settle_hand
-from .models import Hand, Seat, TableState
+from .engine import running_count as _calc_running_count
+from .engine import true_count as _calc_true_count
+from .models import Card, Hand, Seat, TableState
 
 
 class BankAdapter(Protocol):
@@ -61,6 +63,8 @@ class Table:
         bank: BankAdapter,
         min_bet: int,
         max_bet: int,
+        deck_count: int = DEFAULT_DECK_COUNT,
+        penetration_pct: float = DEFAULT_PENETRATION_PCT,
         rng: random.Random | None = None,
     ) -> None:
         self.guild_id = guild_id
@@ -69,12 +73,21 @@ class Table:
         self.bank = bank
         self.min_bet = min_bet
         self.max_bet = max_bet
+        self.deck_count = deck_count
+        self.penetration_pct = penetration_pct
         self._rng = rng or random.Random()
 
         self.state: TableState = "lobby"
         self.seats: list[Seat] = []
         self.dealer_hand: Hand = Hand()
         self.shoe: Optional[Shoe] = None
+        # Every card that's actually been exposed face-up so far in the
+        # current shoe's life (NOT every card drawn -- a dealt-but-hidden
+        # dealer hole card isn't added until it's revealed). This is what
+        # the Hi-Lo running count is computed from. Persists across many
+        # rounds/reopen_lobby() calls -- only reset when the shoe itself
+        # gets reshuffled (see _ensure_shoe below), same as a real count.
+        self.seen_cards: list[Card] = []
         self.current_seat_index: Optional[int] = None
         self.last_results: list[RoundResult] = []
 
@@ -83,16 +96,27 @@ class Table:
     # ------------------------------------------------------------------
 
     def add_seat(self, member_id: int, display_name: str) -> None:
-        if self.state != "lobby":
+        # Joining is allowed during "betting" too, not just "lobby" -- once
+        # the table is dealing continuously (see reopen_lobby/blackjacktable.py's
+        # round loop), a new player showing up between hands shouldn't have
+        # to wait for a full lobby window; they just get seated in time for
+        # the next bet.
+        if self.state not in ("lobby", "betting"):
             raise TableError("Table isn't accepting new players right now.")
         if len(self.seats) >= MAX_SEATS:
             raise TableError("Table is full.")
         if any(s.member_id == member_id for s in self.seats):
             raise TableError("You're already seated.")
-        self.seats.append(Seat(member_id=member_id, display_name=display_name, hands=[]))
+        seat = Seat(member_id=member_id, display_name=display_name, hands=[])
+        if self.state == "betting":
+            seat.hands = [Hand(bet=0)]  # matches what open_betting() gives existing seats
+        self.seats.append(seat)
 
     def remove_seat(self, member_id: int) -> None:
-        if self.state != "lobby":
+        # Leaving is safe during betting too -- no money has actually left
+        # anyone's balance yet at this point (withdrawal happens in deal()),
+        # so dropping a bet-in-progress seat costs nothing.
+        if self.state not in ("lobby", "betting"):
             raise TableError("Can't leave once the round has started.")
         self.seats = [s for s in self.seats if s.member_id != member_id]
 
@@ -136,7 +160,25 @@ class Table:
     # Dealing
     # ------------------------------------------------------------------
 
-    async def deal(self) -> None:
+    def _ensure_shoe(self) -> bool:
+        """Creates a fresh shoe if none exists yet, or if the current one
+        has been dealt down past the configured penetration depth (checked
+        BETWEEN rounds, here, never mid-hand -- matches a real dealer
+        noticing the cut card, finishing the hand, then shuffling before
+        the next one). Returns True if a new shoe was just shuffled in, so
+        the caller can announce it -- anyone counting cards needs to know
+        their running count just reset to zero."""
+        total_cards = self.deck_count * 52
+        threshold = total_cards * (1 - self.penetration_pct)
+        if self.shoe is None or len(self.shoe) <= threshold:
+            self.shoe = Shoe(deck_count=self.deck_count, rng=self._rng)
+            self.seen_cards = []
+            return True
+        return False
+
+    async def deal(self) -> bool:
+        """Deals a new round. Returns True if this deal triggered a shoe
+        reshuffle (see _ensure_shoe)."""
         if self.state != "betting":
             raise TableError("Can't deal outside the betting phase.")
         if not self.seats:
@@ -148,13 +190,20 @@ class Table:
         for seat in self.seats:
             await self.bank.withdraw(seat.member_id, seat.hand.bet)
 
-        self.shoe = Shoe(deck_count=DECK_COUNT, rng=self._rng)
+        reshuffled = self._ensure_shoe()
         self.dealer_hand = Hand()
 
         for _ in range(2):
             for seat in self.seats:
-                seat.hand.add(self.shoe.draw())
+                card = self.shoe.draw()
+                seat.hand.add(card)
+                self.seen_cards.append(card)  # player cards are always face-up
             self.dealer_hand.add(self.shoe.draw())
+
+        # Dealer's first card is the up-card (visible); the second stays
+        # hidden until _advance_to_dealer reveals it -- so only the first
+        # goes into seen_cards here.
+        self.seen_cards.append(self.dealer_hand.cards[0])
 
         for seat in self.seats:
             if is_blackjack(seat.hand.cards):
@@ -165,6 +214,8 @@ class Table:
         self._skip_resolved_seats()
         if self.current_seat_index is None:
             await self._advance_to_dealer()
+
+        return reshuffled
 
     # ------------------------------------------------------------------
     # Player turns
@@ -189,7 +240,9 @@ class Table:
 
     async def hit(self, member_id: int) -> None:
         seat = self._require_current_turn(member_id)
-        seat.hand.add(self.shoe.draw())
+        card = self.shoe.draw()
+        seat.hand.add(card)
+        self.seen_cards.append(card)
         total, _ = hand_value(seat.hand.cards)
         if total > 21:
             seat.hand.status = "bust"
@@ -213,7 +266,9 @@ class Table:
             raise TableError("Not enough credits to double down.")
         await self.bank.withdraw(member_id, seat.hand.bet)
         seat.hand.bet *= 2
-        seat.hand.add(self.shoe.draw())
+        card = self.shoe.draw()
+        seat.hand.add(card)
+        self.seen_cards.append(card)
         total, _ = hand_value(seat.hand.cards)
         seat.hand.status = "bust" if total > 21 else "stood"
         await self._advance_turn()
@@ -240,12 +295,18 @@ class Table:
 
     async def _advance_to_dealer(self) -> None:
         self.state = "dealer_turn"
+        # Reveal the hole card now -- it becomes visible (and countable)
+        # regardless of whether the dealer ends up drawing further.
+        self.seen_cards.append(self.dealer_hand.cards[1])
+
         # If every seat busted, the dealer's hand can't matter to the
         # outcome -- skip drawing for it entirely (matches the design doc:
         # "all-bust tables skip dealer play, no reason to draw").
         anyone_still_live = any(s.hand.status in ("stood", "blackjack") for s in self.seats)
         if anyone_still_live:
+            already_dealt = len(self.dealer_hand.cards)
             self.dealer_hand.cards = play_dealer(self.shoe, self.dealer_hand.cards)
+            self.seen_cards.extend(self.dealer_hand.cards[already_dealt:])
         await self.settle()
 
     # ------------------------------------------------------------------
@@ -279,12 +340,35 @@ class Table:
         """Loops the table back to an open lobby with the same seated
         players (a seat isn't auto-dropped just because a round ended --
         matches sitting at a real table between hands). Only valid once
-        a round has fully settled."""
+        a round has fully settled.
+
+        Deliberately does NOT touch self.shoe or self.seen_cards -- the
+        whole point of a shoe is that it persists across many rounds
+        without reshuffling (see _ensure_shoe). Wiping it here would reset
+        everyone's count every single hand, which defeats card counting
+        entirely."""
         if self.state != "closed":
             raise TableError("Can't reopen a table mid-round.")
         self.state = "lobby"
         for seat in self.seats:
             seat.hands = []
         self.dealer_hand = Hand()
-        self.shoe = None
         self.current_seat_index = None
+
+    # ------------------------------------------------------------------
+    # Card counting
+    # ------------------------------------------------------------------
+
+    @property
+    def cards_remaining(self) -> int:
+        """Cards left in the current shoe (or a fresh shoe's full size if
+        none has been dealt from yet)."""
+        return len(self.shoe) if self.shoe is not None else self.deck_count * 52
+
+    @property
+    def running_count(self) -> int:
+        return _calc_running_count(self.seen_cards)
+
+    @property
+    def true_count(self) -> float:
+        return _calc_true_count(self.running_count, self.cards_remaining)
