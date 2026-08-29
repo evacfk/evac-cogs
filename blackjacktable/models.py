@@ -72,6 +72,36 @@ _SUIT_GLYPH = {
     Suit.SPADES: "♠",
 }
 
+# Suit glyphs WITH the emoji variation selector (U+FE0F) -- this is what
+# actually gets Discord's client to render them as the colored suit icons
+# (red hearts/diamonds, black spades/clubs) instead of small flat glyphs.
+# Only used by embeds.py's display helpers, never by Card.__str__ above
+# (which stays plain or a debug string), so it doesn't leak into game logic.
+SUIT_EMOJI: dict[Suit, str] = {
+    Suit.CLUBS: "♣️",
+    Suit.DIAMONDS: "♦️",
+    Suit.HEARTS: "♥️",
+    Suit.SPADES: "♠️",
+}
+
+# Spelled-out rank for display ("Jack" not "J") -- reads more like a real
+# casino hand notation than an abbreviation does.
+RANK_DISPLAY: dict[Rank, str] = {
+    Rank.TWO: "2",
+    Rank.THREE: "3",
+    Rank.FOUR: "4",
+    Rank.FIVE: "5",
+    Rank.SIX: "6",
+    Rank.SEVEN: "7",
+    Rank.EIGHT: "8",
+    Rank.NINE: "9",
+    Rank.TEN: "10",
+    Rank.JACK: "Jack",
+    Rank.QUEEN: "Queen",
+    Rank.KING: "King",
+    Rank.ACE: "Ace",
+}
+
 
 HandStatus = Literal["playing", "stood", "bust", "blackjack", "surrendered"]
 

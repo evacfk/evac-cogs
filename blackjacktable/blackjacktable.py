@@ -36,6 +36,7 @@ from .embeds import (
     render_hand_embed,
     render_lobby_embed,
     render_results_embed,
+    render_session_summary_embed,
 )
 from .table import Table, TableError
 from .views import ActionView, BettingView, LobbyView, NextRoundView
@@ -194,7 +195,10 @@ class BlackjackTable(commands.Cog):
         await lobby_view.wait()
 
         if not table.can_start():
-            await message.edit(embed=self._closed_embed("No players seated — table closed."), view=None)
+            await message.edit(
+                embed=render_session_summary_embed(table, reason="No players seated — table closed."),
+                view=None,
+            )
             return
 
         while True:
@@ -208,7 +212,8 @@ class BlackjackTable(commands.Cog):
             table.drop_unbet_seats()
             if not table.seats:
                 await message.edit(
-                    embed=self._closed_embed("No bets placed — table closed."), view=None
+                    embed=render_session_summary_embed(table, reason="No bets placed — table closed."),
+                    view=None,
                 )
                 return
 
@@ -237,21 +242,22 @@ class BlackjackTable(commands.Cog):
 
             if timed_out:
                 await message.edit(
-                    embed=self._closed_embed("Table closed — no response from the host."),
+                    embed=render_session_summary_embed(
+                        table, reason="Table closed — no response from the host."
+                    ),
                     view=None,
                 )
                 return
 
             if not table.seats:
                 # Host clicked Close Table (NextRoundView clears seats to signal this).
-                await message.edit(embed=self._closed_embed("Table closed by the host."), view=None)
+                await message.edit(
+                    embed=render_session_summary_embed(table, reason="Table closed by the host."),
+                    view=None,
+                )
                 return
 
             table.reopen_lobby()
-
-    @staticmethod
-    def _closed_embed(description: str) -> discord.Embed:
-        return discord.Embed(description=description, color=discord.Color.greyple())
 
     @wonderjack.command(name="count")
     @commands.guild_only()

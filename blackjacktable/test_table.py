@@ -436,3 +436,34 @@ async def test_count_properties_available_before_any_round():
     assert table.cards_remaining == 104
     assert table.running_count == 0
     assert table.true_count == 0.0
+
+
+@pytest.mark.asyncio
+async def test_session_tracking_accumulates_across_rounds():
+    """session_net/session_rounds/session_names are whole-session
+    bookkeeping (not reset each round like last_results, and not reset on
+    reshuffle like seen_cards) -- this is what the closing summary reads
+    from, so it has to keep accumulating across many rounds."""
+    table, bank = make_table(rng_seed=11, starting_balance=1000)
+    table.add_seat(100, "evac")
+
+    for _ in range(3):
+        table.open_betting()
+        await table.place_bet(100, 50)
+        await table.deal()
+        if table.state == "player_turns":
+            await table.stand(100)
+        assert table.state == "closed"
+        table.reopen_lobby()
+
+    assert table.session_rounds[100] == 3
+    assert table.session_names[100] == "evac"
+    # Net across all three rounds should equal current balance minus the
+    # starting balance (nothing else touches this member's balance).
+    assert table.session_net[100] == bank.balance(100) - 1000
+
+
+@pytest.mark.asyncio
+async def test_session_elapsed_seconds_is_nonnegative():
+    table, _ = make_table()
+    assert table.session_elapsed_seconds >= 0.0

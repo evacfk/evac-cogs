@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import random
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from typing import Optional, Protocol
 
 from .constants import DEFAULT_DECK_COUNT, DEFAULT_PENETRATION_PCT, MAX_SEATS, MIN_SEATS
@@ -90,6 +91,19 @@ class Table:
         self.seen_cards: list[Card] = []
         self.current_seat_index: Optional[int] = None
         self.last_results: list[RoundResult] = []
+
+        # Whole-session bookkeeping, for the closing summary -- unlike
+        # seen_cards (reset on reshuffle) or hands (reset each round),
+        # this tracks every round played from table creation until the
+        # table finally closes, even across many reshuffles.
+        self.created_at: datetime = datetime.now(timezone.utc)
+        self.session_net: dict[int, int] = {}       # member_id -> cumulative net (payout - bet)
+        self.session_rounds: dict[int, int] = {}      # member_id -> rounds played
+        self.session_names: dict[int, str] = {}         # member_id -> last-known display name
+
+    @property
+    def session_elapsed_seconds(self) -> float:
+        return (datetime.now(timezone.utc) - self.created_at).total_seconds()
 
     # ------------------------------------------------------------------
     # Lobby
@@ -328,6 +342,12 @@ class Table:
             results.append(
                 RoundResult(seat.member_id, seat.display_name, outcome, payout, hand.bet)
             )
+
+            net = payout - hand.bet
+            self.session_net[seat.member_id] = self.session_net.get(seat.member_id, 0) + net
+            self.session_rounds[seat.member_id] = self.session_rounds.get(seat.member_id, 0) + 1
+            self.session_names[seat.member_id] = seat.display_name
+
         self.last_results = results
         self.state = "closed"
         return results
