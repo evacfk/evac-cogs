@@ -2,15 +2,18 @@
 Tunable constants for the blackjack table cog.
 
 These are the v1 defaults. Anything here that should be per-guild
-configurable (channel restriction, bet limits, timeouts) gets mirrored
-into the cog's Config schema in blackjacktable.py — this module is just
-the fallback/default values and the things that aren't worth making
-configurable yet (deck count, dealer stand rule, payout ratio).
+configurable (bet limits, timeouts, deck count, penetration, count
+checking) gets mirrored into the cog's Config schema in
+blackjacktable.py — this module is just the fallback/default values and
+the things that aren't worth making configurable yet (dealer stand rule,
+payout ratio).
 """
 
-# Locked to this channel for v1 (per your answer: one table, this channel only).
-# Exposed as a Config-overridable guild setting later if you ever want a second
-# channel — hardcoded here for now since that's the actual requirement.
+# `.wonderjack table` is allowed in this channel, and in any thread created
+# under it (e.g. the same kind of per-session thread your .gamble command
+# spins up) -- see _channel_allowed() in blackjacktable.py. Not a full
+# any-channel opt-in: still scoped to one home channel, just no longer
+# just that one exact channel ID.
 DEFAULT_CHANNEL_ID: int = 1530348323330986005
 
 # A table can start with just the host (solo vs. dealer is allowed).

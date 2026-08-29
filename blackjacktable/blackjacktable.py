@@ -44,6 +44,18 @@ from .views import ActionView, BettingView, LobbyView, NextRoundView
 CONFIG_SCHEMA_VERSION = 1
 
 
+def _channel_allowed(channel: discord.abc.Messageable) -> bool:
+    """True in the home channel itself, or in any thread hanging off of
+    it -- the same shape as the .gamble command's per-session threads.
+    A thread's `.parent_id` points at the channel it was created under,
+    so this covers both a thread made directly under the home channel and
+    (since Discord only allows one level of nesting) any thread a player
+    spins up from within it."""
+    if channel.id == DEFAULT_CHANNEL_ID:
+        return True
+    return getattr(channel, "parent_id", None) == DEFAULT_CHANNEL_ID
+
+
 class RedBankAdapter:
     """table.py's BankAdapter protocol, implemented against Red's real
     bank API. Table only ever deals in plain member IDs (so it stays
@@ -99,7 +111,10 @@ class BlackjackTable(commands.Cog):
             penetration_pct=int(DEFAULT_PENETRATION_PCT * 100),
             show_count=DEFAULT_SHOW_COUNT,
         )
-        # channel_id -> Table, only ever one entry given the single hardcoded channel.
+        # channel_id -> Table (a thread has its own ID here too, distinct
+        # from its parent channel's). The home channel and any thread
+        # under it can each run one table concurrently -- this dict is
+        # what makes "one table per channel/thread" hold.
         self.active_tables: dict[int, Table] = {}
 
     def cog_unload(self) -> None:
@@ -125,9 +140,20 @@ class BlackjackTable(commands.Cog):
     @commands.guild_only()
     @commands.cooldown(1, 10, commands.BucketType.channel)
     async def wonderjack_table(self, ctx: commands.Context) -> None:
-        """Open a blackjack table lobby. Click Join to sit down."""
-        if ctx.channel.id != DEFAULT_CHANNEL_ID:
-            await ctx.send(f"Blackjack can only be played in <#{DEFAULT_CHANNEL_ID}>.")
+        """Open a blackjack table lobby. Click Join to sit down.
+
+        Allowed in the home channel (`constants.DEFAULT_CHANNEL_ID`) and in
+        any thread created under it -- same shape as the .gamble command's
+        per-session threads. `self.active_tables` is keyed by channel ID
+        (a thread has its own ID, distinct from its parent), so this
+        naturally means one table per channel/thread: several threads can
+        each run their own table at the same time, but two tables can't
+        stack in the same one (the check just below still catches that).
+        """
+        if not _channel_allowed(ctx.channel):
+            await ctx.send(
+                f"Blackjack can only be played in <#{DEFAULT_CHANNEL_ID}> or a thread under it."
+            )
             return
 
         if not await self.config.guild(ctx.guild).enabled():
@@ -264,8 +290,10 @@ class BlackjackTable(commands.Cog):
     async def wonderjack_count(self, ctx: commands.Context) -> None:
         """Check the current running/true count -- only works if an admin
         has turned this on with `.wonderjackset showcount true`."""
-        if ctx.channel.id != DEFAULT_CHANNEL_ID:
-            await ctx.send(f"Blackjack can only be played in <#{DEFAULT_CHANNEL_ID}>.")
+        if not _channel_allowed(ctx.channel):
+            await ctx.send(
+                f"Blackjack can only be played in <#{DEFAULT_CHANNEL_ID}> or a thread under it."
+            )
             return
         if not await self.config.guild(ctx.guild).show_count():
             await ctx.send("Count checking isn't enabled on this server.")
@@ -372,7 +400,7 @@ class BlackjackTable(commands.Cog):
         embed.add_field(name="Enabled", value=str(settings["enabled"]))
         embed.add_field(name="Min bet", value=str(settings["min_bet"]))
         embed.add_field(name="Max bet", value=str(settings["max_bet"]))
-        embed.add_field(name="Channel", value=f"<#{DEFAULT_CHANNEL_ID}>")
+        embed.add_field(name="Channel", value=f"<#{DEFAULT_CHANNEL_ID}> + its threads")
         embed.add_field(name="Seats", value=f"{MIN_SEATS}-{MAX_SEATS}")
         embed.add_field(name="Decks", value=str(settings["deck_count"]))
         embed.add_field(name="Penetration", value=f"{settings['penetration_pct']}%")
