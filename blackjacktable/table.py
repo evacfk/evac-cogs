@@ -1,0 +1,290 @@
+"""
+The Table state machine: lobby -> betting -> dealing -> player_turns ->
+dealer_turn -> settling -> closed.
+
+Deliberately has zero discord.py imports, same philosophy as engine.py --
+this is the piece with money and turn-order bugs in it, so it needs to be
+testable with plain pytest (see test_table.py) without a running bot. The
+Discord side (embeds, buttons, the live message) lives in views.py and
+blackjacktable.py, which hold a Table instance and call these methods.
+
+Bank access goes through the BankAdapter protocol below rather than
+importing redbot.core.bank directly -- blackjacktable.py wires the real
+bank calls in; test_table.py wires in a fake in-memory ledger. This is
+the same "keep the money logic testable in isolation" idea as engine.py,
+one layer up.
+"""
+
+from __future__ import annotations
+
+import random
+from dataclasses import dataclass
+from typing import Optional, Protocol
+
+from .constants import DECK_COUNT, MAX_SEATS, MIN_SEATS
+from .engine import Shoe, can_double, hand_value, is_blackjack, play_dealer, settle_hand
+from .models import Hand, Seat, TableState
+
+
+class BankAdapter(Protocol):
+    """Thin interface over Red's bank API. blackjacktable.py implements
+    this against redbot.core.bank; test_table.py implements it against an
+    in-memory dict. Table never touches a real bank module directly."""
+
+    async def can_spend(self, member_id: int, amount: int) -> bool: ...
+    async def withdraw(self, member_id: int, amount: int) -> None: ...
+    async def deposit(self, member_id: int, amount: int) -> None: ...
+
+
+class TableError(Exception):
+    """Raised for any invalid action against a Table: wrong state, not
+    your turn, bad bet amount, insufficient funds, etc. Callers (the
+    Discord command/button layer) catch this and show the message text
+    directly to the user -- messages here are written to be user-facing."""
+
+
+@dataclass
+class RoundResult:
+    member_id: int
+    display_name: str
+    outcome: str  # one of engine.Outcome's values, or "bust"
+    payout: int
+    bet: int
+
+
+class Table:
+    def __init__(
+        self,
+        guild_id: int,
+        channel_id: int,
+        host_id: int,
+        bank: BankAdapter,
+        min_bet: int,
+        max_bet: int,
+        rng: random.Random | None = None,
+    ) -> None:
+        self.guild_id = guild_id
+        self.channel_id = channel_id
+        self.host_id = host_id
+        self.bank = bank
+        self.min_bet = min_bet
+        self.max_bet = max_bet
+        self._rng = rng or random.Random()
+
+        self.state: TableState = "lobby"
+        self.seats: list[Seat] = []
+        self.dealer_hand: Hand = Hand()
+        self.shoe: Optional[Shoe] = None
+        self.current_seat_index: Optional[int] = None
+        self.last_results: list[RoundResult] = []
+
+    # ------------------------------------------------------------------
+    # Lobby
+    # ------------------------------------------------------------------
+
+    def add_seat(self, member_id: int, display_name: str) -> None:
+        if self.state != "lobby":
+            raise TableError("Table isn't accepting new players right now.")
+        if len(self.seats) >= MAX_SEATS:
+            raise TableError("Table is full.")
+        if any(s.member_id == member_id for s in self.seats):
+            raise TableError("You're already seated.")
+        self.seats.append(Seat(member_id=member_id, display_name=display_name, hands=[]))
+
+    def remove_seat(self, member_id: int) -> None:
+        if self.state != "lobby":
+            raise TableError("Can't leave once the round has started.")
+        self.seats = [s for s in self.seats if s.member_id != member_id]
+
+    def can_start(self) -> bool:
+        return self.state == "lobby" and len(self.seats) >= MIN_SEATS
+
+    # ------------------------------------------------------------------
+    # Betting
+    # ------------------------------------------------------------------
+
+    def open_betting(self) -> None:
+        if not self.can_start():
+            raise TableError(f"Need at least {MIN_SEATS} player(s) to start.")
+        self.state = "betting"
+        for seat in self.seats:
+            seat.hands = [Hand(bet=0)]
+
+    async def place_bet(self, member_id: int, amount: int) -> None:
+        if self.state != "betting":
+            raise TableError("Not taking bets right now.")
+        seat = self._seat_for(member_id)
+        if amount < self.min_bet or amount > self.max_bet:
+            raise TableError(f"Bet must be between {self.min_bet} and {self.max_bet}.")
+        if not await self.bank.can_spend(member_id, amount):
+            raise TableError("You don't have enough credits for that bet.")
+        seat.hand.bet = amount
+
+    def all_bets_placed(self) -> bool:
+        return bool(self.seats) and all(seat.hand.bet > 0 for seat in self.seats)
+
+    def drop_unbet_seats(self) -> list[Seat]:
+        """Removes any seat that never placed a bet before the bet timeout
+        expired. Returns the dropped seats so the caller can notify them.
+        They're dropped from the ROUND, not banned from the table --
+        nothing stops them rejoining next time the table reopens."""
+        dropped = [s for s in self.seats if s.hand.bet <= 0]
+        self.seats = [s for s in self.seats if s.hand.bet > 0]
+        return dropped
+
+    # ------------------------------------------------------------------
+    # Dealing
+    # ------------------------------------------------------------------
+
+    async def deal(self) -> None:
+        if self.state != "betting":
+            raise TableError("Can't deal outside the betting phase.")
+        if not self.seats:
+            raise TableError("No players with bets placed.")
+
+        # Withdraw every bet up front, same as buying chips before cards
+        # touch the table -- means a mid-round disconnect can't leave a
+        # player owing without having actually staked anything.
+        for seat in self.seats:
+            await self.bank.withdraw(seat.member_id, seat.hand.bet)
+
+        self.shoe = Shoe(deck_count=DECK_COUNT, rng=self._rng)
+        self.dealer_hand = Hand()
+
+        for _ in range(2):
+            for seat in self.seats:
+                seat.hand.add(self.shoe.draw())
+            self.dealer_hand.add(self.shoe.draw())
+
+        for seat in self.seats:
+            if is_blackjack(seat.hand.cards):
+                seat.hand.status = "blackjack"
+
+        self.state = "player_turns"
+        self.current_seat_index = 0
+        self._skip_resolved_seats()
+        if self.current_seat_index is None:
+            await self._advance_to_dealer()
+
+    # ------------------------------------------------------------------
+    # Player turns
+    # ------------------------------------------------------------------
+
+    def current_seat(self) -> Optional[Seat]:
+        if self.state != "player_turns" or self.current_seat_index is None:
+            return None
+        return self.seats[self.current_seat_index]
+
+    def _seat_for(self, member_id: int) -> Seat:
+        for seat in self.seats:
+            if seat.member_id == member_id:
+                return seat
+        raise TableError("You're not seated at this table.")
+
+    def _require_current_turn(self, member_id: int) -> Seat:
+        seat = self.current_seat()
+        if seat is None or seat.member_id != member_id:
+            raise TableError("It's not your turn.")
+        return seat
+
+    async def hit(self, member_id: int) -> None:
+        seat = self._require_current_turn(member_id)
+        seat.hand.add(self.shoe.draw())
+        total, _ = hand_value(seat.hand.cards)
+        if total > 21:
+            seat.hand.status = "bust"
+            await self._advance_turn()
+        elif total == 21:
+            # No decision left to make at 21 -- auto-stand rather than
+            # making the player click Stand on a hand that can't improve.
+            seat.hand.status = "stood"
+            await self._advance_turn()
+
+    async def stand(self, member_id: int) -> None:
+        seat = self._require_current_turn(member_id)
+        seat.hand.status = "stood"
+        await self._advance_turn()
+
+    async def double(self, member_id: int) -> None:
+        seat = self._require_current_turn(member_id)
+        if not can_double(seat.hand):
+            raise TableError("Can only double down on your first two cards.")
+        if not await self.bank.can_spend(member_id, seat.hand.bet):
+            raise TableError("Not enough credits to double down.")
+        await self.bank.withdraw(member_id, seat.hand.bet)
+        seat.hand.bet *= 2
+        seat.hand.add(self.shoe.draw())
+        total, _ = hand_value(seat.hand.cards)
+        seat.hand.status = "bust" if total > 21 else "stood"
+        await self._advance_turn()
+
+    def _skip_resolved_seats(self) -> None:
+        """Advances current_seat_index past any seat whose hand is already
+        decided (blackjack dealt, or resolved this round), landing on the
+        next seat still awaiting a decision -- or None if everyone's done."""
+        idx = self.current_seat_index if self.current_seat_index is not None else 0
+        while idx < len(self.seats) and self.seats[idx].hand.status != "playing":
+            idx += 1
+        self.current_seat_index = idx if idx < len(self.seats) else None
+
+    async def _advance_turn(self) -> None:
+        assert self.current_seat_index is not None
+        self.current_seat_index += 1
+        self._skip_resolved_seats()
+        if self.current_seat_index is None:
+            await self._advance_to_dealer()
+
+    # ------------------------------------------------------------------
+    # Dealer turn
+    # ------------------------------------------------------------------
+
+    async def _advance_to_dealer(self) -> None:
+        self.state = "dealer_turn"
+        # If every seat busted, the dealer's hand can't matter to the
+        # outcome -- skip drawing for it entirely (matches the design doc:
+        # "all-bust tables skip dealer play, no reason to draw").
+        anyone_still_live = any(s.hand.status in ("stood", "blackjack") for s in self.seats)
+        if anyone_still_live:
+            self.dealer_hand.cards = play_dealer(self.shoe, self.dealer_hand.cards)
+        await self.settle()
+
+    # ------------------------------------------------------------------
+    # Settlement
+    # ------------------------------------------------------------------
+
+    async def settle(self) -> list[RoundResult]:
+        self.state = "settling"
+        results: list[RoundResult] = []
+        for seat in self.seats:
+            hand = seat.hand
+            if hand.status == "bust":
+                outcome, payout = "bust", 0
+            else:
+                settlement = settle_hand(hand.cards, self.dealer_hand.cards, hand.bet)
+                outcome, payout = settlement.outcome, settlement.payout
+            if payout > 0:
+                await self.bank.deposit(seat.member_id, payout)
+            results.append(
+                RoundResult(seat.member_id, seat.display_name, outcome, payout, hand.bet)
+            )
+        self.last_results = results
+        self.state = "closed"
+        return results
+
+    # ------------------------------------------------------------------
+    # Next round
+    # ------------------------------------------------------------------
+
+    def reopen_lobby(self) -> None:
+        """Loops the table back to an open lobby with the same seated
+        players (a seat isn't auto-dropped just because a round ended --
+        matches sitting at a real table between hands). Only valid once
+        a round has fully settled."""
+        if self.state != "closed":
+            raise TableError("Can't reopen a table mid-round.")
+        self.state = "lobby"
+        for seat in self.seats:
+            seat.hands = []
+        self.dealer_hand = Hand()
+        self.shoe = None
+        self.current_seat_index = None
