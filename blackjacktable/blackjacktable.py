@@ -2,6 +2,11 @@
 The Red cog class. Wires table.py's state machine and views.py's buttons
 into actual Discord commands, plus a BankAdapter implementation backed by
 Red's real bank API (redbot.core.bank).
+
+Command group is `.wonderjack` (not `.blackjack`) -- the Casino cog you
+already have loaded exposes its own `.blackjack` command, and the two
+collided. `.load blackjacktable` (the cog/package name) is unchanged; only
+the in-Discord command prefix moved.
 """
 
 from __future__ import annotations
@@ -33,7 +38,7 @@ from .embeds import (
     render_results_embed,
 )
 from .table import Table, TableError
-from .views import ActionView, BettingView, LobbyView
+from .views import ActionView, BettingView, LobbyView, NextRoundView
 
 CONFIG_SCHEMA_VERSION = 1
 
@@ -71,7 +76,8 @@ class RedBankAdapter:
 
 class BlackjackTable(commands.Cog):
     """A multiplayer blackjack table with a shared shoe, seated players,
-    and button-based hit/stand/double play."""
+    and button-based hit/stand/double play. Commands live under
+    `.wonderjack` / `.wonderjackset`."""
 
     def __init__(self, bot: Red) -> None:
         self.bot = bot
@@ -108,16 +114,16 @@ class BlackjackTable(commands.Cog):
     # Player-facing commands
     # ------------------------------------------------------------------
 
-    @commands.group(name="blackjack", invoke_without_command=True)
+    @commands.group(name="wonderjack", invoke_without_command=True)
     @commands.guild_only()
-    async def blackjack(self, ctx: commands.Context) -> None:
-        """Blackjack table commands. Run `.blackjack table` to open a lobby."""
+    async def wonderjack(self, ctx: commands.Context) -> None:
+        """Blackjack table commands. Run `.wonderjack table` to open a lobby."""
         await ctx.send_help(ctx.command)
 
-    @blackjack.command(name="table")
+    @wonderjack.command(name="table")
     @commands.guild_only()
     @commands.cooldown(1, 10, commands.BucketType.channel)
-    async def blackjack_table(self, ctx: commands.Context) -> None:
+    async def wonderjack_table(self, ctx: commands.Context) -> None:
         """Open a blackjack table lobby. Click Join to sit down."""
         if ctx.channel.id != DEFAULT_CHANNEL_ID:
             await ctx.send(f"Blackjack can only be played in <#{DEFAULT_CHANNEL_ID}>.")
@@ -169,13 +175,20 @@ class BlackjackTable(commands.Cog):
         settings: dict,
     ) -> None:
         """Runs the table for as long as anyone keeps playing: one initial
-        lobby window, then continuous betting -> deal -> turns -> dealer ->
-        results rounds, dealing from the SAME shoe (only reshuffling once
-        it's dealt past the configured penetration depth -- see
+        lobby window, then betting -> deal -> turns -> dealer -> results
+        rounds, dealing from the SAME shoe (only reshuffling once it's
+        dealt past the configured penetration depth -- see
         Table._ensure_shoe). This persistence across rounds is what makes
-        card counting mean anything; a shoe that reset every hand would
-        make counting pointless. Ends when nobody's left seated, or nobody
-        places a bet before the timeout."""
+        card counting mean anything.
+
+        Between rounds, the results stay on screen with a Next Round /
+        Close Table view -- the host has to explicitly advance it. This is
+        deliberate: auto-continuing straight into the next bet meant
+        results flashed by before anyone could actually see who won or
+        lost. Ends when the host closes it, nobody's left seated, nobody
+        places a bet before the timeout, or the host doesn't respond to
+        the Next Round prompt in time.
+        """
         lobby_view = LobbyView(table, timeout=settings["lobby_timeout"])
         await message.edit(embed=render_lobby_embed(table), view=lobby_view)
         await lobby_view.wait()
@@ -216,22 +229,35 @@ class BlackjackTable(commands.Cog):
                     # table (locked decision #7).
                     await table.stand(seat.member_id)
 
-            await message.edit(embed=await render_results_embed(table, bank_adapter), view=None)
+            # --- Results: wait for the host, don't auto-continue ---
+            results_embed = await render_results_embed(table, bank_adapter)
+            next_view = NextRoundView(table, timeout=settings["lobby_timeout"])
+            await message.edit(embed=results_embed, view=next_view)
+            timed_out = await next_view.wait()
 
-            # Loop back into another round from the same shoe, same seats.
-            table.reopen_lobby()
-            if not table.seats:
+            if timed_out:
+                await message.edit(
+                    embed=self._closed_embed("Table closed — no response from the host."),
+                    view=None,
+                )
                 return
+
+            if not table.seats:
+                # Host clicked Close Table (NextRoundView clears seats to signal this).
+                await message.edit(embed=self._closed_embed("Table closed by the host."), view=None)
+                return
+
+            table.reopen_lobby()
 
     @staticmethod
     def _closed_embed(description: str) -> discord.Embed:
         return discord.Embed(description=description, color=discord.Color.greyple())
 
-    @blackjack.command(name="count")
+    @wonderjack.command(name="count")
     @commands.guild_only()
-    async def blackjack_count(self, ctx: commands.Context) -> None:
+    async def wonderjack_count(self, ctx: commands.Context) -> None:
         """Check the current running/true count -- only works if an admin
-        has turned this on with `.blackjackset showcount true`."""
+        has turned this on with `.wonderjackset showcount true`."""
         if ctx.channel.id != DEFAULT_CHANNEL_ID:
             await ctx.send(f"Blackjack can only be played in <#{DEFAULT_CHANNEL_ID}>.")
             return
@@ -248,14 +274,14 @@ class BlackjackTable(commands.Cog):
     # Admin commands
     # ------------------------------------------------------------------
 
-    @commands.group(name="blackjackset")
+    @commands.group(name="wonderjackset")
     @commands.guild_only()
     @checks.admin_or_permissions(manage_guild=True)
-    async def blackjackset(self, ctx: commands.Context) -> None:
+    async def wonderjackset(self, ctx: commands.Context) -> None:
         """Admin configuration for the blackjack table cog."""
 
-    @blackjackset.command(name="enabled")
-    async def blackjackset_enabled(self, ctx: commands.Context, on_off: bool) -> None:
+    @wonderjackset.command(name="enabled")
+    async def wonderjackset_enabled(self, ctx: commands.Context, on_off: bool) -> None:
         """Turn the blackjack table on or off for this server.
 
         A table already in progress finishes normally even if this is
@@ -265,8 +291,8 @@ class BlackjackTable(commands.Cog):
         state = "enabled" if on_off else "disabled"
         await ctx.send(f"Blackjack table {state}.")
 
-    @blackjackset.command(name="minbet")
-    async def blackjackset_minbet(self, ctx: commands.Context, amount: int) -> None:
+    @wonderjackset.command(name="minbet")
+    async def wonderjackset_minbet(self, ctx: commands.Context, amount: int) -> None:
         """Set the minimum bet for this server's blackjack table."""
         if amount < 1:
             await ctx.send("Minimum bet must be at least 1.")
@@ -274,8 +300,8 @@ class BlackjackTable(commands.Cog):
         await self.config.guild(ctx.guild).min_bet.set(amount)
         await ctx.send(f"Minimum bet set to {amount}.")
 
-    @blackjackset.command(name="maxbet")
-    async def blackjackset_maxbet(self, ctx: commands.Context, amount: int) -> None:
+    @wonderjackset.command(name="maxbet")
+    async def wonderjackset_maxbet(self, ctx: commands.Context, amount: int) -> None:
         """Set the maximum bet for this server's blackjack table."""
         min_bet = await self.config.guild(ctx.guild).min_bet()
         if amount < min_bet:
@@ -284,8 +310,8 @@ class BlackjackTable(commands.Cog):
         await self.config.guild(ctx.guild).max_bet.set(amount)
         await ctx.send(f"Maximum bet set to {amount}.")
 
-    @blackjackset.command(name="decks")
-    async def blackjackset_decks(self, ctx: commands.Context, count: int) -> None:
+    @wonderjackset.command(name="decks")
+    async def wonderjackset_decks(self, ctx: commands.Context, count: int) -> None:
         """Set how many decks the shoe uses (1-8).
 
         Fewer decks = a faster, more obvious count -- easier to learn on.
@@ -301,8 +327,8 @@ class BlackjackTable(commands.Cog):
             f"Shoe size set to {count} deck(s). Takes effect next time the shoe reshuffles."
         )
 
-    @blackjackset.command(name="penetration")
-    async def blackjackset_penetration(self, ctx: commands.Context, percent: int) -> None:
+    @wonderjackset.command(name="penetration")
+    async def wonderjackset_penetration(self, ctx: commands.Context, percent: int) -> None:
         """Set how deep into the shoe to deal before reshuffling (1-99, as a percent).
 
         75 (the default) matches standard casino cut-card depth. Lower
@@ -319,21 +345,21 @@ class BlackjackTable(commands.Cog):
             f"Penetration set to {percent}%. Takes effect next time the shoe reshuffles."
         )
 
-    @blackjackset.command(name="showcount")
-    async def blackjackset_showcount(self, ctx: commands.Context, on_off: bool) -> None:
-        """Turn `.blackjack count` on or off for this server.
+    @wonderjackset.command(name="showcount")
+    async def wonderjackset_showcount(self, ctx: commands.Context, on_off: bool) -> None:
+        """Turn `.wonderjack count` on or off for this server.
 
-        When on, anyone can run `.blackjack count` during an active table
+        When on, anyone can run `.wonderjack count` during an active table
         to see the current running/true count -- meant as a way to check
         your own manual count while learning, not something shown
         automatically or publicly on the table itself.
         """
         await self.config.guild(ctx.guild).show_count.set(on_off)
         state = "enabled" if on_off else "disabled"
-        await ctx.send(f"Count checking (`.blackjack count`) {state}.")
+        await ctx.send(f"Count checking (`.wonderjack count`) {state}.")
 
-    @blackjackset.command(name="settings")
-    async def blackjackset_settings(self, ctx: commands.Context) -> None:
+    @wonderjackset.command(name="settings")
+    async def wonderjackset_settings(self, ctx: commands.Context) -> None:
         """Show the current blackjack table settings for this server."""
         settings = await self.config.guild(ctx.guild).all()
         embed = discord.Embed(title="Blackjack Table Settings", color=discord.Color.blurple())

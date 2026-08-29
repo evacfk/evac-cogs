@@ -146,6 +146,45 @@ class BettingView(discord.ui.View):
             self.stop()
 
 
+class NextRoundView(discord.ui.View):
+    """Shown alongside the results embed instead of auto-continuing into
+    another round. The host has to explicitly click Next Round -- this is
+    what gives everyone a moment to actually read who won/lost/pushed
+    before the table moves on, rather than results flashing by and
+    immediately getting replaced by the next betting screen. Also gives
+    the host an explicit way to end the session instead of only the
+    implicit "nobody bets, table times out" path."""
+
+    def __init__(self, table: Table, timeout: float) -> None:
+        super().__init__(timeout=timeout)
+        self.table = table
+
+    def _is_host(self, interaction: discord.Interaction) -> bool:
+        return interaction.user.id == self.table.host_id
+
+    @discord.ui.button(label="Next Round", style=discord.ButtonStyle.primary)
+    async def next_round(self, interaction: discord.Interaction, _button: discord.ui.Button) -> None:
+        if not self._is_host(interaction):
+            await interaction.response.send_message(
+                "Only the host who opened this table can start the next round.",
+                ephemeral=True,
+            )
+            return
+        await interaction.response.defer()
+        self.stop()
+
+    @discord.ui.button(label="Close Table", style=discord.ButtonStyle.danger)
+    async def close_table(self, interaction: discord.Interaction, _button: discord.ui.Button) -> None:
+        if not self._is_host(interaction):
+            await interaction.response.send_message(
+                "Only the host who opened this table can close it.", ephemeral=True
+            )
+            return
+        self.table.seats = []  # signals the round loop to end rather than reopen
+        await interaction.response.defer()
+        self.stop()
+
+
 class ActionView(discord.ui.View):
     """Hit / Stand / Double for whichever seat is currently up. A fresh
     ActionView is created for every turn (including a player's own
