@@ -1,5 +1,13 @@
 """
-Placeholder package init. The real Red setup() entrypoint goes here once
-blackjacktable.py (the cog class) exists -- deliberately not written yet,
-per the build plan: engine first, wired to Discord last.
+Red's setup() entrypoint -- this is what was missing before. Without this
+function, `bot.load_extension()` has nothing to call and raises exactly
+the ClientException you hit ("does not have a setup function").
 """
+
+from redbot.core.bot import Red
+
+from .blackjacktable import BlackjackTable
+
+
+async def setup(bot: Red) -> None:
+    await bot.add_cog(BlackjackTable(bot))

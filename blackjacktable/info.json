@@ -1,0 +1,10 @@
+{
+    "author": ["evacfk"],
+    "min_bot_version": "3.5.0",
+    "description": "A multiplayer blackjack table with a shared shoe, seated players, and button-based hit/stand/double play.",
+    "short": "Multiplayer blackjack table",
+    "end_user_data_statement": "This cog stores no end-user data beyond what Red's core economy/bank system already stores (bet amounts pass through the bank API and are not separately retained by this cog).",
+    "install_msg": "Blackjack table loaded. Run `.blackjackset settings` to see current config, `.blackjackset enabled true` to turn it on if it isn't already. The table itself (lobby/seating/gameplay) is still under active development.",
+    "requirements": [],
+    "tags": ["games", "economy", "gambling"]
+}
