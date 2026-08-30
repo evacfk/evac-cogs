@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Optional
 
 import discord
-from PIL import Image
+from PIL import Image, ImageDraw
 from redbot.core import Config, checks, commands
 from redbot.core.data_manager import cog_data_path
 from redbot.core.bot import Red
@@ -68,6 +68,40 @@ class Puzzle(commands.Cog):
         if guild_id not in self._locks:
             self._locks[guild_id] = asyncio.Lock()
         return self._locks[guild_id]
+
+    # keys every valid active-round dict must have under the current schema
+    _ACTIVE_SCHEMA_KEYS = frozenset(
+        {
+            "image_id",
+            "grid_x",
+            "grid_y",
+            "posted_total",
+            "last_post_ts",
+            "open_messages",
+            "inventories",
+            "completions",
+            "unposted_positions",
+        }
+    )
+
+    async def _get_active(self, guild: discord.Guild) -> Optional[dict]:
+        """Fetch the active round, automatically clearing (and treating as
+        "no active round") anything left over from an older version of this
+        cog whose data doesn't match the current schema — e.g. a round that
+        was started before an update and never stopped. Without this, a
+        stale round causes confusing KeyErrors deep in game logic instead of
+        a clear, safe reset."""
+        active = await self.config.guild(guild).active()
+        if active is not None and not self._ACTIVE_SCHEMA_KEYS.issubset(active.keys()):
+            log.warning(
+                "Clearing an incompatible/stale active puzzle round for guild %s "
+                "(likely left over from before a cog update). Run [p]puzzle start "
+                "or [p]puzzle testrun to begin a new one.",
+                guild.id,
+            )
+            await self.config.guild(guild).active.set(None)
+            return None
+        return active
 
     def _guild_dir(self, guild_id: int) -> Path:
         path = cog_data_path(self) / str(guild_id)
@@ -134,6 +168,40 @@ class Puzzle(commands.Cog):
         canvas.save(full_path)
         return full_path
 
+    @staticmethod
+    def _build_progress_image(image_dir: Path, grid_x: int, grid_y: int, owned: set) -> Optional[io.BytesIO]:
+        """Build a preview showing which distinct pieces a user has collected
+        so far: their claimed pieces in their correct grid position, with a
+        dark placeholder box for everything they don't have yet."""
+        total = grid_x * grid_y
+        sample_path = image_dir / "piece_0.png"
+        if not sample_path.exists():
+            return None
+        with Image.open(sample_path) as sample:
+            piece_w, piece_h = sample.size
+
+        canvas = Image.new("RGBA", (piece_w * grid_x, piece_h * grid_y), (32, 32, 36, 255))
+        draw = ImageDraw.Draw(canvas)
+        for i in range(total):
+            row, col = divmod(i, grid_x)
+            x0, y0 = col * piece_w, row * piece_h
+            if i in owned:
+                piece_path = image_dir / f"piece_{i}.png"
+                if piece_path.exists():
+                    with Image.open(piece_path) as piece_img:
+                        canvas.paste(piece_img, (x0, y0))
+            else:
+                draw.rectangle(
+                    (x0 + 1, y0 + 1, x0 + piece_w - 2, y0 + piece_h - 2),
+                    outline=(110, 110, 118, 255),
+                    width=2,
+                )
+
+        buf = io.BytesIO()
+        canvas.save(buf, format="PNG")
+        buf.seek(0)
+        return buf
+
     async def _pick_next_image_id(self, guild: discord.Guild) -> Optional[int]:
         pool = await self.config.guild(guild).pool()
         if not pool:
@@ -157,6 +225,10 @@ class Puzzle(commands.Cog):
         if meta is None:
             return f"Image ID {image_id} is not in the pool."
 
+        total = meta["grid_x"] * meta["grid_y"]
+        unposted = list(range(total))
+        random.shuffle(unposted)
+
         active = {
             "image_id": image_id,
             "grid_x": meta["grid_x"],
@@ -166,6 +238,9 @@ class Puzzle(commands.Cog):
             "open_messages": {},  # str(message_id) -> piece_index, posted and not yet claimed
             "inventories": {},  # str(user_id) -> [piece_index, ...] (may contain duplicates)
             "completions": [],  # user_ids, in the order they completed a full set
+            # every distinct position, in shuffled order, still owed a guaranteed
+            # first appearance -- drained before any repeats are allowed to post
+            "unposted_positions": unposted,
         }
         await self.config.guild(guild).active.set(active)
         return None
@@ -179,14 +254,17 @@ class Puzzle(commands.Cog):
             return
 
         async with self._guild_lock(guild.id):
-            active = await self.config.guild(guild).active()
+            active = await self._get_active(guild)
             if active is None:
                 return
             total = active["grid_x"] * active["grid_y"]
 
-            # pieces repeat with replacement — the round keeps going, regardless
-            # of how many have been posted before, until enough winners finish
-            piece_index = random.randrange(total)
+            # every distinct position must post at least once before any repeats
+            # are allowed -- only after that "first pass" is exhausted do pieces
+            # start posting randomly with replacement
+            first_pass = bool(active["unposted_positions"])
+            piece_index = active["unposted_positions"][-1] if first_pass else random.randrange(total)
+
             image_dir = self._image_dir(guild.id, active["image_id"])
             piece_path = image_dir / f"piece_{piece_index}.png"
             if not piece_path.exists():
@@ -208,6 +286,8 @@ class Puzzle(commands.Cog):
                 log.exception("Failed to post a puzzle piece in guild %s", guild.id)
                 return
 
+            if first_pass:
+                active["unposted_positions"].pop()
             active["open_messages"][str(message.id)] = piece_index
             active["posted_total"] += 1
             active["last_post_ts"] = time.time()
@@ -216,7 +296,7 @@ class Puzzle(commands.Cog):
     async def _finish_round(self, guild: discord.Guild, winners: list):
         channel_id = await self.config.guild(guild).channel_id()
         channel = guild.get_channel(channel_id) if channel_id else None
-        active = await self.config.guild(guild).active()
+        active = await self._get_active(guild)
         image_id = active["image_id"] if active else None
 
         full_image_path = None
@@ -278,7 +358,7 @@ class Puzzle(commands.Cog):
             try:
                 if guild.id in self._test_tasks:
                     continue  # a test run is driving postings for this guild right now
-                active = await self.config.guild(guild).active()
+                active = await self._get_active(guild)
                 if active is None:
                     continue
                 interval_hours = await self.config.guild(guild).interval_hours()
@@ -314,7 +394,7 @@ class Puzzle(commands.Cog):
         finished_winners = None
 
         async with self._guild_lock(guild.id):
-            active = await self.config.guild(guild).active()
+            active = await self._get_active(guild)
             if active is None:
                 return
 
@@ -435,7 +515,7 @@ class Puzzle(commands.Cog):
     @checks.admin_or_permissions(manage_guild=True)
     async def puzzle_delimage(self, ctx: commands.Context, image_id: int):
         """Remove an image from the pool by its ID."""
-        active = await self.config.guild(ctx.guild).active()
+        active = await self._get_active(ctx.guild)
         if active is not None and active["image_id"] == image_id:
             await ctx.send(
                 "That image is the currently active puzzle. Use `[p]puzzle stop` first if you "
@@ -469,7 +549,7 @@ class Puzzle(commands.Cog):
             await ctx.send("The image pool is empty.")
             return
 
-        active = await self.config.guild(ctx.guild).active()
+        active = await self._get_active(ctx.guild)
         active_id = active["image_id"] if active else None
 
         lines = []
@@ -489,7 +569,7 @@ class Puzzle(commands.Cog):
             await ctx.send("Set a channel first with `[p]puzzle setchannel #channel`.")
             return
 
-        active = await self.config.guild(ctx.guild).active()
+        active = await self._get_active(ctx.guild)
         if active is not None:
             await ctx.send("A puzzle is already running. Use `[p]puzzle stop` first.")
             return
@@ -513,7 +593,7 @@ class Puzzle(commands.Cog):
     @checks.admin_or_permissions(manage_guild=True)
     async def puzzle_stop(self, ctx: commands.Context):
         """Stop the current puzzle round and clear its state."""
-        active = await self.config.guild(ctx.guild).active()
+        active = await self._get_active(ctx.guild)
         if active is None:
             await ctx.send("No puzzle is currently running.")
             return
@@ -552,7 +632,7 @@ class Puzzle(commands.Cog):
         # normal background loop can't race in and post a piece at the same time
         self._test_tasks[ctx.guild.id] = None
 
-        active = await self.config.guild(ctx.guild).active()
+        active = await self._get_active(ctx.guild)
         if active is None:
             image_id = await self._pick_next_image_id(ctx.guild)
             if image_id is None:
@@ -577,7 +657,7 @@ class Puzzle(commands.Cog):
         try:
             while True:
                 try:
-                    active = await self.config.guild(guild).active()
+                    active = await self._get_active(guild)
                     if active is None:
                         break
                     await self._post_next_piece(guild)
@@ -606,7 +686,7 @@ class Puzzle(commands.Cog):
     @puzzle.command(name="status")
     async def puzzle_status(self, ctx: commands.Context):
         """Show progress on the current puzzle."""
-        active = await self.config.guild(ctx.guild).active()
+        active = await self._get_active(ctx.guild)
         if active is None:
             await ctx.send("No puzzle is currently running.")
             return
@@ -632,6 +712,31 @@ class Puzzle(commands.Cog):
                 marker = " ✅" if user_id in active["completions"] else ""
                 lines.append(f"  {name}: {len(set(pieces))}/{total}{marker}")
         await ctx.send("\n".join(lines))
+
+    @puzzle.command(name="mypieces", aliases=["mine", "collection"])
+    async def puzzle_mypieces(self, ctx: commands.Context, member: Optional[discord.Member] = None):
+        """See how many distinct pieces you (or someone else) have collected
+        for the current puzzle, with an image preview of your progress."""
+        member = member or ctx.author
+        active = await self._get_active(ctx.guild)
+        if active is None:
+            await ctx.send("No puzzle is currently running.")
+            return
+
+        total = active["grid_x"] * active["grid_y"]
+        owned = set(active["inventories"].get(str(member.id), []))
+
+        if not owned:
+            await ctx.send(f"{member.display_name} hasn't collected any pieces of the current puzzle yet.")
+            return
+
+        image_dir = self._image_dir(ctx.guild.id, active["image_id"])
+        buf = self._build_progress_image(image_dir, active["grid_x"], active["grid_y"], owned)
+        text = f"{member.display_name}: {len(owned)}/{total} distinct pieces collected."
+        if buf is not None:
+            await ctx.send(text, file=discord.File(buf, filename="progress.png"))
+        else:
+            await ctx.send(text)
 
     @puzzle.command(name="setchannel")
     @checks.admin_or_permissions(manage_guild=True)
