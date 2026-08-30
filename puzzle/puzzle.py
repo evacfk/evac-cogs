@@ -1,5 +1,6 @@
 import asyncio
 import io
+import logging
 import random
 import time
 from pathlib import Path
@@ -14,6 +15,8 @@ from discord.ext import tasks
 
 DEFAULT_GRID = (3, 3)
 CHECK_INTERVAL_MINUTES = 5  # how often the background loop wakes up to check timers
+
+log = logging.getLogger("red.puzzle")
 
 
 class Puzzle(commands.Cog):
@@ -202,6 +205,7 @@ class Puzzle(commands.Cog):
                 message = await channel.send(embed=embed, file=file)
                 await message.add_reaction(emoji)
             except discord.HTTPException:
+                log.exception("Failed to post a puzzle piece in guild %s", guild.id)
                 return
 
             active["open_messages"][str(message.id)] = piece_index
@@ -241,7 +245,11 @@ class Puzzle(commands.Cog):
                             try:
                                 await member.add_roles(role, reason="Completed the server puzzle")
                             except discord.HTTPException:
-                                pass
+                                log.exception(
+                                    "Failed to grant puzzle winner role to %s in guild %s",
+                                    user_id,
+                                    guild.id,
+                                )
 
         await self.config.guild(guild).active.set(None)
 
@@ -279,6 +287,7 @@ class Puzzle(commands.Cog):
                     await self._post_next_piece(guild)
             except Exception:
                 # never let one guild's error kill the loop for everyone else
+                log.exception("Error in puzzle background loop for guild %s", guild.id)
                 continue
 
     @background_loop.before_loop
@@ -318,26 +327,37 @@ class Puzzle(commands.Cog):
             active["inventories"].setdefault(user_key, []).append(piece_index)
             await self.config.guild(guild).active.set(active)
 
+            total = active["grid_x"] * active["grid_y"]
+
+            # Update the message to show it's claimed. This is purely cosmetic —
+            # any failure here must NEVER block the win-check below, so it gets
+            # its own broad try/except rather than sharing one with real game logic.
             channel = guild.get_channel(payload.channel_id)
             if channel is not None:
                 try:
                     message = await channel.fetch_message(payload.message_id)
-                    old_embed = message.embeds[0]
                     new_embed = discord.Embed(
-                        title=old_embed.title,
-                        description=old_embed.description,
+                        title="A new puzzle piece has appeared!",
+                        description=(
+                            f"React with {emoji} to claim it. "
+                            f"(Piece position {piece_index + 1} of {total}.)"
+                        ),
                         color=discord.Color.green(),
                     )
-                    if old_embed.image:
-                        new_embed.set_image(url=old_embed.image.url)
+                    # reuse the ORIGINAL attachment:// reference (not a re-fetched,
+                    # already-resolved CDN url) and explicitly keep the existing
+                    # attachment so the image can't get detached and show up bare
+                    new_embed.set_image(url="attachment://piece.png")
                     new_embed.add_field(name="Claimed by", value=payload.member.mention, inline=False)
-                    # explicitly keep the existing attachment so it doesn't
-                    # get detached from the embed and shown as a bare image
                     await message.edit(embed=new_embed, attachments=message.attachments)
-                except discord.HTTPException:
-                    pass
+                except Exception:
+                    log.exception(
+                        "Failed to visually mark a puzzle piece claimed in guild %s (message %s); "
+                        "the claim itself was still recorded.",
+                        guild.id,
+                        payload.message_id,
+                    )
 
-            total = active["grid_x"] * active["grid_y"]
             distinct = set(active["inventories"][user_key])
             winners_count = await self.config.guild(guild).winners_count()
 
@@ -556,10 +576,16 @@ class Puzzle(commands.Cog):
     async def _run_test_loop(self, guild: discord.Guild, seconds: float):
         try:
             while True:
-                active = await self.config.guild(guild).active()
-                if active is None:
-                    break
-                await self._post_next_piece(guild)
+                try:
+                    active = await self.config.guild(guild).active()
+                    if active is None:
+                        break
+                    await self._post_next_piece(guild)
+                except asyncio.CancelledError:
+                    raise
+                except Exception:
+                    # never let one failed posting attempt silently end the whole test run
+                    log.exception("Error during puzzle test run for guild %s", guild.id)
                 await asyncio.sleep(seconds)
         except asyncio.CancelledError:
             pass
