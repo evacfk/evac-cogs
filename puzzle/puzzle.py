@@ -170,6 +170,54 @@ class Puzzle(commands.Cog):
         canvas.save(full_path)
         return full_path
 
+    def _build_pool_preview_image(
+        self, guild_id: int, pool: dict, active_id: Optional[int]
+    ) -> Optional[io.BytesIO]:
+        """Build a labeled thumbnail grid of every image in the pool, so
+        admins can actually tell images apart instead of relying on generic
+        filenames like 'image.png'."""
+        entries = sorted(pool.items(), key=lambda kv: int(kv[0]))
+        if not entries:
+            return None
+
+        thumb = 140
+        pad = 10
+        label_h = 20
+        cols = min(4, len(entries))
+        rows = (len(entries) + cols - 1) // cols
+
+        cell_w = thumb + pad
+        cell_h = thumb + label_h + pad
+        canvas = Image.new("RGBA", (cols * cell_w + pad, rows * cell_h + pad), (32, 32, 36, 255))
+        draw = ImageDraw.Draw(canvas)
+
+        for idx, (image_id_str, meta) in enumerate(entries):
+            image_id = int(image_id_str)
+            col, row = idx % cols, idx // cols
+            x = pad + col * cell_w
+            y = pad + row * cell_h
+
+            image_dir = self._image_dir(guild_id, image_id)
+            full_path = self._ensure_full_image(image_dir, meta["grid_x"], meta["grid_y"])
+            if full_path is not None:
+                with Image.open(full_path) as img:
+                    img = img.convert("RGBA")
+                    img.thumbnail((thumb, thumb))
+                    offset = ((thumb - img.width) // 2, (thumb - img.height) // 2)
+                    canvas.paste(img, (x + offset[0], y + offset[1]), img)
+            else:
+                draw.rectangle((x, y, x + thumb, y + thumb), outline=(110, 110, 118, 255), width=2)
+
+            label = f"#{image_id} {meta['grid_x']}x{meta['grid_y']}"
+            if active_id is not None and image_id == active_id:
+                label += " (active)"
+            draw.text((x, y + thumb + 3), label, fill=(230, 230, 230, 255))
+
+        buf = io.BytesIO()
+        canvas.save(buf, format="PNG")
+        buf.seek(0)
+        return buf
+
     @staticmethod
     def _build_progress_image(image_dir: Path, grid_x: int, grid_y: int, owned: set) -> Optional[io.BytesIO]:
         """Build a preview showing which distinct pieces a user has collected
@@ -573,7 +621,12 @@ class Puzzle(commands.Cog):
                 f"#{image_id}: {meta['grid_x']}x{meta['grid_y']} "
                 f"({meta['filename']}){marker}"
             )
-        await ctx.send("\n".join(lines))
+
+        buf = self._build_pool_preview_image(ctx.guild.id, pool, active_id)
+        if buf is not None:
+            await ctx.send("\n".join(lines), file=discord.File(buf, filename="pool.png"))
+        else:
+            await ctx.send("\n".join(lines))
 
     @puzzle.command(name="start")
     @checks.admin_or_permissions(manage_guild=True)
