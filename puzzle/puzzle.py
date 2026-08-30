@@ -40,7 +40,8 @@ class Puzzle(commands.Cog):
 
         default_guild = {
             "channel_id": None,
-            "interval_hours": 6,
+            "interval_min_hours": 4,
+            "interval_max_hours": 8,
             "claim_emoji": "\N{JIGSAW PUZZLE PIECE}",
             "reward_role_id": None,
             "pool": {},  # str(image_id) -> {"grid_x", "grid_y", "filename", "added_by"}
@@ -81,6 +82,7 @@ class Puzzle(commands.Cog):
             "inventories",
             "completions",
             "unposted_positions",
+            "next_interval_hours",
         }
     )
 
@@ -217,6 +219,15 @@ class Puzzle(commands.Cog):
         await self.config.guild(guild).used_ids.set(used)
         return choice
 
+    async def _roll_interval_hours(self, guild: discord.Guild) -> float:
+        """Pick a fresh random wait (in hours) within the configured range,
+        so the posting schedule can't be predicted/camped."""
+        low = await self.config.guild(guild).interval_min_hours()
+        high = await self.config.guild(guild).interval_max_hours()
+        if high < low:
+            low, high = high, low
+        return random.uniform(low, high)
+
     async def _start_round(self, guild: discord.Guild, image_id: int) -> Optional[str]:
         """Sets up a fresh active round for image_id. Returns an error
         string on failure, or None on success."""
@@ -241,6 +252,9 @@ class Puzzle(commands.Cog):
             # every distinct position, in shuffled order, still owed a guaranteed
             # first appearance -- drained before any repeats are allowed to post
             "unposted_positions": unposted,
+            # re-rolled after every post, within [interval_min_hours, interval_max_hours],
+            # so the schedule can't be predicted and camped
+            "next_interval_hours": await self._roll_interval_hours(guild),
         }
         await self.config.guild(guild).active.set(active)
         return None
@@ -291,6 +305,7 @@ class Puzzle(commands.Cog):
             active["open_messages"][str(message.id)] = piece_index
             active["posted_total"] += 1
             active["last_post_ts"] = time.time()
+            active["next_interval_hours"] = await self._roll_interval_hours(guild)
             await self.config.guild(guild).active.set(active)
 
     async def _finish_round(self, guild: discord.Guild, winners: list):
@@ -361,9 +376,8 @@ class Puzzle(commands.Cog):
                 active = await self._get_active(guild)
                 if active is None:
                     continue
-                interval_hours = await self.config.guild(guild).interval_hours()
                 elapsed = time.time() - active["last_post_ts"]
-                if elapsed >= interval_hours * 3600:
+                if elapsed >= active["next_interval_hours"] * 3600:
                     await self._post_next_piece(guild)
             except Exception:
                 # never let one guild's error kill the loop for everyone else
@@ -584,9 +598,11 @@ class Puzzle(commands.Cog):
             await ctx.send(err)
             return
 
+        low = await self.config.guild(ctx.guild).interval_min_hours()
+        high = await self.config.guild(ctx.guild).interval_max_hours()
         await ctx.send(
             f"Puzzle started with image #{image_id}. The first piece will post shortly, "
-            f"then every {await self.config.guild(ctx.guild).interval_hours()} hour(s) after that."
+            f"then pieces will keep posting at a random interval between {low} and {high} hour(s) apart."
         )
 
     @puzzle.command(name="stop")
@@ -602,6 +618,21 @@ class Puzzle(commands.Cog):
             task.cancel()
         await self.config.guild(ctx.guild).active.set(None)
         await ctx.send("Puzzle stopped and reset. The pool and settings are untouched.")
+
+    @puzzle.command(name="skip")
+    @commands.is_owner()
+    async def puzzle_skip(self, ctx: commands.Context):
+        """Bot owner only: immediately skip the current puzzle (no winners
+        declared, no full image posted) and move on to a new random image
+        from the pool. If a test run is active, it keeps going against the
+        new puzzle without needing to be restarted."""
+        active = await self._get_active(ctx.guild)
+        if active is None:
+            await ctx.send("No puzzle is currently running.")
+            return
+        skipped_image_id = active["image_id"]
+        await self._finish_round(ctx.guild, [])
+        await ctx.send(f"Skipped puzzle image #{skipped_image_id}.")
 
     @puzzle.command(name="testrun")
     @checks.admin_or_permissions(manage_guild=True)
@@ -747,13 +778,22 @@ class Puzzle(commands.Cog):
 
     @puzzle.command(name="setinterval")
     @checks.admin_or_permissions(manage_guild=True)
-    async def puzzle_setinterval(self, ctx: commands.Context, hours: float):
-        """Set how many hours between piece postings."""
-        if hours <= 0:
-            await ctx.send("Hours must be greater than 0.")
+    async def puzzle_setinterval(self, ctx: commands.Context, min_hours: float, max_hours: float):
+        """Set the random range (in hours) between piece postings.
+
+        Each piece picks a fresh random wait within this range rather than a
+        fixed interval, so the schedule can't be predicted and camped.
+        Example: `[p]puzzle setinterval 4 8` posts every 4-8 hours at random.
+        A currently running puzzle picks up the new range on its next post.
+        """
+        if min_hours <= 0 or max_hours <= 0:
+            await ctx.send("Both values must be greater than 0.")
             return
-        await self.config.guild(ctx.guild).interval_hours.set(hours)
-        await ctx.send(f"New pieces will post every {hours} hour(s).")
+        if max_hours < min_hours:
+            min_hours, max_hours = max_hours, min_hours
+        await self.config.guild(ctx.guild).interval_min_hours.set(min_hours)
+        await self.config.guild(ctx.guild).interval_max_hours.set(max_hours)
+        await ctx.send(f"New pieces will post at a random interval between {min_hours} and {max_hours} hour(s).")
 
     @puzzle.command(name="setrole")
     @checks.admin_or_permissions(manage_guild=True)
@@ -796,7 +836,7 @@ class Puzzle(commands.Cog):
         role = ctx.guild.get_role(data["reward_role_id"]) if data["reward_role_id"] else None
         lines = [
             f"Channel: {channel.mention if channel else 'not set'}",
-            f"Interval: {data['interval_hours']} hour(s)",
+            f"Interval: random between {data['interval_min_hours']} and {data['interval_max_hours']} hour(s)",
             f"Claim emoji: {data['claim_emoji']}",
             f"Winners needed to end a puzzle: {data['winners_count']}",
             f"Winner role: {role.name if role else 'not set'}",
