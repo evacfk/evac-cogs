@@ -1,0 +1,9 @@
+{
+    "author": ["you"],
+    "min_bot_version": "3.5.0",
+    "description": "Image-reveal puzzle game. Admins load a pool of images; the cog slices each into a grid, reveals one piece at a time on a timer, and lets members race to claim and complete the set. Automatically rotates to a new random image from the pool when a puzzle is completed.",
+    "short": "Image-reveal puzzle game with an auto-rotating image pool.",
+    "hidden": false,
+    "disabled": false,
+    "tags": ["game", "fun", "engagement"]
+}
