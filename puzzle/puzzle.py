@@ -45,10 +45,13 @@ class Puzzle(commands.Cog):
         self.config.register_guild(**default_guild)
 
         self._locks: dict[int, asyncio.Lock] = {}
+        self._test_tasks: dict[int, asyncio.Task] = {}
         self.background_loop.start()
 
     def cog_unload(self):
         self.background_loop.cancel()
+        for task in self._test_tasks.values():
+            task.cancel()
 
     # ------------------------------------------------------------------ #
     # helpers
@@ -89,6 +92,7 @@ class Puzzle(commands.Cog):
         piece_w = width // grid_x
         piece_h = height // grid_y
         img = img.crop((0, 0, piece_w * grid_x, piece_h * grid_y))
+        img.save(out_dir / "full.png")
 
         count = 0
         for row in range(grid_y):
@@ -194,11 +198,21 @@ class Puzzle(commands.Cog):
         active = await self.config.guild(guild).active()
         image_id = active["image_id"] if active else None
 
+        full_image_path = None
+        if image_id is not None:
+            candidate = self._image_dir(guild.id, image_id) / "full.png"
+            if candidate.exists():
+                full_image_path = candidate
+
         if channel is not None:
             if winner_id is not None:
                 member = guild.get_member(winner_id)
                 name = member.mention if member else f"<@{winner_id}>"
-                await channel.send(f"\N{PARTY POPPER} {name} collected every piece and completed the puzzle!")
+                text = f"\N{PARTY POPPER} {name} collected every piece and completed the puzzle!"
+                if full_image_path is not None:
+                    await channel.send(text, file=discord.File(full_image_path, filename="completed.png"))
+                else:
+                    await channel.send(text)
                 role_id = await self.config.guild(guild).reward_role_id()
                 if role_id and member is not None:
                     role = guild.get_role(role_id)
@@ -208,10 +222,15 @@ class Puzzle(commands.Cog):
                         except discord.HTTPException:
                             pass
             else:
-                await channel.send(
+                text = (
                     "All pieces of that puzzle were claimed, but no single person collected the "
-                    "full set. Starting a new puzzle!"
+                    "full set. Here's the completed image anyway \U0001F447 "
+                    "Starting a new puzzle!"
                 )
+                if full_image_path is not None:
+                    await channel.send(text, file=discord.File(full_image_path, filename="completed.png"))
+                else:
+                    await channel.send(text)
 
         await self.config.guild(guild).active.set(None)
 
@@ -246,6 +265,8 @@ class Puzzle(commands.Cog):
     async def background_loop(self):
         for guild in self.bot.guilds:
             try:
+                if guild.id in self._test_tasks:
+                    continue  # a test run is driving postings for this guild right now
                 active = await self.config.guild(guild).active()
                 if active is None:
                     continue
@@ -457,8 +478,81 @@ class Puzzle(commands.Cog):
         if active is None:
             await ctx.send("No puzzle is currently running.")
             return
+        task = self._test_tasks.pop(ctx.guild.id, None)
+        if task is not None:
+            task.cancel()
         await self.config.guild(ctx.guild).active.set(None)
         await ctx.send("Puzzle stopped and reset. The pool and settings are untouched.")
+
+    @puzzle.command(name="testrun")
+    @checks.admin_or_permissions(manage_guild=True)
+    async def puzzle_testrun(self, ctx: commands.Context, seconds: float = 10):
+        """Fast-forward a puzzle for testing: post a new piece every
+        `seconds` seconds (default 10) instead of waiting for the normal
+        interval, so you can see the whole flow — every piece, claiming,
+        and the win announcement — play out quickly.
+
+        Uses the currently active puzzle if one is running, otherwise
+        starts a fresh one from the pool. Claiming still works normally.
+        Ignores `[p]puzzle setinterval` for the duration of the test.
+        Use `[p]puzzle teststop` to cancel early.
+        """
+        if await self.config.guild(ctx.guild).channel_id() is None:
+            await ctx.send("Set a channel first with `[p]puzzle setchannel #channel`.")
+            return
+        if seconds < 3:
+            await ctx.send("Use at least 3 seconds between pieces, to stay clear of Discord rate limits.")
+            return
+        if ctx.guild.id in self._test_tasks:
+            await ctx.send("A test run is already in progress. Use `[p]puzzle teststop` first.")
+            return
+
+        active = await self.config.guild(ctx.guild).active()
+        if active is None:
+            image_id = await self._pick_next_image_id(ctx.guild)
+            if image_id is None:
+                await ctx.send("The image pool is empty. Add some with `[p]puzzle addimage` first.")
+                return
+            err = await self._start_round(ctx.guild, image_id)
+            if err:
+                await ctx.send(err)
+                return
+
+        await ctx.send(
+            f"Test run started: a new piece every {seconds}s until this puzzle is fully posted "
+            "(and the cog will auto-continue into the next puzzle as normal if it completes). "
+            "This ignores your normal interval setting; use `[p]puzzle teststop` to cancel early."
+        )
+
+        task = asyncio.create_task(self._run_test_loop(ctx.guild, seconds))
+        self._test_tasks[ctx.guild.id] = task
+
+    async def _run_test_loop(self, guild: discord.Guild, seconds: float):
+        try:
+            while True:
+                active = await self.config.guild(guild).active()
+                if active is None:
+                    break
+                total = active["grid_x"] * active["grid_y"]
+                if active["posted_count"] >= total:
+                    break
+                await self._post_next_piece(guild)
+                await asyncio.sleep(seconds)
+        except asyncio.CancelledError:
+            pass
+        finally:
+            self._test_tasks.pop(guild.id, None)
+
+    @puzzle.command(name="teststop")
+    @checks.admin_or_permissions(manage_guild=True)
+    async def puzzle_teststop(self, ctx: commands.Context):
+        """Stop an in-progress test run and go back to normal-interval posting."""
+        task = self._test_tasks.get(ctx.guild.id)
+        if task is None:
+            await ctx.send("No test run is currently active.")
+            return
+        task.cancel()
+        await ctx.send("Test run stopped. Any remaining pieces will post on the normal interval.")
 
     @puzzle.command(name="status")
     async def puzzle_status(self, ctx: commands.Context):
