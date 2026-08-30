@@ -20,10 +20,13 @@ class Puzzle(commands.Cog):
     """Image-reveal puzzle game.
 
     Admins load a pool of images. Each is sliced into a grid of pieces.
-    One piece is posted to a channel on a timer; members race to claim
-    pieces with a reaction. Whoever claims every piece of the current
-    image wins, and the cog automatically starts a new puzzle from a
-    random, not-yet-used image in the pool.
+    A random piece (with repeats) is posted to a channel on a timer;
+    members race to claim pieces with a reaction and build up their own
+    collection. The round keeps posting pieces indefinitely until enough
+    people (configurable via `[p]puzzle setwinners`) have each collected
+    every distinct piece, at which point the full image is posted, the
+    winners are announced, and the cog automatically starts a new puzzle
+    from a random, not-yet-used image in the pool.
     """
 
     __version__ = "1.0.0"
@@ -40,6 +43,7 @@ class Puzzle(commands.Cog):
             "pool": {},  # str(image_id) -> {"grid_x", "grid_y", "filename", "added_by"}
             "next_id": 1,
             "used_ids": [],
+            "winners_count": 1,
             "active": None,
         }
         self.config.register_guild(**default_guild)
@@ -103,6 +107,30 @@ class Puzzle(commands.Cog):
                 count += 1
         return count
 
+    @staticmethod
+    def _ensure_full_image(image_dir: Path, grid_x: int, grid_y: int) -> Optional[Path]:
+        """Return the path to the full assembled image, stitching it back
+        together from the individual pieces if it's missing (e.g. images
+        added before this cog started saving full.png)."""
+        full_path = image_dir / "full.png"
+        if full_path.exists():
+            return full_path
+
+        total = grid_x * grid_y
+        piece_paths = [image_dir / f"piece_{i}.png" for i in range(total)]
+        if not all(p.exists() for p in piece_paths):
+            return None
+
+        with Image.open(piece_paths[0]) as sample:
+            piece_w, piece_h = sample.size
+        canvas = Image.new("RGBA", (piece_w * grid_x, piece_h * grid_y))
+        for i, piece_path in enumerate(piece_paths):
+            row, col = divmod(i, grid_x)
+            with Image.open(piece_path) as piece_img:
+                canvas.paste(piece_img, (col * piece_w, row * piece_h))
+        canvas.save(full_path)
+        return full_path
+
     async def _pick_next_image_id(self, guild: discord.Guild) -> Optional[int]:
         pool = await self.config.guild(guild).pool()
         if not pool:
@@ -126,19 +154,15 @@ class Puzzle(commands.Cog):
         if meta is None:
             return f"Image ID {image_id} is not in the pool."
 
-        total = meta["grid_x"] * meta["grid_y"]
-        order = list(range(total))
-        random.shuffle(order)
-
         active = {
             "image_id": image_id,
             "grid_x": meta["grid_x"],
             "grid_y": meta["grid_y"],
-            "order": order,
-            "posted_count": 0,
+            "posted_total": 0,  # pieces ever posted this round, including repeats
             "last_post_ts": 0,  # 0 forces an immediate first post on the next loop tick
-            "claims": {},
-            "messages": {},
+            "open_messages": {},  # str(message_id) -> piece_index, posted and not yet claimed
+            "inventories": {},  # str(user_id) -> [piece_index, ...] (may contain duplicates)
+            "completions": [],  # user_ids, in the order they completed a full set
         }
         await self.config.guild(guild).active.set(active)
         return None
@@ -156,24 +180,19 @@ class Puzzle(commands.Cog):
             if active is None:
                 return
             total = active["grid_x"] * active["grid_y"]
-            if active["posted_count"] >= total:
-                return
 
-            piece_index = active["order"][active["posted_count"]]
+            # pieces repeat with replacement — the round keeps going, regardless
+            # of how many have been posted before, until enough winners finish
+            piece_index = random.randrange(total)
             image_dir = self._image_dir(guild.id, active["image_id"])
             piece_path = image_dir / f"piece_{piece_index}.png"
             if not piece_path.exists():
                 return
 
             emoji = await self.config.guild(guild).claim_emoji()
-            remaining_after = total - active["posted_count"] - 1
             embed = discord.Embed(
                 title="A new puzzle piece has appeared!",
-                description=(
-                    f"React with {emoji} to claim it.\n"
-                    f"Piece {active['posted_count'] + 1} of {total} "
-                    f"({remaining_after} left to reveal after this one)."
-                ),
+                description=f"React with {emoji} to claim it. (Piece position {piece_index + 1} of {total}.)",
                 color=discord.Color.blurple(),
             )
             file = discord.File(piece_path, filename="piece.png")
@@ -185,52 +204,44 @@ class Puzzle(commands.Cog):
             except discord.HTTPException:
                 return
 
-            active["messages"][str(piece_index)] = message.id
-            active["posted_count"] += 1
+            active["open_messages"][str(message.id)] = piece_index
+            active["posted_total"] += 1
             active["last_post_ts"] = time.time()
             await self.config.guild(guild).active.set(active)
 
-    async def _finish_round(
-        self, guild: discord.Guild, winner_id: Optional[int]
-    ):
+    async def _finish_round(self, guild: discord.Guild, winners: list):
         channel_id = await self.config.guild(guild).channel_id()
         channel = guild.get_channel(channel_id) if channel_id else None
         active = await self.config.guild(guild).active()
         image_id = active["image_id"] if active else None
 
         full_image_path = None
-        if image_id is not None:
-            candidate = self._image_dir(guild.id, image_id) / "full.png"
-            if candidate.exists():
-                full_image_path = candidate
+        if image_id is not None and active is not None:
+            image_dir = self._image_dir(guild.id, image_id)
+            full_image_path = self._ensure_full_image(image_dir, active["grid_x"], active["grid_y"])
 
-        if channel is not None:
-            if winner_id is not None:
-                member = guild.get_member(winner_id)
-                name = member.mention if member else f"<@{winner_id}>"
-                text = f"\N{PARTY POPPER} {name} collected every piece and completed the puzzle!"
-                if full_image_path is not None:
-                    await channel.send(text, file=discord.File(full_image_path, filename="completed.png"))
-                else:
-                    await channel.send(text)
-                role_id = await self.config.guild(guild).reward_role_id()
-                if role_id and member is not None:
-                    role = guild.get_role(role_id)
-                    if role is not None:
-                        try:
-                            await member.add_roles(role, reason="Completed the server puzzle")
-                        except discord.HTTPException:
-                            pass
+        if channel is not None and winners:
+            mentions = []
+            for user_id in winners:
+                member = guild.get_member(user_id)
+                mentions.append(member.mention if member else f"<@{user_id}>")
+            text = f"\N{PARTY POPPER} " + ", ".join(mentions) + " completed the puzzle!"
+            if full_image_path is not None:
+                await channel.send(text, file=discord.File(full_image_path, filename="completed.png"))
             else:
-                text = (
-                    "All pieces of that puzzle were claimed, but no single person collected the "
-                    "full set. Here's the completed image anyway \U0001F447 "
-                    "Starting a new puzzle!"
-                )
-                if full_image_path is not None:
-                    await channel.send(text, file=discord.File(full_image_path, filename="completed.png"))
-                else:
-                    await channel.send(text)
+                await channel.send(text)
+
+            role_id = await self.config.guild(guild).reward_role_id()
+            if role_id:
+                role = guild.get_role(role_id)
+                if role is not None:
+                    for user_id in winners:
+                        member = guild.get_member(user_id)
+                        if member is not None:
+                            try:
+                                await member.add_roles(role, reason="Completed the server puzzle")
+                            except discord.HTTPException:
+                                pass
 
         await self.config.guild(guild).active.set(None)
 
@@ -246,16 +257,8 @@ class Puzzle(commands.Cog):
         err = await self._start_round(guild, next_id)
         if err and channel is not None:
             await channel.send(f"Couldn't start the next puzzle automatically: {err}")
-
-    def _check_winner(self, active: dict) -> Optional[int]:
-        total = active["grid_x"] * active["grid_y"]
-        counts: dict[int, int] = {}
-        for user_id in active["claims"].values():
-            counts[user_id] = counts.get(user_id, 0) + 1
-        for user_id, count in counts.items():
-            if count >= total:
-                return user_id
-        return None
+        elif channel is not None:
+            await channel.send(f"Starting a new puzzle with image #{next_id}!")
 
     # ------------------------------------------------------------------ #
     # background loop
@@ -299,42 +302,58 @@ class Puzzle(commands.Cog):
         if str(payload.emoji) != emoji:
             return
 
+        finished_winners = None
+
         async with self._guild_lock(guild.id):
             active = await self.config.guild(guild).active()
             if active is None:
                 return
 
-            piece_index = None
-            for idx_str, message_id in active["messages"].items():
-                if message_id == payload.message_id:
-                    piece_index = idx_str
-                    break
+            msg_key = str(payload.message_id)
+            piece_index = active["open_messages"].pop(msg_key, None)
             if piece_index is None:
-                return
+                return  # not an open piece message (already claimed, or unrelated)
 
-            if piece_index in active["claims"]:
-                return  # already claimed, first reactor wins
-
-            active["claims"][piece_index] = payload.member.id
+            user_key = str(payload.member.id)
+            active["inventories"].setdefault(user_key, []).append(piece_index)
             await self.config.guild(guild).active.set(active)
 
             channel = guild.get_channel(payload.channel_id)
             if channel is not None:
                 try:
                     message = await channel.fetch_message(payload.message_id)
-                    embed = message.embeds[0]
-                    embed.color = discord.Color.green()
-                    embed.add_field(name="Claimed by", value=payload.member.mention, inline=False)
-                    await message.edit(embed=embed)
+                    old_embed = message.embeds[0]
+                    new_embed = discord.Embed(
+                        title=old_embed.title,
+                        description=old_embed.description,
+                        color=discord.Color.green(),
+                    )
+                    if old_embed.image:
+                        new_embed.set_image(url=old_embed.image.url)
+                    new_embed.add_field(name="Claimed by", value=payload.member.mention, inline=False)
+                    # explicitly keep the existing attachment so it doesn't
+                    # get detached from the embed and shown as a bare image
+                    await message.edit(embed=new_embed, attachments=message.attachments)
                 except discord.HTTPException:
                     pass
 
             total = active["grid_x"] * active["grid_y"]
-            all_claimed = len(active["claims"]) >= total
-            winner_id = self._check_winner(active)
+            distinct = set(active["inventories"][user_key])
+            winners_count = await self.config.guild(guild).winners_count()
 
-        if winner_id is not None or all_claimed:
-            await self._finish_round(guild, winner_id)
+            if len(distinct) >= total and payload.member.id not in active["completions"]:
+                active["completions"].append(payload.member.id)
+                await self.config.guild(guild).active.set(active)
+                if channel is not None:
+                    await channel.send(
+                        f"\N{JIGSAW PUZZLE PIECE} {payload.member.mention} collected every piece! "
+                        f"({len(active['completions'])}/{winners_count} winner(s) needed to end this puzzle)"
+                    )
+                if len(active["completions"]) >= winners_count:
+                    finished_winners = list(active["completions"])
+
+        if finished_winners is not None:
+            await self._finish_round(guild, finished_winners)
 
     # ------------------------------------------------------------------ #
     # commands
@@ -487,15 +506,17 @@ class Puzzle(commands.Cog):
     @puzzle.command(name="testrun")
     @checks.admin_or_permissions(manage_guild=True)
     async def puzzle_testrun(self, ctx: commands.Context, seconds: float = 10):
-        """Fast-forward a puzzle for testing: post a new piece every
+        """Fast-forward the puzzle for testing: post a new piece every
         `seconds` seconds (default 10) instead of waiting for the normal
-        interval, so you can see the whole flow — every piece, claiming,
-        and the win announcement — play out quickly.
+        interval, so you can watch the whole flow — pieces, claiming, and
+        the win announcement — play out quickly.
 
         Uses the currently active puzzle if one is running, otherwise
         starts a fresh one from the pool. Claiming still works normally.
-        Ignores `[p]puzzle setinterval` for the duration of the test.
-        Use `[p]puzzle teststop` to cancel early.
+        This runs indefinitely (auto-continuing into new puzzles, same as
+        normal play) until you cancel it with `[p]puzzle teststop` — it
+        does not stop on its own, since the game itself never "runs out"
+        of pieces to post.
         """
         if await self.config.guild(ctx.guild).channel_id() is None:
             await ctx.send("Set a channel first with `[p]puzzle setchannel #channel`.")
@@ -507,21 +528,26 @@ class Puzzle(commands.Cog):
             await ctx.send("A test run is already in progress. Use `[p]puzzle teststop` first.")
             return
 
+        # claim the guild for test-mode immediately (before any awaits) so the
+        # normal background loop can't race in and post a piece at the same time
+        self._test_tasks[ctx.guild.id] = None
+
         active = await self.config.guild(ctx.guild).active()
         if active is None:
             image_id = await self._pick_next_image_id(ctx.guild)
             if image_id is None:
+                self._test_tasks.pop(ctx.guild.id, None)
                 await ctx.send("The image pool is empty. Add some with `[p]puzzle addimage` first.")
                 return
             err = await self._start_round(ctx.guild, image_id)
             if err:
+                self._test_tasks.pop(ctx.guild.id, None)
                 await ctx.send(err)
                 return
 
         await ctx.send(
-            f"Test run started: a new piece every {seconds}s until this puzzle is fully posted "
-            "(and the cog will auto-continue into the next puzzle as normal if it completes). "
-            "This ignores your normal interval setting; use `[p]puzzle teststop` to cancel early."
+            f"Test run started: a new piece every {seconds}s, continuing through new puzzles "
+            "automatically, until you run `[p]puzzle teststop`."
         )
 
         task = asyncio.create_task(self._run_test_loop(ctx.guild, seconds))
@@ -532,9 +558,6 @@ class Puzzle(commands.Cog):
             while True:
                 active = await self.config.guild(guild).active()
                 if active is None:
-                    break
-                total = active["grid_x"] * active["grid_y"]
-                if active["posted_count"] >= total:
                     break
                 await self._post_next_piece(guild)
                 await asyncio.sleep(seconds)
@@ -563,21 +586,25 @@ class Puzzle(commands.Cog):
             return
 
         total = active["grid_x"] * active["grid_y"]
-        claimed = len(active["claims"])
-        counts: dict[int, int] = {}
-        for user_id in active["claims"].values():
-            counts[user_id] = counts.get(user_id, 0) + 1
+        winners_count = await self.config.guild(ctx.guild).winners_count()
 
         lines = [
-            f"Puzzle image #{active['image_id']}: {active['posted_count']}/{total} pieces posted, "
-            f"{claimed}/{total} claimed."
+            f"Puzzle image #{active['image_id']}: {total} distinct pieces, "
+            f"{active['posted_total']} posted so far (pieces repeat).",
+            f"Winners so far: {len(active['completions'])}/{winners_count}",
         ]
-        if counts:
-            lines.append("Standings:")
-            for user_id, count in sorted(counts.items(), key=lambda kv: -kv[1]):
+        if active["inventories"]:
+            lines.append("Standings (distinct pieces collected):")
+            ranked = sorted(
+                active["inventories"].items(),
+                key=lambda kv: -len(set(kv[1])),
+            )
+            for user_id_str, pieces in ranked:
+                user_id = int(user_id_str)
                 member = ctx.guild.get_member(user_id)
                 name = member.display_name if member else f"User {user_id}"
-                lines.append(f"  {name}: {count}/{total}")
+                marker = " ✅" if user_id in active["completions"] else ""
+                lines.append(f"  {name}: {len(set(pieces))}/{total}{marker}")
         await ctx.send("\n".join(lines))
 
     @puzzle.command(name="setchannel")
@@ -614,6 +641,22 @@ class Puzzle(commands.Cog):
         await self.config.guild(ctx.guild).claim_emoji.set(emoji)
         await ctx.send(f"Claim emoji set to {emoji}.")
 
+    @puzzle.command(name="setwinners")
+    @checks.admin_or_permissions(manage_guild=True)
+    async def puzzle_setwinners(self, ctx: commands.Context, count: int):
+        """Set how many people need to complete the full set before the
+        puzzle ends, posts the completed image, and moves on to the next
+        random image in the pool. Defaults to 1.
+        """
+        if count < 1:
+            await ctx.send("Must be at least 1.")
+            return
+        await self.config.guild(ctx.guild).winners_count.set(count)
+        await ctx.send(
+            f"The puzzle will now end (posting the full image and picking a new one) once "
+            f"{count} winner(s) have collected every piece."
+        )
+
     @puzzle.command(name="settings")
     async def puzzle_settings(self, ctx: commands.Context):
         """Show the current puzzle configuration for this server."""
@@ -624,6 +667,7 @@ class Puzzle(commands.Cog):
             f"Channel: {channel.mention if channel else 'not set'}",
             f"Interval: {data['interval_hours']} hour(s)",
             f"Claim emoji: {data['claim_emoji']}",
+            f"Winners needed to end a puzzle: {data['winners_count']}",
             f"Winner role: {role.name if role else 'not set'}",
             f"Images in pool: {len(data['pool'])}",
         ]
