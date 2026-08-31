@@ -382,6 +382,22 @@ class Puzzle(commands.Cog):
             if role_id:
                 role = guild.get_role(role_id)
                 if role is not None:
+                    new_winner_ids = set(winners)
+
+                    # this is a rotating "current champion" role: strip it from
+                    # anyone who held it from a previous puzzle before handing
+                    # it to this puzzle's winner(s)
+                    for member in list(role.members):
+                        if member.id not in new_winner_ids:
+                            try:
+                                await member.remove_roles(role, reason="No longer the current puzzle champion")
+                            except discord.HTTPException:
+                                log.exception(
+                                    "Failed to remove puzzle winner role from %s in guild %s",
+                                    member.id,
+                                    guild.id,
+                                )
+
                     for user_id in winners:
                         member = guild.get_member(user_id)
                         if member is not None:
