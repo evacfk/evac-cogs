@@ -550,9 +550,8 @@ class Puzzle(commands.Cog):
 
         data = await attachment.read()
 
-        async with self.config.guild(ctx.guild).all() as guild_data:
-            image_id = guild_data["next_id"]
-            guild_data["next_id"] += 1
+        image_id = await self.config.guild(ctx.guild).next_id()
+        await self.config.guild(ctx.guild).next_id.set(image_id + 1)
 
         try:
             out_dir = self._image_dir(ctx.guild.id, image_id)
@@ -884,15 +883,23 @@ class Puzzle(commands.Cog):
     @puzzle.command(name="settings")
     async def puzzle_settings(self, ctx: commands.Context):
         """Show the current puzzle configuration for this server."""
-        data = await self.config.guild(ctx.guild).all()
-        channel = ctx.guild.get_channel(data["channel_id"]) if data["channel_id"] else None
-        role = ctx.guild.get_role(data["reward_role_id"]) if data["reward_role_id"] else None
+        guild_conf = self.config.guild(ctx.guild)
+        channel_id = await guild_conf.channel_id()
+        reward_role_id = await guild_conf.reward_role_id()
+        interval_min_hours = await guild_conf.interval_min_hours()
+        interval_max_hours = await guild_conf.interval_max_hours()
+        claim_emoji = await guild_conf.claim_emoji()
+        winners_count = await guild_conf.winners_count()
+        pool = await guild_conf.pool()
+
+        channel = ctx.guild.get_channel(channel_id) if channel_id else None
+        role = ctx.guild.get_role(reward_role_id) if reward_role_id else None
         lines = [
             f"Channel: {channel.mention if channel else 'not set'}",
-            f"Interval: random between {data['interval_min_hours']} and {data['interval_max_hours']} hour(s)",
-            f"Claim emoji: {data['claim_emoji']}",
-            f"Winners needed to end a puzzle: {data['winners_count']}",
+            f"Interval: random between {interval_min_hours} and {interval_max_hours} hour(s)",
+            f"Claim emoji: {claim_emoji}",
+            f"Winners needed to end a puzzle: {winners_count}",
             f"Winner role: {role.name if role else 'not set'}",
-            f"Images in pool: {len(data['pool'])}",
+            f"Images in pool: {len(pool)}",
         ]
         await ctx.send("\n".join(lines))
