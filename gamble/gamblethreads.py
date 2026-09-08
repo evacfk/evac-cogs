@@ -6,7 +6,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 import discord
-from redbot.core import commands, Config, checks
+from redbot.core import bank, commands, Config, checks
 from redbot.core.bot import Red
 
 # ---------------------------------------------------------------------------
@@ -189,6 +189,7 @@ class _ArgModal(discord.ui.Modal):
         self.cog = cog
         self.member = member
         self.command = command
+        self.entry = entry
         self.inputs: list[discord.ui.TextInput] = []
         for arg in entry.get("args", [])[:2]:
             text_input = discord.ui.TextInput(
@@ -206,7 +207,47 @@ class _ArgModal(discord.ui.Modal):
         # optional argument still resolves correctly when only the first
         # is filled in.
         extra_args = " ".join(i.value.strip() for i in self.inputs if i.value.strip())
-        await self.cog._invoke_direct(interaction, self.member, self.command, extra_args=extra_args)
+        await self.cog._invoke_direct(
+            interaction, self.member, self.command, extra_args=extra_args, entry=self.entry
+        )
+
+
+class _RunAgainView(discord.ui.View):
+    """Attached to the ephemeral result of a "modal" mode game (see
+    _ArgModal) so a player can immediately go again without re-opening the
+    "More games…" dropdown and re-selecting the same entry from scratch
+    every single time — built for repeat-play commands like Coinflip,
+    where re-navigating the dropdown for every roll is the whole
+    complaint. Deliberately NOT attached to "direct" mode results (Payday):
+    those are cooldown-gated, so a one-click repeat wouldn't do anything
+    useful. Non-persistent (5 min timeout) is fine here — it's only ever
+    attached to an ephemeral followup, which stops being usable around the
+    same window regardless (the interaction token expires), so there's
+    nothing to survive a bot restart for."""
+
+    def __init__(
+        self,
+        cog: "GambleThreads",
+        member: discord.Member,
+        command: commands.Command,
+        entry: dict,
+    ):
+        super().__init__(timeout=300)
+        self.cog = cog
+        self.member = member
+        self.command = command
+        self.entry = entry
+
+    @discord.ui.button(label="Go Again", emoji="\U0001F501", style=discord.ButtonStyle.secondary)
+    async def go_again(self, interaction: discord.Interaction, _button: discord.ui.Button) -> None:
+        if interaction.user.id != self.member.id:
+            await interaction.response.send_message(
+                "This isn't your result to replay.", ephemeral=True
+            )
+            return
+        await interaction.response.send_modal(
+            _ArgModal(self.cog, self.member, self.command, self.entry)
+        )
 
 
 class _NoopTyping:
@@ -236,8 +277,15 @@ class _EphemeralRelay:
     this class's own .send() is only a fallback for the rare case
     something calls ctx.channel.send() directly instead of ctx.send()."""
 
-    def __init__(self, interaction: discord.Interaction):
+    def __init__(self, interaction: discord.Interaction, retry_view: Optional[discord.ui.View] = None):
         self._interaction = interaction
+        # Set only for "modal" mode games (see _invoke_direct) — attached
+        # to whatever this relay ends up sending, so a repeat-play command
+        # like Coinflip gets a "Go Again" button on its result instead of
+        # forcing a full dropdown re-navigation for every single roll.
+        # setdefault in send() below means a view the command supplies
+        # itself always wins over this one.
+        self._retry_view = retry_view
         self.guild = interaction.guild
         self.id = interaction.channel_id
         real_channel = interaction.channel
@@ -268,6 +316,8 @@ class _EphemeralRelay:
         kwargs.pop("reference", None)
         kwargs.pop("mention_author", None)
         kwargs.setdefault("ephemeral", True)
+        if self._retry_view is not None:
+            kwargs.setdefault("view", self._retry_view)
         if self._interaction.response.is_done():
             return await self._interaction.followup.send(content, **kwargs)
         return await self._interaction.response.send_message(content, **kwargs)
@@ -641,6 +691,7 @@ class GambleThreads(commands.Cog):
         member: discord.Member,
         command: commands.Command,
         extra_args: str = "",
+        entry: Optional[dict] = None,
     ):
         """Run `command` with no thread at all (see "direct" mode above).
         Builds a fake invocation the same way _invoke_in_thread does, using
@@ -667,7 +718,13 @@ class GambleThreads(commands.Cog):
         that exactly as they would for a real typed invocation, which is
         also why a bad value (an unresolvable member, a non-integer
         amount) surfaces as the command's normal argument-error reply
-        rather than something this method has to anticipate."""
+        rather than something this method has to anticipate.
+
+        `entry`, also modal-mode only, is passed straight through to
+        _EphemeralRelay so it can attach a "Go Again" button (see
+        _RunAgainView) to whatever the command ends up sending — repeat-play
+        games like Coinflip would otherwise need the dropdown re-opened and
+        re-selected by hand for every single roll."""
         # A silent ack: no "thinking…" bubble, no visible change to the hub
         # message, but it satisfies Discord's 3-second response window —
         # which matters here, because checks/cooldowns/bank lookups inside
@@ -687,7 +744,10 @@ class GambleThreads(commands.Cog):
                 ephemeral=True,
             )
             return
-        relay = _EphemeralRelay(interaction)
+        retry_view = None
+        if entry is not None and entry.get("mode") == "modal":
+            retry_view = _RunAgainView(self, member, command, entry)
+        relay = _EphemeralRelay(interaction, retry_view=retry_view)
         fake_message = copy.copy(reference_message)
         fake_message.author = member
         fake_message.channel = relay
@@ -703,7 +763,48 @@ class GambleThreads(commands.Cog):
             )
             return
         ctx.send = relay.send
+
+        # Recipient DM notification (see `.gamblehub notifyrecipient`) —
+        # opt-in per game, and only meaningful when the game's first
+        # argument is a recipient (Bank Transfer: yes; Coinflip: no, its
+        # first arg is an amount, so this block just no-ops for it).
+        # Detecting success by balance delta rather than parsing the
+        # command's own reply text means this works for ANY currency-moving
+        # command wired in this way, not just bank transfer specifically,
+        # and it never misfires on a failed transfer (insufficient funds,
+        # bad recipient) since the balance simply won't have moved.
+        notify_target = None
+        notify_before = None
+        if entry is not None and entry.get("notify_recipient") and extra_args:
+            first_token = extra_args.split(maxsplit=1)[0]
+            try:
+                candidate = await commands.MemberConverter().convert(ctx, first_token)
+            except commands.BadArgument:
+                candidate = None
+            if candidate is not None and candidate.id != member.id:
+                try:
+                    notify_before = await bank.get_balance(candidate)
+                    notify_target = candidate
+                except Exception:
+                    notify_target = None
+
         await self.bot.invoke(ctx)
+
+        if notify_target is not None:
+            try:
+                notify_after = await bank.get_balance(notify_target)
+            except Exception:
+                notify_after = notify_before
+            delta = notify_after - notify_before
+            if delta > 0:
+                currency = await bank.get_currency_name(interaction.guild)
+                try:
+                    await notify_target.send(
+                        f"\U0001F4B0 **{member.display_name}** sent you **{delta:,}** "
+                        f"{currency} in **{interaction.guild.name}**!"
+                    )
+                except discord.HTTPException:
+                    pass  # DMs closed — no other notification channel to fall back to yet
 
     async def _invoke_in_thread(
         self,
@@ -1033,6 +1134,9 @@ class GambleThreads(commands.Cog):
         .gamblehub addmodalgame banktransfer 💸 "bank transfer" "Bank Transfer" "Recipient (mention or ID)" "Amount"
         .gamblehub addmodalgame allin 🎲 allin "All In" "Amount"
         .gamblehub addmodalgame coinflip 🪙 coin "Coinflip" "Amount" "Heads or Tails"
+
+        Re-running this on an existing `key` updates it in place and keeps
+        whatever `.gamblehub notifyrecipient` setting it already had.
         """
         key = key.lower()
         resolved = self.bot.get_command(command)
@@ -1061,6 +1165,10 @@ class GambleThreads(commands.Cog):
                 "command": resolved.qualified_name,
                 "mode": "modal",
                 "args": args,
+                # Preserved across re-registration rather than reset to
+                # off, so re-running this to tweak a label/arg doesn't
+                # silently turn recipient notifications back off.
+                "notify_recipient": bool(previous_entry.get("notify_recipient")) if existed else False,
             }
         error = await self._refresh_hub_message(ctx.guild)
         if error:
@@ -1074,6 +1182,47 @@ class GambleThreads(commands.Cog):
         await ctx.send(
             f"{'Updated' if existed else 'Added'} **{label}** (`{key}`) → `.{resolved.qualified_name}`, "
             f"modal mode ({len(args)} argument{'s' if len(args) != 1 else ''}). Hub menu refreshed."
+        )
+
+    @gamblehub.command(name="notifyrecipient")
+    @commands.is_owner()
+    async def gamblehub_notifyrecipient(self, ctx: commands.Context, key: str, on_off: str):
+        """Toggle a DM to whoever receives currency through a "modal" mode
+        game (see `.gamblehub addmodalgame`) — e.g. "hey, evac sent you 100
+        coins" after a Bank Transfer. Owner-only.
+
+        Only meaningful when the game's FIRST argument is the recipient
+        (a member), since that's the raw text this resolves and watches
+        for a balance increase around the command running — Bank Transfer
+        qualifies, Coinflip doesn't (its first argument is an amount, so
+        turning this on for it just never fires — harmless, but pointless).
+        Detection is by balance delta, not by reading the command's own
+        reply, so a failed transfer (insufficient funds, bad recipient)
+        correctly sends no notification.
+
+        If the recipient has server/bot DMs closed, the notification is
+        silently skipped — there's no other delivery path wired up yet.
+
+        `on_off` — `on` or `off`
+
+        Example: .gamblehub notifyrecipient banktransfer on
+        """
+        key = key.lower()
+        on_off = on_off.lower()
+        if on_off not in ("on", "off"):
+            await ctx.send("Second argument must be `on` or `off`.")
+            return
+        async with self.config.guild(ctx.guild).games() as games:
+            if key not in games:
+                await ctx.send(f"No game registered under `{key}`.")
+                return
+            if games[key]["mode"] != "modal":
+                await ctx.send(f"`{key}` isn't a modal-mode game — nothing to notify on.")
+                return
+            games[key]["notify_recipient"] = on_off == "on"
+            label = games[key]["label"]
+        await ctx.send(
+            f"Recipient notifications for **{label}** are now {'on' if on_off == 'on' else 'off'}."
         )
 
     @gamblehub.command(name="removegame")
@@ -1135,6 +1284,8 @@ class GambleThreads(commands.Cog):
             if data["mode"] == "modal" and data.get("args"):
                 arg_labels = ", ".join(a["label"] for a in data["args"])
                 mode_suffix = f"modal: {arg_labels}"
+                if data.get("notify_recipient"):
+                    mode_suffix += ", notifies recipient"
             lines.append(
                 f"`{key}` — {data['emoji']} **{data['label']}** → `.{data['command']}` ({mode_suffix}"
                 f"{', flagship' if key in FLAGSHIP_KEYS else ''})"
