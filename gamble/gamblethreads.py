@@ -28,6 +28,11 @@ from redbot.core.bot import Red
 #             on that button while the session is still live routes the
 #             player into that SAME thread rather than fragmenting into
 #             1-person tables. Wonderjack lives here.
+# "direct":   no thread at all — the command is invoked immediately and
+#             whatever it would normally ctx.send() is relayed back as an
+#             ephemeral reply to the clicking user instead. For quick,
+#             one-shot commands with no back-and-forth (Payday) where
+#             opening/reusing a table would just be overhead.
 #
 # Session liveness for "shared" games is tracked purely off Discord's own
 # thread state (does the stored thread ID still resolve, is it archived) —
@@ -53,7 +58,7 @@ DEFAULT_GAMES = {
         "emoji": "\U0001F4B5",  # 💵
         "label": "Payday",
         "command": "payday",
-        "mode": "personal",
+        "mode": "direct",
     },
     "gamble": {
         "emoji": "\U0001F3B0",  # 🎰
@@ -151,6 +156,32 @@ class HubView(discord.ui.View):
             )
             return
         await self.cog.handle_hub_click(interaction, value)
+
+
+class _EphemeralRelay:
+    """Stand-in for a real channel/thread when invoking a "direct" mode
+    command (see DEFAULT_GAMES above). Only implements what commands.Context
+    actually touches for a simple command like Payday — anything that
+    calls ctx.send() gets relayed back through the interaction's ephemeral
+    followup instead of posting anywhere real."""
+
+    def __init__(self, interaction: discord.Interaction):
+        self._interaction = interaction
+        self.guild = interaction.guild
+        self.id = interaction.channel_id
+
+    async def send(self, content=None, **kwargs):
+        # Followups don't support delete_after/reference/mention_author —
+        # drop anything a normal ctx.send() might pass that a webhook
+        # followup message doesn't understand.
+        kwargs.pop("delete_after", None)
+        kwargs.pop("reference", None)
+        kwargs.pop("mention_author", None)
+        kwargs.setdefault("ephemeral", True)
+        return await self._interaction.followup.send(content, **kwargs)
+
+    def permissions_for(self, _member):
+        return discord.Permissions.all()
 
 
 class GambleThreads(commands.Cog):
@@ -382,7 +413,24 @@ class GambleThreads(commands.Cog):
 
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message):
-        if message.author.bot or message.guild is None:
+        if message.guild is None:
+            return
+        # Discord auto-posts a "<member> started a thread: ..." system
+        # message in the parent channel whenever a thread is created via
+        # the API without replying to an existing message — which is what
+        # every hub click does. Left alone these pile up below the hub
+        # embed and eventually bury it. The bot is always the author here
+        # (it's the one creating the thread), so deleting its own message
+        # needs no extra permissions.
+        if message.type is discord.MessageType.thread_created:
+            hub_channel = await self._hub_channel(message.guild)
+            if hub_channel and message.channel.id == hub_channel.id:
+                try:
+                    await message.delete()
+                except discord.HTTPException:
+                    pass
+            return
+        if message.author.bot:
             return
         if not isinstance(message.channel, discord.Thread):
             return
@@ -427,6 +475,9 @@ class GambleThreads(commands.Cog):
             return
         await interaction.response.defer(ephemeral=True, thinking=True)
         member = interaction.user
+        if entry["mode"] == "direct":
+            await self._invoke_direct(interaction, member, command)
+            return
         if entry["mode"] == "shared":
             thread, created = await self._get_or_create_shared_thread(guild, key, entry["label"])
         else:
@@ -469,6 +520,40 @@ class GambleThreads(commands.Cog):
         if should_invoke:
             await self._invoke_in_thread(thread, member, command, anchor_message=anchor_message)
         await interaction.followup.send(f"You're set: {thread.mention}", ephemeral=True)
+
+    async def _invoke_direct(
+        self, interaction: discord.Interaction, member: discord.Member, command: commands.Command
+    ):
+        """Run `command` with no thread at all (see "direct" mode above).
+        Builds a fake invocation the same way _invoke_in_thread does, but
+        swaps in an _EphemeralRelay as the channel so the command's own
+        ctx.send() calls land back on the clicking user as ephemeral
+        replies instead of posting anywhere real."""
+        prefixes = await self.bot.get_prefix(interaction.channel)
+        prefix = prefixes[0] if isinstance(prefixes, list) else prefixes
+        # The hub message this button lives on doubles as our template
+        # Message to build a fake invocation off of — always present for
+        # any component interaction, no extra fetch needed.
+        reference_message = interaction.message
+        if reference_message is None:
+            await interaction.followup.send(
+                f"Couldn't run that here — try `{prefix}{command.qualified_name}` directly.",
+                ephemeral=True,
+            )
+            return
+        fake_message = copy.copy(reference_message)
+        fake_message.author = member
+        fake_message.channel = _EphemeralRelay(interaction)
+        fake_message.guild = interaction.guild
+        fake_message.content = f"{prefix}{command.qualified_name}"
+        ctx = await self.bot.get_context(fake_message)
+        if not ctx.valid:
+            await interaction.followup.send(
+                f"Couldn't run that here — try `{prefix}{command.qualified_name}` directly.",
+                ephemeral=True,
+            )
+            return
+        await self.bot.invoke(ctx)
 
     async def _invoke_in_thread(
         self,
@@ -709,7 +794,9 @@ class GambleThreads(commands.Cog):
 
         `key` — short internal id, e.g. `casino-slots`
         `emoji` — shown on the button/dropdown entry
-        `mode` — `personal` (own thread every time) or `shared` (one table, others join in)
+        `mode` — `personal` (own thread every time), `shared` (one table, others join in),
+                 or `direct` (no thread — just runs the command and relays its reply to
+                 the clicking user; only safe for commands that take no arguments)
         `command` — the exact bot command to run, quoted if it has a space, e.g. "wonderjack table"
         `label` — display name, can have spaces, goes last
 
@@ -717,8 +804,8 @@ class GambleThreads(commands.Cog):
         """
         key = key.lower()
         mode = mode.lower()
-        if mode not in ("personal", "shared"):
-            await ctx.send("`mode` must be `personal` or `shared`.")
+        if mode not in ("personal", "shared", "direct"):
+            await ctx.send("`mode` must be `personal`, `shared`, or `direct`.")
             return
         resolved = self.bot.get_command(command)
         if resolved is None:
