@@ -165,7 +165,7 @@ class HubView(discord.ui.View):
                 "No additional games are configured right now.", ephemeral=True
             )
             return
-        await self.cog.handle_hub_click(interaction, value)
+        await self.cog.handle_hub_click(interaction, value, from_select=True)
 
 
 class _ArgModal(discord.ui.Modal):
@@ -605,7 +605,24 @@ class GambleThreads(commands.Cog):
 
     # ---------- hub dispatch ----------
 
-    async def handle_hub_click(self, interaction: discord.Interaction, key: str):
+    async def handle_hub_click(
+        self, interaction: discord.Interaction, key: str, from_select: bool = False
+    ):
+        """`from_select` is True only when this click came from the "More
+        games…" dropdown (never a flagship button). Discord's own select
+        component keeps showing a checkmark next to whatever was LAST
+        chosen on that message, and — since nothing about the message
+        actually changes when the response is a modal/ephemeral reply
+        rather than an edit to the hub message itself — picking that same
+        already-checked entry again doesn't fire a new interaction at all;
+        the player has to select something else first and come back. The
+        fix is cosmetic but has to happen for real: re-editing the hub
+        message with a freshly built (if functionally identical) view
+        resets Discord's client-side "currently selected" state, so the
+        same entry becomes reselectable immediately. Scheduled as a
+        background task AFTER the interaction's own response has already
+        gone out, never awaited inline here, so a slow/rate-limited edit
+        can never eat into the 3-second window for the actual reply."""
         guild = interaction.guild
         if guild is None:
             await interaction.response.send_message("This only works in a server.", ephemeral=True)
@@ -631,6 +648,8 @@ class GambleThreads(commands.Cog):
             # interaction's initial response — deferring first would only
             # add a pointless "thinking…" placeholder to clean up after.
             await self._invoke_direct(interaction, member, command)
+            if from_select:
+                self._schedule_select_reset(guild)
             return
         if entry["mode"] == "modal":
             # Same reasoning as direct mode: the modal itself IS the
@@ -638,6 +657,8 @@ class GambleThreads(commands.Cog):
             # _ArgModal.on_submit hands off to _invoke_direct once the
             # player fills it in, which does its own silent defer there.
             await interaction.response.send_modal(_ArgModal(self, member, command, entry))
+            if from_select:
+                self._schedule_select_reset(guild)
             return
         await interaction.response.defer(ephemeral=True, thinking=True)
         if entry["mode"] == "shared":
@@ -684,6 +705,23 @@ class GambleThreads(commands.Cog):
         if should_invoke:
             await self._invoke_in_thread(thread, member, command, anchor_message=anchor_message)
         await interaction.edit_original_response(content=f"You're set: {thread.mention}")
+        if from_select:
+            self._schedule_select_reset(guild)
+
+    def _schedule_select_reset(self, guild: discord.Guild) -> None:
+        """Fire-and-forget `_refresh_hub_message` after a select-originated
+        click's own response has already been sent — see the from_select
+        note on handle_hub_click. Failures are swallowed: this is a purely
+        cosmetic follow-up, never worth surfacing an error to the player
+        over, since their actual click already succeeded."""
+
+        async def _reset() -> None:
+            try:
+                await self._refresh_hub_message(guild)
+            except Exception:
+                pass
+
+        asyncio.create_task(_reset())
 
     async def _invoke_direct(
         self,
