@@ -158,17 +158,46 @@ class HubView(discord.ui.View):
         await self.cog.handle_hub_click(interaction, value)
 
 
+class _NoopTyping:
+    """No-op stand-in for the object channel.typing() normally returns,
+    usable as both `with` and `async with` since callers may use either."""
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *exc_info):
+        return False
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc_info):
+        return False
+
+
 class _EphemeralRelay:
     """Stand-in for a real channel/thread when invoking a "direct" mode
-    command (see DEFAULT_GAMES above). Only implements what commands.Context
-    actually touches for a simple command like Payday — anything that
-    calls ctx.send() gets relayed back through the interaction's ephemeral
-    followup instead of posting anywhere real."""
+    command (see DEFAULT_GAMES above). Implements everything a plain
+    commands.Context / Red command-invocation pipeline is likely to touch
+    on ctx.channel even when it never actually sends anything itself
+    (typing indicators, permission checks, name/mention in logging) —
+    anything that actually calls ctx.send() gets relayed back through the
+    interaction's ephemeral followup instead of posting anywhere real."""
 
     def __init__(self, interaction: discord.Interaction):
         self._interaction = interaction
         self.guild = interaction.guild
         self.id = interaction.channel_id
+        real_channel = interaction.channel
+        self.name = getattr(real_channel, "name", "wondercasino")
+        self.category_id = getattr(real_channel, "category_id", None)
+        self.mention = f"<#{interaction.channel_id}>"
+        # Red's Context.bot_permissions checks channel.type == private to
+        # tell DMs apart from guild channels when there's no ctx.interaction
+        # (which is the case here — we build ctx from a fake Message, not
+        # from the interaction directly). Never a DM in this flow, so text
+        # is always correct.
+        self.type = getattr(real_channel, "type", discord.ChannelType.text)
 
     async def send(self, content=None, **kwargs):
         # Followups don't support delete_after/reference/mention_author —
@@ -179,6 +208,12 @@ class _EphemeralRelay:
         kwargs.pop("mention_author", None)
         kwargs.setdefault("ephemeral", True)
         return await self._interaction.followup.send(content, **kwargs)
+
+    async def trigger_typing(self):
+        return None
+
+    def typing(self):
+        return _NoopTyping()
 
     def permissions_for(self, _member):
         return discord.Permissions.all()
