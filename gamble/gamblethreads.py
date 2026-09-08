@@ -49,6 +49,12 @@ DEFAULT_GAMES = {
         "command": "heist start",
         "mode": "personal",
     },
+    "payday": {
+        "emoji": "\U0001F4B5",  # 💵
+        "label": "Payday",
+        "command": "payday",
+        "mode": "personal",
+    },
     "gamble": {
         "emoji": "\U0001F3B0",  # 🎰
         "label": "Open a Table",
@@ -57,7 +63,12 @@ DEFAULT_GAMES = {
     },
 }
 
-FLAGSHIP_KEYS = ("wonderjack", "heist")
+# Flagship keys get a dedicated, always-visible button on row 0 instead of
+# being buried in the "More games…" dropdown. Order here also drives the
+# button order (see HubView) — wonderjack, heist, payday, then "Open a
+# Table" right before "Active Tables".
+FLAGSHIP_KEYS = ("wonderjack", "heist", "payday", "gamble")
+
 SHARED_THREAD_NAMES = {
     "wonderjack": "blackjack-table",
 }
@@ -93,6 +104,26 @@ class HubView(discord.ui.View):
     )
     async def heist_button(self, interaction: discord.Interaction, button: discord.ui.Button):
         await self.cog.handle_hub_click(interaction, "heist")
+
+    @discord.ui.button(
+        label="Payday",
+        emoji="\U0001F4B5",
+        style=discord.ButtonStyle.blurple,
+        custom_id="gamblehub:flagship:payday",
+        row=0,
+    )
+    async def payday_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.cog.handle_hub_click(interaction, "payday")
+
+    @discord.ui.button(
+        label="Open a Table",
+        emoji="\U0001F3B0",
+        style=discord.ButtonStyle.blurple,
+        custom_id="gamblehub:flagship:gamble",
+        row=0,
+    )
+    async def gamble_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.cog.handle_hub_click(interaction, "gamble")
 
     @discord.ui.button(
         label="Active Tables",
@@ -233,18 +264,15 @@ class GambleThreads(commands.Cog):
         every 'personal' mode hub game."""
         user_id = str(member.id)
         active = await self.config.guild(guild).active_threads()
-
         if user_id in active:
             existing = guild.get_thread(active[user_id]["thread_id"])
             if existing and not existing.archived:
                 return existing, False
             async with self.config.guild(guild).active_threads() as a:
                 a.pop(user_id, None)
-
         channel = await self._hub_channel(guild)
         if channel is None:
             return None, False
-
         thread_name = f"\U0001F3B2 {member.display_name}'s table"[:100]
         thread = await channel.create_thread(
             name=thread_name,
@@ -252,18 +280,15 @@ class GambleThreads(commands.Cog):
             auto_archive_duration=60,
             reason=f"Gambling session for {member} ({member.id})",
         )
-
         try:
             await thread.add_user(member)
         except discord.HTTPException:
             pass
-
         async with self.config.guild(guild).active_threads() as a:
             a[user_id] = {
                 "thread_id": thread.id,
                 "last_activity": datetime.now(timezone.utc).isoformat(),
             }
-
         return thread, True
 
     async def _get_or_create_shared_thread(
@@ -272,18 +297,15 @@ class GambleThreads(commands.Cog):
         """Returns (thread, created). One live thread per (guild, game_key)
         at a time — later clicks reuse it instead of spawning duplicates."""
         sessions = await self.config.guild(guild).shared_sessions()
-
         if game_key in sessions:
             existing = guild.get_thread(sessions[game_key]["thread_id"])
             if existing and not existing.archived:
                 return existing, False
             async with self.config.guild(guild).shared_sessions() as s:
                 s.pop(game_key, None)
-
         channel = await self._hub_channel(guild)
         if channel is None:
             return None, False
-
         thread_name = SHARED_THREAD_NAMES.get(game_key, f"{label.lower()}-table")[:100]
         thread = await channel.create_thread(
             name=thread_name,
@@ -291,13 +313,11 @@ class GambleThreads(commands.Cog):
             auto_archive_duration=60,
             reason=f"Shared {label} session",
         )
-
         async with self.config.guild(guild).shared_sessions() as s:
             s[game_key] = {
                 "thread_id": thread.id,
                 "last_activity": datetime.now(timezone.utc).isoformat(),
             }
-
         return thread, True
 
     # ---------- commands ----------
@@ -314,14 +334,12 @@ class GambleThreads(commands.Cog):
                 "`.gambleset channel #wondercasino` first."
             )
             return
-
         if not created:
             await ctx.send(
                 f"{ctx.author.mention} you already have an open table: {thread.mention}",
                 delete_after=10,
             )
             return
-
         timeout_minutes = await self.config.guild(guild).timeout_minutes()
         await thread.send(
             f"🎰 {ctx.author.mention} this is your table. Run your usual game commands right "
@@ -339,16 +357,13 @@ class GambleThreads(commands.Cog):
         user_id = str(ctx.author.id)
         active = await self.config.guild(guild).active_threads()
         info = active.get(user_id)
-
         if not info or ctx.channel.id != info["thread_id"]:
             await ctx.send(
                 "You don't have an open gambling table in this thread.", delete_after=10
             )
             return
-
         async with self.config.guild(guild).active_threads() as a:
             a.pop(user_id, None)
-
         try:
             await ctx.send("Closing this table. Thanks for playing! 🎲")
         except discord.HTTPException:
@@ -373,7 +388,6 @@ class GambleThreads(commands.Cog):
             return
         guild = message.guild
         thread_id = message.channel.id
-
         user_id = str(message.author.id)
         active = await self.config.guild(guild).active_threads()
         info = active.get(user_id)
@@ -382,7 +396,6 @@ class GambleThreads(commands.Cog):
                 if user_id in a:
                     a[user_id]["last_activity"] = datetime.now(timezone.utc).isoformat()
             return
-
         sessions = await self.config.guild(guild).shared_sessions()
         for key, session_info in sessions.items():
             if session_info["thread_id"] == thread_id:
@@ -398,7 +411,6 @@ class GambleThreads(commands.Cog):
         if guild is None:
             await interaction.response.send_message("This only works in a server.", ephemeral=True)
             return
-
         games = await self.config.guild(guild).games()
         entry = games.get(key)
         if entry is None:
@@ -406,7 +418,6 @@ class GambleThreads(commands.Cog):
                 "That game isn't configured right now.", ephemeral=True
             )
             return
-
         command = self.bot.get_command(entry["command"])
         if command is None:
             await interaction.response.send_message(
@@ -414,15 +425,12 @@ class GambleThreads(commands.Cog):
                 ephemeral=True,
             )
             return
-
         await interaction.response.defer(ephemeral=True, thinking=True)
         member = interaction.user
-
         if entry["mode"] == "shared":
             thread, created = await self._get_or_create_shared_thread(guild, key, entry["label"])
         else:
             thread, created = await self._get_or_create_personal_thread(guild, member)
-
         if thread is None:
             await interaction.followup.send(
                 "No gambling channel is configured yet — ask a mod to run "
@@ -430,12 +438,10 @@ class GambleThreads(commands.Cog):
                 ephemeral=True,
             )
             return
-
         try:
             await thread.add_user(member)
         except discord.HTTPException:
             pass
-
         # We always need one real Message object in this thread to build a
         # fake invocation off of (see _invoke_in_thread). On creation we
         # control that directly by sending an anchor message ourselves —
@@ -452,7 +458,6 @@ class GambleThreads(commands.Cog):
             )
         elif entry["mode"] == "shared" and created:
             anchor_message = await thread.send(f"🎲 Starting **{entry['label']}**…")
-
         # `gamble` itself IS the thread-provisioning step above — nothing
         # further to invoke, opening the thread is the whole command.
         # For a *reused* shared thread, skip invoking too: the game's own
@@ -463,7 +468,6 @@ class GambleThreads(commands.Cog):
         should_invoke = command.qualified_name != "gamble" and (entry["mode"] == "personal" or created)
         if should_invoke:
             await self._invoke_in_thread(thread, member, command, anchor_message=anchor_message)
-
         await interaction.followup.send(f"You're set: {thread.mention}", ephemeral=True)
 
     async def _invoke_in_thread(
@@ -481,27 +485,23 @@ class GambleThreads(commands.Cog):
         silently skipping it."""
         prefixes = await self.bot.get_prefix(thread)
         prefix = prefixes[0] if isinstance(prefixes, list) else prefixes
-
         reference_message = anchor_message
         if reference_message is None:
             try:
                 reference_message = [msg async for msg in thread.history(limit=1)][0]
             except (discord.HTTPException, IndexError):
                 reference_message = None
-
         if reference_message is None:
             await thread.send(
                 "⚠️ I couldn't set up that command in this thread — try running "
                 f"`{prefix}{command.qualified_name}` here directly."
             )
             return
-
         fake_message = copy.copy(reference_message)
         fake_message.author = member
         fake_message.channel = thread
         fake_message.guild = thread.guild
         fake_message.content = f"{prefix}{command.qualified_name}"
-
         ctx = await self.bot.get_context(fake_message)
         if not ctx.valid:
             await thread.send(
@@ -512,17 +512,13 @@ class GambleThreads(commands.Cog):
         await self.bot.invoke(ctx)
 
     async def show_active_sessions(self, interaction: discord.Interaction):
+        """Lists every currently-open gambling table — shared (e.g. the
+        Wonderjack blackjack table) and personal (each player's own table,
+        opened via Heist/Payday/Open a Table) alike."""
         guild = interaction.guild
         sessions = await self.config.guild(guild).shared_sessions()
+        personal = await self.config.guild(guild).active_threads()
         games = await self.config.guild(guild).games()
-
-        if not sessions:
-            await interaction.response.send_message(
-                "No shared tables are open right now — click a game to start one.",
-                ephemeral=True,
-            )
-            return
-
         lines = []
         for key, info in sessions.items():
             thread = guild.get_thread(info["thread_id"])
@@ -531,14 +527,20 @@ class GambleThreads(commands.Cog):
             label = games.get(key, {}).get("label", key)
             member_count = thread.member_count if thread.member_count is not None else "?"
             lines.append(f"• **{label}** — {thread.mention} ({member_count} in thread)")
-
+        for user_id, info in personal.items():
+            thread = guild.get_thread(info["thread_id"])
+            if thread is None or thread.archived:
+                continue
+            member = guild.get_member(int(user_id))
+            owner_name = member.display_name if member else f"User {user_id}"
+            member_count = thread.member_count if thread.member_count is not None else "?"
+            lines.append(f"• **{owner_name}'s table** — {thread.mention} ({member_count} in thread)")
         if not lines:
             await interaction.response.send_message(
-                "No shared tables are open right now — click a game to start one.",
+                "No active tables right now — click a game to start one.",
                 ephemeral=True,
             )
             return
-
         await interaction.response.send_message("\n".join(lines), ephemeral=True)
 
     # ---------- hub rendering ----------
@@ -575,7 +577,6 @@ class GambleThreads(commands.Cog):
         if not options:
             options = [discord.SelectOption(label="No other games yet", value="__none__")]
         view.game_select.options = options[:25]
-
         # Flagship buttons reflect current labels/emoji even though their
         # custom_id (and therefore routing) is fixed.
         if "wonderjack" in games:
@@ -588,7 +589,16 @@ class GambleThreads(commands.Cog):
             view.heist_button.disabled = False
         else:
             view.heist_button.disabled = True
-
+        if "payday" in games:
+            view.payday_button.label = games["payday"]["label"]
+            view.payday_button.disabled = False
+        else:
+            view.payday_button.disabled = True
+        if "gamble" in games:
+            view.gamble_button.label = games["gamble"]["label"]
+            view.gamble_button.disabled = False
+        else:
+            view.gamble_button.disabled = True
         return view
 
     async def _refresh_hub_message(self, guild: discord.Guild) -> Optional[str]:
@@ -597,19 +607,16 @@ class GambleThreads(commands.Cog):
         channel = await self._hub_channel(guild)
         if channel is None:
             return "No hub channel is set — run `.gambleset channel #wondercasino` first."
-
         message_id = await self.config.guild(guild).hub_message_id()
         games = await self.config.guild(guild).games()
         embed = self._build_hub_embed(games)
         view = self._build_hub_view(games)
-
         message = None
         if message_id:
             try:
                 message = await channel.fetch_message(message_id)
             except (discord.NotFound, discord.Forbidden, discord.HTTPException):
                 message = None
-
         try:
             if message is None:
                 message = await channel.send(embed=embed, view=view)
@@ -620,7 +627,6 @@ class GambleThreads(commands.Cog):
             # Most likely cause: a bad emoji/label on a recently-added game
             # that Discord rejects at render time rather than at save time.
             return f"Discord rejected the hub menu update: `{e}`. Check emoji/labels on recently added games."
-
         return None
 
     # ---------- admin config: gambling threads ----------
@@ -714,7 +720,6 @@ class GambleThreads(commands.Cog):
         if mode not in ("personal", "shared"):
             await ctx.send("`mode` must be `personal` or `shared`.")
             return
-
         resolved = self.bot.get_command(command)
         if resolved is None:
             await ctx.send(
@@ -722,13 +727,11 @@ class GambleThreads(commands.Cog):
                 f"Check the spelling/quoting and try again."
             )
             return
-
         try:
             discord.PartialEmoji.from_str(emoji)
         except Exception:
             await ctx.send(f"`{emoji}` doesn't look like a valid emoji — nothing was saved.")
             return
-
         previous_entry = None
         async with self.config.guild(ctx.guild).games() as games:
             existed = key in games
@@ -740,7 +743,6 @@ class GambleThreads(commands.Cog):
                 "command": resolved.qualified_name,
                 "mode": mode,
             }
-
         error = await self._refresh_hub_message(ctx.guild)
         if error:
             # Roll back so a bad emoji/label doesn't leave a broken entry
@@ -753,7 +755,6 @@ class GambleThreads(commands.Cog):
                     games.pop(key, None)
             await ctx.send(f"{error}\nNothing was saved — fix the emoji/label and try again.")
             return
-
         await ctx.send(
             f"{'Updated' if existed else 'Added'} **{label}** (`{key}`) → `.{resolved.qualified_name}`, "
             f"{mode} mode. Hub menu refreshed."
@@ -769,7 +770,6 @@ class GambleThreads(commands.Cog):
                 await ctx.send(f"No game registered under `{key}`.")
                 return
             removed = games.pop(key)
-
         error = await self._refresh_hub_message(ctx.guild)
         if error:
             await ctx.send(f"Removed **{removed['label']}** (`{key}`), but {error}")
@@ -786,7 +786,6 @@ class GambleThreads(commands.Cog):
         if channel is None:
             await ctx.send("No hub channel is set — run `.gambleset channel #wondercasino` first.")
             return
-
         everyone = ctx.guild.default_role
         overwrite = channel.overwrites_for(everyone)
         overwrite.send_messages = False
@@ -801,7 +800,6 @@ class GambleThreads(commands.Cog):
                 "I need **Manage Channel/Permissions** there."
             )
             return
-
         await ctx.send(
             f"{channel.mention} is now view-only for @everyone: they can't post directly there, "
             f"but they can still send messages inside threads spawned from it."
