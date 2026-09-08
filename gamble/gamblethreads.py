@@ -177,12 +177,13 @@ class _NoopTyping:
 
 class _EphemeralRelay:
     """Stand-in for a real channel/thread when invoking a "direct" mode
-    command (see DEFAULT_GAMES above). Implements everything a plain
-    commands.Context / Red command-invocation pipeline is likely to touch
-    on ctx.channel even when it never actually sends anything itself
-    (typing indicators, permission checks, name/mention in logging) —
-    anything that actually calls ctx.send() gets relayed back through the
-    interaction's ephemeral followup instead of posting anywhere real."""
+    command (see DEFAULT_GAMES above). Covers everything a plain
+    commands.Context / Red command-invocation pipeline touches on
+    ctx.channel that doesn't go through ctx.send() itself — permission
+    checks, typing indicators, name/mention in logging. The actual reply
+    routing happens separately in _invoke_direct via ctx.interaction;
+    this class's own .send() is only a fallback for the rare case
+    something calls ctx.channel.send() directly instead of ctx.send()."""
 
     def __init__(self, interaction: discord.Interaction):
         self._interaction = interaction
@@ -200,14 +201,20 @@ class _EphemeralRelay:
         self.type = getattr(real_channel, "type", discord.ChannelType.text)
 
     async def send(self, content=None, **kwargs):
-        # Followups don't support delete_after/reference/mention_author —
-        # drop anything a normal ctx.send() might pass that a webhook
-        # followup message doesn't understand.
+        # Safety-net fallback only — normal flow never reaches this: with
+        # ctx.interaction set (see _invoke_direct), Context.send() handles
+        # the interaction directly and never calls channel.send() at all.
+        # This only fires if something calls ctx.channel.send() itself.
         kwargs.pop("delete_after", None)
         kwargs.pop("reference", None)
         kwargs.pop("mention_author", None)
         kwargs.setdefault("ephemeral", True)
-        return await self._interaction.followup.send(content, **kwargs)
+        if self._interaction.response.is_done():
+            return await self._interaction.followup.send(content, **kwargs)
+        return await self._interaction.response.send_message(content, **kwargs)
+
+    async def trigger_typing(self):
+        return None
 
     async def trigger_typing(self):
         return None
@@ -508,20 +515,26 @@ class GambleThreads(commands.Cog):
                 ephemeral=True,
             )
             return
-        await interaction.response.defer(ephemeral=True, thinking=True)
         member = interaction.user
         if entry["mode"] == "direct":
+            # No defer here: direct-mode commands reply near-instantly, and
+            # _invoke_direct makes the command's own first reply BE the
+            # interaction's initial response — deferring first would only
+            # add a pointless "thinking…" placeholder to clean up after.
             await self._invoke_direct(interaction, member, command)
             return
+        await interaction.response.defer(ephemeral=True, thinking=True)
         if entry["mode"] == "shared":
             thread, created = await self._get_or_create_shared_thread(guild, key, entry["label"])
         else:
             thread, created = await self._get_or_create_personal_thread(guild, member)
         if thread is None:
-            await interaction.followup.send(
-                "No gambling channel is configured yet — ask a mod to run "
-                "`.gambleset channel #wondercasino` first.",
-                ephemeral=True,
+            # edit_original_response (not followup.send) resolves the
+            # "thinking…" placeholder from the defer() above in place,
+            # instead of leaving it stuck alongside a brand-new message.
+            await interaction.edit_original_response(
+                content="No gambling channel is configured yet — ask a mod to run "
+                "`.gambleset channel #wondercasino` first."
             )
             return
         try:
@@ -554,16 +567,22 @@ class GambleThreads(commands.Cog):
         should_invoke = command.qualified_name != "gamble" and (entry["mode"] == "personal" or created)
         if should_invoke:
             await self._invoke_in_thread(thread, member, command, anchor_message=anchor_message)
-        await interaction.followup.send(f"You're set: {thread.mention}", ephemeral=True)
+        await interaction.edit_original_response(content=f"You're set: {thread.mention}")
 
     async def _invoke_direct(
         self, interaction: discord.Interaction, member: discord.Member, command: commands.Command
     ):
         """Run `command` with no thread at all (see "direct" mode above).
         Builds a fake invocation the same way _invoke_in_thread does, but
-        swaps in an _EphemeralRelay as the channel so the command's own
-        ctx.send() calls land back on the clicking user as ephemeral
-        replies instead of posting anywhere real."""
+        swaps in an _EphemeralRelay as the channel for attribute lookups
+        (permissions, typing, etc.) AND sets ctx.interaction so that
+        ctx.send() routes through the interaction's own response/followup
+        instead of Context.send()'s default behavior when ctx.interaction
+        is unset — which is a *raw HTTP POST straight to ctx.channel.id*,
+        bypassing any channel object's .send() override entirely. That's
+        the bug this replaced: the relay's .send() was simply never being
+        called, so replies landed as real, non-ephemeral messages in the
+        hub channel instead of privately to the clicking user."""
         prefixes = await self.bot.get_prefix(interaction.channel)
         prefix = prefixes[0] if isinstance(prefixes, list) else prefixes
         # The hub message this button lives on doubles as our template
@@ -571,7 +590,7 @@ class GambleThreads(commands.Cog):
         # any component interaction, no extra fetch needed.
         reference_message = interaction.message
         if reference_message is None:
-            await interaction.followup.send(
+            await interaction.response.send_message(
                 f"Couldn't run that here — try `{prefix}{command.qualified_name}` directly.",
                 ephemeral=True,
             )
@@ -583,12 +602,32 @@ class GambleThreads(commands.Cog):
         fake_message.content = f"{prefix}{command.qualified_name}"
         ctx = await self.bot.get_context(fake_message)
         if not ctx.valid:
-            await interaction.followup.send(
+            await interaction.response.send_message(
                 f"Couldn't run that here — try `{prefix}{command.qualified_name}` directly.",
                 ephemeral=True,
             )
             return
+        ctx.interaction = interaction
+        original_send = ctx.send
+
+        async def _ephemeral_send(*args, **kwargs):
+            # The invoked command (e.g. Payday) has no idea it's running
+            # inside an interaction and never passes ephemeral itself —
+            # force it here so its reply is private to the clicking user.
+            kwargs.setdefault("ephemeral", True)
+            return await original_send(*args, **kwargs)
+
+        ctx.send = _ephemeral_send
         await self.bot.invoke(ctx)
+        if not interaction.response.is_done():
+            # The command ran but never replied at all (most likely a
+            # misconfigured future "direct" mode game) — acknowledge so
+            # the clicking user doesn't see a generic "This interaction
+            # failed" from Discord instead.
+            await interaction.response.send_message(
+                f"`{prefix}{command.qualified_name}` ran but didn't send a reply.",
+                ephemeral=True,
+            )
 
     async def _invoke_in_thread(
         self,
