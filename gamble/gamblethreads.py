@@ -573,16 +573,23 @@ class GambleThreads(commands.Cog):
         self, interaction: discord.Interaction, member: discord.Member, command: commands.Command
     ):
         """Run `command` with no thread at all (see "direct" mode above).
-        Builds a fake invocation the same way _invoke_in_thread does, but
-        swaps in an _EphemeralRelay as the channel for attribute lookups
-        (permissions, typing, etc.) AND sets ctx.interaction so that
-        ctx.send() routes through the interaction's own response/followup
-        instead of Context.send()'s default behavior when ctx.interaction
-        is unset — which is a *raw HTTP POST straight to ctx.channel.id*,
-        bypassing any channel object's .send() override entirely. That's
-        the bug this replaced: the relay's .send() was simply never being
-        called, so replies landed as real, non-ephemeral messages in the
-        hub channel instead of privately to the clicking user."""
+        Builds a fake invocation the same way _invoke_in_thread does, using
+        an _EphemeralRelay as the channel — but deliberately leaves
+        ctx.interaction unset (None), exactly like _invoke_in_thread does
+        for every thread-based game. Red's hybrid-command permission check
+        (used by some core commands, Payday included) special-cases
+        ctx.interaction is not None by reading interaction._baton, a
+        private discord.py field only populated by the library's own
+        interaction-dispatch pipeline — never true for a synthetic
+        invocation like this one. An earlier version of this method set
+        ctx.interaction = interaction to route replies through it, which
+        raised AttributeError('_MissingSentinel' object has no attribute
+        'interaction') deep inside that check for exactly this reason.
+        With ctx.interaction left None, Red treats this as a normal prefix
+        invocation for permission purposes (safe — proven by every
+        thread-based game already working this way); only ctx.send itself
+        is redirected below, straight to _EphemeralRelay.send(), to reply
+        through the interaction instead of posting to a real channel."""
         # A silent ack: no "thinking…" bubble, no visible change to the hub
         # message, but it satisfies Discord's 3-second response window —
         # which matters here, because checks/cooldowns/bank lookups inside
@@ -602,9 +609,10 @@ class GambleThreads(commands.Cog):
                 ephemeral=True,
             )
             return
+        relay = _EphemeralRelay(interaction)
         fake_message = copy.copy(reference_message)
         fake_message.author = member
-        fake_message.channel = _EphemeralRelay(interaction)
+        fake_message.channel = relay
         fake_message.guild = interaction.guild
         fake_message.content = f"{prefix}{command.qualified_name}"
         ctx = await self.bot.get_context(fake_message)
@@ -614,27 +622,8 @@ class GambleThreads(commands.Cog):
                 ephemeral=True,
             )
             return
-        ctx.interaction = interaction
-        original_send = ctx.send
-
-        async def _ephemeral_send(*args, **kwargs):
-            # The invoked command (e.g. Payday) has no idea it's running
-            # inside an interaction and never passes ephemeral itself —
-            # force it here so its reply is private to the clicking user.
-            kwargs.setdefault("ephemeral", True)
-            return await original_send(*args, **kwargs)
-
-        ctx.send = _ephemeral_send
+        ctx.send = relay.send
         await self.bot.invoke(ctx)
-        if not interaction.response.is_done():
-            # The command ran but never replied at all (most likely a
-            # misconfigured future "direct" mode game) — this shouldn't
-            # normally trigger since we already deferred above, but covers
-            # it in case something clears is_done() unexpectedly.
-            await interaction.followup.send(
-                f"`{prefix}{command.qualified_name}` ran but didn't send a reply.",
-                ephemeral=True,
-            )
 
     async def _invoke_in_thread(
         self,
