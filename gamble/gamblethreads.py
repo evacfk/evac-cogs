@@ -192,6 +192,14 @@ class _EphemeralRelay:
         real_channel = interaction.channel
         self.name = getattr(real_channel, "name", "wondercasino")
         self.category_id = getattr(real_channel, "category_id", None)
+        # Red's permission-rule resolution (requires.verify -> ...
+        # _get_rule_from_ctx) reads ctx.channel.category directly, not just
+        # .category_id — hit in production for Payday: any command gated by
+        # Red's per-category/per-channel permission rules raised
+        # AttributeError here and was silently swallowed by discord.py's
+        # view on_error, so only users who never triggered that check (e.g.
+        # while testing as the account with global admin) saw a reply.
+        self.category = getattr(real_channel, "category", None)
         self.mention = f"<#{interaction.channel_id}>"
         # Red's Context.bot_permissions checks channel.type == private to
         # tell DMs apart from guild channels when there's no ctx.interaction

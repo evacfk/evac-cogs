@@ -61,6 +61,20 @@ class LobbyView(discord.ui.View):
         await interaction.response.defer()
         self.stop()
 
+    @discord.ui.button(label="Close Table", style=discord.ButtonStyle.danger)
+    async def close_table(self, interaction: discord.Interaction, _button: discord.ui.Button) -> None:
+        if interaction.user.id != self.table.host_id:
+            await interaction.response.send_message(
+                "Only the host who opened this table can close it.", ephemeral=True
+            )
+            return
+        # Clearing seats reuses the existing "no players seated" closed path
+        # in _run_table_session (checked via table.can_start() right after
+        # lobby_view.wait() returns) rather than needing a separate signal.
+        self.table.seats = []
+        await interaction.response.defer()
+        self.stop()
+
 
 class BetModal(discord.ui.Modal, title="Place Your Bet"):
     """Opened by BettingView's Place Bet button. Editing the underlying
@@ -144,6 +158,22 @@ class BettingView(discord.ui.View):
         if not self.table.seats:
             # Nobody left to bet -- no point waiting out the rest of the timer.
             self.stop()
+
+    @discord.ui.button(label="Close Table", style=discord.ButtonStyle.danger, row=1)
+    async def close_table(self, interaction: discord.Interaction, _button: discord.ui.Button) -> None:
+        if interaction.user.id != self.table.host_id:
+            await interaction.response.send_message(
+                "Only the host who opened this table can close it.", ephemeral=True
+            )
+            return
+        # Clearing seats reuses the existing "no bets placed" closed path in
+        # _run_table_session (checked via table.drop_unbet_seats() +
+        # table.seats right after betting_view.wait() returns). Note: same
+        # caveat as a crashed session -- any bets already withdrawn from
+        # seated players this round are not auto-refunded.
+        self.table.seats = []
+        await interaction.response.defer()
+        self.stop()
 
 
 class NextRoundView(discord.ui.View):
