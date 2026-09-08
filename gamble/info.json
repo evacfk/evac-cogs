@@ -1,9 +1,9 @@
 {
     "author": ["Fareed"],
     "min_bot_version": "3.5.0",
-    "description": "Per-user gambling threads to keep the shared bot channel clean. Users open a private thread with .gamble, play normally, and it auto-closes after inactivity or .endgambling.",
+    "description": "Per-user gambling threads to keep the shared bot channel clean, plus the Wondercasino hub: a read-only channel with a persistent button/dropdown menu (.gamblehub) that routes players into personal or shared threads instead of letting them post directly. .gamble opens a private thread; it auto-closes after inactivity or .endgambling.",
     "hidden": false,
     "disabled": false,
-    "short": "Per-user private gambling threads with auto-timeout.",
+    "short": "Per-user gambling threads plus the Wondercasino hub menu.",
     "tags": ["economy", "utility", "threads"]
 }
