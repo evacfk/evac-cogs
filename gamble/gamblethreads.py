@@ -583,6 +583,13 @@ class GambleThreads(commands.Cog):
         the bug this replaced: the relay's .send() was simply never being
         called, so replies landed as real, non-ephemeral messages in the
         hub channel instead of privately to the clicking user."""
+        # A silent ack: no "thinking…" bubble, no visible change to the hub
+        # message, but it satisfies Discord's 3-second response window —
+        # which matters here, because checks/cooldowns/bank lookups inside
+        # an arbitrary invoked command (Payday included) can occasionally
+        # take longer than that. Once deferred, every reply below goes
+        # through followup.send() instead of response.send_message().
+        await interaction.response.defer(thinking=False)
         prefixes = await self.bot.get_prefix(interaction.channel)
         prefix = prefixes[0] if isinstance(prefixes, list) else prefixes
         # The hub message this button lives on doubles as our template
@@ -590,7 +597,7 @@ class GambleThreads(commands.Cog):
         # any component interaction, no extra fetch needed.
         reference_message = interaction.message
         if reference_message is None:
-            await interaction.response.send_message(
+            await interaction.followup.send(
                 f"Couldn't run that here — try `{prefix}{command.qualified_name}` directly.",
                 ephemeral=True,
             )
@@ -602,7 +609,7 @@ class GambleThreads(commands.Cog):
         fake_message.content = f"{prefix}{command.qualified_name}"
         ctx = await self.bot.get_context(fake_message)
         if not ctx.valid:
-            await interaction.response.send_message(
+            await interaction.followup.send(
                 f"Couldn't run that here — try `{prefix}{command.qualified_name}` directly.",
                 ephemeral=True,
             )
@@ -621,10 +628,10 @@ class GambleThreads(commands.Cog):
         await self.bot.invoke(ctx)
         if not interaction.response.is_done():
             # The command ran but never replied at all (most likely a
-            # misconfigured future "direct" mode game) — acknowledge so
-            # the clicking user doesn't see a generic "This interaction
-            # failed" from Discord instead.
-            await interaction.response.send_message(
+            # misconfigured future "direct" mode game) — this shouldn't
+            # normally trigger since we already deferred above, but covers
+            # it in case something clears is_done() unexpectedly.
+            await interaction.followup.send(
                 f"`{prefix}{command.qualified_name}` ran but didn't send a reply.",
                 ephemeral=True,
             )
