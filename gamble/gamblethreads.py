@@ -752,6 +752,18 @@ class GambleThreads(commands.Cog):
         fake_message.author = member
         fake_message.channel = relay
         fake_message.guild = interaction.guild
+        # Message.created_at isn't a stored field -- it's derived from the
+        # message's snowflake id (discord.utils.snowflake_time(self.id)).
+        # copy.copy() above carries over reference_message's REAL id, which
+        # for the hub is the persistent embed's id from whenever it was
+        # last fully (re)posted -- could be days old. Any command that
+        # computes elapsed time off ctx.message.created_at (Red's own core
+        # `payday` does exactly this, via calendar.timegm(...utctimetuple()))
+        # was silently being fed that stale timestamp as "now", producing
+        # wrong cooldown results while an identical command typed directly
+        # worked fine. Minting a fresh id for the current moment fixes it
+        # for every such command, not just payday.
+        fake_message.id = discord.utils.time_snowflake(datetime.now(timezone.utc))
         fake_message.content = f"{prefix}{command.qualified_name}"
         if extra_args:
             fake_message.content += f" {extra_args}"
@@ -837,6 +849,11 @@ class GambleThreads(commands.Cog):
         fake_message.author = member
         fake_message.channel = thread
         fake_message.guild = thread.guild
+        # Same fix as _invoke_direct: created_at is derived from the
+        # message id, not stored, so a reused thread's stale
+        # history()[0] (anything but a brand-new anchor message) would
+        # otherwise feed commands like `payday` a wrong "current time".
+        fake_message.id = discord.utils.time_snowflake(datetime.now(timezone.utc))
         fake_message.content = f"{prefix}{command.qualified_name}"
         ctx = await self.bot.get_context(fake_message)
         if not ctx.valid:
