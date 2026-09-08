@@ -17,7 +17,8 @@ from redbot.core.bot import Red
 #       "emoji": "🃏",
 #       "label": "Wonderjack",
 #       "command": "wonderjack table",   # resolved via bot.get_command() at click time
-#       "mode": "personal" | "shared",   # routing model, see below
+#       "mode": "personal" | "shared" | "direct" | "modal",   # routing model, see below
+#       "args": [{"label": "Amount"}, {"label": "Heads or Tails"}],  # modal mode only, 1-2 entries
 #   }
 #
 # "personal": every player gets their own thread, reused across sessions
@@ -33,12 +34,21 @@ from redbot.core.bot import Red
 #             ephemeral reply to the clicking user instead. For quick,
 #             one-shot commands with no back-and-forth (Payday) where
 #             opening/reusing a table would just be overhead.
+# "modal":    same as "direct" (no thread, ephemeral reply), but for a
+#             command that needs 1-2 arguments the hub can't supply on its
+#             own (a recipient, an amount, a coinflip side, ...). Clicking
+#             it pops a Discord modal collecting each argument as plain
+#             text via `entry["args"]`; the raw text is appended to the
+#             invocation exactly as if typed (e.g. `.bank transfer @user
+#             100`), so Red's normal converters do the actual parsing —
+#             see _ArgModal and `.gamblehub addmodalgame`.
 #
 # Session liveness for "shared" games is tracked purely off Discord's own
 # thread state (does the stored thread ID still resolve, is it archived) —
 # never by reading a specific game cog's internal Table/session objects.
 # That's what keeps this generic across any future multiplayer cog: adding
-# one costs a `.gamblehub addgame` call, never new Python here.
+# one costs a `.gamblehub addgame` (or `addmodalgame`) call, never new
+# Python here.
 # ---------------------------------------------------------------------------
 
 DEFAULT_GAMES = {
@@ -156,6 +166,47 @@ class HubView(discord.ui.View):
             )
             return
         await self.cog.handle_hub_click(interaction, value)
+
+
+class _ArgModal(discord.ui.Modal):
+    """Generic modal for hub games registered in "modal" mode — up to two
+    typed arguments (a recipient, an amount, a coinflip side, ...) collected
+    as plain text and appended to the command invocation exactly as if the
+    player had typed them, e.g. `.bank transfer @Someone 100`. Red's own
+    command converters (discord.Member, int, str, ...) do the actual
+    parsing/validation from that point on; this class never converts
+    anything itself, so it works unmodified for any command that takes at
+    most two arguments — see `.gamblehub addmodalgame`."""
+
+    def __init__(
+        self,
+        cog: "GambleThreads",
+        member: discord.Member,
+        command: commands.Command,
+        entry: dict,
+    ):
+        super().__init__(title=entry["label"][:45])
+        self.cog = cog
+        self.member = member
+        self.command = command
+        self.inputs: list[discord.ui.TextInput] = []
+        for arg in entry.get("args", [])[:2]:
+            text_input = discord.ui.TextInput(
+                label=arg["label"][:45],
+                placeholder=arg.get("placeholder", "")[:100],
+                required=arg.get("required", True),
+                max_length=200,
+            )
+            self.inputs.append(text_input)
+            self.add_item(text_input)
+
+    async def on_submit(self, interaction: discord.Interaction) -> None:
+        # Blank/omitted optional fields are dropped rather than passed
+        # through as empty tokens, so a command with one required + one
+        # optional argument still resolves correctly when only the first
+        # is filled in.
+        extra_args = " ".join(i.value.strip() for i in self.inputs if i.value.strip())
+        await self.cog._invoke_direct(interaction, self.member, self.command, extra_args=extra_args)
 
 
 class _NoopTyping:
@@ -531,6 +582,13 @@ class GambleThreads(commands.Cog):
             # add a pointless "thinking…" placeholder to clean up after.
             await self._invoke_direct(interaction, member, command)
             return
+        if entry["mode"] == "modal":
+            # Same reasoning as direct mode: the modal itself IS the
+            # interaction's initial response, so no defer() here either —
+            # _ArgModal.on_submit hands off to _invoke_direct once the
+            # player fills it in, which does its own silent defer there.
+            await interaction.response.send_modal(_ArgModal(self, member, command, entry))
+            return
         await interaction.response.defer(ephemeral=True, thinking=True)
         if entry["mode"] == "shared":
             thread, created = await self._get_or_create_shared_thread(guild, key, entry["label"])
@@ -578,7 +636,11 @@ class GambleThreads(commands.Cog):
         await interaction.edit_original_response(content=f"You're set: {thread.mention}")
 
     async def _invoke_direct(
-        self, interaction: discord.Interaction, member: discord.Member, command: commands.Command
+        self,
+        interaction: discord.Interaction,
+        member: discord.Member,
+        command: commands.Command,
+        extra_args: str = "",
     ):
         """Run `command` with no thread at all (see "direct" mode above).
         Builds a fake invocation the same way _invoke_in_thread does, using
@@ -597,7 +659,15 @@ class GambleThreads(commands.Cog):
         invocation for permission purposes (safe — proven by every
         thread-based game already working this way); only ctx.send itself
         is redirected below, straight to _EphemeralRelay.send(), to reply
-        through the interaction instead of posting to a real channel."""
+        through the interaction instead of posting to a real channel.
+
+        `extra_args`, when set (modal mode — see _ArgModal), is appended
+        to the invocation text verbatim, e.g. "@Someone 100" for a bank
+        transfer. It's never parsed here; Red's own command converters do
+        that exactly as they would for a real typed invocation, which is
+        also why a bad value (an unresolvable member, a non-integer
+        amount) surfaces as the command's normal argument-error reply
+        rather than something this method has to anticipate."""
         # A silent ack: no "thinking…" bubble, no visible change to the hub
         # message, but it satisfies Discord's 3-second response window —
         # which matters here, because checks/cooldowns/bank lookups inside
@@ -623,6 +693,8 @@ class GambleThreads(commands.Cog):
         fake_message.channel = relay
         fake_message.guild = interaction.guild
         fake_message.content = f"{prefix}{command.qualified_name}"
+        if extra_args:
+            fake_message.content += f" {extra_args}"
         ctx = await self.bot.get_context(fake_message)
         if not ctx.valid:
             await interaction.followup.send(
@@ -925,6 +997,85 @@ class GambleThreads(commands.Cog):
             f"{mode} mode. Hub menu refreshed."
         )
 
+    @gamblehub.command(name="addmodalgame")
+    @commands.is_owner()
+    async def gamblehub_addmodalgame(
+        self,
+        ctx: commands.Context,
+        key: str,
+        emoji: str,
+        command: str,
+        label: str,
+        arg1_label: str,
+        arg2_label: str = "",
+    ):
+        """Register a game that needs 1-2 arguments the hub can't supply on
+        its own — a recipient, an amount, a coinflip side, and so on.
+        Owner-only.
+
+        Clicking it pops a modal with one text field per argument. Whatever
+        gets typed is appended to the command exactly as if the player had
+        typed it themselves (e.g. `.bank transfer @Someone 100`) — Red's own
+        converters parse and validate from there, so a bad value (an
+        unresolvable member, a non-integer amount) comes back as that
+        command's normal argument error, same as typing it wrong manually.
+
+        `key`/`emoji`/`command` — same as `.gamblehub addgame`
+        `label` — display name shown on the dropdown/button, quote if it has spaces
+        `arg1_label` — text shown above the first input field, e.g. "Recipient (mention or ID)"
+        `arg2_label` — optional second input field, e.g. "Amount" — omit for single-argument commands
+
+        For a recipient argument, tell players to paste a mention or user ID
+        rather than typing a bare username — modals are plain text fields,
+        so a name only resolves if it's an exact/unambiguous match.
+
+        Examples:
+        .gamblehub addmodalgame banktransfer 💸 "bank transfer" "Bank Transfer" "Recipient (mention or ID)" "Amount"
+        .gamblehub addmodalgame allin 🎲 allin "All In" "Amount"
+        .gamblehub addmodalgame coinflip 🪙 coin "Coinflip" "Amount" "Heads or Tails"
+        """
+        key = key.lower()
+        resolved = self.bot.get_command(command)
+        if resolved is None:
+            await ctx.send(
+                f"`{command}` doesn't resolve to a real bot command — nothing was saved. "
+                f"Check the spelling/quoting and try again."
+            )
+            return
+        try:
+            discord.PartialEmoji.from_str(emoji)
+        except Exception:
+            await ctx.send(f"`{emoji}` doesn't look like a valid emoji — nothing was saved.")
+            return
+        args = [{"label": arg1_label}]
+        if arg2_label:
+            args.append({"label": arg2_label})
+        previous_entry = None
+        async with self.config.guild(ctx.guild).games() as games:
+            existed = key in games
+            if existed:
+                previous_entry = games[key]
+            games[key] = {
+                "emoji": emoji,
+                "label": label,
+                "command": resolved.qualified_name,
+                "mode": "modal",
+                "args": args,
+            }
+        error = await self._refresh_hub_message(ctx.guild)
+        if error:
+            async with self.config.guild(ctx.guild).games() as games:
+                if previous_entry is not None:
+                    games[key] = previous_entry
+                else:
+                    games.pop(key, None)
+            await ctx.send(f"{error}\nNothing was saved — fix the emoji/label and try again.")
+            return
+        await ctx.send(
+            f"{'Updated' if existed else 'Added'} **{label}** (`{key}`) → `.{resolved.qualified_name}`, "
+            f"modal mode ({len(args)} argument{'s' if len(args) != 1 else ''}). Hub menu refreshed."
+        )
+
     @gamblehub.command(name="removegame")
     @commands.is_owner()
     async def gamblehub_removegame(self, ctx: commands.Context, key: str):
@@ -978,9 +1129,14 @@ class GambleThreads(commands.Cog):
         if not games:
             await ctx.send("No games registered.")
             return
-        lines = [
-            f"`{key}` — {data['emoji']} **{data['label']}** → `.{data['command']}` ({data['mode']}"
-            f"{', flagship' if key in FLAGSHIP_KEYS else ''})"
-            for key, data in games.items()
-        ]
+        lines = []
+        for key, data in games.items():
+            mode_suffix = data["mode"]
+            if data["mode"] == "modal" and data.get("args"):
+                arg_labels = ", ".join(a["label"] for a in data["args"])
+                mode_suffix = f"modal: {arg_labels}"
+            lines.append(
+                f"`{key}` — {data['emoji']} **{data['label']}** → `.{data['command']}` ({mode_suffix}"
+                f"{', flagship' if key in FLAGSHIP_KEYS else ''})"
+            )
         await ctx.send("\n".join(lines))
