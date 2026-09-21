@@ -29,18 +29,6 @@ from .games import GAME_REGISTRY
 
 log = logging.getLogger("red.minigamehub")
 
-# The four cogs this replaces, for `.minigamehub migrate` -- best-effort only,
-# since this environment has no way to inspect their exact Config identifiers
-# offline. If they're still loaded, we read through the live cog instance's
-# own `.config` attribute instead of guessing an identifier.
-_OLD_COG_NAMES = {
-    "cashdrop": "mathdrop",
-    "hunting": "hunt",
-    "lootdrop": "lootdrop",
-    "pupper": "pet",
-}
-
-
 def _mod_check():
     async def predicate(ctx: commands.Context) -> bool:
         if await ctx.bot.is_owner(ctx.author):
@@ -690,73 +678,6 @@ class MinigameHub(commands.Cog):
         await ctx.send(f"Imported {len(new_scenarios)} boss scenario(s){' (replaced pool)' if replace else ''}.")
 
     # -- migration from the four old cogs -------------------------------- #
-
-    # keyword(s) used to fuzzy-match a loaded cog's qualified_name, since the
-    # exact class name of each source repo isn't known ahead of time -- no
-    # need for the Dev cog's `eval` here, `self.bot.cogs` already gives us
-    # every loaded cog's real name and instance directly.
-    _MIGRATE_TARGETS = {
-        "lootdrop": ["lootdrop", "loot"],
-        "mathdrop": ["cashdrop", "cash"],
-        "hunt": ["hunting", "hunt"],
-        "pet": ["pupper", "pup"],
-    }
-
-    def _find_old_cog(self, keywords):
-        for name, cog in self.bot.cogs.items():
-            lname = name.lower()
-            if any(kw in lname for kw in keywords):
-                return name, cog
-        return None, None
-
-    @minigamehub.command(name="migrate")
-    async def mgh_migrate(self, ctx: commands.Context):
-        """Best-effort port of settings from cashdrop/hunting/lootdrop/pupper,
-        if they're still loaded. Run this BEFORE unloading them.
-
-        Auto-detects the old cogs by name and, for lootdrop, ports the scenario
-        pool directly if the field is called `scenarios`. For the others (field
-        names vary too much per source repo to guess reliably), it dumps each
-        old cog's full guild config as a JSON file so you can eyeball it and
-        copy the fields you want across with `.minigamehub game <key> settings`.
-        """
-        ported = []
-        skipped = []
-        files = []
-
-        for new_key, keywords in self._MIGRATE_TARGETS.items():
-            name, old_cog = self._find_old_cog(keywords)
-            if old_cog is None:
-                skipped.append(f"{new_key} (no loaded cog matched keywords {keywords} -- if it's loaded under a different name, tell me the name and I'll adjust the matcher)")
-                continue
-            if not hasattr(old_cog, "config"):
-                skipped.append(f"{new_key} (found cog `{name}` but it has no `.config` attribute)")
-                continue
-
-            try:
-                dump = await old_cog.config.guild(ctx.guild).all()
-            except Exception as e:
-                skipped.append(f"{new_key} (found cog `{name}`, but reading its config raised {e!r})")
-                continue
-
-            if new_key == "lootdrop" and isinstance(dump.get("scenarios"), list) and dump["scenarios"]:
-                async with self.config.guild(ctx.guild).games() as games:
-                    games["lootdrop"]["scenarios"] = dump["scenarios"]
-                ported.append(f"lootdrop: {len(dump['scenarios'])} scenario(s) ported directly from `{name}`")
-
-            buf = io.BytesIO(json.dumps(dump, indent=2, ensure_ascii=False, default=str).encode("utf-8"))
-            files.append(discord.File(buf, filename=f"{new_key}_{name}_config.json"))
-            skipped.append(f"{new_key} (found cog `{name}` -- full config attached as {new_key}_{name}_config.json, copy fields you want via `.minigamehub game {new_key} settings`)")
-
-        msg = "**Migration report**\n"
-        if ported:
-            msg += "Ported automatically:\n" + "\n".join(f"- {p}" for p in ported) + "\n"
-        if skipped:
-            msg += "Needs manual review:\n" + "\n".join(f"- {s}" for s in skipped)
-        if files:
-            await ctx.send(msg, files=files)
-        else:
-            await ctx.send(msg)
 
     # -- diagnostics -------------------------------------------------------#
 
