@@ -412,32 +412,84 @@ class MinigameHub(commands.Cog):
 
     @minigamehub.command(name="leaderboard")
     async def mgh_leaderboard(self, ctx: commands.Context, game_key: Optional[str] = None):
-        """Server leaderboard, overall or for one game type."""
+        """Server leaderboard. With no argument, shows top players per game type
+        (most pets, most math questions solved, etc) plus overall and boss damage.
+        With a game key, shows a single expanded top-15 for that game only."""
         all_members = await self.config.all_members(ctx.guild)
         if not all_members:
             await ctx.send("No stats recorded yet.")
             return
 
-        rows = []
+        if game_key:
+            game_key = game_key.lower()
+            if game_key not in GAME_KEYS:
+                await ctx.send(f"Unknown game key. Choose from: {humanize_list(GAME_KEYS)}")
+                return
+            rows = []
+            for member_id, data in all_members.items():
+                member = ctx.guild.get_member(member_id)
+                if member is None:
+                    continue
+                entry = data.get("games", {}).get(game_key)
+                if entry and entry.get("good", 0) > 0:
+                    rows.append((member, entry["good"], entry.get("highest_streak", 0)))
+            if not rows:
+                await ctx.send(f"No `{game_key}` stats recorded yet.")
+                return
+            rows.sort(key=lambda r: r[1], reverse=True)
+            lines = [f"{i+1}. {m.display_name} -- {s} (best streak: {st})" for i, (m, s, st) in enumerate(rows[:15])]
+            await ctx.send(f"**Leaderboard: {game_key}**\n" + "\n".join(lines))
+            return
+
+        # No game key -- one embed, one category per game type plus overall/boss damage.
+        per_game: dict = {k: [] for k in GAME_KEYS}
+        overall: list = []
+        boss_damage: list = []
         for member_id, data in all_members.items():
             member = ctx.guild.get_member(member_id)
             if member is None:
                 continue
-            if game_key:
-                entry = data.get("games", {}).get(game_key.lower())
-                score = entry["good"] if entry else 0
-            else:
-                score = sum(e.get("good", 0) for e in data.get("games", {}).values())
-            if score > 0:
-                rows.append((member, score))
+            games_data = data.get("games", {})
+            total = 0
+            for key in GAME_KEYS:
+                entry = games_data.get(key)
+                if entry and entry.get("good", 0) > 0:
+                    per_game[key].append((member, entry["good"]))
+                    total += entry["good"]
+            if total > 0:
+                overall.append((member, total))
+            if data.get("boss_damage", 0) > 0:
+                boss_damage.append((member, data["boss_damage"]))
 
-        if not rows:
+        if not overall:
             await ctx.send("No stats recorded yet.")
             return
-        rows.sort(key=lambda r: r[1], reverse=True)
-        title = f"Leaderboard ({game_key})" if game_key else "Leaderboard (all games)"
-        lines = [f"{i+1}. {m.display_name} -- {s} wins" for i, (m, s) in enumerate(rows[:15])]
-        await ctx.send(f"**{title}**\n" + "\n".join(lines))
+
+        embed = discord.Embed(title="MinigameHub Leaderboards", color=discord.Color.gold())
+        overall.sort(key=lambda r: r[1], reverse=True)
+        embed.add_field(
+            name="\U0001F3C6 Overall (total wins)",
+            value="\n".join(f"{i+1}. {m.display_name} -- {s}" for i, (m, s) in enumerate(overall[:5])) or "--",
+            inline=False,
+        )
+        for key in GAME_KEYS:
+            rows = sorted(per_game[key], key=lambda r: r[1], reverse=True)
+            if not rows:
+                continue
+            embed.add_field(
+                name=f"{key}",
+                value="\n".join(f"{i+1}. {m.display_name} -- {s}" for i, (m, s) in enumerate(rows[:5])),
+                inline=True,
+            )
+        if boss_damage:
+            boss_damage.sort(key=lambda r: r[1], reverse=True)
+            embed.add_field(
+                name="\U0001F5E1️ Boss damage (lifetime)",
+                value="\n".join(f"{i+1}. {m.display_name} -- {s:,}" for i, (m, s) in enumerate(boss_damage[:5])),
+                inline=True,
+            )
+        embed.set_footer(text="Use .minigamehub leaderboard <game> for a full top-15 of one game.")
+        await ctx.send(embed=embed)
 
     # -- wipe (owner only) ------------------------------------------------ #
 
@@ -639,39 +691,72 @@ class MinigameHub(commands.Cog):
 
     # -- migration from the four old cogs -------------------------------- #
 
+    # keyword(s) used to fuzzy-match a loaded cog's qualified_name, since the
+    # exact class name of each source repo isn't known ahead of time -- no
+    # need for the Dev cog's `eval` here, `self.bot.cogs` already gives us
+    # every loaded cog's real name and instance directly.
+    _MIGRATE_TARGETS = {
+        "lootdrop": ["lootdrop", "loot"],
+        "mathdrop": ["cashdrop", "cash"],
+        "hunt": ["hunting", "hunt"],
+        "pet": ["pupper", "pup"],
+    }
+
+    def _find_old_cog(self, keywords):
+        for name, cog in self.bot.cogs.items():
+            lname = name.lower()
+            if any(kw in lname for kw in keywords):
+                return name, cog
+        return None, None
+
     @minigamehub.command(name="migrate")
     async def mgh_migrate(self, ctx: commands.Context):
         """Best-effort port of settings from cashdrop/hunting/lootdrop/pupper,
-        if they're still loaded. Run this BEFORE unloading them."""
+        if they're still loaded. Run this BEFORE unloading them.
+
+        Auto-detects the old cogs by name and, for lootdrop, ports the scenario
+        pool directly if the field is called `scenarios`. For the others (field
+        names vary too much per source repo to guess reliably), it dumps each
+        old cog's full guild config as a JSON file so you can eyeball it and
+        copy the fields you want across with `.minigamehub game <key> settings`.
+        """
         ported = []
         skipped = []
+        files = []
 
-        old_lootdrop = self.bot.get_cog("LootDrop") or self.bot.get_cog("Lootdrop")
-        if old_lootdrop and hasattr(old_lootdrop, "config"):
-            try:
-                old_scenarios = await old_lootdrop.config.guild(ctx.guild).scenarios()
-                if old_scenarios:
-                    async with self.config.guild(ctx.guild).games() as games:
-                        games["lootdrop"]["scenarios"] = old_scenarios
-                    ported.append(f"lootdrop: {len(old_scenarios)} scenario(s)")
-            except Exception:
-                skipped.append("lootdrop (config shape didn't match, ported nothing)")
-        else:
-            skipped.append("lootdrop (cog not loaded)")
-
-        for cog_name, new_key in (("CashDrop", "mathdrop"), ("Hunting", "hunt"), ("Pupper", "pet")):
-            old_cog = self.bot.get_cog(cog_name)
-            if old_cog is None or not hasattr(old_cog, "config"):
-                skipped.append(f"{new_key} ({cog_name} not loaded)")
+        for new_key, keywords in self._MIGRATE_TARGETS.items():
+            name, old_cog = self._find_old_cog(keywords)
+            if old_cog is None:
+                skipped.append(f"{new_key} (no loaded cog matched keywords {keywords} -- if it's loaded under a different name, tell me the name and I'll adjust the matcher)")
                 continue
-            skipped.append(f"{new_key} ({cog_name} found, but its settings shape isn't known here -- copy manually via `.minigamehub game {new_key} settings`)")
+            if not hasattr(old_cog, "config"):
+                skipped.append(f"{new_key} (found cog `{name}` but it has no `.config` attribute)")
+                continue
+
+            try:
+                dump = await old_cog.config.guild(ctx.guild).all()
+            except Exception as e:
+                skipped.append(f"{new_key} (found cog `{name}`, but reading its config raised {e!r})")
+                continue
+
+            if new_key == "lootdrop" and isinstance(dump.get("scenarios"), list) and dump["scenarios"]:
+                async with self.config.guild(ctx.guild).games() as games:
+                    games["lootdrop"]["scenarios"] = dump["scenarios"]
+                ported.append(f"lootdrop: {len(dump['scenarios'])} scenario(s) ported directly from `{name}`")
+
+            buf = io.BytesIO(json.dumps(dump, indent=2, ensure_ascii=False, default=str).encode("utf-8"))
+            files.append(discord.File(buf, filename=f"{new_key}_{name}_config.json"))
+            skipped.append(f"{new_key} (found cog `{name}` -- full config attached as {new_key}_{name}_config.json, copy fields you want via `.minigamehub game {new_key} settings`)")
 
         msg = "**Migration report**\n"
         if ported:
-            msg += "Ported:\n" + "\n".join(f"- {p}" for p in ported) + "\n"
+            msg += "Ported automatically:\n" + "\n".join(f"- {p}" for p in ported) + "\n"
         if skipped:
             msg += "Needs manual review:\n" + "\n".join(f"- {s}" for s in skipped)
-        await ctx.send(msg)
+        if files:
+            await ctx.send(msg, files=files)
+        else:
+            await ctx.send(msg)
 
     # -- diagnostics -------------------------------------------------------#
 
