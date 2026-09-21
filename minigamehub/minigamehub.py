@@ -81,9 +81,28 @@ class MinigameHub(commands.Cog):
     # ------------------------------------------------------------------ #
 
     async def _seed_scenarios(self, guild: discord.Guild) -> None:
-        """Populate lootdrop/boss scenario pools from the built-in seed data,
-        but only if they're empty -- never clobbers a guild's edits."""
+        """Populate lootdrop/boss scenario pools from the built-in seed data
+        (only if empty -- never clobbers a guild's edits), and backfill any
+        game-config field that's been added to config_schema.py since this
+        guild was first set up.
+
+        Red's Config only applies registered defaults to a key that was never
+        set at all -- once a guild has a non-empty `games` dict on disk (true
+        for every guild that's ever toggled MinigameHub on), a brand new field
+        added to DEFAULT_GUILD["games"][key] later (e.g. hunt's `trigger_mode`)
+        will NOT retroactively appear for them, and code that does plain
+        `game_conf[field]` indexing (the settings UI) will KeyError. Filling
+        in anything missing here, once per process per guild, avoids that.
+        """
         async with self.config.guild(guild).games() as games:
+            for key in GAME_KEYS:
+                defaults = DEFAULT_GUILD["games"][key]
+                game_conf = games.setdefault(key, {})
+                for field, default_val in defaults.items():
+                    if field == "scenarios":
+                        continue  # handled below, conditional on being empty
+                    if field not in game_conf:
+                        game_conf[field] = copy.deepcopy(default_val)
             if not games["lootdrop"]["scenarios"]:
                 games["lootdrop"]["scenarios"] = copy.deepcopy(scenario_data.SEED_LOOTDROP_SCENARIOS)
             if not games["boss"]["scenarios"]:

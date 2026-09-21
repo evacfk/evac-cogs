@@ -12,7 +12,7 @@ bounded recent-history fetch on first load for an immediate rough estimate.
 """
 import time
 from collections import defaultdict, deque
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Deque, Dict
 
 import discord
@@ -95,17 +95,20 @@ class ActivityTracker:
         if tracking.get("sampling_since"):
             return  # already seeded or already accumulating live data
 
-        after = datetime.now(RESET_TIMEZONE).astimezone(tz=None)
+        cutoff_dt = datetime.now(RESET_TIMEZONE) - timedelta(hours=HISTORY_SEED_HOURS)
         seed_buckets: Dict[str, dict] = defaultdict(lambda: {"message_count": 0, "concurrency_sum": 0, "concurrency_n": 0, "max_gap_seconds": 0})
         recent_authors: Deque[tuple] = deque()
         last_ts = None
+        newest_ts = None  # timestamp of the most recent (non-bot) message seen
         count = 0
         try:
-            async for msg in channel.history(limit=HISTORY_SEED_LIMIT, oldest_first=False):
+            async for msg in channel.history(limit=HISTORY_SEED_LIMIT, after=cutoff_dt, oldest_first=False):
                 if msg.author.bot:
                     continue
                 count += 1
                 ts = msg.created_at.timestamp()
+                if newest_ts is None:
+                    newest_ts = ts  # first hit, newest-first order -- this IS the most recent message
                 hour = _hour_key(msg.created_at)
                 bucket = seed_buckets[hour]
                 bucket["message_count"] += 1
@@ -126,6 +129,13 @@ class ActivityTracker:
         async with self.config.guild(self.guild).activity_tracking() as tracking:
             tracking["sampling_since"] = time.time()
             tracking["hourly_buckets"] = dict(seed_buckets)
+
+        # Bootstrap the live spawn gate too -- without this, is_channel_active()
+        # stays blocked after every restart until a brand-new live message
+        # arrives, no matter how recently active the channel actually was,
+        # since it only ever looks at self.last_message_at (in-memory).
+        if newest_ts is not None:
+            self.last_message_at = newest_ts
 
 
 async def is_channel_active(config: Config, channel: discord.abc.Messageable, tracker: "ActivityTracker") -> bool:
