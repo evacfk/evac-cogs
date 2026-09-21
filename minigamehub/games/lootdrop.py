@@ -14,6 +14,7 @@ import discord
 from redbot.core import bank
 
 from .. import pacing, stats
+from ..payout_format import format_payout_lines
 from .base import register
 
 log = logging.getLogger("red.minigamehub.lootdrop")
@@ -173,11 +174,15 @@ async def _resolve_party(cog, message: discord.Message, view: _PartyView, guild:
         actual = await pacing.settle_reward(cog.config, member, credits, dry_run=dry_run)
         if not dry_run:
             await stats.record_result(cog.config, member, "lootdrop", good=True)
-        results.append(f"{member.mention}: {actual:,} {currency}")
+        results.append((member, actual))
 
+    # Grouped by identical amount so a party of a dozen people who all
+    # claimed near-simultaneously (and landed on the same payout tier)
+    # reads as one line instead of one per person.
+    lines = format_payout_lines(results, currency)
     try:
         await message.edit(
-            content=f"\U0001F389 **Party Drop Results!**{note} \U0001F389\n" + "\n".join(results),
+            content=f"\U0001F389 **Party Drop Results!**{note} \U0001F389\n" + "\n".join(lines),
             view=None,
         )
     except discord.HTTPException:

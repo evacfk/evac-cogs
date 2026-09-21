@@ -21,6 +21,7 @@ DEFAULT_GUILD = {
             "enabled": True,
             "min_frequency": 1800,
             "max_frequency": 5400,
+            "next_spawn": 0,
             "reward_range": [100, 500],
             "spawn_message": "Hi! Can someone pet me?",
             "pet_reaction": "\U0001F44B",  # 👋
@@ -31,6 +32,7 @@ DEFAULT_GUILD = {
             "enabled": True,
             "min_frequency": 900,
             "max_frequency": 2700,
+            "next_spawn": 0,
             "reward_range": [50, 550],
             "operators": ["+", "-", "*", "/"],
             "response_timeout": 10,
@@ -40,6 +42,7 @@ DEFAULT_GUILD = {
             "enabled": True,
             "min_frequency": 900,
             "max_frequency": 3600,
+            "next_spawn": 0,
             "reward_range": [50, 400],
             "response_timeout": 20,
             "trigger_mode": "both",  # "both" | "word" | "reaction"
@@ -66,6 +69,7 @@ DEFAULT_GUILD = {
             "enabled": True,
             "min_frequency": 300,
             "max_frequency": 1800,
+            "next_spawn": 0,
             "reward_range": [100, 1000],
             "bad_outcome_chance": 30,
             "streak_bonus": 10,
@@ -82,6 +86,7 @@ DEFAULT_GUILD = {
             "enabled": True,
             "min_frequency": 1200,
             "max_frequency": 3600,
+            "next_spawn": 0,
             "reward_range": [100, 400],
             "spawn_message": "\U0001F3C3 First to click wins!",
             "response_timeout": 20,
@@ -91,6 +96,7 @@ DEFAULT_GUILD = {
             "enabled": True,
             "min_frequency": 3600,
             "max_frequency": 10800,
+            "next_spawn": 0,
             "fight_duration": 300,
             "hp_update_interval": 3,
             "attack_cooldown": 1.5,
@@ -118,7 +124,6 @@ DEFAULT_GUILD = {
         "sampling_since": 0,
     },
 
-    "next_spawn": 0,
     "last_game": None,
 }
 

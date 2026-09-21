@@ -160,8 +160,6 @@ class MinigameHub(commands.Cog):
             return
         if self.active_game.get(guild.id):
             return  # a game is currently running -- one at a time (locked decision #7)
-        if time.time() < guild_conf["next_spawn"]:
-            return
 
         channel = guild.get_channel(guild_conf["spawn_channel"])
         if channel is None:
@@ -178,7 +176,15 @@ class MinigameHub(commands.Cog):
         enabled_games = [k for k in GAME_KEYS if guild_conf["games"][k]["enabled"]]
         if not enabled_games:
             return
-        candidates = [k for k in enabled_games if k != guild_conf["last_game"]] or enabled_games
+
+        # Each game type has its own next_spawn -- a long boss cooldown must
+        # not block a short lootdrop cooldown (or vice versa). Only games
+        # that are individually due are eligible this tick.
+        now = time.time()
+        due_games = [k for k in enabled_games if now >= guild_conf["games"][k].get("next_spawn", 0)]
+        if not due_games:
+            return
+        candidates = [k for k in due_games if k != guild_conf["last_game"]] or due_games
         key = random.choice(candidates)
         game_conf = guild_conf["games"][key]
 
@@ -194,7 +200,8 @@ class MinigameHub(commands.Cog):
             self.active_game.pop(guild.id, None)
             min_f, max_f = game_conf["min_frequency"], game_conf["max_frequency"]
             next_spawn = time.time() + random.uniform(min_f, max_f)
-            await self.config.guild(guild).next_spawn.set(next_spawn)
+            async with self.config.guild(guild).games() as games:
+                games[key]["next_spawn"] = next_spawn
 
     # ------------------------------------------------------------------ #
     # Admin command tree
@@ -214,9 +221,14 @@ class MinigameHub(commands.Cog):
         state = "enabled" if not current else "disabled"
         if not current:
             await self._seed_scenarios(ctx.guild)
-            # Kick the first spawn window off shortly rather than making
-            # people wait out whatever next_spawn was left over from before.
-            await self.config.guild(ctx.guild).next_spawn.set(time.time() + 30)
+            # Kick each enabled game's spawn window off shortly rather than
+            # making people wait out whatever next_spawn was left over from
+            # before -- staggered per game so they don't all fire in a burst.
+            now = time.time()
+            async with self.config.guild(ctx.guild).games() as games:
+                for k in GAME_KEYS:
+                    if games[k]["enabled"]:
+                        games[k]["next_spawn"] = now + random.uniform(30, 300)
         await ctx.send(f"MinigameHub is now **{state}** in this server.")
 
     @minigamehub.command(name="channel")
@@ -304,6 +316,8 @@ class MinigameHub(commands.Cog):
         async with self.config.guild(ctx.guild).games() as games:
             games[game_key]["enabled"] = not games[game_key]["enabled"]
             state = "enabled" if games[game_key]["enabled"] else "disabled"
+            if games[game_key]["enabled"]:
+                games[game_key]["next_spawn"] = time.time() + random.uniform(30, 300)
         await ctx.send(f"`{game_key}` is now **{state}**.")
 
     @mgh_game.command(name="frequency")
@@ -796,7 +810,16 @@ class MinigameHub(commands.Cog):
             description=f"Currency: {currency} | Sampling since: {since_txt}",
             color=discord.Color.blurple(),
         )
-        embed.add_field(name="Hourly activity (America/Los_Angeles)", value=box("\n".join(lines), lang="text"), inline=False)
+        embed.add_field(
+            name="Hourly activity (America/Los_Angeles) -- 00:00-11:00",
+            value=box("\n".join(lines[:12]), lang="text"),
+            inline=False,
+        )
+        embed.add_field(
+            name="Hourly activity (America/Los_Angeles) -- 12:00-23:00",
+            value=box("\n".join(lines[12:]), lang="text"),
+            inline=False,
+        )
         embed.add_field(name="Suggestion", value=suggestion["note"], inline=False)
 
         payload = {

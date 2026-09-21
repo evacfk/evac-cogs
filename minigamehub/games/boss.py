@@ -19,9 +19,17 @@ import discord
 from redbot.core import bank
 
 from .. import pacing, stats
+from ..payout_format import format_payout_lines
 from .base import register
 
 log = logging.getLogger("red.minigamehub.boss")
+
+
+class _MentionStub:
+    """Stand-in for an attacker who's since left the guild -- format_payout_lines
+    just needs something with a .mention."""
+    def __init__(self, user_id: int):
+        self.mention = f"<@{user_id}>"
 
 
 def _pick_tier(tiers: dict) -> tuple:
@@ -59,6 +67,7 @@ class _BossView(discord.ui.View):
         self.message: discord.Message = None
         self.last_attack: dict = {}   # user_id -> timestamp, for attack_cooldown
         self.damage_dealt: dict = {}  # user_id -> total damage, for MVP (in-memory only, fine for test runs)
+        self.reward_dealt: dict = {}  # user_id -> total currency earned (good hits only), for the public payout summary
         self.attackers: set = set()   # user_ids who landed >=1 good hit
         self.ended = False
         self._dirty = False
@@ -95,6 +104,7 @@ class _BossView(discord.ui.View):
 
             base = random.randint(*self.tier["reward"])
             actual = await pacing.settle_reward(self.cog.config, member, base, dry_run=self.dry_run)
+            self.reward_dealt[member.id] = self.reward_dealt.get(member.id, 0) + actual
             if not self.dry_run:
                 await stats.record_result(self.cog.config, member, "boss", good=True)
 
@@ -174,8 +184,27 @@ async def spawn(cog, channel: discord.TextChannel, game_conf: dict, dry_run: boo
             if mvp:
                 status += f"\nMVP: {mvp.mention} ({view.damage_dealt[mvp_id]} total damage)"
 
+        final_embed = view.build_embed(status)
+        if view.reward_dealt:
+            currency = await bank.get_currency_name(guild)
+            paid = [
+                (guild.get_member(uid) or _MentionStub(uid), amount)
+                for uid, amount in view.reward_dealt.items()
+            ]
+            # Grouped by identical amount (format_payout_lines) rather than
+            # one line per attacker -- a busy fight has a lot of attackers
+            # landing on the same reward roll, and listing each separately
+            # got spammy fast. Amounts vary a lot less than attackers do, so
+            # a flat cap on the number of grouped lines is enough to stay
+            # under Discord's 1024-char field limit (same cap that bit the
+            # diagnostics embed) without needing to count characters.
+            lines = format_payout_lines(paid, currency, verb="earned")
+            shown, cut = lines[:5], len(lines) - 5
+            payouts_text = "\n".join(shown) + (f"\n...and {cut} more" if cut > 0 else "")
+            final_embed.add_field(name="Payouts", value=payouts_text, inline=False)
+
         try:
-            await message.edit(embed=view.build_embed(status), view=view)
+            await message.edit(embed=final_embed, view=view)
         except discord.HTTPException:
             pass
     finally:

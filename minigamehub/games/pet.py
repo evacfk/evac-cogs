@@ -15,6 +15,7 @@ from redbot.core import bank
 
 from .. import pacing, stats
 from ..emoji_utils import emoji_matches, parse_emoji
+from ..payout_format import format_payout_lines
 from .base import register
 
 log = logging.getLogger("red.minigamehub.pet")
@@ -71,13 +72,11 @@ async def spawn(cog, channel: discord.TextChannel, game_conf: dict, dry_run: boo
             paid.append((member, actual))
 
         currency = await bank.get_currency_name(guild)
-        names = ", ".join(m.mention for m, _ in paid[:15])
-        extra = f" (+{len(paid) - 15} more)" if len(paid) > 15 else ""
-        total = sum(a for _, a in paid)
+        payout_lines = format_payout_lines(paid, currency)
         note = " (test -- no currency actually paid)" if dry_run else ""
         goodbye = (
-            f"{prefix}{game_conf['goodbye_message']}\n"
-            f"-# {len(paid)} petter(s) got a total of {total:,} {currency}{note}: {names}{extra}"
+            f"{prefix}{game_conf['goodbye_message']}{note}\n"
+            f"-# " + "; ".join(payout_lines)
         )
         try:
             await message.edit(content=goodbye)

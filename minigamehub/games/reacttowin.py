@@ -70,7 +70,13 @@ async def spawn(cog, channel: discord.TextChannel, game_conf: dict, dry_run: boo
         streak_txt = f" (streak: {streak})" if streak > 1 else ""
         note = " (test -- no currency actually paid)" if dry_run else ""
         try:
-            await message.edit(content=f"{prefix}{member.mention} won {actual:,} {currency}!{streak_txt}{note}", view=None)
+            # Keep the original spawn prompt in the final edit -- previously this
+            # replaced the whole message, so once it resolved there was no longer
+            # any indication of *what* had just been played, only a bare payout line.
+            await message.edit(
+                content=f"{prefix}{game_conf['spawn_message']}\n\U0001F3C6 {member.mention} won {actual:,} {currency}!{streak_txt}{note}",
+                view=None,
+            )
         except discord.HTTPException:
             pass
     finally:
