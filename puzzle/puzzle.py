@@ -22,7 +22,7 @@ DEFAULT_PIECE_COUNT = 9  # used when no per-server default and no per-image size
 CHECK_INTERVAL_MINUTES = 5  # how often the background loop wakes up to check posting timers
 SHARED_SWEEP_INTERVAL_SECONDS = 30  # how often open shared-mode pieces are checked for an expired claim window
 
-ACTIVE_SCHEMA_VERSION = 2
+ACTIVE_SCHEMA_VERSION = 3
 
 _GRID_RE = re.compile(r"^(\d+)x(\d+)$")
 
@@ -109,12 +109,13 @@ class Puzzle(commands.Cog):
             self._locks[guild_id] = asyncio.Lock()
         return self._locks[guild_id]
 
-    # keys every valid active-round dict must have under the current schema.
+    # keys every valid active-round dict must have under the CURRENT schema.
     # "schema_version" is checked separately against ACTIVE_SCHEMA_VERSION so
     # that a structural change to what's INSIDE an existing key (e.g.
     # open_messages entries changing from a bare int to a dict, as happened
-    # going into schema version 2) also triggers the safe-reset below, not
-    # just an added/removed top-level key.
+    # going into schema version 2) is also caught, not just an added/removed
+    # top-level key. A round that doesn't match goes through _migrate_active
+    # first (see below) and is only reset if there's no migration path.
     _ACTIVE_SCHEMA_KEYS = frozenset(
         {
             "schema_version",
@@ -129,25 +130,75 @@ class Puzzle(commands.Cog):
             "completions",
             "unposted_positions",
             "next_interval_hours",
+            "finalize_after_message",
+            "finalize_after_ts",
         }
     )
 
+    @staticmethod
+    def _migrate_active(active: dict) -> Optional[dict]:
+        """Try to upgrade an older active-round dict to the current schema
+        IN PLACE, preserving the in-progress round (its pieces, claims,
+        standings, everything) instead of discarding it on a `[p]cog
+        update`. Returns the upgraded dict, or None if the stored data is
+        structurally incompatible in a way there's no safe migration for
+        (forcing a reset as a last resort).
+
+        Each past schema bump gets one step here. When a future update adds
+        new fields with a sensible default, add a step the same way rather
+        than letting the schema-version check below wipe every in-progress
+        round on every update — some updates (like this one) genuinely
+        don't require that.
+        """
+        version = active.get("schema_version")
+
+        if version == 2:
+            # v2 -> v3: added deferred-finalize tracking for shared mode.
+            # Purely additive -- everything else about the round (pieces,
+            # claims, standings) is untouched, so just fill in the new
+            # fields and bump the version.
+            active.setdefault("finalize_after_message", None)
+            active.setdefault("finalize_after_ts", None)
+            active["schema_version"] = 3
+            version = 3
+
+        if version != ACTIVE_SCHEMA_VERSION:
+            return None  # no migration path from whatever this is
+        if not Puzzle._ACTIVE_SCHEMA_KEYS.issubset(active.keys()):
+            return None  # still missing something this code doesn't know how to backfill
+        return active
+
     async def _get_active(self, guild: discord.Guild) -> Optional[dict]:
-        """Fetch the active round, automatically clearing (and treating as
-        "no active round") anything left over from an older version of this
-        cog whose data doesn't match the current schema — e.g. a round that
-        was started before an update and never stopped. Without this, a
-        stale round causes confusing KeyErrors deep in game logic instead of
-        a clear, safe reset."""
+        """Fetch the active round. If it's in an older format, try to
+        upgrade it in place (see `_migrate_active`) so an in-progress round
+        survives a cog update rather than getting wiped. Only falls back to
+        clearing it (treating it as "no active round") when the stored data
+        is structurally incompatible in a way that can't be safely
+        migrated -- e.g. a round left over from a version so old there's no
+        migration step for it. Without this fallback, a truly incompatible
+        stale round would cause confusing KeyErrors deep in game logic
+        instead of a clear, safe reset."""
         active = await self.config.guild(guild).active()
-        if active is not None and (
-            not self._ACTIVE_SCHEMA_KEYS.issubset(active.keys())
-            or active.get("schema_version") != ACTIVE_SCHEMA_VERSION
-        ):
+        if active is None:
+            return active
+
+        if not self._ACTIVE_SCHEMA_KEYS.issubset(active.keys()) or active.get(
+            "schema_version"
+        ) != ACTIVE_SCHEMA_VERSION:
+            migrated = self._migrate_active(dict(active))
+            if migrated is not None:
+                await self.config.guild(guild).active.set(migrated)
+                log.info(
+                    "Upgraded an in-progress puzzle round for guild %s to the current data "
+                    "format after a cog update -- it kept running, nothing was reset.",
+                    guild.id,
+                )
+                return migrated
+
             log.warning(
                 "Clearing an incompatible/stale active puzzle round for guild %s "
-                "(likely left over from before a cog update). Run [p]puzzle start "
-                "or [p]puzzle testrun to begin a new one.",
+                "(no migration path from its stored format -- likely very old). Run "
+                "[p]puzzle start or [p]puzzle testrun to begin a new one.",
                 guild.id,
             )
             await self.config.guild(guild).active.set(None)
@@ -484,6 +535,16 @@ class Puzzle(commands.Cog):
             # re-rolled after every post, within [interval_min_hours, interval_max_hours],
             # so the schedule can't be predicted and camped
             "next_interval_hours": await self._roll_interval_hours(guild),
+            # set once someone's completion crosses the winners_count threshold
+            # via a SHARED piece: instead of ending the round immediately, we
+            # wait until THAT piece's claim window fully closes (so a later
+            # reactor within the same window still counts as a winner too),
+            # then finalize using whoever is in "completions" at that point.
+            # None means no finalize is currently pending. A threshold crossed
+            # by a non-shared (exclusive) piece still ends the round instantly,
+            # same as always -- there's no window to wait for there.
+            "finalize_after_message": None,
+            "finalize_after_ts": None,
         }
         await self.config.guild(guild).active.set(active)
         await self._update_live_status(guild)
@@ -596,17 +657,31 @@ class Puzzle(commands.Cog):
             )
 
     async def _finish_round(self, guild: discord.Guild, winners: list):
+        """End the active round and start the next one.
+
+        Guarded against being run twice for the same round: more than one
+        caller can decide "this round is over" at nearly the same moment
+        (e.g. two people completing within moments of each other), so the
+        actual "is there still an active round?" check and clearing it
+        happens atomically under the guild lock, held only very briefly.
+        Whichever caller gets there first proceeds; anyone else sees the
+        round already cleared and returns immediately, instead of both
+        posting duplicate announcements, granting/stripping the winner
+        role twice, or each picking a different "next" image.
+        """
+        async with self._guild_lock(guild.id):
+            active = await self._get_active(guild)
+            if active is None:
+                return  # already finished by a concurrent call -- nothing to do
+            image_id = active["image_id"]
+            img_w, img_h, piece_rows = active["img_w"], active["img_h"], active["piece_rows"]
+            await self.config.guild(guild).active.set(None)
+
         channel_id = await self.config.guild(guild).channel_id()
         channel = guild.get_channel(channel_id) if channel_id else None
-        active = await self._get_active(guild)
-        image_id = active["image_id"] if active else None
 
-        full_image_path = None
-        if image_id is not None and active is not None:
-            image_dir = self._image_dir(guild.id, image_id)
-            full_image_path = self._ensure_full_image(
-                image_dir, active["img_w"], active["img_h"], active["piece_rows"]
-            )
+        image_dir = self._image_dir(guild.id, image_id)
+        full_image_path = self._ensure_full_image(image_dir, img_w, img_h, piece_rows)
 
         if winners:
             mentions = []
@@ -674,7 +749,6 @@ class Puzzle(commands.Cog):
                     entry = stats.setdefault(str(user_id), {"pieces_collected": 0, "puzzles_won": 0})
                     entry["puzzles_won"] += 1
 
-        await self.config.guild(guild).active.set(None)
         await self._update_live_status(guild)
 
         next_id = await self._pick_next_image_id(guild)
@@ -727,6 +801,7 @@ class Puzzle(commands.Cog):
         mid-window."""
         for guild in self.bot.guilds:
             to_close = []
+            finished_winners = None
             try:
                 async with self._guild_lock(guild.id):
                     active = await self._get_active(guild)
@@ -741,6 +816,22 @@ class Puzzle(commands.Cog):
                     for msg_key, _entry in to_close:
                         del active["open_messages"][msg_key]
                         changed = True
+
+                    # a completion earlier in this round asked to wait for its
+                    # piece's claim window to fully close before declaring
+                    # winners -- once that time has passed, finalize using
+                    # whoever is in "completions" now (which may include more
+                    # people than when the wait started, if others claimed
+                    # the same piece before the window closed)
+                    pending_ts = active.get("finalize_after_ts")
+                    if pending_ts is not None and now >= pending_ts:
+                        winners_count = await self.config.guild(guild).winners_count()
+                        if len(active["completions"]) >= winners_count:
+                            finished_winners = list(active["completions"])
+                        active["finalize_after_message"] = None
+                        active["finalize_after_ts"] = None
+                        changed = True
+
                     if changed:
                         await self.config.guild(guild).active.set(active)
 
@@ -748,6 +839,9 @@ class Puzzle(commands.Cog):
                 # briefly as possible
                 for msg_key, entry in to_close:
                     await self._close_shared_piece_message(guild, int(msg_key), entry)
+
+                if finished_winners is not None:
+                    await self._finish_round(guild, finished_winners)
             except Exception:
                 log.exception("Error in puzzle shared-piece sweep for guild %s", guild.id)
                 continue
@@ -866,14 +960,35 @@ class Puzzle(commands.Cog):
 
             if len(distinct) >= total and user_id not in active["completions"]:
                 active["completions"].append(user_id)
-                await self.config.guild(guild).active.set(active)
                 if channel is not None:
                     await channel.send(
                         f"\N{JIGSAW PUZZLE PIECE} {payload.member.mention} collected every piece! "
                         f"({len(active['completions'])}/{winners_count} winner(s) needed to end this puzzle)"
                     )
                 if len(active["completions"]) >= winners_count:
-                    finished_winners = list(active["completions"])
+                    if shared:
+                        # give this piece its full claim window before
+                        # declaring winners, so anyone else who reacts before
+                        # it closes -- 5 seconds in or 55 seconds in, same
+                        # window -- gets counted as a winner too, instead of
+                        # only whoever happened to complete first
+                        if active["finalize_after_message"] is None:
+                            active["finalize_after_message"] = msg_key
+                            active["finalize_after_ts"] = entry["opened_ts"] + entry["window_minutes"] * 60
+                            if channel is not None:
+                                await channel.send(
+                                    "\N{HOURGLASS WITH FLOWING SAND} Waiting for this piece's claim "
+                                    "window to close before announcing the winner(s), so everyone who "
+                                    "claims it in time is included."
+                                )
+                        # else: a finalize is already pending from an earlier
+                        # completion this round -- this completion is already
+                        # captured in "completions" and will be picked up
+                        # when that pending finalize fires, nothing more to do
+                    else:
+                        finished_winners = list(active["completions"])
+
+                await self.config.guild(guild).active.set(active)
 
         await self._update_live_status(guild)
 
