@@ -26,6 +26,7 @@ from .activity import ActivityTracker, is_channel_active
 from .config_schema import DEFAULT_GUILD, DEFAULT_MEMBER
 from .constants import CONFIG_IDENTIFIER, GAME_KEYS, MOD_ROLE_ID, RESET_TIMEZONE, SCHEDULER_TICK_SECONDS
 from .games import GAME_REGISTRY
+from .settings_ui import ConfigView
 
 log = logging.getLogger("red.minigamehub")
 
@@ -222,6 +223,38 @@ class MinigameHub(commands.Cog):
             return
         await self.config.guild(ctx.guild).activity_window.set(seconds)
         await ctx.send(f"Activity window set to {_fmt_secs(seconds)}.")
+
+    @minigamehub.command(name="settings")
+    async def mgh_settings(self, ctx: commands.Context):
+        """Browse and edit game settings with dropdowns (game -> parameter -> Set Value)."""
+        view = ConfigView(self.config, ctx.guild)
+        embed = await view.build_embed()
+        await ctx.send(embed=embed, view=view)
+
+    @minigamehub.command(name="test")
+    async def mgh_test(self, ctx: commands.Context, game_key: str):
+        """Spawn one game right here for testing -- no currency or stats change.
+
+        Runs in this channel regardless of the configured spawn channel or
+        activity gate, so you can test from anywhere. Only one game (real or
+        test) can be active per server at a time.
+        """
+        game_key = game_key.lower()
+        if game_key not in GAME_KEYS:
+            await ctx.send(f"Unknown game key. Choose from: {humanize_list(GAME_KEYS)}")
+            return
+        if self.active_game.get(ctx.guild.id):
+            await ctx.send("A game (real or test) is already active in this server -- wait for it to resolve first.")
+            return
+
+        guild_conf = await self.config.guild(ctx.guild).all()
+        game_conf = guild_conf["games"][game_key]
+        if game_key in ("lootdrop", "boss") and not game_conf.get("scenarios"):
+            await ctx.send(f"No scenarios configured for `{game_key}` yet -- run `.minigamehub toggle` once first so scenarios get seeded, or check `.minigamehub {'scenario' if game_key == 'lootdrop' else 'bossscenario'} list`.")
+            return
+
+        await ctx.send(f"\U0001F9EA Test-spawning `{game_key}` here -- no currency or stats will actually change.")
+        await GAME_REGISTRY[game_key](self, ctx.channel, game_conf, dry_run=True)
 
     # -- game subgroup ------------------------------------------------- #
 

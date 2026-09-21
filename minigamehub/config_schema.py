@@ -42,6 +42,7 @@ DEFAULT_GUILD = {
             "max_frequency": 3600,
             "reward_range": [50, 400],
             "response_timeout": 20,
+            "trigger_mode": "both",  # "both" | "word" | "reaction"
             "shoot_word": "bang",
             "safe_word": "salute",
             "shoot_reaction": "\U0001F4A5",  # 💥

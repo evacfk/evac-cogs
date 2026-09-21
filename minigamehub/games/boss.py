@@ -17,7 +17,6 @@ import time
 
 import discord
 from redbot.core import bank
-from redbot.core.errors import BalanceTooHigh
 
 from .. import pacing, stats
 from .base import register
@@ -40,7 +39,7 @@ def _hp_bar(current: int, maximum: int, width: int = 20) -> str:
 
 
 class _BossView(discord.ui.View):
-    def __init__(self, cog, scenario: dict, tier_key: str, tier: dict, max_hp: int, game_conf: dict, guild: discord.Guild):
+    def __init__(self, cog, scenario: dict, tier_key: str, tier: dict, max_hp: int, game_conf: dict, guild: discord.Guild, dry_run: bool = False):
         super().__init__(timeout=game_conf["fight_duration"])
         self.cog = cog
         self.scenario = scenario
@@ -50,9 +49,10 @@ class _BossView(discord.ui.View):
         self.hp = max_hp
         self.game_conf = game_conf
         self.guild = guild
+        self.dry_run = dry_run
         self.message: discord.Message = None
         self.last_attack: dict = {}   # user_id -> timestamp, for attack_cooldown
-        self.damage_dealt: dict = {}  # user_id -> total damage, for MVP
+        self.damage_dealt: dict = {}  # user_id -> total damage, for MVP (in-memory only, fine for test runs)
         self.attackers: set = set()   # user_ids who landed >=1 good hit
         self.ended = False
         self._dirty = False
@@ -77,34 +77,30 @@ class _BossView(discord.ui.View):
         currency = await bank.get_currency_name(self.guild)
         landed = random.randint(1, 100) <= self.game_conf["hit_chance"]
 
+        note = " (test)" if self.dry_run else ""
+
         if landed:
             dmg = random.randint(*self.game_conf["damage_per_hit"])
             self.hp = max(0, self.hp - dmg)
             self.damage_dealt[member.id] = self.damage_dealt.get(member.id, 0) + dmg
             self.attackers.add(member.id)
-            await stats.add_boss_damage(self.cog.config, member, dmg)
+            if not self.dry_run:
+                await stats.add_boss_damage(self.cog.config, member, dmg)
 
             base = random.randint(*self.tier["reward"])
-            actual, _ = await pacing.apply_pacing(self.cog.config, member, base)
-            try:
-                await bank.deposit_credits(member, actual)
-            except BalanceTooHigh as e:
-                bal = await bank.get_balance(member)
-                new_bal = await bank.set_balance(member, e.max_balance)
-                actual = new_bal - bal
-            await pacing.record_payout(self.cog.config, member, actual)
-            await stats.record_result(self.cog.config, member, "boss", good=True)
+            actual = await pacing.settle_reward(self.cog.config, member, base, dry_run=self.dry_run)
+            if not self.dry_run:
+                await stats.record_result(self.cog.config, member, "boss", good=True)
 
             text = self.scenario["good"].format(user=member.mention, amount=f"{actual:,}", currency=currency)
-            await interaction.response.send_message(f"{text} (-{dmg} HP)", ephemeral=True)
+            await interaction.response.send_message(f"{text} (-{dmg} HP){note}", ephemeral=True)
         else:
-            balance = await bank.get_balance(member)
-            penalty = min(random.randint(*self.tier["penalty"]), balance)
-            if penalty > 0:
-                await bank.withdraw_credits(member, penalty)
-            await stats.record_result(self.cog.config, member, "boss", good=False)
+            raw_penalty = random.randint(*self.tier["penalty"])
+            penalty = await pacing.settle_penalty(member, raw_penalty, dry_run=self.dry_run)
+            if not self.dry_run:
+                await stats.record_result(self.cog.config, member, "boss", good=False)
             text = self.scenario["bad"].format(user=member.mention, amount=f"{penalty:,}", currency=currency)
-            await interaction.response.send_message(text, ephemeral=True)
+            await interaction.response.send_message(f"{text}{note}", ephemeral=True)
 
         self._dirty = True
         if self.hp <= 0:
@@ -112,8 +108,11 @@ class _BossView(discord.ui.View):
             self.stop()
 
     def build_embed(self, status: str) -> discord.Embed:
+        title = self.scenario["start"]
+        if self.dry_run:
+            title = "\U0001F9EA [TEST] " + title
         embed = discord.Embed(
-            title=self.scenario["start"],
+            title=title,
             description=f"`{_hp_bar(self.hp, self.max_hp)}` {self.hp}/{self.max_hp} HP\n\n{status}",
             color=discord.Color.red() if self.hp > 0 else discord.Color.green(),
         )
@@ -135,7 +134,7 @@ class _BossView(discord.ui.View):
 
 
 @register("boss")
-async def spawn(cog, channel: discord.TextChannel, game_conf: dict) -> None:
+async def spawn(cog, channel: discord.TextChannel, game_conf: dict, dry_run: bool = False) -> None:
     guild = channel.guild
     cog.active_game[guild.id] = "boss"
     try:
@@ -146,7 +145,7 @@ async def spawn(cog, channel: discord.TextChannel, game_conf: dict) -> None:
         tier_key, tier = _pick_tier(game_conf["tiers"])
         max_hp = random.randint(*tier["hp"])
 
-        view = _BossView(cog, scenario, tier_key, tier, max_hp, game_conf, guild)
+        view = _BossView(cog, scenario, tier_key, tier, max_hp, game_conf, guild, dry_run=dry_run)
         message = await channel.send(embed=view.build_embed("Fight starting -- click Attack!"))
         view.message = message
 

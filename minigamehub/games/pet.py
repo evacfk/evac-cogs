@@ -12,7 +12,6 @@ import random
 
 import discord
 from redbot.core import bank
-from redbot.core.errors import BalanceTooHigh
 
 from .. import pacing, stats
 from .base import register
@@ -21,11 +20,12 @@ log = logging.getLogger("red.minigamehub.pet")
 
 
 @register("pet")
-async def spawn(cog, channel: discord.TextChannel, game_conf: dict) -> None:
+async def spawn(cog, channel: discord.TextChannel, game_conf: dict, dry_run: bool = False) -> None:
     guild = channel.guild
     cog.active_game[guild.id] = "pet"
     try:
-        message = await channel.send(game_conf["spawn_message"])
+        prefix = "\U0001F9EA **[TEST]** " if dry_run else ""
+        message = await channel.send(prefix + game_conf["spawn_message"])
         try:
             await message.add_reaction(game_conf["pet_reaction"])
         except discord.HTTPException:
@@ -51,7 +51,7 @@ async def spawn(cog, channel: discord.TextChannel, game_conf: dict) -> None:
 
         if not petters:
             try:
-                await message.edit(content=f"{game_conf['spawn_message']}\n\n*No one came to pet...* \U0001F97A")
+                await message.edit(content=f"{prefix}{game_conf['spawn_message']}\n\n*No one came to pet...* \U0001F97A")
             except discord.HTTPException:
                 pass
             return
@@ -61,24 +61,19 @@ async def spawn(cog, channel: discord.TextChannel, game_conf: dict) -> None:
         for user in petters:
             member = guild.get_member(user.id) or user
             base = random.randint(min_r, max_r)
-            actual, _ = await pacing.apply_pacing(cog.config, member, base)
-            try:
-                await bank.deposit_credits(member, actual)
-            except BalanceTooHigh as e:
-                bal = await bank.get_balance(member)
-                new_bal = await bank.set_balance(member, e.max_balance)
-                actual = new_bal - bal
-            await pacing.record_payout(cog.config, member, actual)
-            await stats.record_result(cog.config, member, "pet", good=True)
+            actual = await pacing.settle_reward(cog.config, member, base, dry_run=dry_run)
+            if not dry_run:
+                await stats.record_result(cog.config, member, "pet", good=True)
             paid.append((member, actual))
 
         currency = await bank.get_currency_name(guild)
         names = ", ".join(m.mention for m, _ in paid[:15])
         extra = f" (+{len(paid) - 15} more)" if len(paid) > 15 else ""
         total = sum(a for _, a in paid)
+        note = " (test -- no currency actually paid)" if dry_run else ""
         goodbye = (
-            f"{game_conf['goodbye_message']}\n"
-            f"-# {len(paid)} petter(s) got a total of {total:,} {currency}: {names}{extra}"
+            f"{prefix}{game_conf['goodbye_message']}\n"
+            f"-# {len(paid)} petter(s) got a total of {total:,} {currency}{note}: {names}{extra}"
         )
         try:
             await message.edit(content=goodbye)

@@ -13,7 +13,6 @@ import random
 
 import discord
 from redbot.core import bank
-from redbot.core.errors import BalanceTooHigh
 from redbot.core.utils.predicates import MessagePredicate
 
 from .. import pacing, stats
@@ -45,12 +44,13 @@ def _generate_question(enabled_ops: list) -> tuple:
 
 
 @register("mathdrop")
-async def spawn(cog, channel: discord.TextChannel, game_conf: dict) -> None:
+async def spawn(cog, channel: discord.TextChannel, game_conf: dict, dry_run: bool = False) -> None:
     guild = channel.guild
     cog.active_game[guild.id] = "mathdrop"
     try:
+        prefix = "\U0001F9EA **[TEST]** " if dry_run else ""
         question, answer = _generate_question(game_conf["operators"])
-        message = await channel.send(question)
+        message = await channel.send(prefix + question)
 
         pred = MessagePredicate.equal_to(str(answer), channel=channel)
         try:
@@ -59,7 +59,7 @@ async def spawn(cog, channel: discord.TextChannel, game_conf: dict) -> None:
             )
         except asyncio.TimeoutError:
             try:
-                await message.edit(content=f"{question}\n{game_conf['timeout_message']}")
+                await message.edit(content=f"{prefix}{question}\n{game_conf['timeout_message']}")
             except discord.HTTPException:
                 pass
             return
@@ -67,19 +67,14 @@ async def spawn(cog, channel: discord.TextChannel, game_conf: dict) -> None:
         member = guild.get_member(answer_msg.author.id) or answer_msg.author
         min_r, max_r = game_conf["reward_range"]
         base = random.randint(min_r, max_r)
-        actual, _ = await pacing.apply_pacing(cog.config, member, base)
-        try:
-            await bank.deposit_credits(member, actual)
-        except BalanceTooHigh as e:
-            bal = await bank.get_balance(member)
-            new_bal = await bank.set_balance(member, e.max_balance)
-            actual = new_bal - bal
-        await pacing.record_payout(cog.config, member, actual)
-        await stats.record_result(cog.config, member, "mathdrop", good=True)
+        actual = await pacing.settle_reward(cog.config, member, base, dry_run=dry_run)
+        if not dry_run:
+            await stats.record_result(cog.config, member, "mathdrop", good=True)
 
         currency = await bank.get_currency_name(guild)
+        note = " (test -- no currency actually paid)" if dry_run else ""
         try:
-            await message.edit(content=f"{question}\nCorrect! {member.mention} got {actual:,} {currency}!")
+            await message.edit(content=f"{prefix}{question}\nCorrect! {member.mention} got {actual:,} {currency}!{note}")
         except discord.HTTPException:
             pass
     finally:

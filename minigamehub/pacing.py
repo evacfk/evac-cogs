@@ -13,7 +13,8 @@ UTC-default mistake caught in design review), computed via zoneinfo.
 from datetime import datetime
 from typing import Tuple
 
-from redbot.core import Config
+from redbot.core import Config, bank
+from redbot.core.errors import BalanceTooHigh
 
 from .constants import RESET_TIMEZONE
 
@@ -87,3 +88,35 @@ async def payout_status(config: Config, member) -> Tuple[int, int]:
     pacing_conf = await config.guild(member.guild).payout_pacing()
     today_total = await _get_today_payout(config, member)
     return today_total, pacing_conf["daily_cap_per_user"]
+
+
+async def settle_reward(config: Config, member, base_reward: int, dry_run: bool = False) -> int:
+    """One-stop reward helper used by every game type: computes the paced
+    amount and, unless `dry_run`, actually deposits it and records it against
+    the daily cap. Always returns the (would-be) actual amount, so `.minigamehub
+    test` can show realistic numbers without touching anyone's balance or the
+    daily-cap ledger.
+    """
+    actual, _ = await apply_pacing(config, member, base_reward)
+    if dry_run or actual <= 0:
+        return actual
+    try:
+        await bank.deposit_credits(member, actual)
+    except BalanceTooHigh as e:
+        bal = await bank.get_balance(member)
+        new_bal = await bank.set_balance(member, e.max_balance)
+        actual = new_bal - bal
+    await record_payout(config, member, actual)
+    return actual
+
+
+async def settle_penalty(member, penalty: int, dry_run: bool = False) -> int:
+    """Withdraw up to `penalty` (capped at the member's balance) unless
+    `dry_run`. Always returns the (would-be) actual amount withdrawn."""
+    if penalty <= 0:
+        return 0
+    balance = await bank.get_balance(member)
+    actual = min(penalty, balance)
+    if not dry_run and actual > 0:
+        await bank.withdraw_credits(member, actual)
+    return actual

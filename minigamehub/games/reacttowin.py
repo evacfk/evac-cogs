@@ -10,7 +10,6 @@ import random
 
 import discord
 from redbot.core import bank
-from redbot.core.errors import BalanceTooHigh
 
 from .. import pacing, stats
 from .base import register
@@ -36,41 +35,42 @@ class _ClickView(discord.ui.View):
 
 
 @register("reacttowin")
-async def spawn(cog, channel: discord.TextChannel, game_conf: dict) -> None:
+async def spawn(cog, channel: discord.TextChannel, game_conf: dict, dry_run: bool = False) -> None:
     guild = channel.guild
     cog.active_game[guild.id] = "reacttowin"
     try:
+        prefix = "\U0001F9EA **[TEST]** " if dry_run else ""
         view = _ClickView(timeout=game_conf["response_timeout"])
-        message = await channel.send(game_conf["spawn_message"], view=view)
+        message = await channel.send(prefix + game_conf["spawn_message"], view=view)
         await view.wait()
 
         if view.winner is None:
             try:
-                await message.edit(content=f"{game_conf['spawn_message']}\n*Nobody clicked in time.*", view=None)
+                await message.edit(content=f"{prefix}{game_conf['spawn_message']}\n*Nobody clicked in time.*", view=None)
             except discord.HTTPException:
                 pass
             return
 
         member = guild.get_member(view.winner.id) or view.winner
-        streak = await stats.record_result(cog.config, member, "reacttowin", good=True)
+        if dry_run:
+            # Don't touch the real streak counter for a test run -- preview
+            # against whatever streak they're actually on right now.
+            entry = (await cog.config.member(member).games()).get("reacttowin", {})
+            streak = entry.get("streak", 0) + 1
+        else:
+            streak = await stats.record_result(cog.config, member, "reacttowin", good=True)
 
         min_r, max_r = game_conf["reward_range"]
         base = random.randint(min_r, max_r)
         bonus = int(base * (min(streak, 10) * game_conf["streak_bonus_pct"] / 100))
         total_base = base + bonus
-        actual, _ = await pacing.apply_pacing(cog.config, member, total_base)
-        try:
-            await bank.deposit_credits(member, actual)
-        except BalanceTooHigh as e:
-            bal = await bank.get_balance(member)
-            new_bal = await bank.set_balance(member, e.max_balance)
-            actual = new_bal - bal
-        await pacing.record_payout(cog.config, member, actual)
+        actual = await pacing.settle_reward(cog.config, member, total_base, dry_run=dry_run)
 
         currency = await bank.get_currency_name(guild)
         streak_txt = f" (streak: {streak})" if streak > 1 else ""
+        note = " (test -- no currency actually paid)" if dry_run else ""
         try:
-            await message.edit(content=f"{member.mention} won {actual:,} {currency}!{streak_txt}", view=None)
+            await message.edit(content=f"{prefix}{member.mention} won {actual:,} {currency}!{streak_txt}{note}", view=None)
         except discord.HTTPException:
             pass
     finally:
