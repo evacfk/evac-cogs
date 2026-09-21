@@ -15,6 +15,13 @@ Design doc per-game-type notes:
 6. `trigger_mode` ("both"/"word"/"reaction", default "both") toggles whether
    hunt accepts the typed word, the reaction, or either -- added on request,
    the word itself stays Config-editable via `shoot_word`/`safe_word`.
+7. Bug fix -- custom emoji reactions compared by ID via emoji_utils, not raw
+   string equality. Raw `str(reaction.emoji) == game_conf["shoot_reaction"]`
+   broke the moment an admin set a custom emoji, since anything short of a
+   byte-for-byte identical string (a stray copy-paste space was enough)
+   silently failed to match, and the bot's own add_reaction() call round-
+   tripped the raw string through manual `<>` stripping instead of Discord.py's
+   own emoji parsing.
 """
 import asyncio
 import logging
@@ -25,6 +32,7 @@ import discord
 from redbot.core import bank
 
 from .. import pacing, stats
+from ..emoji_utils import emoji_matches, parse_emoji
 from .base import register
 
 log = logging.getLogger("red.minigamehub.hunt")
@@ -49,9 +57,9 @@ async def spawn(cog, channel: discord.TextChannel, game_conf: dict, dry_run: boo
         message = await channel.send(f"{prefix}{animal['emoji']} {animal['text']}")
         if accepts_reaction:
             try:
-                await message.add_reaction(game_conf["shoot_reaction"])
+                await message.add_reaction(parse_emoji(game_conf["shoot_reaction"]))
                 if is_safe:
-                    await message.add_reaction(game_conf["safe_reaction"])
+                    await message.add_reaction(parse_emoji(game_conf["safe_reaction"]))
             except discord.HTTPException:
                 pass
 
@@ -76,8 +84,9 @@ async def spawn(cog, channel: discord.TextChannel, game_conf: dict, dry_run: boo
                 return False
             if payload.member is None or payload.member.bot:
                 return False
-            emoji = str(payload.emoji)
-            return emoji == game_conf["shoot_reaction"] or (is_safe and emoji == game_conf["safe_reaction"])
+            return emoji_matches(game_conf["shoot_reaction"], payload.emoji) or (
+                is_safe and emoji_matches(game_conf["safe_reaction"], payload.emoji)
+            )
 
         futures = []
         if accepts_word:
@@ -111,7 +120,7 @@ async def spawn(cog, channel: discord.TextChannel, game_conf: dict, dry_run: boo
             saluted = is_safe and bool(safe_pattern.match(result.content.strip().lower()))
         else:
             author = result.member
-            saluted = is_safe and str(result.emoji) == game_conf["safe_reaction"]
+            saluted = is_safe and emoji_matches(game_conf["safe_reaction"], result.emoji)
 
         member = guild.get_member(author.id) or author
         currency = await bank.get_currency_name(guild)

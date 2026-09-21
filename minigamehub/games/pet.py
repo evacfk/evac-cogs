@@ -14,6 +14,7 @@ import discord
 from redbot.core import bank
 
 from .. import pacing, stats
+from ..emoji_utils import emoji_matches, parse_emoji
 from .base import register
 
 log = logging.getLogger("red.minigamehub.pet")
@@ -27,7 +28,10 @@ async def spawn(cog, channel: discord.TextChannel, game_conf: dict, dry_run: boo
         prefix = "\U0001F9EA **[TEST]** " if dry_run else ""
         message = await channel.send(prefix + game_conf["spawn_message"])
         try:
-            await message.add_reaction(game_conf["pet_reaction"])
+            # Parse into a PartialEmoji and react with the object directly --
+            # more robust than round-tripping through the raw config string,
+            # which broke on custom emoji with stray copy-paste whitespace.
+            await message.add_reaction(parse_emoji(game_conf["pet_reaction"]))
         except discord.HTTPException:
             log.warning("Couldn't add pet_reaction %r in guild %s -- is it a valid emoji?", game_conf["pet_reaction"], guild.id)
             return
@@ -41,7 +45,7 @@ async def spawn(cog, channel: discord.TextChannel, game_conf: dict, dry_run: boo
 
         petters = []
         for reaction in message.reactions:
-            if str(reaction.emoji) != str(game_conf["pet_reaction"]):
+            if not emoji_matches(game_conf["pet_reaction"], reaction.emoji):
                 continue
             async for user in reaction.users():
                 if user.bot:
