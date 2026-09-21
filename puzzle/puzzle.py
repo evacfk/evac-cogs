@@ -616,32 +616,36 @@ class Puzzle(commands.Cog):
             active["next_interval_hours"] = await self._roll_interval_hours(guild)
             await self.config.guild(guild).active.set(active)
 
-    async def _close_shared_piece_message(self, guild: discord.Guild, message_id: int, entry: dict):
+    async def _close_shared_piece_message(
+        self, guild: discord.Guild, message_id: int, entry: dict, total: int
+    ):
         """Cosmetically close out a shared-mode piece message once its claim
-        window has elapsed: show who claimed it and strip the reaction so
-        late reactors don't think they can still claim it. Purely cosmetic
-        -- credit was already awarded as each reaction came in, so any
-        failure here is logged and otherwise ignored."""
+        window has elapsed: show who claimed it (and which piece it was) and
+        strip the reaction so late reactors don't think they can still claim
+        it. Purely cosmetic -- credit was already awarded as each reaction
+        came in, so any failure here is logged and otherwise ignored."""
         channel_id = await self.config.guild(guild).channel_id()
         channel = guild.get_channel(channel_id) if channel_id else None
         if channel is None:
             return
         try:
             message = await channel.fetch_message(message_id)
+            piece_index = entry.get("piece_index")
+            piece_label = f"Piece position {piece_index + 1} of {total}" if piece_index is not None else "This piece"
             claimants = entry.get("claimants", [])
             names = []
             for user_id in claimants[:15]:
                 member = guild.get_member(user_id)
                 names.append(member.mention if member else f"<@{user_id}>")
             if not names:
-                description = "This piece's claim window closed \N{EM DASH} nobody claimed it."
+                description = f"{piece_label}: claim window closed \N{EM DASH} nobody claimed it."
             else:
                 extra = len(claimants) - len(names)
                 suffix = f" (+{extra} more)" if extra > 0 else ""
-                description = "Claim window closed. Claimed by: " + ", ".join(names) + suffix
+                description = f"{piece_label}: claim window closed. Claimed by: " + ", ".join(names) + suffix
 
             new_embed = discord.Embed(
-                title="Puzzle piece \N{EM DASH} claim window closed",
+                title=f"Puzzle piece #{piece_index + 1 if piece_index is not None else '?'} \N{EM DASH} claim window closed",
                 description=description,
                 color=discord.Color.dark_grey(),
             )
@@ -802,11 +806,13 @@ class Puzzle(commands.Cog):
         for guild in self.bot.guilds:
             to_close = []
             finished_winners = None
+            total = 0
             try:
                 async with self._guild_lock(guild.id):
                     active = await self._get_active(guild)
                     if active is None:
                         continue
+                    total = sum(active["piece_rows"])
                     now = time.time()
                     changed = False
                     for msg_key, entry in list(active["open_messages"].items()):
@@ -838,7 +844,7 @@ class Puzzle(commands.Cog):
                 # do the Discord API calls outside the lock so it's held as
                 # briefly as possible
                 for msg_key, entry in to_close:
-                    await self._close_shared_piece_message(guild, int(msg_key), entry)
+                    await self._close_shared_piece_message(guild, int(msg_key), entry, total)
 
                 if finished_winners is not None:
                     await self._finish_round(guild, finished_winners)
