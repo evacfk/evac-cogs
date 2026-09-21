@@ -351,7 +351,7 @@ class PhotoDrop(commands.Cog):
 
     # -- set (config) ------------------------------------------------------------
 
-    @pp.group(name="set")
+    @pp.group(name="set", invoke_without_command=True)
     @commands.guild_only()
     @commands.mod_or_permissions(manage_roles=True)
     async def pp_set(self, ctx: commands.Context):
