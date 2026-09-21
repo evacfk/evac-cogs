@@ -1,4 +1,5 @@
 import asyncio
+import hashlib
 import io
 import logging
 import random
@@ -18,7 +19,10 @@ MIN_PIECE_COUNT = 2
 MAX_PIECE_COUNT = 25
 DEFAULT_PIECE_COUNT = 9  # used when no per-server default and no per-image size is set
 
-CHECK_INTERVAL_MINUTES = 5  # how often the background loop wakes up to check timers
+CHECK_INTERVAL_MINUTES = 5  # how often the background loop wakes up to check posting timers
+SHARED_SWEEP_INTERVAL_SECONDS = 30  # how often open shared-mode pieces are checked for an expired claim window
+
+ACTIVE_SCHEMA_VERSION = 2
 
 _GRID_RE = re.compile(r"^(\d+)x(\d+)$")
 
@@ -31,20 +35,24 @@ class Puzzle(commands.Cog):
     Admins load a pool of images. Each is sliced into a set of pieces
     (either an explicit grid like `4x4`, or a plain piece count like `7`,
     auto-arranged into rows). A random piece (with repeats) is posted to
-    a channel on a timer; members race to claim pieces with a reaction
-    and build up their own collection. The round keeps posting pieces
-    indefinitely until enough people (configurable via
-    `[p]puzzle setwinners`) have each collected every distinct piece, at
-    which point the full image is posted, the winners are announced, and
-    the cog automatically starts a new puzzle from a random, not-yet-used
-    image in the pool.
+    a channel on a timer.
 
-    The piece count for images added without an explicit size comes from
-    `[p]puzzle setpieces`, which only affects the *next* puzzle to start —
-    it never changes a puzzle that's already running.
+    Two claim modes: normal (first reaction wins the piece) or shared
+    mode (everyone who reacts within a configurable window gets credit,
+    so a single piece can have multiple claimants). Either way, a round
+    ends once enough people (`[p]puzzle setwinners`) have each collected
+    every distinct piece, at which point the full image is posted, the
+    winners are announced, and the cog automatically starts a new puzzle
+    from a random, not-yet-used image in the pool (never immediately
+    repeating the image that just finished, pool size permitting).
+
+    An optional announcement channel gets a copy of every completion
+    post, an optional live status message tracks standings in real time,
+    and an all-time leaderboard tracks puzzles won and pieces collected
+    per person across every round.
     """
 
-    __version__ = "1.1.0"
+    __version__ = "1.2.0"
 
     def __init__(self, bot: Red):
         self.bot = bot
@@ -56,25 +64,39 @@ class Puzzle(commands.Cog):
             "interval_max_hours": 8,
             "claim_emoji": "\N{JIGSAW PUZZLE PIECE}",
             "reward_role_id": None,
-            # str(image_id) -> {"piece_rows", "img_w", "img_h", "filename", "added_by"}
+            # str(image_id) -> {"piece_rows", "img_w", "img_h", "filename", "added_by", "image_hash"}
             "pool": {},
             "next_id": 1,
             "used_ids": [],
+            "last_image_id": None,  # never picked twice in a row, pool size permitting
             "winners_count": 1,
             "active": None,
             # default piece count for images added WITHOUT an explicit size.
             # None means "use DEFAULT_PIECE_COUNT". Set via [p]puzzle setpieces;
-            # only takes effect for puzzles that start after it's set.
+            # only takes effect for images added (and puzzles started) after
+            # it's set.
             "next_piece_count": None,
+            # shared-credit mode: when on, a piece posted after this was
+            # turned on stays claimable by everyone for shared_window_minutes
+            # instead of locking to the first reactor.
+            "shared_mode": False,
+            "shared_window_minutes": 1,
+            "announce_channel_id": None,
+            "live_status_channel_id": None,
+            "live_status_message_id": None,
+            # str(user_id) -> {"pieces_collected": int, "puzzles_won": int}, all-time
+            "lifetime_stats": {},
         }
         self.config.register_guild(**default_guild)
 
         self._locks: dict[int, asyncio.Lock] = {}
         self._test_tasks: dict[int, asyncio.Task] = {}
         self.background_loop.start()
+        self.shared_sweep_loop.start()
 
     def cog_unload(self):
         self.background_loop.cancel()
+        self.shared_sweep_loop.cancel()
         for task in self._test_tasks.values():
             task.cancel()
 
@@ -88,14 +110,14 @@ class Puzzle(commands.Cog):
         return self._locks[guild_id]
 
     # keys every valid active-round dict must have under the current schema.
-    # NOTE: this changed from {"grid_x", "grid_y", ...} to {"piece_rows",
-    # "img_w", "img_h", ...} in v1.1.0. Any round started under the old
-    # schema will be automatically detected as stale and cleared by
-    # _get_active below the first time this version runs — that's expected,
-    # not a bug, and mirrors how the cog already handled this exact
-    # situation for earlier schema changes.
+    # "schema_version" is checked separately against ACTIVE_SCHEMA_VERSION so
+    # that a structural change to what's INSIDE an existing key (e.g.
+    # open_messages entries changing from a bare int to a dict, as happened
+    # going into schema version 2) also triggers the safe-reset below, not
+    # just an added/removed top-level key.
     _ACTIVE_SCHEMA_KEYS = frozenset(
         {
+            "schema_version",
             "image_id",
             "piece_rows",
             "img_w",
@@ -118,7 +140,10 @@ class Puzzle(commands.Cog):
         stale round causes confusing KeyErrors deep in game logic instead of
         a clear, safe reset."""
         active = await self.config.guild(guild).active()
-        if active is not None and not self._ACTIVE_SCHEMA_KEYS.issubset(active.keys()):
+        if active is not None and (
+            not self._ACTIVE_SCHEMA_KEYS.issubset(active.keys())
+            or active.get("schema_version") != ACTIVE_SCHEMA_VERSION
+        ):
             log.warning(
                 "Clearing an incompatible/stale active puzzle round for guild %s "
                 "(likely left over from before a cog update). Run [p]puzzle start "
@@ -294,7 +319,9 @@ class Puzzle(commands.Cog):
     ) -> Optional[io.BytesIO]:
         """Build a preview showing which distinct pieces a user has collected
         so far: their claimed pieces in their correct position, with a
-        dark placeholder box for everything they don't have yet."""
+        dark placeholder box (numbered with that piece's position, so you
+        know exactly which ones you're still missing) for everything they
+        don't have yet."""
         boxes = Puzzle._piece_boxes(img_w, img_h, rows)
         if not (image_dir / "piece_0.png").exists():
             return None
@@ -313,11 +340,76 @@ class Puzzle(commands.Cog):
                     outline=(110, 110, 118, 255),
                     width=2,
                 )
+                label = str(i + 1)
+                bbox = draw.textbbox((0, 0), label)
+                text_w, text_h = bbox[2] - bbox[0], bbox[3] - bbox[1]
+                cx = x0 + (x1 - x0 - text_w) // 2 - bbox[0]
+                cy = y0 + (y1 - y0 - text_h) // 2 - bbox[1]
+                draw.text((cx, cy), label, fill=(160, 160, 170, 255))
 
         buf = io.BytesIO()
         canvas.save(buf, format="PNG")
         buf.seek(0)
         return buf
+
+    async def _render_status_embed(self, guild: discord.Guild, active: Optional[dict]) -> discord.Embed:
+        """Build the standings embed used by the live status message. Kept
+        separate from `[p]puzzle status` (which stays plain text) since the
+        live version needs to be cheap to regenerate on every claim."""
+        if active is None:
+            return discord.Embed(
+                title="Puzzle status",
+                description="No puzzle is currently running.",
+                color=discord.Color.greyple(),
+            )
+
+        total = sum(active["piece_rows"])
+        winners_count = await self.config.guild(guild).winners_count()
+
+        embed = discord.Embed(
+            title=f"Puzzle status \N{EM DASH} image #{active['image_id']}",
+            description=f"{total} distinct pieces, {active['posted_total']} posted so far (pieces repeat).",
+            color=discord.Color.blurple(),
+        )
+        embed.add_field(name="Winners so far", value=f"{len(active['completions'])}/{winners_count}", inline=False)
+
+        if active["inventories"]:
+            ranked = sorted(active["inventories"].items(), key=lambda kv: -len(set(kv[1])))
+            lines = []
+            for user_id_str, pieces in ranked[:15]:
+                user_id = int(user_id_str)
+                member = guild.get_member(user_id)
+                name = member.display_name if member else f"User {user_id}"
+                marker = " \N{WHITE HEAVY CHECK MARK}" if user_id in active["completions"] else ""
+                lines.append(f"{name}: {len(set(pieces))}/{total}{marker}")
+            embed.add_field(name="Standings", value="\n".join(lines), inline=False)
+
+        embed.set_footer(text="Updates automatically as pieces are claimed.")
+        return embed
+
+    async def _update_live_status(self, guild: discord.Guild):
+        """Refresh the tracked live-status message, if one is set up for
+        this guild. Silently gives up (and turns tracking off) if the
+        message has been deleted; any other failure is logged but never
+        allowed to interrupt real game logic, since this is purely
+        cosmetic."""
+        channel_id = await self.config.guild(guild).live_status_channel_id()
+        message_id = await self.config.guild(guild).live_status_message_id()
+        if channel_id is None or message_id is None:
+            return
+        channel = guild.get_channel(channel_id)
+        if channel is None:
+            return
+
+        try:
+            active = await self._get_active(guild)
+            embed = await self._render_status_embed(guild, active)
+            message = await channel.fetch_message(message_id)
+            await message.edit(embed=embed)
+        except discord.NotFound:
+            await self.config.guild(guild).live_status_message_id.set(None)
+        except Exception:
+            log.exception("Failed to update the live puzzle status message in guild %s", guild.id)
 
     async def _pick_next_image_id(self, guild: discord.Guild) -> Optional[int]:
         pool = await self.config.guild(guild).pool()
@@ -329,9 +421,18 @@ class Puzzle(commands.Cog):
             # exhausted the pool without repeats; reshuffle the cycle
             used = []
             available = [int(i) for i in pool.keys()]
+
+        # never immediately repeat the image that just finished, as long as
+        # there's another option -- this matters most right when a cycle
+        # resets, since the just-finished image is back in the running pool
+        last_image_id = await self.config.guild(guild).last_image_id()
+        if last_image_id is not None and len(available) > 1 and last_image_id in available:
+            available = [i for i in available if i != last_image_id]
+
         choice = random.choice(available)
         used.append(choice)
         await self.config.guild(guild).used_ids.set(used)
+        await self.config.guild(guild).last_image_id.set(choice)
         return choice
 
     async def _roll_interval_hours(self, guild: discord.Guild) -> float:
@@ -363,13 +464,18 @@ class Puzzle(commands.Cog):
         random.shuffle(unposted)
 
         active = {
+            "schema_version": ACTIVE_SCHEMA_VERSION,
             "image_id": image_id,
             "piece_rows": rows,
             "img_w": meta["img_w"],
             "img_h": meta["img_h"],
             "posted_total": 0,  # pieces ever posted this round, including repeats
             "last_post_ts": 0,  # 0 forces an immediate first post on the next loop tick
-            "open_messages": {},  # str(message_id) -> piece_index, posted and not yet claimed
+            # str(message_id) -> {"piece_index", "shared", "opened_ts",
+            # "window_minutes", "claimants"}. In non-shared mode a piece is
+            # removed from here the instant it's claimed; in shared mode it
+            # stays until its claim window closes (see shared_sweep_loop).
+            "open_messages": {},
             "inventories": {},  # str(user_id) -> [piece_index, ...] (may contain duplicates)
             "completions": [],  # user_ids, in the order they completed a full set
             # every distinct position, in shuffled order, still owed a guaranteed
@@ -380,6 +486,7 @@ class Puzzle(commands.Cog):
             "next_interval_hours": await self._roll_interval_hours(guild),
         }
         await self.config.guild(guild).active.set(active)
+        await self._update_live_status(guild)
         return None
 
     async def _post_next_piece(self, guild: discord.Guild):
@@ -407,10 +514,21 @@ class Puzzle(commands.Cog):
             if not piece_path.exists():
                 return
 
+            shared_mode = await self.config.guild(guild).shared_mode()
+            window_minutes = await self.config.guild(guild).shared_window_minutes() if shared_mode else 0
+
             emoji = await self.config.guild(guild).claim_emoji()
+            if shared_mode:
+                description = (
+                    f"React with {emoji} within {window_minutes} minute(s) to claim it \N{EM DASH} "
+                    f"everyone who reacts in time gets credit! (Piece position {piece_index + 1} of {total}.)"
+                )
+            else:
+                description = f"React with {emoji} to claim it. (Piece position {piece_index + 1} of {total}.)"
+
             embed = discord.Embed(
                 title="A new puzzle piece has appeared!",
-                description=f"React with {emoji} to claim it. (Piece position {piece_index + 1} of {total}.)",
+                description=description,
                 color=discord.Color.blurple(),
             )
             file = discord.File(piece_path, filename="piece.png")
@@ -425,11 +543,57 @@ class Puzzle(commands.Cog):
 
             if first_pass:
                 active["unposted_positions"].pop()
-            active["open_messages"][str(message.id)] = piece_index
+            active["open_messages"][str(message.id)] = {
+                "piece_index": piece_index,
+                "shared": shared_mode,
+                "opened_ts": time.time(),
+                "window_minutes": window_minutes,
+                "claimants": [],
+            }
             active["posted_total"] += 1
             active["last_post_ts"] = time.time()
             active["next_interval_hours"] = await self._roll_interval_hours(guild)
             await self.config.guild(guild).active.set(active)
+
+    async def _close_shared_piece_message(self, guild: discord.Guild, message_id: int, entry: dict):
+        """Cosmetically close out a shared-mode piece message once its claim
+        window has elapsed: show who claimed it and strip the reaction so
+        late reactors don't think they can still claim it. Purely cosmetic
+        -- credit was already awarded as each reaction came in, so any
+        failure here is logged and otherwise ignored."""
+        channel_id = await self.config.guild(guild).channel_id()
+        channel = guild.get_channel(channel_id) if channel_id else None
+        if channel is None:
+            return
+        try:
+            message = await channel.fetch_message(message_id)
+            claimants = entry.get("claimants", [])
+            names = []
+            for user_id in claimants[:15]:
+                member = guild.get_member(user_id)
+                names.append(member.mention if member else f"<@{user_id}>")
+            if not names:
+                description = "This piece's claim window closed \N{EM DASH} nobody claimed it."
+            else:
+                extra = len(claimants) - len(names)
+                suffix = f" (+{extra} more)" if extra > 0 else ""
+                description = "Claim window closed. Claimed by: " + ", ".join(names) + suffix
+
+            new_embed = discord.Embed(
+                title="Puzzle piece \N{EM DASH} claim window closed",
+                description=description,
+                color=discord.Color.dark_grey(),
+            )
+            new_embed.set_image(url="attachment://piece.png")
+            await message.edit(embed=new_embed, attachments=message.attachments)
+            try:
+                await message.clear_reactions()
+            except discord.HTTPException:
+                pass
+        except Exception:
+            log.exception(
+                "Failed to close a shared puzzle piece message in guild %s (message %s)", guild.id, message_id
+            )
 
     async def _finish_round(self, guild: discord.Guild, winners: list):
         channel_id = await self.config.guild(guild).channel_id()
@@ -444,16 +608,34 @@ class Puzzle(commands.Cog):
                 image_dir, active["img_w"], active["img_h"], active["piece_rows"]
             )
 
-        if channel is not None and winners:
+        if winners:
             mentions = []
             for user_id in winners:
                 member = guild.get_member(user_id)
                 mentions.append(member.mention if member else f"<@{user_id}>")
             text = f"\N{PARTY POPPER} " + ", ".join(mentions) + " completed the puzzle!"
-            if full_image_path is not None:
-                await channel.send(text, file=discord.File(full_image_path, filename="completed.png"))
-            else:
-                await channel.send(text)
+
+            if channel is not None:
+                if full_image_path is not None:
+                    await channel.send(text, file=discord.File(full_image_path, filename="completed.png"))
+                else:
+                    await channel.send(text)
+
+            announce_channel_id = await self.config.guild(guild).announce_channel_id()
+            if announce_channel_id and announce_channel_id != channel_id:
+                announce_channel = guild.get_channel(announce_channel_id)
+                if announce_channel is not None:
+                    try:
+                        if full_image_path is not None:
+                            await announce_channel.send(
+                                text, file=discord.File(full_image_path, filename="completed.png")
+                            )
+                        else:
+                            await announce_channel.send(text)
+                    except discord.HTTPException:
+                        log.exception(
+                            "Failed to post the puzzle-completed announcement in guild %s", guild.id
+                        )
 
             role_id = await self.config.guild(guild).reward_role_id()
             if role_id:
@@ -487,7 +669,13 @@ class Puzzle(commands.Cog):
                                     guild.id,
                                 )
 
+            async with self.config.guild(guild).lifetime_stats() as stats:
+                for user_id in winners:
+                    entry = stats.setdefault(str(user_id), {"pieces_collected": 0, "puzzles_won": 0})
+                    entry["puzzles_won"] += 1
+
         await self.config.guild(guild).active.set(None)
+        await self._update_live_status(guild)
 
         next_id = await self._pick_next_image_id(guild)
         if next_id is None:
@@ -505,7 +693,7 @@ class Puzzle(commands.Cog):
             await channel.send(f"Starting a new puzzle with image #{next_id}!")
 
     # ------------------------------------------------------------------ #
-    # background loop
+    # background loops
     # ------------------------------------------------------------------ #
 
     @tasks.loop(minutes=CHECK_INTERVAL_MINUTES)
@@ -527,6 +715,45 @@ class Puzzle(commands.Cog):
 
     @background_loop.before_loop
     async def _before_background_loop(self):
+        await self.bot.wait_until_red_ready()
+
+    @tasks.loop(seconds=SHARED_SWEEP_INTERVAL_SECONDS)
+    async def shared_sweep_loop(self):
+        """Closes out shared-mode pieces once their claim window has
+        elapsed. Runs on its own short interval, separate from the (much
+        coarser) posting-schedule loop, since claim windows are typically
+        just a minute or two. Polls stored state rather than scheduling a
+        per-piece timer, so it recovers correctly even if the bot restarts
+        mid-window."""
+        for guild in self.bot.guilds:
+            to_close = []
+            try:
+                async with self._guild_lock(guild.id):
+                    active = await self._get_active(guild)
+                    if active is None:
+                        continue
+                    now = time.time()
+                    changed = False
+                    for msg_key, entry in list(active["open_messages"].items()):
+                        if entry.get("shared") and entry.get("window_minutes", 0) > 0:
+                            if now - entry["opened_ts"] >= entry["window_minutes"] * 60:
+                                to_close.append((msg_key, entry))
+                    for msg_key, _entry in to_close:
+                        del active["open_messages"][msg_key]
+                        changed = True
+                    if changed:
+                        await self.config.guild(guild).active.set(active)
+
+                # do the Discord API calls outside the lock so it's held as
+                # briefly as possible
+                for msg_key, entry in to_close:
+                    await self._close_shared_piece_message(guild, int(msg_key), entry)
+            except Exception:
+                log.exception("Error in puzzle shared-piece sweep for guild %s", guild.id)
+                continue
+
+    @shared_sweep_loop.before_loop
+    async def _before_shared_sweep_loop(self):
         await self.bot.wait_until_red_ready()
 
     # ------------------------------------------------------------------ #
@@ -554,13 +781,30 @@ class Puzzle(commands.Cog):
                 return
 
             msg_key = str(payload.message_id)
-            piece_index = active["open_messages"].pop(msg_key, None)
-            if piece_index is None:
-                return  # not an open piece message (already claimed, or unrelated)
+            entry = active["open_messages"].get(msg_key)
+            if entry is None:
+                return  # not an open piece message (already claimed/closed, or unrelated)
 
-            user_key = str(payload.member.id)
+            piece_index = entry["piece_index"]
+            shared = entry["shared"]
+            user_id = payload.member.id
+            user_key = str(user_id)
+
+            if shared:
+                if user_id in entry["claimants"]:
+                    return  # already credited for this piece; ignore repeat reacts
+                entry["claimants"].append(user_id)
+            else:
+                active["open_messages"].pop(msg_key, None)
+
+            is_new_distinct = piece_index not in active["inventories"].get(user_key, [])
             active["inventories"].setdefault(user_key, []).append(piece_index)
             await self.config.guild(guild).active.set(active)
+
+            if is_new_distinct:
+                async with self.config.guild(guild).lifetime_stats() as stats:
+                    lstats = stats.setdefault(user_key, {"pieces_collected": 0, "puzzles_won": 0})
+                    lstats["pieces_collected"] += 1
 
             total = sum(active["piece_rows"])
 
@@ -571,19 +815,43 @@ class Puzzle(commands.Cog):
             if channel is not None:
                 try:
                     message = await channel.fetch_message(payload.message_id)
-                    new_embed = discord.Embed(
-                        title="A new puzzle piece has appeared!",
-                        description=(
-                            f"React with {emoji} to claim it. "
-                            f"(Piece position {piece_index + 1} of {total}.)"
-                        ),
-                        color=discord.Color.green(),
-                    )
-                    # reuse the ORIGINAL attachment:// reference (not a re-fetched,
-                    # already-resolved CDN url) and explicitly keep the existing
-                    # attachment so the image can't get detached and show up bare
-                    new_embed.set_image(url="attachment://piece.png")
-                    new_embed.add_field(name="Claimed by", value=payload.member.mention, inline=False)
+                    if shared:
+                        names = []
+                        for cid in entry["claimants"][:15]:
+                            member = guild.get_member(cid)
+                            names.append(member.mention if member else f"<@{cid}>")
+                        extra = len(entry["claimants"]) - len(names)
+                        suffix = f" (+{extra} more)" if extra > 0 else ""
+                        window_minutes = entry.get("window_minutes", 0)
+                        new_embed = discord.Embed(
+                            title="A new puzzle piece has appeared!",
+                            description=(
+                                f"React with {emoji} within {window_minutes} minute(s) to claim it \N{EM DASH} "
+                                f"everyone who reacts in time gets credit! "
+                                f"(Piece position {piece_index + 1} of {total}.)"
+                            ),
+                            color=discord.Color.green(),
+                        )
+                        new_embed.set_image(url="attachment://piece.png")
+                        new_embed.add_field(
+                            name=f"Claimed so far ({len(entry['claimants'])})",
+                            value=", ".join(names) + suffix,
+                            inline=False,
+                        )
+                    else:
+                        new_embed = discord.Embed(
+                            title="A new puzzle piece has appeared!",
+                            description=(
+                                f"React with {emoji} to claim it. "
+                                f"(Piece position {piece_index + 1} of {total}.)"
+                            ),
+                            color=discord.Color.green(),
+                        )
+                        # reuse the ORIGINAL attachment:// reference (not a re-fetched,
+                        # already-resolved CDN url) and explicitly keep the existing
+                        # attachment so the image can't get detached and show up bare
+                        new_embed.set_image(url="attachment://piece.png")
+                        new_embed.add_field(name="Claimed by", value=payload.member.mention, inline=False)
                     await message.edit(embed=new_embed, attachments=message.attachments)
                 except Exception:
                     log.exception(
@@ -596,8 +864,8 @@ class Puzzle(commands.Cog):
             distinct = set(active["inventories"][user_key])
             winners_count = await self.config.guild(guild).winners_count()
 
-            if len(distinct) >= total and payload.member.id not in active["completions"]:
-                active["completions"].append(payload.member.id)
+            if len(distinct) >= total and user_id not in active["completions"]:
+                active["completions"].append(user_id)
                 await self.config.guild(guild).active.set(active)
                 if channel is not None:
                     await channel.send(
@@ -606,6 +874,8 @@ class Puzzle(commands.Cog):
                     )
                 if len(active["completions"]) >= winners_count:
                     finished_winners = list(active["completions"])
+
+        await self._update_live_status(guild)
 
         if finished_winners is not None:
             await self._finish_round(guild, finished_winners)
@@ -622,7 +892,8 @@ class Puzzle(commands.Cog):
     @puzzle.command(name="addimage")
     @checks.admin_or_permissions(manage_guild=True)
     async def puzzle_addimage(self, ctx: commands.Context, size: Optional[str] = None):
-        """Add an image to the puzzle pool. Attach the image with this command.
+        """Add one or more images to the puzzle pool. Attach one or more
+        images with this command; they'll all use the same size.
 
         `size` is optional and can be either:
         - a piece count, e.g. `7` (2-{max} pieces, auto-arranged into rows)
@@ -630,9 +901,13 @@ class Puzzle(commands.Cog):
 
         If omitted, uses the server's default from `[p]puzzle setpieces`
         (or {default} pieces if that's never been set).
+
+        Images that are byte-for-byte identical to one already in the pool
+        are skipped automatically, so attaching the same file twice by
+        accident won't create a duplicate entry.
         """.format(max=MAX_PIECE_COUNT, default=DEFAULT_PIECE_COUNT)
         if not ctx.message.attachments:
-            await ctx.send("Attach an image with this command.")
+            await ctx.send("Attach one or more images with this command.")
             return
 
         if size is None:
@@ -647,33 +922,53 @@ class Puzzle(commands.Cog):
                 )
                 return
 
-        attachment = ctx.message.attachments[0]
-        if not (attachment.content_type or "").startswith("image/"):
-            await ctx.send("That attachment doesn't look like an image.")
-            return
+        added, skipped_dupe, failed = [], [], []
 
-        data = await attachment.read()
+        for attachment in ctx.message.attachments:
+            if not (attachment.content_type or "").startswith("image/"):
+                failed.append(f"{attachment.filename} (not an image)")
+                continue
 
-        image_id = await self.config.guild(ctx.guild).next_id()
-        await self.config.guild(ctx.guild).next_id.set(image_id + 1)
+            data = await attachment.read()
+            image_hash = hashlib.sha256(data).hexdigest()
 
-        try:
-            out_dir = self._image_dir(ctx.guild.id, image_id)
-            piece_count, img_w, img_h = self._slice_image(data, rows, out_dir)
-        except Exception as e:
-            await ctx.send(f"Couldn't process that image: {e}")
-            return
+            pool = await self.config.guild(ctx.guild).pool()
+            dupe_id = next((eid for eid, meta in pool.items() if meta.get("image_hash") == image_hash), None)
+            if dupe_id is not None:
+                skipped_dupe.append(f"{attachment.filename} (matches existing #{dupe_id})")
+                continue
 
-        async with self.config.guild(ctx.guild).pool() as pool:
-            pool[str(image_id)] = {
-                "piece_rows": rows,
-                "img_w": img_w,
-                "img_h": img_h,
-                "added_by": ctx.author.id,
-                "filename": attachment.filename,
-            }
+            image_id = await self.config.guild(ctx.guild).next_id()
+            await self.config.guild(ctx.guild).next_id.set(image_id + 1)
 
-        await ctx.send(f"Added image **#{image_id}** to the pool ({piece_count} pieces).")
+            try:
+                out_dir = self._image_dir(ctx.guild.id, image_id)
+                piece_count, img_w, img_h = self._slice_image(data, rows, out_dir)
+            except Exception as e:
+                failed.append(f"{attachment.filename} ({e})")
+                continue
+
+            async with self.config.guild(ctx.guild).pool() as pool:
+                pool[str(image_id)] = {
+                    "piece_rows": rows,
+                    "img_w": img_w,
+                    "img_h": img_h,
+                    "added_by": ctx.author.id,
+                    "filename": attachment.filename,
+                    "image_hash": image_hash,
+                }
+            added.append(f"#{image_id} ({piece_count} pieces)")
+
+        lines = []
+        if added:
+            lines.append("Added: " + ", ".join(added))
+        if skipped_dupe:
+            lines.append("Skipped as duplicates: " + ", ".join(skipped_dupe))
+        if failed:
+            lines.append("Failed: " + ", ".join(failed))
+        if not lines:
+            lines.append("Nothing was added.")
+        await ctx.send("\n".join(lines))
 
     @puzzle.command(name="setpieces")
     @checks.admin_or_permissions(manage_guild=True)
@@ -694,6 +989,112 @@ class Puzzle(commands.Cog):
             f"Images added from now on (without their own size) will use {count} pieces. "
             "Existing pool images and the current puzzle, if any, are unaffected."
         )
+
+    @puzzle.command(name="setsharedmode")
+    @checks.admin_or_permissions(manage_guild=True)
+    async def puzzle_setsharedmode(self, ctx: commands.Context, on_off: bool):
+        """Turn shared-credit mode on or off.
+
+        When on, everyone who reacts to a piece within the claim window
+        (see `[p]puzzle setsharedwindow`) gets credit for it, not just the
+        first person -- so a round can end with multiple simultaneous
+        winners more easily. When off (the default), it's back to
+        first-come-first-claimed.
+
+        Only affects pieces posted AFTER this changes -- a piece already
+        posted keeps whatever mode was active when it went up.
+        """
+        await self.config.guild(ctx.guild).shared_mode.set(on_off)
+        if on_off:
+            window = await self.config.guild(ctx.guild).shared_window_minutes()
+            await ctx.send(
+                f"Shared mode is now ON. New pieces will stay claimable by everyone for {window} minute(s)."
+            )
+        else:
+            await ctx.send("Shared mode is now OFF. New pieces go back to first-come-first-claimed.")
+
+    @puzzle.command(name="setsharedwindow")
+    @checks.admin_or_permissions(manage_guild=True)
+    async def puzzle_setsharedwindow(self, ctx: commands.Context, minutes: float):
+        """Set how many minutes a piece stays open for shared credit.
+
+        Only matters when shared mode is on (`[p]puzzle setsharedmode`),
+        and only affects pieces posted after this changes.
+        """
+        if minutes <= 0 or minutes > 60:
+            await ctx.send("Must be greater than 0 and at most 60 minutes.")
+            return
+        await self.config.guild(ctx.guild).shared_window_minutes.set(minutes)
+        await ctx.send(f"New shared-mode pieces will stay claimable for {minutes} minute(s).")
+
+    @puzzle.command(name="setannouncechannel")
+    @checks.admin_or_permissions(manage_guild=True)
+    async def puzzle_setannouncechannel(self, ctx: commands.Context, channel: Optional[discord.TextChannel] = None):
+        """Set (or clear, if no channel given) a channel where puzzle
+        completions are ALSO posted, in addition to the channel pieces are
+        collected in. Useful when the collection channel is busy enough
+        that a completion announcement gets buried quickly.
+        """
+        await self.config.guild(ctx.guild).announce_channel_id.set(channel.id if channel else None)
+        if channel:
+            await ctx.send(f"Puzzle completions will also be announced in {channel.mention}.")
+        else:
+            await ctx.send("Announcement channel cleared \N{EM DASH} completions will only post in the collection channel.")
+
+    @puzzle.group(name="livestatus")
+    async def puzzle_livestatus(self, ctx: commands.Context):
+        """Manage the auto-updating live puzzle status message."""
+
+    @puzzle_livestatus.command(name="enable")
+    @checks.admin_or_permissions(manage_guild=True)
+    async def puzzle_livestatus_enable(self, ctx: commands.Context, channel: Optional[discord.TextChannel] = None):
+        """Post a status message in `channel` (or the current channel) that
+        automatically updates with live standings every time a piece is
+        claimed, so people don't have to keep running `[p]puzzle status`.
+        """
+        channel = channel or ctx.channel
+        active = await self._get_active(ctx.guild)
+        embed = await self._render_status_embed(ctx.guild, active)
+        try:
+            message = await channel.send(embed=embed)
+        except discord.HTTPException as e:
+            await ctx.send(f"Couldn't post the status message: {e}")
+            return
+        await self.config.guild(ctx.guild).live_status_channel_id.set(channel.id)
+        await self.config.guild(ctx.guild).live_status_message_id.set(message.id)
+        await ctx.send(f"Live status enabled in {channel.mention}. It'll update automatically as pieces are claimed.")
+
+    @puzzle_livestatus.command(name="disable")
+    @checks.admin_or_permissions(manage_guild=True)
+    async def puzzle_livestatus_disable(self, ctx: commands.Context):
+        """Stop auto-updating the live status message. The last posted
+        message is left in place as-is, just no longer refreshed."""
+        await self.config.guild(ctx.guild).live_status_channel_id.set(None)
+        await self.config.guild(ctx.guild).live_status_message_id.set(None)
+        await ctx.send("Live status tracking disabled. The last posted message is left as-is.")
+
+    @puzzle.command(name="leaderboard", aliases=["lb"])
+    async def puzzle_leaderboard(self, ctx: commands.Context):
+        """Show the all-time puzzle leaderboard: most puzzles won, then
+        most pieces collected, across every round ever played here."""
+        stats = await self.config.guild(ctx.guild).lifetime_stats()
+        if not stats:
+            await ctx.send("No puzzle history yet.")
+            return
+        ranked = sorted(
+            stats.items(),
+            key=lambda kv: (-kv[1].get("puzzles_won", 0), -kv[1].get("pieces_collected", 0)),
+        )
+        lines = ["**Puzzle leaderboard**"]
+        for i, (user_id_str, s) in enumerate(ranked[:10], start=1):
+            user_id = int(user_id_str)
+            member = ctx.guild.get_member(user_id)
+            name = member.display_name if member else f"User {user_id}"
+            lines.append(
+                f"{i}. {name} \N{EM DASH} {s.get('puzzles_won', 0)} puzzle(s) won, "
+                f"{s.get('pieces_collected', 0)} pieces collected"
+            )
+        await ctx.send("\n".join(lines))
 
     @puzzle.command(name="delimage")
     @checks.admin_or_permissions(manage_guild=True)
@@ -759,59 +1160,67 @@ class Puzzle(commands.Cog):
     @checks.admin_or_permissions(manage_guild=True)
     async def puzzle_migratepool(self, ctx: commands.Context):
         """One-time cleanup: convert any pool images still using the old
-        `grid_x`/`grid_y` format (from before variable piece counts) to
-        the current format. Safe to run any time, including if there's
-        nothing to convert -- it only touches old-format entries.
+        `grid_x`/`grid_y` format to the current format, and backfill
+        duplicate-detection hashes for images added before that feature
+        existed. Safe to run any time, including if there's nothing to do
+        -- it only touches entries that actually need updating.
 
-        This does NOT re-slice or re-crop any images; it just relabels
-        their existing grid as an equivalent row layout, so existing
-        piece images and any claimed pieces are untouched.
+        Format conversion does NOT re-slice or re-crop any images; it just
+        relabels their existing grid as an equivalent row layout, so
+        existing piece images and any claimed pieces are untouched. Hash
+        backfilling is best-effort: it's computed from the stored image
+        rather than the original upload (which isn't kept around), so it
+        may not catch every duplicate a freshly-added image would.
         """
         converted = 0
         skipped = []
 
         async with self.config.guild(ctx.guild).pool() as pool:
             for image_id_str, meta in pool.items():
-                if "piece_rows" in meta:
-                    continue  # already on the current format
-
-                grid_x = meta.pop("grid_x", None)
-                grid_y = meta.pop("grid_y", None)
-                if grid_x is None or grid_y is None:
-                    skipped.append(image_id_str)
-                    continue
-
                 image_dir = self._image_dir(ctx.guild.id, int(image_id_str))
-                # an old-format image's grid IS a valid (rectangular) row
-                # layout already -- grid_y rows of grid_x pieces each
-                rows = [grid_x] * grid_y
+                changed = False
 
-                full_path = image_dir / "full.png"
-                if not full_path.exists():
-                    # reconstruct once using the OLD (uniform-grid) paste
-                    # math, since that's how this image was actually sliced
-                    piece_paths = [image_dir / f"piece_{i}.png" for i in range(grid_x * grid_y)]
-                    if not all(p.exists() for p in piece_paths):
+                if "piece_rows" not in meta:
+                    grid_x = meta.pop("grid_x", None)
+                    grid_y = meta.pop("grid_y", None)
+                    if grid_x is None or grid_y is None:
                         skipped.append(image_id_str)
                         continue
-                    with Image.open(piece_paths[0]) as sample:
-                        piece_w, piece_h = sample.size
-                    canvas = Image.new("RGBA", (piece_w * grid_x, piece_h * grid_y))
-                    for i, piece_path in enumerate(piece_paths):
-                        row, col = divmod(i, grid_x)
-                        with Image.open(piece_path) as piece_img:
-                            canvas.paste(piece_img, (col * piece_w, row * piece_h))
-                    canvas.save(full_path)
+                    rows = [grid_x] * grid_y
 
-                with Image.open(full_path) as full_img:
-                    img_w, img_h = full_img.size
+                    full_path = image_dir / "full.png"
+                    if not full_path.exists():
+                        piece_paths = [image_dir / f"piece_{i}.png" for i in range(grid_x * grid_y)]
+                        if not all(p.exists() for p in piece_paths):
+                            skipped.append(image_id_str)
+                            continue
+                        with Image.open(piece_paths[0]) as sample:
+                            piece_w, piece_h = sample.size
+                        canvas = Image.new("RGBA", (piece_w * grid_x, piece_h * grid_y))
+                        for i, piece_path in enumerate(piece_paths):
+                            row, col = divmod(i, grid_x)
+                            with Image.open(piece_path) as piece_img:
+                                canvas.paste(piece_img, (col * piece_w, row * piece_h))
+                        canvas.save(full_path)
 
-                meta["piece_rows"] = rows
-                meta["img_w"] = img_w
-                meta["img_h"] = img_h
-                converted += 1
+                    with Image.open(full_path) as full_img:
+                        img_w, img_h = full_img.size
 
-        msg = f"Converted {converted} image(s) to the current format."
+                    meta["piece_rows"] = rows
+                    meta["img_w"] = img_w
+                    meta["img_h"] = img_h
+                    changed = True
+
+                if "image_hash" not in meta:
+                    full_path = image_dir / "full.png"
+                    if full_path.exists():
+                        meta["image_hash"] = hashlib.sha256(full_path.read_bytes()).hexdigest()
+                        changed = True
+
+                if changed:
+                    converted += 1
+
+        msg = f"Converted/updated {converted} image(s)."
         if skipped:
             msg += (
                 f" Couldn't convert {len(skipped)} image(s) (missing files): "
@@ -861,6 +1270,7 @@ class Puzzle(commands.Cog):
         if task is not None:
             task.cancel()
         await self.config.guild(ctx.guild).active.set(None)
+        await self._update_live_status(ctx.guild)
         await ctx.send("Puzzle stopped and reset. The pool and settings are untouched.")
 
     @puzzle.command(name="skip")
@@ -991,7 +1401,9 @@ class Puzzle(commands.Cog):
     @puzzle.command(name="mypieces", aliases=["mine", "collection"])
     async def puzzle_mypieces(self, ctx: commands.Context, member: Optional[discord.Member] = None):
         """See how many distinct pieces you (or someone else) have collected
-        for the current puzzle, with an image preview of your progress."""
+        for the current puzzle, with an image preview of your progress.
+        Pieces you're still missing are numbered in the preview so you
+        know exactly which ones to watch for."""
         member = member or ctx.author
         active = await self._get_active(ctx.guild)
         if active is None:
@@ -1083,10 +1495,17 @@ class Puzzle(commands.Cog):
         claim_emoji = await guild_conf.claim_emoji()
         winners_count = await guild_conf.winners_count()
         next_piece_count = await guild_conf.next_piece_count()
+        shared_mode = await guild_conf.shared_mode()
+        shared_window_minutes = await guild_conf.shared_window_minutes()
+        announce_channel_id = await guild_conf.announce_channel_id()
+        live_status_channel_id = await guild_conf.live_status_channel_id()
         pool = await guild_conf.pool()
 
         channel = ctx.guild.get_channel(channel_id) if channel_id else None
         role = ctx.guild.get_role(reward_role_id) if reward_role_id else None
+        announce_channel = ctx.guild.get_channel(announce_channel_id) if announce_channel_id else None
+        live_status_channel = ctx.guild.get_channel(live_status_channel_id) if live_status_channel_id else None
+
         lines = [
             f"Channel: {channel.mention if channel else 'not set'}",
             f"Interval: random between {interval_min_hours} and {interval_max_hours} hour(s)",
@@ -1094,6 +1513,9 @@ class Puzzle(commands.Cog):
             f"Winners needed to end a puzzle: {winners_count}",
             f"Winner role: {role.name if role else 'not set'}",
             f"Default pieces for new images (no explicit size): {next_piece_count or DEFAULT_PIECE_COUNT}",
+            f"Shared mode: {'ON, ' + str(shared_window_minutes) + ' minute(s) per piece' if shared_mode else 'off'}",
+            f"Announcement channel: {announce_channel.mention if announce_channel else 'not set'}",
+            f"Live status: {('enabled in ' + live_status_channel.mention) if live_status_channel else 'off'}",
             f"Images in pool: {len(pool)}",
         ]
         await ctx.send("\n".join(lines))
