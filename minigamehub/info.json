@@ -1,0 +1,11 @@
+{
+    "author": ["evac"],
+    "min_bot_version": "3.5.0",
+    "description": "Unified minigame spawner replacing cashdrop, hunting, lootdrop, and pupper. Spawns pet, mathdrop, hunt, lootdrop, reacttowin, and boss battle events in one fixed channel, with activity gating, per-user payout pacing, and a diagnostics command for tuning.",
+    "hidden": false,
+    "install_msg": "Thanks for installing MinigameHub!\n\nBefore enabling: `.minigamehub channel #your-channel` to confirm the spawn channel (defaults to the general chat channel from the design doc), then `.minigamehub toggle` to start spawning.\n\nReplacing cashdrop/hunting/lootdrop/pupper: just unload the four old cogs once you're happy with MinigameHub's defaults (already tuned to roughly match them) -- there's no settings migration since the schemas don't line up 1:1.\n\nRun `.minigamehub diagnostics` after a few days live to get tuned frequency/reward/cap suggestions based on your server's real activity.",
+    "name": "MinigameHub",
+    "short": "Unified, config-driven minigame spawner (pet/mathdrop/hunt/lootdrop/reacttowin/boss).",
+    "end_user_data_statement": "This cog stores per-user game statistics (wins, streaks, boss damage, daily payout totals) and per-guild configuration. Use `.minigamehub wipestats` or `[p]mydata` to remove your data.",
+    "tags": ["economy", "games", "minigame", "fun"]
+}
