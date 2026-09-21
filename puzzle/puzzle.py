@@ -896,16 +896,16 @@ class Puzzle(commands.Cog):
         images with this command; they'll all use the same size.
 
         `size` is optional and can be either:
-        - a piece count, e.g. `7` (2-{max} pieces, auto-arranged into rows)
+        - a piece count, e.g. `7` (2-25 pieces, auto-arranged into rows)
         - an explicit grid, e.g. `4x4` (each side 2-10, an exact rectangle)
 
         If omitted, uses the server's default from `[p]puzzle setpieces`
-        (or {default} pieces if that's never been set).
+        (or 9 pieces if that's never been set).
 
         Images that are byte-for-byte identical to one already in the pool
         are skipped automatically, so attaching the same file twice by
         accident won't create a duplicate entry.
-        """.format(max=MAX_PIECE_COUNT, default=DEFAULT_PIECE_COUNT)
+        """
         if not ctx.message.attachments:
             await ctx.send("Attach one or more images with this command.")
             return
