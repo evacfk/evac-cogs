@@ -14,6 +14,13 @@ PARAM_SCHEMA maps game_key -> list of param specs:
   path:    single Config key (str) for scalar kinds, or a (min_key, max_key)
            tuple for "range_int"
   choices: allowed values, only for kind == "choice"
+  unit:    optional, "minutes" -- the field is stored in seconds (Config,
+           game logic) but shown/edited in minutes here, same convention as
+           `.minigamehub game <key> frequency` and `.minigamehub
+           activitywindow`. Reserved for "how often"/"how long the whole
+           event runs" fields (spawn frequency, boss fight duration); short
+           per-action timeouts (response_timeout, attack_cooldown, etc.) stay
+           in seconds since minutes would just be awkward decimals there.
 """
 from typing import Optional
 
@@ -30,7 +37,7 @@ GAME_LABELS = {
 
 PARAM_SCHEMA = {
     "pet": [
-        {"key": "frequency", "label": "Spawn frequency (sec)", "kind": "range_int", "path": ("min_frequency", "max_frequency")},
+        {"key": "frequency", "label": "Spawn frequency (min)", "kind": "range_int", "path": ("min_frequency", "max_frequency"), "unit": "minutes"},
         {"key": "reward_range", "label": "Reward range", "kind": "range_int", "path": ("reward_range.0", "reward_range.1")},
         {"key": "window_seconds", "label": "Claim window (sec)", "kind": "int", "path": "window_seconds"},
         {"key": "pet_reaction", "label": "Pet reaction emoji", "kind": "str", "path": "pet_reaction"},
@@ -38,13 +45,13 @@ PARAM_SCHEMA = {
         {"key": "goodbye_message", "label": "Goodbye message", "kind": "str", "path": "goodbye_message"},
     ],
     "mathdrop": [
-        {"key": "frequency", "label": "Spawn frequency (sec)", "kind": "range_int", "path": ("min_frequency", "max_frequency")},
+        {"key": "frequency", "label": "Spawn frequency (min)", "kind": "range_int", "path": ("min_frequency", "max_frequency"), "unit": "minutes"},
         {"key": "reward_range", "label": "Reward range", "kind": "range_int", "path": ("reward_range.0", "reward_range.1")},
         {"key": "response_timeout", "label": "Answer timeout (sec)", "kind": "int", "path": "response_timeout"},
         {"key": "timeout_message", "label": "Timeout message", "kind": "str", "path": "timeout_message"},
     ],
     "hunt": [
-        {"key": "frequency", "label": "Spawn frequency (sec)", "kind": "range_int", "path": ("min_frequency", "max_frequency")},
+        {"key": "frequency", "label": "Spawn frequency (min)", "kind": "range_int", "path": ("min_frequency", "max_frequency"), "unit": "minutes"},
         {"key": "reward_range", "label": "Reward range", "kind": "range_int", "path": ("reward_range.0", "reward_range.1")},
         {"key": "response_timeout", "label": "Response timeout (sec)", "kind": "int", "path": "response_timeout"},
         {"key": "trigger_mode", "label": "Trigger mode", "kind": "choice", "path": "trigger_mode", "choices": ["both", "word", "reaction"]},
@@ -54,7 +61,7 @@ PARAM_SCHEMA = {
         {"key": "safe_reaction", "label": "Safe reaction emoji", "kind": "str", "path": "safe_reaction"},
     ],
     "lootdrop": [
-        {"key": "frequency", "label": "Spawn frequency (sec)", "kind": "range_int", "path": ("min_frequency", "max_frequency")},
+        {"key": "frequency", "label": "Spawn frequency (min)", "kind": "range_int", "path": ("min_frequency", "max_frequency"), "unit": "minutes"},
         {"key": "reward_range", "label": "Reward range", "kind": "range_int", "path": ("reward_range.0", "reward_range.1")},
         {"key": "bad_outcome_chance", "label": "Bad outcome chance (%)", "kind": "int", "path": "bad_outcome_chance"},
         {"key": "streak_bonus", "label": "Streak bonus (% per streak)", "kind": "int", "path": "streak_bonus"},
@@ -66,15 +73,15 @@ PARAM_SCHEMA = {
         {"key": "party_drop_timeout", "label": "Party drop timeout (sec)", "kind": "int", "path": "party_drop_timeout"},
     ],
     "reacttowin": [
-        {"key": "frequency", "label": "Spawn frequency (sec)", "kind": "range_int", "path": ("min_frequency", "max_frequency")},
+        {"key": "frequency", "label": "Spawn frequency (min)", "kind": "range_int", "path": ("min_frequency", "max_frequency"), "unit": "minutes"},
         {"key": "reward_range", "label": "Reward range", "kind": "range_int", "path": ("reward_range.0", "reward_range.1")},
         {"key": "response_timeout", "label": "Click timeout (sec)", "kind": "int", "path": "response_timeout"},
         {"key": "streak_bonus_pct", "label": "Streak bonus (% per streak)", "kind": "int", "path": "streak_bonus_pct"},
         {"key": "spawn_message", "label": "Spawn message", "kind": "str", "path": "spawn_message"},
     ],
     "boss": [
-        {"key": "frequency", "label": "Spawn frequency (sec)", "kind": "range_int", "path": ("min_frequency", "max_frequency")},
-        {"key": "fight_duration", "label": "Fight duration (sec)", "kind": "int", "path": "fight_duration"},
+        {"key": "frequency", "label": "Spawn frequency (min)", "kind": "range_int", "path": ("min_frequency", "max_frequency"), "unit": "minutes"},
+        {"key": "fight_duration", "label": "Fight duration (min)", "kind": "int", "path": "fight_duration", "unit": "minutes"},
         {"key": "hp_update_interval", "label": "HP bar update interval (sec)", "kind": "int", "path": "hp_update_interval"},
         {"key": "attack_cooldown", "label": "Per-user attack cooldown (sec)", "kind": "float", "path": "attack_cooldown"},
         {"key": "hit_chance", "label": "Hit chance (%)", "kind": "int", "path": "hit_chance"},
@@ -99,12 +106,26 @@ def _set_path(game_conf: dict, path, value) -> None:
         game_conf[path] = value
 
 
+def _to_display(seconds) -> float:
+    return round(seconds / 60, 2)
+
+
+def _to_storage(minutes) -> int:
+    return round(minutes * 60)
+
+
 def _display_value(game_conf: dict, spec: dict) -> str:
+    unit_suffix = " min" if spec.get("unit") == "minutes" else ""
     if spec["kind"] == "range_int":
         lo = _get_path(game_conf, spec["path"][0])
         hi = _get_path(game_conf, spec["path"][1])
+        if spec.get("unit") == "minutes":
+            return f"{_to_display(lo):g}-{_to_display(hi):g} min"
         return f"{lo}-{hi}"
-    return str(_get_path(game_conf, spec["path"]))
+    value = _get_path(game_conf, spec["path"])
+    if spec.get("unit") == "minutes":
+        return f"{_to_display(value):g} min"
+    return f"{value}{unit_suffix}"
 
 
 class _GameSelect(discord.ui.Select):
@@ -152,21 +173,29 @@ class _ParamModal(discord.ui.Modal):
         super().__init__(title=spec["label"][:45])
         self.parent_view = parent_view
         self.spec = spec
+        is_minutes = spec.get("unit") == "minutes"
         if spec["kind"] == "range_int":
             lo = _get_path(game_conf, spec["path"][0])
             hi = _get_path(game_conf, spec["path"][1])
-            self.min_input = discord.ui.TextInput(label="Minimum", default=str(lo))
-            self.max_input = discord.ui.TextInput(label="Maximum", default=str(hi))
+            if is_minutes:
+                lo, hi = _to_display(lo), _to_display(hi)
+            min_label = "Minimum (min)" if is_minutes else "Minimum"
+            max_label = "Maximum (min)" if is_minutes else "Maximum"
+            self.min_input = discord.ui.TextInput(label=min_label, default=f"{lo:g}")
+            self.max_input = discord.ui.TextInput(label=max_label, default=f"{hi:g}")
             self.add_item(self.min_input)
             self.add_item(self.max_input)
         else:
             current = _get_path(game_conf, spec["path"])
+            if is_minutes:
+                current = _to_display(current)
             label = spec["label"][:45]
             if spec["kind"] == "choice":
                 label = f"{label} ({'/'.join(spec['choices'])})"[:45]
             long_text = spec["kind"] == "str" and len(str(current)) > 80
+            default = f"{current:g}" if is_minutes else str(current)
             self.value_input = discord.ui.TextInput(
-                label=label, default=str(current),
+                label=label, default=default,
                 style=discord.TextStyle.paragraph if long_text else discord.TextStyle.short,
                 max_length=None if long_text else 200,
             )
@@ -176,18 +205,24 @@ class _ParamModal(discord.ui.Modal):
         config = self.parent_view.config
         guild = self.parent_view.guild
         spec = self.spec
+        is_minutes = spec.get("unit") == "minutes"
         try:
             async with config.guild(guild).games() as games:
                 game_conf = games[self.parent_view.game_key]
                 if spec["kind"] == "range_int":
-                    lo = int(self.min_input.value)
-                    hi = int(self.max_input.value)
+                    lo = float(self.min_input.value)
+                    hi = float(self.max_input.value)
                     if lo < 0 or hi < lo:
                         raise ValueError("minimum must be >= 0 and maximum >= minimum")
+                    if is_minutes:
+                        lo, hi = _to_storage(lo), _to_storage(hi)
+                    else:
+                        lo, hi = int(lo), int(hi)
                     _set_path(game_conf, spec["path"][0], lo)
                     _set_path(game_conf, spec["path"][1], hi)
                 elif spec["kind"] == "int":
-                    _set_path(game_conf, spec["path"], int(self.value_input.value))
+                    val = float(self.value_input.value)
+                    _set_path(game_conf, spec["path"], _to_storage(val) if is_minutes else int(val))
                 elif spec["kind"] == "float":
                     _set_path(game_conf, spec["path"], float(self.value_input.value))
                 elif spec["kind"] == "choice":

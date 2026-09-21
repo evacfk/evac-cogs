@@ -31,11 +31,17 @@ def _pick_tier(tiers: dict) -> tuple:
     return key, tiers[key]
 
 
-def _hp_bar(current: int, maximum: int, width: int = 20) -> str:
+def _hp_bar(current: int, maximum: int, width: int = 10) -> str:
+    """Colored square emoji instead of Unicode block-drawing characters --
+    `█`/`░` render almost identically at embed-description size in Discord's
+    default font (a full bar and an empty bar looked the same), emoji squares
+    don't have that problem and also give a free color cue on HP remaining."""
     if maximum <= 0:
         return "[error]"
     filled = max(0, min(width, round(width * current / maximum)))
-    return "█" * filled + "░" * (width - filled)
+    pct = current / maximum
+    fill = "\U0001F7E9" if pct > 0.5 else ("\U0001F7E8" if pct > 0.2 else "\U0001F7E5")  # 🟩/🟨/🟥
+    return fill * filled + "⬛" * (width - filled)  # ⬛
 
 
 class _BossView(discord.ui.View):
@@ -113,7 +119,7 @@ class _BossView(discord.ui.View):
             title = "\U0001F9EA [TEST] " + title
         embed = discord.Embed(
             title=title,
-            description=f"`{_hp_bar(self.hp, self.max_hp)}` {self.hp}/{self.max_hp} HP\n\n{status}",
+            description=f"{_hp_bar(self.hp, self.max_hp)}\n{self.hp}/{self.max_hp} HP\n\n{status}",
             color=discord.Color.red() if self.hp > 0 else discord.Color.green(),
         )
         embed.set_footer(text=f"Tier: {self.tier_key} | Attackers: {len(self.attackers)}")
@@ -146,7 +152,7 @@ async def spawn(cog, channel: discord.TextChannel, game_conf: dict, dry_run: boo
         max_hp = random.randint(*tier["hp"])
 
         view = _BossView(cog, scenario, tier_key, tier, max_hp, game_conf, guild, dry_run=dry_run)
-        message = await channel.send(embed=view.build_embed("Fight starting -- click Attack!"))
+        message = await channel.send(embed=view.build_embed("Fight starting -- click Attack!"), view=view)
         view.message = message
 
         render_task = asyncio.create_task(view.render_loop())

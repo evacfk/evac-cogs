@@ -212,17 +212,18 @@ class MinigameHub(commands.Cog):
         await ctx.send(f"Spawn channel set to {channel.mention}.")
 
     @minigamehub.command(name="activitywindow")
-    async def mgh_activitywindow(self, ctx: commands.Context, seconds: Optional[int] = None):
-        """Show or set how recently a message must have appeared for spawns to fire."""
-        if seconds is None:
+    async def mgh_activitywindow(self, ctx: commands.Context, minutes: Optional[float] = None):
+        """Show or set how recently a message must have appeared for spawns to fire (in minutes)."""
+        if minutes is None:
             current = await self.config.guild(ctx.guild).activity_window()
-            await ctx.send(f"Current activity window: {_fmt_secs(current)}.")
+            await ctx.send(f"Current activity window: {current / 60:.2f} min ({_fmt_secs(current)}).")
             return
+        seconds = round(minutes * 60)
         if seconds < 10:
-            await ctx.send("That's too short -- pick at least 10 seconds.")
+            await ctx.send("That's too short -- pick at least 1/6 of a minute (10 seconds).")
             return
         await self.config.guild(ctx.guild).activity_window.set(seconds)
-        await ctx.send(f"Activity window set to {_fmt_secs(seconds)}.")
+        await ctx.send(f"Activity window set to {minutes:g} min ({_fmt_secs(seconds)}).")
 
     @minigamehub.command(name="settings")
     async def mgh_settings(self, ctx: commands.Context):
@@ -287,19 +288,22 @@ class MinigameHub(commands.Cog):
         await ctx.send(f"`{game_key}` is now **{state}**.")
 
     @mgh_game.command(name="frequency")
-    async def mgh_game_frequency(self, ctx: commands.Context, game_key: str, min_seconds: int, max_seconds: int):
-        """Set how often (in seconds) one game type can spawn."""
+    async def mgh_game_frequency(self, ctx: commands.Context, game_key: str, min_minutes: float, max_minutes: float):
+        """Set how often (in minutes) one game type can spawn -- a random point
+        between min and max is picked each time. Checked against the activity
+        window separately, so this is "how often it's eligible", not a guarantee."""
         game_key = game_key.lower()
         if game_key not in GAME_KEYS:
             await ctx.send(f"Unknown game key. Choose from: {humanize_list(GAME_KEYS)}")
             return
+        min_seconds, max_seconds = round(min_minutes * 60), round(max_minutes * 60)
         if min_seconds <= 0 or max_seconds < min_seconds:
-            await ctx.send("min_seconds must be positive and max_seconds >= min_seconds.")
+            await ctx.send("min_minutes must be positive and max_minutes >= min_minutes.")
             return
         async with self.config.guild(ctx.guild).games() as games:
             games[game_key]["min_frequency"] = min_seconds
             games[game_key]["max_frequency"] = max_seconds
-        await ctx.send(f"`{game_key}` frequency set to {_fmt_secs(min_seconds)}-{_fmt_secs(max_seconds)}.")
+        await ctx.send(f"`{game_key}` frequency set to {min_minutes:g}-{max_minutes:g} min ({_fmt_secs(min_seconds)}-{_fmt_secs(max_seconds)}).")
 
     @mgh_game.command(name="reward")
     async def mgh_game_reward(self, ctx: commands.Context, game_key: str, min_amount: int, max_amount: int):
