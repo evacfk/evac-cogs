@@ -144,12 +144,14 @@ class PhotoDrop(commands.Cog):
             self._rollover_loop.start()
             self._weekly_poll_loop.start()
             self._poll_close_loop.start()
+            self._reminder_loop.start()
 
     def cog_unload(self):
         if tasks is not None:
             self._rollover_loop.cancel()
             self._weekly_poll_loop.cancel()
             self._poll_close_loop.cancel()
+            self._reminder_loop.cancel()
 
     # ------------------------------------------------------------------
     # Role-holder lookups
@@ -528,6 +530,18 @@ class PhotoDrop(commands.Cog):
         await self.config.guild(ctx.guild).rater_id.set(user.id)
         await ctx.send(f"Rater set to {user.display_name}.")
 
+    @pp_set.command(name="reminderhours")
+    async def pp_set_reminderhours(self, ctx: commands.Context, hours: int):
+        """Ping the job role this many hours before local midnight if anyone still hasn't submitted."""
+        if hours < 1:
+            await ctx.send("Must be at least 1 hour.")
+            return
+        if hours >= 24:
+            await ctx.send("Must be less than 24 hours.")
+            return
+        await self.config.guild(ctx.guild).reminder_hours_before.set(hours)
+        await ctx.send(f"Reminder set to {hours} hour{'s' if hours != 1 else ''} before local midnight.")
+
     # -- ratephotos / rated -------------------------------------------------------
 
     @pp.command(name="ratephotos")
@@ -710,9 +724,18 @@ class PhotoDrop(commands.Cog):
                 except Exception:
                     self._log.exception("photodrop: poll close check failed for guild %s", guild.id)
 
+        @tasks.loop(minutes=5)
+        async def _reminder_loop(self):
+            for guild in self.bot.guilds:
+                try:
+                    await self._run_reminder_check(guild)
+                except Exception:
+                    self._log.exception("photodrop: reminder check failed for guild %s", guild.id)
+
         @_rollover_loop.before_loop
         @_weekly_poll_loop.before_loop
         @_poll_close_loop.before_loop
+        @_reminder_loop.before_loop
         async def _before_loops(self):
             await self.bot.wait_until_red_ready()
 
@@ -833,3 +856,43 @@ class PhotoDrop(commands.Cog):
             closes_at = datetime.fromisoformat(record["closes_at"])
             if now >= closes_at + timedelta(minutes=POLL_CLOSE_GRACE_MINUTES):
                 await self._close_poll(guild, message_id, record)
+
+    async def _run_reminder_check(self, guild: discord.Guild) -> None:
+        """Ping whoever still hasn't submitted (or been excused) for today,
+        once, `reminder_hours_before` hours before local midnight.
+
+        Individual mentions, not the whole role -- someone who already
+        dropped today's photos, or is on PTO, never gets pinged for a day
+        they're already covered on. Fires at most once per calendar day,
+        same pattern as the other daily events (rollover, weekly poll).
+        """
+        gconf = self.config.guild(guild)
+        holders = await self._current_holders(guild)
+        if not holders:
+            return
+
+        now = models.now_local(DEFAULT_TIMEZONE)
+        hours_before = await gconf.reminder_hours_before()
+        if now.hour < 24 - hours_before:
+            return
+
+        today = models.today_key(DEFAULT_TIMEZONE)
+        if await gconf.last_reminder_date() == today:
+            return
+
+        channel = await self._member_channel(guild)
+        if channel is None:
+            await gconf.last_reminder_date.set(today)
+            return
+
+        missing = []
+        for member in holders:
+            member_state = await self.config.member(member).all()
+            if models.needs_no_show_check(member_state, today):
+                missing.append(member)
+
+        if missing:
+            mentions = " ".join(member.mention for member in missing)
+            await channel.send(f"{mentions} — last chance to submit the feet or you're fired and pocky takes over the channel.")
+
+        await gconf.last_reminder_date.set(today)

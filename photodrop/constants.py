@@ -37,6 +37,7 @@ POLL_CLOSE_GRACE_MINUTES = 5  # wait this long past expiry before reading result
 DEFAULT_WEEKLY_POLL_WEEKDAY = 6  # Sunday, per date.weekday() (Mon=0 .. Sun=6)
 DEFAULT_WEEKLY_POLL_HOUR = 18  # 6pm local, "Sunday evening"
 DEFAULT_JOB_ROLE_ID = 1546643582633377832  # hardcoded default; changeable via `.pp set role`
+DEFAULT_REMINDER_HOURS_BEFORE = 1  # ping the role this many hours before local midnight if anyone's still missing
 
 DEFAULT_MEMBER = {
     "streak": 0,
@@ -57,5 +58,7 @@ DEFAULT_GUILD = {
     "active_polls": {},  # message_id (str) -> poll bookkeeping dict, see PollRecord in models.py
     "rater_id": None,  # who can click rating buttons; falls back to the guild owner if unset
     "pending_ratings": {},  # message_id (str) -> {"member_id", "date_key", "photo_index"}
+    "reminder_hours_before": DEFAULT_REMINDER_HOURS_BEFORE,
+    "last_reminder_date": None,  # "YYYY-MM-DD" the end-of-day reminder last fired for
 }
 
