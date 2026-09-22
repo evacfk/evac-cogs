@@ -674,6 +674,37 @@ async def test_card_give_to_a_receiver_below_cap_becomes_a_real_second_copy(cog)
 
 
 @pytest.mark.asyncio
+async def test_importpool_queues_behind_a_running_import_and_warns(cog, monkeypatch):
+    """Regression test for the AniList 429 issue: two `.card importpool`
+    runs started close together used to each start their own paging loop
+    concurrently, multiplying the request rate against AniList's rate limit.
+    A second run must now queue behind the first (via cog._importpool_lock)
+    rather than run in parallel, and tell the admin it's queued rather than
+    silently appearing to do nothing."""
+    guild = FakeGuild(33)
+    admin = FakeMember(330, guild)
+    channel = FakeChannel(3300, guild)
+    ctx = FakeCtx(admin, guild, channel)
+
+    async def fake_fetch(*args, **kwargs):
+        return []
+
+    monkeypatch.setattr(cc_module.import_characters, "fetch_top_female_characters", fake_fetch)
+
+    # simulate a first import already in flight
+    await cog._importpool_lock.acquire()
+    task = asyncio.create_task(cog.card.commands["importpool"].callback(cog, ctx, count=5))
+    await asyncio.sleep(0)  # let the second call reach (and block on) the lock
+    assert "already running" in ctx.sent[-1].content.lower()
+    assert cog._importpool_lock.locked()
+
+    # release the first import -- the queued second one should now proceed
+    cog._importpool_lock.release()
+    await task
+    assert "no characters came back" in ctx.sent[-1].content.lower()
+
+
+@pytest.mark.asyncio
 async def test_removecard_retires_but_existing_owners_keep_their_gallery_tile(cog):
     """Locked decision #17: removecard drops a character from future rolls,
     but a member who already owns it keeps their copy -- which means the

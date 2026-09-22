@@ -88,6 +88,13 @@ class CardCollect(commands.Cog):
         self.last_drop_time: Dict[int, float] = {}  # guild_id -> monotonic time
         self.claim_cooldown_until: Dict[int, float] = {}  # user_id -> monotonic time
         self._drop_locks: Dict[int, asyncio.Lock] = {}  # guild_id -> lock
+        # AniList's public API rate-limits aggressively; without this, two
+        # `.card importpool` runs fired close together each start their own
+        # up-to-200-page loop and multiply the request rate against the same
+        # limit, tripping 429s that neither run alone would have hit. This
+        # lock is process-wide (not per-guild) since it's AniList's own
+        # global limit being protected, not anything guild-scoped.
+        self._importpool_lock = asyncio.Lock()
 
         self._session: Optional[aiohttp.ClientSession] = None
 
@@ -894,73 +901,95 @@ class CardCollect(commands.Cog):
             await ctx.send("Pick a count between 1 and 200.")
             return
 
-        await ctx.send(f"Fetching {count} female characters from AniList, spread across rarity tiers…")
-        tier_cutoffs = await self.config.guild(ctx.guild).tier_cutoffs()
-        drop_weights = await self.config.guild(ctx.guild).drop_weights()
-        # skip characters already in the pool (by AniList id) so re-running
-        # importpool doesn't add the same character twice under a new local
-        # card_id -- hand-added .card addcard entries have no anilist_id and
-        # are naturally never matched here
-        existing_anilist_ids = {c.anilist_id for c in await self._pool_cards(ctx.guild) if c.anilist_id is not None}
+        # AniList rate-limits aggressively -- a second importpool started
+        # while one is already running would multiply the request rate
+        # against the same limit and trip 429s that neither run alone would
+        # hit (see the comment on self._importpool_lock). Queue rather than
+        # run concurrently, and say so, so a second run doesn't just look
+        # like it's doing nothing.
+        if self._importpool_lock.locked():
+            await ctx.send("Another `.card importpool` is already running -- this one will start once it finishes.")
 
-        try:
-            raw_entries = await import_characters.fetch_top_female_characters(
-                self._session,
-                tier_cutoffs,
-                engine.bucket_tier,
-                count,
-                weights=drop_weights,
-                exclude_ids=existing_anilist_ids,
-            )
-        except (aiohttp.ClientError, asyncio.TimeoutError) as e:
-            await ctx.send(f"AniList request failed: {e}")
-            return
+        async with self._importpool_lock:
+            await ctx.send(f"Fetching {count} female characters from AniList, spread across rarity tiers…")
+            tier_cutoffs = await self.config.guild(ctx.guild).tier_cutoffs()
+            drop_weights = await self.config.guild(ctx.guild).drop_weights()
+            # skip characters already in the pool (by AniList id) so
+            # re-running importpool doesn't add the same character twice
+            # under a new local card_id -- hand-added .card addcard entries
+            # have no anilist_id and are naturally never matched here
+            existing_anilist_ids = {
+                c.anilist_id for c in await self._pool_cards(ctx.guild) if c.anilist_id is not None
+            }
 
-        if not raw_entries:
-            await ctx.send("No characters came back -- AniList may be unreachable, or the filter matched nothing.")
-            return
-
-        # Download every image *before* touching Config, not inside the
-        # "async with ... .all()" write below. That block used to wrap the
-        # whole network loop (up to 200 image downloads, potentially tens
-        # of seconds), holding a mutable handle on the guild's entire config
-        # open the whole time -- any other command writing the same guild's
-        # config during that window (e.g. a concurrent .card addcard) would
-        # have its change silently overwritten when this one finally closes
-        # and writes back. Fetching first and writing once, quickly,
-        # afterward closes that window.
-        downloaded = []
-        for entry in raw_entries:
             try:
-                async with self._session.get(entry["image_url"]) as resp:
-                    resp.raise_for_status()
-                    image_bytes = await resp.read()
-            except (aiohttp.ClientError, asyncio.TimeoutError):
-                continue
-            downloaded.append((entry, image_bytes))
+                raw_entries = await import_characters.fetch_top_female_characters(
+                    self._session,
+                    tier_cutoffs,
+                    engine.bucket_tier,
+                    count,
+                    weights=drop_weights,
+                    exclude_ids=existing_anilist_ids,
+                )
+            except aiohttp.ClientResponseError as e:
+                if e.status == 429:
+                    await ctx.send(
+                        "AniList kept rate-limiting this import even after retrying with backoff -- "
+                        "try again in a few minutes, and avoid running `.card importpool` more than "
+                        "once at a time."
+                    )
+                else:
+                    await ctx.send(f"AniList request failed: {e}")
+                return
+            except (aiohttp.ClientError, asyncio.TimeoutError) as e:
+                await ctx.send(f"AniList request failed: {e}")
+                return
 
-        added = 0
-        async with self.config.guild(ctx.guild).all() as guild_data:
-            for entry, image_bytes in downloaded:
-                card_id = guild_data["next_id"]
-                guild_data["next_id"] += 1
-                storage.save_card_image(self.data_path, ctx.guild.id, card_id, image_bytes)
-                guild_data["pool"][str(card_id)] = Card(
-                    card_id=card_id,
-                    name=entry["name"],
-                    series=entry["series"],
-                    rarity=entry["rarity"],
-                    image_path=str(storage.card_image_path(self.data_path, ctx.guild.id, card_id)),
-                    favourites=entry["favourites"],
-                    added_by=None,
-                    anilist_id=entry.get("anilist_id"),
-                ).to_dict()
-                added += 1
+            if not raw_entries:
+                await ctx.send("No characters came back -- AniList may be unreachable, or the filter matched nothing.")
+                return
 
-        await ctx.send(
-            f"Imported {added} characters (characters already in the pool were skipped automatically). "
-            f"Prune unwanted ones with `.card removecard <id>`."
-        )
+            # Download every image *before* touching Config, not inside the
+            # "async with ... .all()" write below. That block used to wrap
+            # the whole network loop (up to 200 image downloads, potentially
+            # tens of seconds), holding a mutable handle on the guild's
+            # entire config open the whole time -- any other command writing
+            # the same guild's config during that window (e.g. a concurrent
+            # .card addcard) would have its change silently overwritten when
+            # this one finally closes and writes back. Fetching first and
+            # writing once, quickly, afterward closes that window.
+            downloaded = []
+            for entry in raw_entries:
+                try:
+                    async with self._session.get(entry["image_url"]) as resp:
+                        resp.raise_for_status()
+                        image_bytes = await resp.read()
+                except (aiohttp.ClientError, asyncio.TimeoutError):
+                    continue
+                downloaded.append((entry, image_bytes))
+
+            added = 0
+            async with self.config.guild(ctx.guild).all() as guild_data:
+                for entry, image_bytes in downloaded:
+                    card_id = guild_data["next_id"]
+                    guild_data["next_id"] += 1
+                    storage.save_card_image(self.data_path, ctx.guild.id, card_id, image_bytes)
+                    guild_data["pool"][str(card_id)] = Card(
+                        card_id=card_id,
+                        name=entry["name"],
+                        series=entry["series"],
+                        rarity=entry["rarity"],
+                        image_path=str(storage.card_image_path(self.data_path, ctx.guild.id, card_id)),
+                        favourites=entry["favourites"],
+                        added_by=None,
+                        anilist_id=entry.get("anilist_id"),
+                    ).to_dict()
+                    added += 1
+
+            await ctx.send(
+                f"Imported {added} characters (characters already in the pool were skipped automatically). "
+                f"Prune unwanted ones with `.card removecard <id>`."
+            )
 
     @card.command(name="diagnostics")
     @commands.guild_only()

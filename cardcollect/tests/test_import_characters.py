@@ -4,6 +4,14 @@ from cardcollect import engine, import_characters
 from cardcollect.constants import DEFAULT_TIER_CUTOFFS
 
 
+async def instant_sleep(seconds):
+    """Drop-in for asyncio.sleep in tests -- fetch_top_female_characters and
+    _post_with_rate_limit_retry both space out/back off real requests with
+    real delays by default; tests inject this instead so they run instantly
+    rather than actually waiting out request_delay/backoff seconds."""
+    return
+
+
 def make_character(id_, name, favourites, gender="Female", series="Some Show", has_image=True):
     return {
         "id": id_,
@@ -141,7 +149,7 @@ async def test_fetch_top_female_characters_pages_until_every_tier_quota_is_fille
     session = FakeSession([page1, page2])
 
     result = await import_characters.fetch_top_female_characters(
-        session, DEFAULT_TIER_CUTOFFS, engine.bucket_tier, target_count=7, per_page=5
+        session, DEFAULT_TIER_CUTOFFS, engine.bucket_tier, target_count=7, per_page=5, sleep_fn=instant_sleep
     )
     assert len(result) == 7
     assert session.calls == 2
@@ -159,7 +167,7 @@ async def test_fetch_top_female_characters_stops_when_no_next_page():
     session = FakeSession([page1])
 
     result = await import_characters.fetch_top_female_characters(
-        session, DEFAULT_TIER_CUTOFFS, engine.bucket_tier, target_count=50, per_page=3
+        session, DEFAULT_TIER_CUTOFFS, engine.bucket_tier, target_count=50, per_page=3, sleep_fn=instant_sleep
     )
     assert len(result) == 3
     assert session.calls == 1
@@ -203,5 +211,129 @@ async def test_fetch_top_female_characters_does_not_reimport_existing_pool_chara
         target_count=5,
         per_page=2,
         exclude_ids={1},
+        sleep_fn=instant_sleep,
     )
     assert [e["name"] for e in result] == ["Brand new"]
+
+
+# ---------------------------------------------------------------------------
+# rate-limit (429) retry behavior
+# ---------------------------------------------------------------------------
+
+
+class FakeRateLimitedResponse:
+    """Unlike FakeResponse above, this carries a real .status and .headers
+    so _post_with_rate_limit_retry's 429-detection path is actually
+    exercised (FakeResponse's getattr(..., default) fallback deliberately
+    skips that path for the older, lighter-weight fakes)."""
+
+    def __init__(self, status, payload=None, headers=None):
+        self.status = status
+        self._payload = payload
+        self.headers = headers or {}
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *exc):
+        return False
+
+    def raise_for_status(self):
+        if self.status >= 400:
+            raise RuntimeError(f"HTTP {self.status}")
+
+    async def json(self):
+        return self._payload
+
+
+class FakeRateLimitedSession:
+    """Replays a fixed sequence of responses (a mix of 429s and normal page
+    responses), one per call to .post() -- used to simulate AniList tripping
+    its rate limit mid-import and then recovering."""
+
+    def __init__(self, responses):
+        self._responses = list(responses)
+        self.calls = 0
+
+    def post(self, url, json=None):
+        resp = self._responses[self.calls]
+        self.calls += 1
+        return resp
+
+
+@pytest.mark.asyncio
+async def test_post_with_rate_limit_retry_retries_a_429_and_then_succeeds():
+    sleeps = []
+
+    async def recording_sleep(seconds):
+        sleeps.append(seconds)
+
+    page = make_page_response([], has_next_page=False)
+    session = FakeRateLimitedSession(
+        [
+            FakeRateLimitedResponse(429, headers={"Retry-After": "2"}),
+            FakeRateLimitedResponse(200, payload=page),
+        ]
+    )
+
+    data = await import_characters._post_with_rate_limit_retry(
+        session, "https://example.invalid", {"query": "x"}, sleep_fn=recording_sleep
+    )
+    assert data == page
+    assert session.calls == 2
+    assert sleeps == [2.0]  # honored the Retry-After header exactly, no default backoff used
+
+
+@pytest.mark.asyncio
+async def test_post_with_rate_limit_retry_uses_default_backoff_without_retry_after_header():
+    sleeps = []
+
+    async def recording_sleep(seconds):
+        sleeps.append(seconds)
+
+    page = make_page_response([], has_next_page=False)
+    session = FakeRateLimitedSession(
+        [FakeRateLimitedResponse(429), FakeRateLimitedResponse(200, payload=page)]
+    )
+
+    await import_characters._post_with_rate_limit_retry(
+        session, "https://example.invalid", {"query": "x"}, sleep_fn=recording_sleep
+    )
+    assert sleeps == [import_characters.RATE_LIMIT_DEFAULT_BACKOFF_SECONDS]
+
+
+@pytest.mark.asyncio
+async def test_post_with_rate_limit_retry_gives_up_after_max_retries():
+    async def instant(seconds):
+        return
+
+    # always 429, never recovers -- must eventually raise rather than loop forever
+    session = FakeRateLimitedSession(
+        [FakeRateLimitedResponse(429) for _ in range(import_characters.RATE_LIMIT_MAX_RETRIES + 2)]
+    )
+
+    with pytest.raises(Exception):
+        await import_characters._post_with_rate_limit_retry(
+            session, "https://example.invalid", {"query": "x"}, sleep_fn=instant, max_retries=2
+        )
+    # gave up after max_retries+1 attempts (the original try plus max_retries retries),
+    # not before, and not indefinitely
+    assert session.calls == 3
+
+
+@pytest.mark.asyncio
+async def test_fetch_top_female_characters_recovers_from_a_429_mid_import():
+    """End-to-end: a 429 on the first page must not abort the whole import
+    -- fetch_top_female_characters should recover via the retry and still
+    return the page's characters."""
+    page = make_page_response(
+        [make_character(1, "Survivor", 100, gender="Female")], has_next_page=False
+    )
+    session = FakeRateLimitedSession(
+        [FakeRateLimitedResponse(429, headers={"Retry-After": "0"}), FakeRateLimitedResponse(200, payload=page)]
+    )
+
+    result = await import_characters.fetch_top_female_characters(
+        session, DEFAULT_TIER_CUTOFFS, engine.bucket_tier, target_count=5, per_page=5, sleep_fn=instant_sleep
+    )
+    assert [e["name"] for e in result] == ["Survivor"]

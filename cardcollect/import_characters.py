@@ -18,9 +18,21 @@ been exercised against the live API from here -- flagged clearly rather
 than silently assumed to work.
 """
 
+import asyncio
 from typing import Any, Dict, List, Optional
 
 from .constants import DEFAULT_DROP_WEIGHTS, TIERS
+
+# AniList's public API rate-limits fairly aggressively (it's been running in
+# a "degraded" reduced-limit mode for extended periods) and returns plain 429s
+# with no useful body when tripped. A single `.card importpool` run can
+# legitimately fire dozens of requests (max_pages=200) to fill the common/rare
+# quotas, and it's trivial for an admin to fire the command more than once in
+# quick succession -- both were observed to trip 429s in practice. These
+# constants back off automatically instead of just failing the whole import.
+REQUEST_DELAY_SECONDS = 0.75  # spacing between successful page requests
+RATE_LIMIT_MAX_RETRIES = 6
+RATE_LIMIT_DEFAULT_BACKOFF_SECONDS = 5.0  # used when AniList sends no Retry-After
 
 CHARACTERS_QUERY = """
 query ($page: Int, $perPage: Int) {
@@ -159,6 +171,41 @@ def build_pool_entries(
     return entries
 
 
+async def _post_with_rate_limit_retry(session, url, payload, sleep_fn=asyncio.sleep, max_retries=RATE_LIMIT_MAX_RETRIES):
+    """POST to `url` and return the parsed JSON body, retrying with backoff
+    on a 429 (rate limited) response instead of failing the whole import
+    outright. Honors AniList's `Retry-After` response header (seconds) when
+    present, falling back to `RATE_LIMIT_DEFAULT_BACKOFF_SECONDS` otherwise.
+    Still raises (via `raise_for_status`) for a 429 that persists past
+    `max_retries`, or for any other HTTP error status.
+
+    `sleep_fn` is injected (defaults to `asyncio.sleep`) so tests can swap in
+    a fast no-op instead of actually waiting out a real backoff.
+
+    A fake session/response in tests that has no `.status` (only the
+    lightweight `raise_for_status()`/`.json()` surface older tests use) is
+    treated as never rate-limited -- `getattr(..., "status", 200)` defaults
+    to a non-429 value, so existing fakes keep working unchanged."""
+    attempt = 0
+    while True:
+        async with session.post(url, json=payload) as resp:
+            status = getattr(resp, "status", 200)
+            if status == 429:
+                attempt += 1
+                if attempt > max_retries:
+                    resp.raise_for_status()
+                headers = getattr(resp, "headers", None) or {}
+                retry_after = headers.get("Retry-After")
+                try:
+                    delay = float(retry_after) if retry_after is not None else RATE_LIMIT_DEFAULT_BACKOFF_SECONDS
+                except (TypeError, ValueError):
+                    delay = RATE_LIMIT_DEFAULT_BACKOFF_SECONDS
+                await sleep_fn(delay)
+                continue
+            resp.raise_for_status()
+            return await resp.json()
+
+
 async def fetch_top_female_characters(
     session,
     tier_cutoffs: dict,
@@ -168,6 +215,8 @@ async def fetch_top_female_characters(
     per_page: int = 50,
     max_pages: int = 200,
     exclude_ids: Optional[set] = None,
+    request_delay: float = REQUEST_DELAY_SECONDS,
+    sleep_fn=asyncio.sleep,
 ) -> List[Dict[str, Any]]:
     """Page through AniList's characters-by-favourites list, filtering to
     female characters as pages come in, and stop once every tier's quota
@@ -195,6 +244,13 @@ async def fetch_top_female_characters(
     created here so this function is testable with a fake session and so
     the cog can reuse its own long-lived session instead of opening a new
     one per import.
+
+    Each request is spaced `request_delay` seconds apart, and a 429
+    (rate-limited) response is retried with backoff rather than aborting the
+    whole import -- see `_post_with_rate_limit_retry`. AniList's public API
+    rate-limits aggressively enough that a single deep import (paging to
+    fill common/rare quotas) or two `.card importpool` runs started close
+    together can trip it; both were observed doing exactly that in practice.
     """
     quotas = tier_quotas(target_count, weights)
     seen_ids = set(exclude_ids) if exclude_ids else set()
@@ -202,9 +258,7 @@ async def fetch_top_female_characters(
     page = 1
     while any(q > 0 for q in quotas.values()) and page <= max_pages:
         payload = {"query": CHARACTERS_QUERY, "variables": {"page": page, "perPage": per_page}}
-        async with session.post(ANILIST_URL, json=payload) as resp:
-            resp.raise_for_status()
-            data = await resp.json()
+        data = await _post_with_rate_limit_retry(session, ANILIST_URL, payload, sleep_fn=sleep_fn)
 
         characters = parse_characters(data)
         collected.extend(build_pool_entries(characters, tier_cutoffs, bucket_tier_fn, quotas, seen_ids))
@@ -212,5 +266,7 @@ async def fetch_top_female_characters(
         if not has_next_page(data):
             break
         page += 1
+        if request_delay:
+            await sleep_fn(request_delay)
 
     return collected
