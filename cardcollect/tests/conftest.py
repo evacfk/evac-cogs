@@ -14,6 +14,7 @@ discord.py itself is a real pip dependency here (installed for real), so
 only `redbot` needs faking.
 """
 
+import asyncio
 import copy
 import sys
 import tempfile
@@ -42,6 +43,13 @@ class _Value:
         return self._get().__await__()
 
     async def _get(self):
+        # a real suspension point, not just an `async def` -- Red's actual
+        # Config backend does real I/O, so code relying on a lock around a
+        # check-then-set spanning Config awaits (e.g. on_message's drop
+        # cooldown) needs its test fakes to genuinely yield here too, or two
+        # "concurrent" callers would just run sequentially to completion and
+        # the test could pass even against unlocked, racy code
+        await asyncio.sleep(0)
         if self._key not in self._store:
             return copy.deepcopy(self._default)
         return copy.deepcopy(self._store[self._key])
@@ -72,6 +80,7 @@ class _AllValue:
         return self._get().__await__()
 
     async def _get(self):
+        await asyncio.sleep(0)  # real suspension point, see _Value._get
         merged = copy.deepcopy(self._defaults)
         merged.update(copy.deepcopy(self._store))
         return merged
@@ -134,10 +143,13 @@ class FakeConfig:
     def guild(self, guild_obj):
         return self.guild_from_id(guild_obj.id)
 
-    def member(self, member_obj):
-        key = (member_obj.guild.id, member_obj.id)
+    def member_from_ids(self, guild_id, member_id):
+        key = (guild_id, member_id)
         store = self._member_data.setdefault(key, {})
         return _ScopedConfig(store, self._member_defaults)
+
+    def member(self, member_obj):
+        return self.member_from_ids(member_obj.guild.id, member_obj.id)
 
     async def all_members(self, guild_obj):
         result = {}

@@ -142,6 +142,54 @@ def test_make_sell_token_and_price():
     assert engine.sell_price("unknown_tier", DEFAULT_SELL_PRICES) == 0
 
 
-def test_would_be_dupe():
-    assert engine.would_be_dupe([1, 2, 3], 2) is True
-    assert engine.would_be_dupe([1, 2, 3], 99) is False
+def test_claim_outcome_new_pickup_when_not_owned():
+    assert engine.claim_outcome([1, 2, 3], 99, max_copies=2) == "new"
+
+
+def test_claim_outcome_duplicate_when_below_cap():
+    # owns exactly one copy, cap is 2 -- this claim becomes a tradeable spare
+    assert engine.claim_outcome([1, 2, 3], 2, max_copies=2) == "duplicate"
+
+
+def test_claim_outcome_sell_token_when_at_cap():
+    # already holds max_copies (an "original" + a spare) -- a 3rd claim
+    # converts straight to a sell token instead of piling up more copies
+    assert engine.claim_outcome([1, 2, 2, 3], 2, max_copies=2) == "sell_token"
+
+
+def test_claim_outcome_respects_a_higher_or_lower_max_copies():
+    assert engine.claim_outcome([5], 5, max_copies=1) == "sell_token"  # cap of 1: no spares allowed
+    assert engine.claim_outcome([5, 5, 5], 5, max_copies=5) == "duplicate"  # generous cap: still room
+
+
+def test_today_str_uses_injected_now_not_wall_clock():
+    import datetime
+    from zoneinfo import ZoneInfo
+
+    moment = datetime.datetime(2026, 9, 22, 3, 0, tzinfo=ZoneInfo("America/Los_Angeles"))
+    assert engine.today_str("America/Los_Angeles", now=moment) == "2026-09-22"
+
+
+def test_has_quota_remaining_unlimited_when_quota_is_zero_or_negative():
+    assert engine.has_quota_remaining(999, "2026-09-22", quota=0, today="2026-09-22") is True
+    assert engine.has_quota_remaining(999, "2026-09-22", quota=-1, today="2026-09-22") is True
+
+
+def test_has_quota_remaining_resets_lazily_on_a_new_day():
+    # stale/yesterday's date -> full quota available, no scheduler needed
+    assert engine.has_quota_remaining(10, "2026-09-21", quota=10, today="2026-09-22") is True
+    # never claimed (blank date, the DEFAULT_MEMBER sentinel) -> full quota
+    assert engine.has_quota_remaining(0, "", quota=10, today="2026-09-22") is True
+
+
+def test_has_quota_remaining_enforces_the_cap_within_the_same_day():
+    assert engine.has_quota_remaining(9, "2026-09-22", quota=10, today="2026-09-22") is True
+    assert engine.has_quota_remaining(10, "2026-09-22", quota=10, today="2026-09-22") is False
+    assert engine.has_quota_remaining(11, "2026-09-22", quota=10, today="2026-09-22") is False
+
+
+def test_record_claim_increments_within_a_day_and_resets_on_a_new_day():
+    assert engine.record_claim(0, "", today="2026-09-22") == (1, "2026-09-22")
+    assert engine.record_claim(4, "2026-09-22", today="2026-09-22") == (5, "2026-09-22")
+    # stale date -> starts over at 1, doesn't keep incrementing yesterday's count
+    assert engine.record_claim(9, "2026-09-21", today="2026-09-22") == (1, "2026-09-22")

@@ -39,6 +39,15 @@ DEFAULT_CLAIM_COOLDOWN_SECONDS = 300  # 5 minutes
 DEFAULT_DECOYS_ENABLED = True
 DEFAULT_DECOY_COUNT = 5  # extra decoy reactions added alongside the 3 real ones
 
+DEFAULT_CLAIM_QUOTA = 10  # max real claims per member per day; 0 = unlimited
+MAX_SHOWCASE_SLOTS = 3  # how many cards a member can pin in their gallery header
+
+# 1 "original" copy + 1 tradeable spare; a 3rd+ claim of the same character
+# auto-converts to a sell token instead of piling up more duplicates, so
+# members can still trade a spare with `.card give` without being able to
+# hoard an unlimited stack of the same character.
+MAX_COPIES_KEPT = 2
+
 # A reasonably large, visually distinct pool of standard emoji used as claim
 # reactions. Kept deliberately varied (food/animals/objects/symbols) so decoys
 # and real emoji don't cluster into one obvious visual category. Renderable

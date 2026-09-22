@@ -23,6 +23,7 @@ class Card:
     favourites: int = 0
     added_by: Optional[int] = None  # None for AniList-imported cards, else the admin's id
     retired: bool = False  # removed from future rolls, but existing owners keep it
+    anilist_id: Optional[int] = None  # None for hand-added cards; used to dedupe re-imports
 
     def __post_init__(self):
         if self.rarity not in TIERS:
@@ -37,6 +38,7 @@ class Card:
             "favourites": self.favourites,
             "added_by": self.added_by,
             "retired": self.retired,
+            "anilist_id": self.anilist_id,
         }
 
     @staticmethod
@@ -50,6 +52,7 @@ class Card:
             favourites=data.get("favourites", 0),
             added_by=data.get("added_by"),
             retired=data.get("retired", False),
+            anilist_id=data.get("anilist_id"),
         )
 
 
@@ -87,8 +90,10 @@ class MemberState:
     """One member's cardcollect state within a guild."""
 
     collection: list = field(default_factory=list)  # list[int] of owned card_ids, no duplicates
-    favorite_card_id: Optional[int] = None
+    showcase_card_ids: list = field(default_factory=list)  # list[int], up to MAX_SHOWCASE_SLOTS, ordered
     sell_tokens: list = field(default_factory=list)  # list[SellToken]
+    daily_claims: int = 0  # real claims made on daily_claims_date; see engine.has_quota_remaining
+    daily_claims_date: str = ""  # ISO date (ACTIVITY_TIMEZONE) daily_claims was last reset for
 
     def owns(self, card_id: int) -> bool:
         return card_id in self.collection
@@ -96,16 +101,26 @@ class MemberState:
     def to_dict(self) -> dict:
         return {
             "collection": list(self.collection),
-            "favorite_card_id": self.favorite_card_id,
+            "showcase_card_ids": list(self.showcase_card_ids),
             "sell_tokens": [t.to_dict() for t in self.sell_tokens],
+            "daily_claims": self.daily_claims,
+            "daily_claims_date": self.daily_claims_date,
         }
 
     @staticmethod
     def from_dict(data: dict) -> "MemberState":
+        showcase = data.get("showcase_card_ids")
+        if showcase is None:
+            # pre-showcase data only ever had a single favorite_card_id --
+            # carry it over as a one-card showcase instead of losing it
+            legacy_favorite = data.get("favorite_card_id")
+            showcase = [legacy_favorite] if legacy_favorite is not None else []
         return MemberState(
             collection=list(data.get("collection", [])),
-            favorite_card_id=data.get("favorite_card_id"),
+            showcase_card_ids=list(showcase),
             sell_tokens=[SellToken.from_dict(t) for t in data.get("sell_tokens", [])],
+            daily_claims=data.get("daily_claims", 0),
+            daily_claims_date=data.get("daily_claims_date", ""),
         )
 
 
@@ -120,6 +135,7 @@ class ActiveDrop:
     cards: list  # list[dict]: {"card_id": int, "emoji": str, "position": int}
     decoy_emojis: list  # list[str]
     claimed_positions: set = field(default_factory=set)  # positions already resolved
+    claimed_by: set = field(default_factory=set)  # user ids who already won a card from this drop
     is_test: bool = False  # test-mode drop: claims resolve fully but nothing is awarded
 
     def emoji_for(self, emoji: str) -> Optional[dict]:

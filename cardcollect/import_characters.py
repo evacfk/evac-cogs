@@ -20,6 +20,8 @@ than silently assumed to work.
 
 from typing import Any, Dict, List, Optional
 
+from .constants import DEFAULT_DROP_WEIGHTS, TIERS
+
 CHARACTERS_QUERY = """
 query ($page: Int, $perPage: Int) {
   Page(page: $page, perPage: $perPage) {
@@ -85,24 +87,75 @@ def to_pool_entry(character: dict, tier_cutoffs: dict, bucket_tier_fn) -> Option
     }
 
 
+def tier_quotas(target_count: int, weights: Optional[dict] = None) -> Dict[str, int]:
+    """Split `target_count` across rarity tiers proportionally to `weights`
+    (defaults to the same DEFAULT_DROP_WEIGHTS drops are rolled against).
+
+    This exists because AniList's characters list is sorted purely by
+    favourites, descending. Naively taking the first `target_count` results
+    (the old behavior) only ever grabs the *most*-favourited characters --
+    which, against the default tier cutoffs, are almost all epic or
+    legendary. The result was a pool with no common/rare cards at all, so
+    every drop rolled epic/legendary regardless of drop_weights, since
+    build_drop's tier-fallback had nothing else to fall back to. Quotas fix
+    this at the source: the import keeps paging until each tier has its
+    proportional share filled, not just until a raw count is hit."""
+    weights = weights or DEFAULT_DROP_WEIGHTS
+    tiers = [t for t in TIERS if weights.get(t, 0) > 0]
+    if not tiers:
+        tiers = list(TIERS)
+        weights = DEFAULT_DROP_WEIGHTS
+    total_weight = sum(weights.get(t, 0) for t in tiers) or 1
+    quotas: Dict[str, int] = {}
+    assigned = 0
+    for i, tier in enumerate(tiers):
+        if i == len(tiers) - 1:
+            quotas[tier] = max(target_count - assigned, 0)
+        else:
+            n = round(target_count * weights.get(tier, 0) / total_weight)
+            quotas[tier] = n
+            assigned += n
+    return quotas
+
+
 def build_pool_entries(
     characters: List[dict],
     tier_cutoffs: dict,
     bucket_tier_fn,
-    target_count: int,
+    quotas: Dict[str, int],
+    exclude_ids: Optional[set] = None,
 ) -> List[Dict[str, Any]]:
-    """Filter to female characters, convert to pool-entry shape, and cap at
-    `target_count`. Characters are already favourites-sorted by the AniList
-    query itself, so taking the first `target_count` after filtering keeps
-    the highest-favourites female characters."""
+    """Filter to female characters, convert to pool-entry shape, and keep
+    only entries whose tier still has quota remaining -- decrementing
+    `quotas` in place as entries are accepted, so the caller can page
+    across multiple calls and know when every tier is filled. A character
+    whose tier's quota is already spent is skipped, not appended, so a page
+    stacked with (say) legendary characters doesn't blow past that tier's
+    share just because they showed up first.
+
+    `exclude_ids`, if given, is a set of AniList character ids to skip
+    outright (already in the pool from an earlier import) -- and every
+    *newly accepted* character's id is added to it in place, so a second
+    call sharing the same set (as fetch_top_female_characters does, once
+    per page) also can't re-add the same character twice within one import
+    run, not just across separate runs."""
+    exclude_ids = set() if exclude_ids is None else exclude_ids
     female = filter_female(characters)
     entries = []
     for c in female:
         entry = to_pool_entry(c, tier_cutoffs, bucket_tier_fn)
-        if entry is not None:
-            entries.append(entry)
-        if len(entries) >= target_count:
-            break
+        if entry is None:
+            continue
+        anilist_id = entry.get("anilist_id")
+        if anilist_id is not None and anilist_id in exclude_ids:
+            continue
+        tier = entry["rarity"]
+        if quotas.get(tier, 0) <= 0:
+            continue
+        entries.append(entry)
+        quotas[tier] = quotas.get(tier, 0) - 1
+        if anilist_id is not None:
+            exclude_ids.add(anilist_id)
     return entries
 
 
@@ -111,14 +164,31 @@ async def fetch_top_female_characters(
     tier_cutoffs: dict,
     bucket_tier_fn,
     target_count: int,
+    weights: Optional[dict] = None,
     per_page: int = 50,
-    max_pages: int = 10,
+    max_pages: int = 200,
+    exclude_ids: Optional[set] = None,
 ) -> List[Dict[str, Any]]:
     """Page through AniList's characters-by-favourites list, filtering to
-    female characters as pages come in, and stop once `target_count` is
-    reached or `max_pages` is hit (whichever first -- max_pages is a safety
-    cap so a target_count nothing can satisfy, e.g. more than actually
-    exist, can't page forever).
+    female characters as pages come in, and stop once every tier's quota
+    (see `tier_quotas`) is filled or `max_pages` is hit (whichever first --
+    max_pages is a safety cap so a quota nothing can satisfy, e.g. more
+    common characters than AniList actually has favourites data for, can't
+    page forever).
+
+    Sorted-by-favourites-descending means the early pages fill the
+    legendary/epic quotas almost immediately and then get skipped for the
+    rest of the run; rare and especially common quotas may need many pages
+    before enough low-favourite characters show up. `max_pages` defaults
+    much higher than a naive "just get target_count" import would need, to
+    give the common quota a real chance to fill instead of silently coming
+    back empty.
+
+    `exclude_ids` -- AniList character ids already present in the pool from
+    an earlier import -- are skipped so a repeat `.card importpool` doesn't
+    add the same character twice under a new local card_id; pass the set of
+    ids already on disk. See build_pool_entries for how this also prevents
+    intra-run duplicates.
 
     `session` is an aiohttp.ClientSession (or anything with a compatible
     `.post(url, json=...)` async context manager) -- injected rather than
@@ -126,20 +196,21 @@ async def fetch_top_female_characters(
     the cog can reuse its own long-lived session instead of opening a new
     one per import.
     """
+    quotas = tier_quotas(target_count, weights)
+    seen_ids = set(exclude_ids) if exclude_ids else set()
     collected: List[Dict[str, Any]] = []
     page = 1
-    while len(collected) < target_count and page <= max_pages:
+    while any(q > 0 for q in quotas.values()) and page <= max_pages:
         payload = {"query": CHARACTERS_QUERY, "variables": {"page": page, "perPage": per_page}}
         async with session.post(ANILIST_URL, json=payload) as resp:
             resp.raise_for_status()
             data = await resp.json()
 
         characters = parse_characters(data)
-        remaining = target_count - len(collected)
-        collected.extend(build_pool_entries(characters, tier_cutoffs, bucket_tier_fn, remaining))
+        collected.extend(build_pool_entries(characters, tier_cutoffs, bucket_tier_fn, quotas, seen_ids))
 
         if not has_next_page(data):
             break
         page += 1
 
-    return collected[:target_count]
+    return collected

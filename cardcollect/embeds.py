@@ -30,15 +30,18 @@ def _rarity_line(rarity: str) -> str:
 def claim_result_embed(
     card: Card,
     claimant: discord.abc.User,
-    is_dupe: bool,
+    outcome: str,  # "new" | "duplicate" | "sell_token" -- see engine.claim_outcome
     price: Optional[int] = None,
     is_test: bool = False,
 ) -> discord.Embed:
     if is_test:
         title = "Test claim (nothing awarded)"
         color = TEST_COLOR
-    elif is_dupe:
+    elif outcome == "sell_token":
         title = "Duplicate — converted to a sell token"
+        color = EMBED_COLOR
+    elif outcome == "duplicate":
+        title = "Duplicate claimed — spare copy!"
         color = EMBED_COLOR
     else:
         title = "New card claimed!"
@@ -48,10 +51,17 @@ def claim_result_embed(
     embed.add_field(name="Card", value=f"**{card.name}** ({card.series})", inline=True)
     embed.add_field(name="Rarity", value=_rarity_line(card.rarity), inline=True)
     embed.add_field(name="Claimed by", value=claimant.mention, inline=True)
-    if is_dupe and not is_test and price is not None:
+    if outcome == "sell_token" and not is_test and price is not None:
         embed.add_field(
             name="Sell token",
-            value=f"Already in your collection — sell with `.card sell` for {price} wondercoin.",
+            value=f"Already at your duplicate limit for this card — sell with `.card sell` for {price} wondercoin.",
+            inline=False,
+        )
+    elif outcome == "duplicate" and not is_test:
+        embed.add_field(
+            name="Spare copy",
+            value="You now hold two of this card. Give the spare to someone with `.card give`, or it'll "
+            "convert to a sell token if you claim a third.",
             inline=False,
         )
     if is_test:
@@ -101,6 +111,8 @@ def settings_embed(guild_config: dict, guild_name: str) -> discord.Embed:
     embed.add_field(name="Drop cooldown", value=f"{guild_config.get('drop_cooldown_seconds', 0)}s", inline=True)
     embed.add_field(name="Claim window", value=f"{guild_config.get('claim_window_seconds', 0)}s", inline=True)
     embed.add_field(name="Claim cooldown", value=f"{guild_config.get('claim_cooldown_seconds', 0)}s", inline=True)
+    quota = guild_config.get("claim_quota", 0)
+    embed.add_field(name="Daily claim quota", value=str(quota) if quota > 0 else "Unlimited", inline=True)
     embed.add_field(name="Decoys enabled", value=str(guild_config.get("decoys_enabled", True)), inline=True)
 
     weights = guild_config.get("drop_weights", {})
@@ -166,6 +178,61 @@ def card_added_embed(card: Card) -> discord.Embed:
 def card_removed_embed(card_id: int, name: str) -> discord.Embed:
     embed = discord.Embed(title="Character removed from pool", color=EMBED_COLOR)
     embed.description = f"**{name}** (ID {card_id}) will no longer drop. Members who already own it keep their copy."
+    return embed
+
+
+def cards_removed_embed(retired: Sequence[Tuple[int, str]], not_found: Sequence[int]) -> discord.Embed:
+    """Bulk version of card_removed_embed, for `.card removecard <id> <id> ...`."""
+    embed = discord.Embed(title="Characters removed from pool", color=EMBED_COLOR)
+    if retired:
+        lines = [f"**{name}** (ID {cid})" for cid, name in retired]
+        text = "\n".join(lines)
+        if len(text) > 1024:
+            text = text[:1000] + f"\n… and {len(lines) - 1} more"
+        embed.add_field(
+            name=f"Retired ({len(retired)})",
+            value=text + "\n\nMembers who already own any of these keep their copy.",
+            inline=False,
+        )
+    if not_found:
+        embed.add_field(
+            name=f"Not found ({len(not_found)})",
+            value=", ".join(str(cid) for cid in not_found),
+            inline=False,
+        )
+    if not retired and not not_found:
+        embed.description = "Nothing to remove."
+    return embed
+
+
+def card_info_embed(card: Card, owner_count: int, owner_mentions: Sequence[str]) -> discord.Embed:
+    embed = discord.Embed(title=card.name, color=EMBED_COLOR)
+    embed.add_field(name="Series", value=card.series or "—", inline=True)
+    embed.add_field(name="Rarity", value=_rarity_line(card.rarity), inline=True)
+    embed.add_field(name="Card ID", value=str(card.card_id), inline=True)
+    embed.add_field(name="AniList favourites", value=str(card.favourites), inline=True)
+    embed.add_field(
+        name="Currently owned by",
+        value=f"{owner_count} member{'s' if owner_count != 1 else ''}",
+        inline=True,
+    )
+    if card.retired:
+        embed.add_field(name="Status", value="Retired — no longer drops", inline=True)
+    if owner_mentions:
+        text = ", ".join(owner_mentions)
+        if owner_count > len(owner_mentions):
+            text += f", +{owner_count - len(owner_mentions)} more"
+        embed.add_field(name="Owners", value=text, inline=False)
+    return embed
+
+
+def pool_reset_embed(count: int) -> discord.Embed:
+    embed = discord.Embed(title="Pool reset", color=EMBED_COLOR)
+    embed.description = (
+        f"Retired all {count} active characters. Nothing will drop until you re-import "
+        f"(`.card importpool`) or re-add (`.card addcard`). Members who already own a "
+        f"retired card keep their copy."
+    )
     return embed
 
 

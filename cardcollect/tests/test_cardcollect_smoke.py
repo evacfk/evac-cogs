@@ -42,9 +42,10 @@ class FakeUser:
 
 
 class FakeMember(FakeUser):
-    def __init__(self, id_, guild, bot=False):
+    def __init__(self, id_, guild, bot=False, display_name=None):
         super().__init__(id_, bot=bot)
         self.guild = guild
+        self.display_name = display_name or f"Member{id_}"
 
 
 class FakeGuild:
@@ -52,12 +53,13 @@ class FakeGuild:
         self.id = id_
         self.name = name
         self.members = {}
+        self.channels = {}
 
     def get_member(self, member_id):
         return self.members.get(member_id)
 
     def get_channel(self, channel_id):
-        return None
+        return self.channels.get(channel_id)
 
 
 class FakeReaction:
@@ -97,6 +99,7 @@ class FakeChannel:
         self._messages = {}
         self._next_id = 1
         self.sent = []
+        guild.channels[id_] = self
 
     @property
     def mention(self):
@@ -280,7 +283,10 @@ async def test_test_mode_drop_awards_nothing(cog):
 
 
 @pytest.mark.asyncio
-async def test_duplicate_claim_becomes_sell_token(cog):
+async def test_first_duplicate_claim_becomes_a_tradeable_spare(cog):
+    """Locked decision: MAX_COPIES_KEPT=2 -- a member's *first* duplicate of
+    a card becomes a real second collection entry (a tradeable spare, not a
+    sell token), so `.card give` has something to actually hand off."""
     guild = FakeGuild(5)
     admin = FakeMember(50, guild)
     winner = FakeMember(51, guild)
@@ -314,12 +320,357 @@ async def test_duplicate_claim_becomes_sell_token(cog):
     await cog._resolve_claim_window(channel.id, drop_message.id, real_emoji, window=0)
 
     final_state = await cog._member_state(winner)
-    assert final_state.collection == [card_id]  # no duplicate tile
+    assert final_state.collection == [card_id, card_id]  # a real second copy, not a sell token
+    assert final_state.sell_tokens == []
+
+    result_embed = channel.sent[-1].embeds[0]
+    assert "Duplicate" in result_embed.title
+    assert "spare" in result_embed.title.lower()
+
+
+@pytest.mark.asyncio
+async def test_claim_at_the_duplicate_cap_becomes_a_sell_token(cog):
+    """A 3rd claim of the same card (already at MAX_COPIES_KEPT=2) converts
+    straight to a sell token instead of piling up more duplicates."""
+    guild = FakeGuild(24)
+    admin = FakeMember(240, guild)
+    winner = FakeMember(241, guild)
+    guild.members = {240: admin, 241: winner}
+
+    channel = FakeChannel(2400, guild)
+    cog.bot.register_channel(channel)
+    ctx = FakeCtx(admin, guild, channel, attachments=[FakeAttachment(fake_art_bytes((200, 10, 200)))])
+    await cog.card.commands["addcard"].callback(cog, ctx, "epic", name_and_series="Cap | Some Anime")
+
+    pool = await cog.config.guild(guild).pool()
+    card_id = int(next(iter(pool)))
+
+    from cardcollect.models import MemberState
+
+    # winner is already at the cap (2 copies)
+    state = MemberState(collection=[card_id, card_id])
+    await cog._save_member_state(winner, state)
+
+    await cog._post_drop(channel, guild, is_test=False)
+    drop_message = channel.sent[-1]
+    drop = cog.active_drops[drop_message.id]
+    drop.cards[0]["card_id"] = card_id
+    real_emoji = drop.cards[0]["emoji"]
+    reaction = next(r for r in drop_message.reactions if r.emoji == real_emoji)
+    reaction._reactor_objs = [winner]
+
+    await cog._resolve_claim_window(channel.id, drop_message.id, real_emoji, window=0)
+
+    final_state = await cog._member_state(winner)
+    assert final_state.collection == [card_id, card_id]  # unchanged, no 3rd copy
     assert len(final_state.sell_tokens) == 1
     assert final_state.sell_tokens[0].card_id == card_id
 
     result_embed = channel.sent[-1].embeds[0]
-    assert "Duplicate" in result_embed.title
+    assert "sell token" in result_embed.title.lower()
+
+
+@pytest.mark.asyncio
+async def test_claim_at_the_cap_still_counts_against_daily_quota(cog):
+    """A sell-token (at-cap) claim still burns quota, same as Mudae/Karuta
+    rate-limit claim *attempts* against the pool, not just new pickups (see
+    the comment above the daily_claims increment in
+    _resolve_claim_window) -- otherwise a maxed-out member could keep
+    re-rolling a card they already have two of forever without it ever
+    counting against them."""
+    guild = FakeGuild(22)
+    admin = FakeMember(220, guild)
+    winner = FakeMember(221, guild)
+    guild.members = {220: admin, 221: winner}
+
+    channel = FakeChannel(2200, guild)
+    cog.bot.register_channel(channel)
+    ctx = FakeCtx(admin, guild, channel, attachments=[FakeAttachment(fake_art_bytes((5, 5, 5)))])
+    await cog.card.commands["addcard"].callback(cog, ctx, "epic", name_and_series="Dupe | Some Anime")
+    await cog.config.guild(guild).claim_quota.set(5)
+
+    pool = await cog.config.guild(guild).pool()
+    card_id = int(next(iter(pool)))
+
+    from cardcollect.models import MemberState
+
+    # already at the duplicate cap (2 copies)
+    await cog._save_member_state(winner, MemberState(collection=[card_id, card_id]))
+
+    await cog._post_drop(channel, guild, is_test=False)
+    drop_message = channel.sent[-1]
+    drop = cog.active_drops[drop_message.id]
+    drop.cards[0]["card_id"] = card_id
+    real_emoji = drop.cards[0]["emoji"]
+    reaction = next(r for r in drop_message.reactions if r.emoji == real_emoji)
+    reaction._reactor_objs = [winner]
+
+    await cog._resolve_claim_window(channel.id, drop_message.id, real_emoji, window=0)
+
+    final_state = await cog._member_state(winner)
+    assert len(final_state.sell_tokens) == 1  # at-cap path, not a new pickup or a 3rd copy
+    assert final_state.daily_claims == 1, "an at-cap claim must still burn quota"
+
+
+@pytest.mark.asyncio
+async def test_first_duplicate_claim_also_counts_against_daily_quota(cog):
+    """Same as the at-cap case above, but for the *first* duplicate (kept as
+    a tradeable spare rather than converted to a sell token) -- that must
+    burn quota too, not just sell-token conversions."""
+    guild = FakeGuild(25)
+    admin = FakeMember(250, guild)
+    winner = FakeMember(251, guild)
+    guild.members = {250: admin, 251: winner}
+
+    channel = FakeChannel(2500, guild)
+    cog.bot.register_channel(channel)
+    ctx = FakeCtx(admin, guild, channel, attachments=[FakeAttachment(fake_art_bytes((5, 6, 7)))])
+    await cog.card.commands["addcard"].callback(cog, ctx, "epic", name_and_series="Spare | Some Anime")
+    await cog.config.guild(guild).claim_quota.set(5)
+
+    pool = await cog.config.guild(guild).pool()
+    card_id = int(next(iter(pool)))
+
+    from cardcollect.models import MemberState
+
+    await cog._save_member_state(winner, MemberState(collection=[card_id]))
+
+    await cog._post_drop(channel, guild, is_test=False)
+    drop_message = channel.sent[-1]
+    drop = cog.active_drops[drop_message.id]
+    drop.cards[0]["card_id"] = card_id
+    real_emoji = drop.cards[0]["emoji"]
+    reaction = next(r for r in drop_message.reactions if r.emoji == real_emoji)
+    reaction._reactor_objs = [winner]
+
+    await cog._resolve_claim_window(channel.id, drop_message.id, real_emoji, window=0)
+
+    final_state = await cog._member_state(winner)
+    assert final_state.collection == [card_id, card_id]
+    assert final_state.sell_tokens == []
+    assert final_state.daily_claims == 1, "a spare-duplicate claim must still burn quota"
+
+
+@pytest.mark.asyncio
+async def test_showcase_add_rejects_a_pool_card_the_member_does_not_own(cog):
+    """Distinct from the 'card doesn't exist at all' rejection: this is a
+    real pool card that simply isn't in this member's collection yet."""
+    guild = FakeGuild(23)
+    admin = FakeMember(230, guild)
+    non_owner = FakeMember(231, guild)
+    guild.members = {230: admin, 231: non_owner}
+    channel = FakeChannel(2300, guild)
+
+    ctx = FakeCtx(admin, guild, channel, attachments=[FakeAttachment(fake_art_bytes((1, 2, 3)))])
+    await cog.card.commands["addcard"].callback(cog, ctx, "common", name_and_series="Unowned | S")
+    pool = await cog.config.guild(guild).pool()
+    card_id = int(next(iter(pool)))
+
+    add_ctx = FakeCtx(non_owner, guild, channel)
+    await cog.card.commands["showcase"].commands["add"].callback(cog, add_ctx, card_arg=str(card_id))
+    assert "don't own" in add_ctx.sent[-1].content.lower()
+
+    state = await cog._member_state(non_owner)
+    assert state.showcase_card_ids == []
+
+
+@pytest.mark.asyncio
+async def test_card_gallery_viewable_for_another_member(cog):
+    guild = FakeGuild(26)
+    admin = FakeMember(260, guild)
+    owner = FakeMember(261, guild, display_name="Nia")
+    empty_member = FakeMember(262, guild, display_name="Empty")
+    guild.members = {260: admin, 261: owner, 262: empty_member}
+    channel = FakeChannel(2600, guild)
+
+    ctx = FakeCtx(admin, guild, channel, attachments=[FakeAttachment(fake_art_bytes((11, 22, 33)))])
+    await cog.card.commands["addcard"].callback(cog, ctx, "common", name_and_series="Viewed | S")
+    pool = await cog.config.guild(guild).pool()
+    card_id = int(next(iter(pool)))
+
+    from cardcollect.models import MemberState
+
+    await cog._save_member_state(owner, MemberState(collection=[card_id]))
+
+    # own gallery: no caption
+    own_ctx = FakeCtx(owner, guild, channel)
+    await cog.card.callback(cog, own_ctx, member=None)
+    assert own_ctx.sent[-1].content is None
+    assert own_ctx.sent[-1].files
+
+    # someone else's gallery: captioned with their name
+    other_ctx = FakeCtx(admin, guild, channel)
+    await cog.card.callback(cog, other_ctx, member=owner)
+    assert "nia" in other_ctx.sent[-1].content.lower()
+    assert other_ctx.sent[-1].files
+
+    # a member with nothing claimed yet gets a clear message, not an error
+    empty_ctx = FakeCtx(admin, guild, channel)
+    await cog.card.callback(cog, empty_ctx, member=empty_member)
+    assert "hasn't claimed" in empty_ctx.sent[-1].content.lower()
+
+
+@pytest.mark.asyncio
+async def test_card_showcase_viewable_for_another_member_with_tier_breakdown(cog):
+    guild = FakeGuild(27)
+    admin = FakeMember(270, guild)
+    owner = FakeMember(271, guild, display_name="Kess")
+    guild.members = {270: admin, 271: owner}
+    channel = FakeChannel(2700, guild)
+
+    card_ids = []
+    for i, rarity in enumerate(["common", "common", "rare", "legendary"]):
+        ctx = FakeCtx(admin, guild, channel, attachments=[FakeAttachment(fake_art_bytes((i, i, i)))])
+        await cog.card.commands["addcard"].callback(cog, ctx, rarity, name_and_series=f"T{i} | S")
+    pool = await cog.config.guild(guild).pool()
+    card_ids = sorted(int(cid) for cid in pool)
+
+    from cardcollect.models import MemberState
+
+    await cog._save_member_state(owner, MemberState(collection=card_ids, showcase_card_ids=[card_ids[0]]))
+
+    # viewed by the owner themself
+    own_ctx = FakeCtx(owner, guild, channel)
+    await cog.card_showcase.callback(cog, own_ctx, member=None)
+    text = own_ctx.sent[-1].content.lower()
+    assert "2 common" in text and "1 rare" in text and "1 legendary" in text and "0 epic" in text
+    assert "(4 total)" in text
+
+    # viewed by someone else
+    other_ctx = FakeCtx(admin, guild, channel)
+    await cog.card_showcase.callback(cog, other_ctx, member=owner)
+    other_text = other_ctx.sent[-1].content.lower()
+    assert "kess" in other_text
+    assert "2 common" in other_text
+
+
+@pytest.mark.asyncio
+async def test_card_showcase_empty_collection_shows_no_tier_line(cog):
+    guild = FakeGuild(28)
+    admin = FakeMember(280, guild)
+    channel = FakeChannel(2800, guild)
+    ctx = FakeCtx(admin, guild, channel)
+    await cog.card_showcase.callback(cog, ctx, member=None)
+    assert "Collection:" not in ctx.sent[-1].content
+
+
+@pytest.mark.asyncio
+async def test_card_give_keeps_showcase_when_giver_still_holds_a_spare(cog):
+    guild = FakeGuild(29)
+    admin = FakeMember(290, guild)
+    giver = FakeMember(291, guild)
+    receiver = FakeMember(292, guild)
+    guild.members = {290: admin, 291: giver, 292: receiver}
+    channel = FakeChannel(2900, guild)
+
+    ctx = FakeCtx(admin, guild, channel, attachments=[FakeAttachment(fake_art_bytes((40, 40, 40)))])
+    await cog.card.commands["addcard"].callback(cog, ctx, "rare", name_and_series="Spare | S")
+    pool = await cog.config.guild(guild).pool()
+    card_id = int(next(iter(pool)))
+
+    from cardcollect.models import MemberState
+
+    # giver holds 2 copies, showcased
+    await cog._save_member_state(
+        giver, MemberState(collection=[card_id, card_id], showcase_card_ids=[card_id])
+    )
+
+    give_ctx = FakeCtx(giver, guild, channel)
+    await cog.card.commands["give"].callback(cog, give_ctx, receiver, card_arg=str(card_id))
+
+    giver_state = await cog._member_state(giver)
+    assert giver_state.collection == [card_id]  # one copy left
+    assert giver_state.showcase_card_ids == [card_id]  # still showcased -- they still own one
+
+    receiver_state = await cog._member_state(receiver)
+    assert receiver_state.collection == [card_id]
+
+
+@pytest.mark.asyncio
+async def test_card_give_removes_showcase_entry_when_it_was_the_last_copy(cog):
+    guild = FakeGuild(30)
+    admin = FakeMember(300, guild)
+    giver = FakeMember(301, guild)
+    receiver = FakeMember(302, guild)
+    guild.members = {300: admin, 301: giver, 302: receiver}
+    channel = FakeChannel(3000, guild)
+
+    ctx = FakeCtx(admin, guild, channel, attachments=[FakeAttachment(fake_art_bytes((50, 50, 50)))])
+    await cog.card.commands["addcard"].callback(cog, ctx, "rare", name_and_series="Last | S")
+    pool = await cog.config.guild(guild).pool()
+    card_id = int(next(iter(pool)))
+
+    from cardcollect.models import MemberState
+
+    await cog._save_member_state(giver, MemberState(collection=[card_id], showcase_card_ids=[card_id]))
+
+    give_ctx = FakeCtx(giver, guild, channel)
+    await cog.card.commands["give"].callback(cog, give_ctx, receiver, card_arg=str(card_id))
+
+    giver_state = await cog._member_state(giver)
+    assert giver_state.collection == []
+    assert giver_state.showcase_card_ids == []  # no longer own any copy -- removed
+
+
+@pytest.mark.asyncio
+async def test_card_give_converts_to_sell_token_when_receiver_at_duplicate_cap(cog):
+    guild = FakeGuild(31)
+    admin = FakeMember(310, guild)
+    giver = FakeMember(311, guild)
+    receiver = FakeMember(312, guild)
+    guild.members = {310: admin, 311: giver, 312: receiver}
+    channel = FakeChannel(3100, guild)
+
+    ctx = FakeCtx(admin, guild, channel, attachments=[FakeAttachment(fake_art_bytes((60, 60, 60)))])
+    await cog.card.commands["addcard"].callback(cog, ctx, "rare", name_and_series="Capped | S")
+    pool = await cog.config.guild(guild).pool()
+    card_id = int(next(iter(pool)))
+
+    from cardcollect.models import MemberState
+
+    await cog._save_member_state(giver, MemberState(collection=[card_id]))
+    # receiver already at the cap
+    await cog._save_member_state(receiver, MemberState(collection=[card_id, card_id]))
+
+    give_ctx = FakeCtx(giver, guild, channel)
+    await cog.card.commands["give"].callback(cog, give_ctx, receiver, card_arg=str(card_id))
+
+    receiver_state = await cog._member_state(receiver)
+    assert receiver_state.collection == [card_id, card_id]  # unchanged, no 3rd copy
+    assert len(receiver_state.sell_tokens) == 1
+    assert "duplicate limit" in give_ctx.sent[-1].content.lower()
+
+
+@pytest.mark.asyncio
+async def test_card_give_to_a_receiver_below_cap_becomes_a_real_second_copy(cog):
+    """Distinct from the at-cap case above: a receiver who already owns
+    exactly one copy (below MAX_COPIES_KEPT) must get a real, tradeable
+    second copy from the gift -- not have it silently converted to a sell
+    token just because they already own one."""
+    guild = FakeGuild(32)
+    admin = FakeMember(320, guild)
+    giver = FakeMember(321, guild)
+    receiver = FakeMember(322, guild)
+    guild.members = {320: admin, 321: giver, 322: receiver}
+    channel = FakeChannel(3200, guild)
+
+    ctx = FakeCtx(admin, guild, channel, attachments=[FakeAttachment(fake_art_bytes((70, 70, 70)))])
+    await cog.card.commands["addcard"].callback(cog, ctx, "rare", name_and_series="Below | S")
+    pool = await cog.config.guild(guild).pool()
+    card_id = int(next(iter(pool)))
+
+    from cardcollect.models import MemberState
+
+    await cog._save_member_state(giver, MemberState(collection=[card_id]))
+    # receiver owns exactly one -- below the cap, room for a spare
+    await cog._save_member_state(receiver, MemberState(collection=[card_id]))
+
+    give_ctx = FakeCtx(giver, guild, channel)
+    await cog.card.commands["give"].callback(cog, give_ctx, receiver, card_arg=str(card_id))
+
+    receiver_state = await cog._member_state(receiver)
+    assert receiver_state.collection == [card_id, card_id]  # a real second copy
+    assert receiver_state.sell_tokens == []
 
 
 @pytest.mark.asyncio
@@ -343,7 +694,7 @@ async def test_removecard_retires_but_existing_owners_keep_their_gallery_tile(co
 
     await cog._save_member_state(owner, MemberState(collection=[card_id]))
 
-    await cog.card.commands["removecard"].callback(cog, ctx, card_id)
+    await cog.card.commands["removecard"].callback(cog, ctx, card_ids=str(card_id))
 
     # art must still be on disk, and the card must still resolve by id --
     # otherwise the owner's gallery silently drops the tile
@@ -361,6 +712,365 @@ async def test_removecard_retires_but_existing_owners_keep_their_gallery_tile(co
     owner_ctx = FakeCtx(owner, guild, channel)
     await cog.card.callback(cog, owner_ctx)
     assert owner_ctx.sent[-1].files, "gallery image should still render for the retired card"
+
+
+@pytest.mark.asyncio
+async def test_removecard_accepts_multiple_ids_and_reports_not_found(cog):
+    guild = FakeGuild(12)
+    admin = FakeMember(120, guild)
+    channel = FakeChannel(1200, guild)
+    ctx = FakeCtx(admin, guild, channel, attachments=[FakeAttachment(fake_art_bytes((1, 1, 1)))])
+    await cog.card.commands["addcard"].callback(cog, ctx, "common", name_and_series="A | S")
+    ctx2 = FakeCtx(admin, guild, channel, attachments=[FakeAttachment(fake_art_bytes((2, 2, 2)))])
+    await cog.card.commands["addcard"].callback(cog, ctx2, "common", name_and_series="B | S")
+    ctx3 = FakeCtx(admin, guild, channel, attachments=[FakeAttachment(fake_art_bytes((3, 3, 3)))])
+    await cog.card.commands["addcard"].callback(cog, ctx3, "common", name_and_series="C | S")
+
+    pool = await cog.config.guild(guild).pool()
+    ids = sorted(int(cid) for cid in pool)
+    id_a, id_b, id_c = ids
+
+    remove_ctx = FakeCtx(admin, guild, channel)
+    # remove two of the three real IDs plus one that doesn't exist
+    await cog.card.commands["removecard"].callback(
+        cog, remove_ctx, card_ids=f"{id_a} {id_b} 99999"
+    )
+
+    embed = remove_ctx.sent[-1].embeds[0]
+    field_names = [f.name for f in embed.fields]
+    assert any("Retired (2)" in n for n in field_names)
+    assert any("Not found (1)" in n for n in field_names)
+
+    rollable_ids = {c.card_id for c in await cog._rollable_pool_cards(guild)}
+    assert id_a not in rollable_ids
+    assert id_b not in rollable_ids
+    assert id_c in rollable_ids  # untouched
+
+
+@pytest.mark.asyncio
+async def test_viewpool_lists_every_card_including_retired(cog):
+    guild = FakeGuild(13)
+    admin = FakeMember(130, guild)
+    channel = FakeChannel(1300, guild)
+    ctx = FakeCtx(admin, guild, channel, attachments=[FakeAttachment(fake_art_bytes((10, 10, 10)))])
+    await cog.card.commands["addcard"].callback(cog, ctx, "rare", name_and_series="Keeper | Show")
+    ctx2 = FakeCtx(admin, guild, channel, attachments=[FakeAttachment(fake_art_bytes((20, 20, 20)))])
+    await cog.card.commands["addcard"].callback(cog, ctx2, "epic", name_and_series="Gone | Show")
+
+    pool = await cog.config.guild(guild).pool()
+    gone_id = int(sorted(pool, key=int)[1])
+    await cog.card.commands["removecard"].callback(cog, ctx, card_ids=str(gone_id))
+
+    view_ctx = FakeCtx(admin, guild, channel)
+    await cog.card.commands["viewpool"].callback(cog, view_ctx)
+
+    sent = view_ctx.sent[-1]
+    assert sent.files, "viewpool should attach a file"
+    text = sent.files[0].fp.read().decode("utf-8")
+    assert "Keeper" in text
+    assert "Gone" in text
+    assert "[retired]" in text
+    assert "2" in sent.content and "1 retired" in sent.content
+
+
+@pytest.mark.asyncio
+async def test_resetpool_requires_confirmation_then_retires_everything(cog):
+    guild = FakeGuild(14)
+    admin = FakeMember(140, guild)
+    channel = FakeChannel(1400, guild)
+    ctx = FakeCtx(admin, guild, channel, attachments=[FakeAttachment(fake_art_bytes((5, 5, 5)))])
+    await cog.card.commands["addcard"].callback(cog, ctx, "common", name_and_series="X | S")
+    ctx2 = FakeCtx(admin, guild, channel, attachments=[FakeAttachment(fake_art_bytes((6, 6, 6)))])
+    await cog.card.commands["addcard"].callback(cog, ctx2, "rare", name_and_series="Y | S")
+
+    reset_ctx = FakeCtx(admin, guild, channel)
+    await cog.card.commands["resetpool"].callback(cog, reset_ctx)
+    assert "confirm" in reset_ctx.sent[-1].content.lower()
+    # nothing actually retired yet -- still 2 rollable
+    assert len(await cog._rollable_pool_cards(guild)) == 2
+
+    confirm_ctx = FakeCtx(admin, guild, channel)
+    await cog.card.commands["resetpool"].callback(cog, confirm_ctx, confirm="confirm")
+    assert len(await cog._rollable_pool_cards(guild)) == 0
+
+    # existing pool entries still resolve by id (soft delete, not hard delete)
+    pool = await cog.config.guild(guild).pool()
+    assert len(pool) == 2
+    assert all(entry["retired"] for entry in pool.values())
+
+
+@pytest.mark.asyncio
+async def test_daily_claim_quota_excludes_a_reactor_who_already_hit_it(cog, monkeypatch):
+    """A member at their daily quota must be excluded from the reactor pool
+    entirely, the same way claimed_by/claim_cooldown exclude people -- not
+    merely prevented from being picked as winner (that would still let them
+    win by being the only eligible reactor)."""
+    monkeypatch.setattr(cc_module.engine, "resolve_claim", lambda reactor_ids, rng=None: reactor_ids[0])
+
+    guild = FakeGuild(15)
+    admin = FakeMember(150, guild)
+    maxed_out = FakeMember(151, guild)
+    fresh = FakeMember(152, guild)
+    guild.members = {150: admin, 151: maxed_out, 152: fresh}
+
+    channel = FakeChannel(1500, guild)
+    cog.bot.register_channel(channel)
+    ctx = FakeCtx(admin, guild, channel, attachments=[FakeAttachment(fake_art_bytes((7, 7, 7)))])
+    await cog.card.commands["addcard"].callback(cog, ctx, "common", name_and_series="Q | S")
+
+    await cog.config.guild(guild).claim_quota.set(1)
+    await cog.config.guild(guild).claim_cooldown_seconds.set(0)
+    # maxed_out already used today's one claim
+    from cardcollect import engine as engine_mod
+
+    today = engine_mod.today_str("America/Los_Angeles")
+    member_conf = cog.config.member_from_ids(guild.id, maxed_out.id)
+    await member_conf.daily_claims.set(1)
+    await member_conf.daily_claims_date.set(today)
+
+    await cog._post_drop(channel, guild, is_test=False)
+    drop_message = channel.sent[-1]
+    real_emoji = cog.active_drops[drop_message.id].cards[0]["emoji"]
+    reaction = next(r for r in drop_message.reactions if r.emoji == real_emoji)
+    # maxed_out reacts first (would deterministically win under the pinned
+    # resolve_claim if not excluded); fresh reacts too
+    reaction._reactor_objs = [maxed_out, fresh]
+
+    await cog._resolve_claim_window(channel.id, drop_message.id, real_emoji, window=0)
+
+    maxed_state = await cog._member_state(maxed_out)
+    fresh_state = await cog._member_state(fresh)
+    assert maxed_state.collection == [], "a member at their daily quota must not win a card"
+    assert len(fresh_state.collection) == 1
+    assert fresh_state.daily_claims == 1
+    assert fresh_state.daily_claims_date == today
+
+
+@pytest.mark.asyncio
+async def test_claim_quota_zero_means_unlimited_and_quota_command_reports_it(cog):
+    guild = FakeGuild(16)
+    admin = FakeMember(160, guild)
+    channel = FakeChannel(1600, guild)
+    ctx = FakeCtx(admin, guild, channel)
+
+    await cog.config.guild(guild).claim_quota.set(0)
+    await cog.card.commands["quota"].callback(cog, ctx)
+    assert "no daily claim limit" in ctx.sent[-1].content.lower()
+
+
+@pytest.mark.asyncio
+async def test_set_claimquota_command_updates_config(cog):
+    guild = FakeGuild(17)
+    admin = FakeMember(170, guild)
+    channel = FakeChannel(1700, guild)
+    ctx = FakeCtx(admin, guild, channel)
+
+    await cog.card.commands["set"].commands["claimquota"].callback(cog, ctx, 15)
+    assert await cog.config.guild(guild).claim_quota() == 15
+    assert "15" in ctx.sent[-1].content
+
+    ctx2 = FakeCtx(admin, guild, channel)
+    await cog.card.commands["set"].commands["claimquota"].callback(cog, ctx2, -1)
+    assert "negative" in ctx2.sent[-1].content.lower()
+    assert await cog.config.guild(guild).claim_quota() == 15  # unchanged
+
+
+@pytest.mark.asyncio
+async def test_showcase_add_remove_and_view(cog):
+    guild = FakeGuild(18)
+    admin = FakeMember(180, guild)
+    owner = FakeMember(181, guild)
+    guild.members = {180: admin, 181: owner}
+
+    channel = FakeChannel(1800, guild)
+    ctx = FakeCtx(admin, guild, channel, attachments=[FakeAttachment(fake_art_bytes((30, 30, 30)))])
+    await cog.card.commands["addcard"].callback(cog, ctx, "common", name_and_series="Nia | S")
+    pool = await cog.config.guild(guild).pool()
+    card_id = int(next(iter(pool)))
+
+    from cardcollect.models import MemberState
+
+    await cog._save_member_state(owner, MemberState(collection=[card_id]))
+
+    owner_ctx = FakeCtx(owner, guild, channel)
+    await cog.card.commands["showcase"].callback(cog, owner_ctx)
+    assert "no showcase" in owner_ctx.sent[-1].content.lower()
+
+    add_ctx = FakeCtx(owner, guild, channel)
+    await cog.card.commands["showcase"].commands["add"].callback(cog, add_ctx, card_arg=str(card_id))
+    assert "added" in add_ctx.sent[-1].content.lower()
+
+    state = await cog._member_state(owner)
+    assert state.showcase_card_ids == [card_id]
+
+    view_ctx = FakeCtx(owner, guild, channel)
+    await cog.card.commands["showcase"].callback(cog, view_ctx)
+    assert str(card_id) in view_ctx.sent[-1].content
+
+    remove_ctx = FakeCtx(owner, guild, channel)
+    await cog.card.commands["showcase"].commands["remove"].callback(cog, remove_ctx, card_arg=str(card_id))
+    state2 = await cog._member_state(owner)
+    assert state2.showcase_card_ids == []
+
+
+@pytest.mark.asyncio
+async def test_showcase_add_rejects_unowned_card_and_enforces_max_slots(cog):
+    guild = FakeGuild(19)
+    admin = FakeMember(190, guild)
+    owner = FakeMember(191, guild)
+    guild.members = {190: admin, 191: owner}
+    channel = FakeChannel(1900, guild)
+
+    card_ids = []
+    for i in range(4):
+        ctx = FakeCtx(admin, guild, channel, attachments=[FakeAttachment(fake_art_bytes((i * 10, 1, 1)))])
+        await cog.card.commands["addcard"].callback(cog, ctx, "common", name_and_series=f"C{i} | S")
+    pool = await cog.config.guild(guild).pool()
+    card_ids = sorted(int(cid) for cid in pool)
+
+    from cardcollect.models import MemberState
+
+    await cog._save_member_state(owner, MemberState(collection=card_ids))
+
+    unowned_ctx = FakeCtx(owner, guild, channel)
+    await cog.card.commands["showcase"].commands["add"].callback(cog, unowned_ctx, card_arg="99999")
+    assert "matches" in unowned_ctx.sent[-1].content.lower() or "don't own" in unowned_ctx.sent[-1].content.lower()
+
+    # fill all 3 slots (MAX_SHOWCASE_SLOTS)
+    for cid in card_ids[:3]:
+        add_ctx = FakeCtx(owner, guild, channel)
+        await cog.card.commands["showcase"].commands["add"].callback(cog, add_ctx, card_arg=str(cid))
+
+    full_ctx = FakeCtx(owner, guild, channel)
+    await cog.card.commands["showcase"].commands["add"].callback(cog, full_ctx, card_arg=str(card_ids[3]))
+    assert "full" in full_ctx.sent[-1].content.lower()
+
+    state = await cog._member_state(owner)
+    assert len(state.showcase_card_ids) == 3
+
+
+@pytest.mark.asyncio
+async def test_card_info_reports_rarity_and_owner_count(cog):
+    guild = FakeGuild(20)
+    admin = FakeMember(200, guild)
+    owner1 = FakeMember(201, guild)
+    owner2 = FakeMember(202, guild)
+    guild.members = {200: admin, 201: owner1, 202: owner2}
+
+    channel = FakeChannel(2000, guild)
+    ctx = FakeCtx(admin, guild, channel, attachments=[FakeAttachment(fake_art_bytes((90, 90, 90)))])
+    await cog.card.commands["addcard"].callback(cog, ctx, "legendary", name_and_series="Star | Show")
+    pool = await cog.config.guild(guild).pool()
+    card_id = int(next(iter(pool)))
+
+    from cardcollect.models import MemberState
+
+    await cog._save_member_state(owner1, MemberState(collection=[card_id]))
+    await cog._save_member_state(owner2, MemberState(collection=[card_id]))
+
+    info_ctx = FakeCtx(admin, guild, channel)
+    await cog.card.commands["info"].callback(cog, info_ctx, card_arg=str(card_id))
+
+    sent = info_ctx.sent[-1]
+    embed = sent.embeds[0]
+    assert embed.title == "Star"
+    field_values = {f.name: f.value for f in embed.fields}
+    assert field_values["Currently owned by"] == "2 members"
+    assert sent.files, "card_info should attach the card art"
+
+
+@pytest.mark.asyncio
+async def test_importpool_skips_characters_already_in_the_pool(cog):
+    """Regression test for the 'importpool re-adds the same character on a
+    second run' gap: an AniList character already in the pool (matched by
+    anilist_id) must not be imported again under a new local card_id."""
+    guild = FakeGuild(21)
+    admin = FakeMember(210, guild)
+    channel = FakeChannel(2100, guild)
+    ctx = FakeCtx(admin, guild, channel)
+
+    from cardcollect.models import Card as CardModel
+
+    async with cog.config.guild(guild).all() as guild_data:
+        guild_data["pool"]["1"] = CardModel(
+            card_id=1, name="Existing", series="S", rarity="common",
+            image_path="1.png", favourites=100, anilist_id=42,
+        ).to_dict()
+        guild_data["next_id"] = 2
+
+    class FakeAniListResponse:
+        def __init__(self, payload):
+            self._payload = payload
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc):
+            return False
+
+        def raise_for_status(self):
+            pass
+
+        async def json(self):
+            return self._payload
+
+    class FakeAniListSession:
+        def __init__(self, pages):
+            self._pages = list(pages)
+            self._calls = 0
+
+        def post(self, url, json=None):
+            payload = self._pages[min(self._calls, len(self._pages) - 1)]
+            self._calls += 1
+            return FakeAniListResponse(payload)
+
+        def get(self, url):
+            return FakeAniListResponse(None)  # unused directly; image bytes come via aenter override below
+
+    def make_char(id_, name, favourites):
+        return {
+            "id": id_,
+            "name": {"full": name, "native": name},
+            "image": {"large": f"https://example.invalid/{id_}.png"},
+            "favourites": favourites,
+            "gender": "Female",
+            "media": {"nodes": [{"title": {"romaji": "S"}}]},
+        }
+
+    page = {
+        "data": {
+            "Page": {
+                "pageInfo": {"hasNextPage": False},
+                "characters": [make_char(42, "Existing", 100), make_char(43, "Fresh", 100)],
+            }
+        }
+    }
+
+    class FakeImageResponse(FakeAniListResponse):
+        def __init__(self):
+            super().__init__(None)
+
+        async def read(self):
+            return fake_art_bytes()
+
+    class FakeSessionWithImages(FakeAniListSession):
+        def get(self, url):
+            return FakeImageResponse()
+
+    cog._session = FakeSessionWithImages([page])
+
+    await cog.card.commands["importpool"].callback(cog, ctx, count=5)
+
+    pool = await cog.config.guild(guild).pool()
+    # use anilist_id, not name, to check for the dupe -- a set of names
+    # would silently collapse two distinct pool entries that happen to
+    # share a name (as "Existing" imported twice would) into one element,
+    # masking exactly the bug this test exists to catch
+    anilist_ids = [entry.get("anilist_id") for entry in pool.values()]
+    assert sorted(x for x in anilist_ids if x is not None) == [42, 43], (
+        f"expected anilist id 42 (pre-existing) to appear exactly once and 43 (new) once, got {anilist_ids}"
+    )
+    assert len(pool) == 2, f"expected exactly 2 pool entries total, got {len(pool)}"
 
 
 @pytest.mark.asyncio
@@ -413,3 +1123,177 @@ async def test_concurrent_resolution_calls_never_double_award(cog):
 
     new_messages = channel.sent[messages_before:]
     assert len(new_messages) == 1, f"expected exactly one claim result message, got {len(new_messages)}"
+
+
+@pytest.mark.asyncio
+async def test_one_card_per_person_per_drop(cog, monkeypatch):
+    """User-requested rule: a drop still has multiple independently-claimable
+    cards (that part is unchanged), but a single person may only ever redeem
+    one of them. Set up a 2-card drop where the same user reacts to both
+    cards, but a second person also reacts to the second card -- the greedy
+    reactor must win exactly one card total, and the other reactor must
+    still be able to win the second card despite not being first/fastest.
+
+    resolve_claim is normally a random pick among eligible reactors, which
+    would make this test flaky (a pass could just mean the RNG happened to
+    pick "other"). Pin it to "first eligible reactor" so the assertions
+    below are actually discriminating: if the one-card-per-drop filtering
+    disappeared, greedy (who reacted first, at index 0) would deterministically
+    win card B too, not just possibly."""
+    monkeypatch.setattr(cc_module.engine, "resolve_claim", lambda reactor_ids, rng=None: reactor_ids[0])
+
+    guild = FakeGuild(10)
+    # (see below) claim_cooldown_seconds is set to 0 for this guild so the
+    # unrelated per-user claim-cooldown mechanism can't incidentally exclude
+    # greedy from card B's reactor list itself and mask a missing
+    # claimed_by check -- same pitfall as the double-award race test above
+    admin = FakeMember(100, guild)
+    greedy = FakeMember(101, guild)
+    other = FakeMember(102, guild)
+    guild.members = {100: admin, 101: greedy, 102: other}
+
+    channel = FakeChannel(1000, guild)
+    cog.bot.register_channel(channel)
+    ctx = FakeCtx(admin, guild, channel, attachments=[FakeAttachment(fake_art_bytes((5, 5, 5)))])
+    await cog.card.commands["addcard"].callback(cog, ctx, "common", name_and_series="Mio | Some Anime")
+    ctx2 = FakeCtx(admin, guild, channel, attachments=[FakeAttachment(fake_art_bytes((250, 5, 5)))])
+    await cog.card.commands["addcard"].callback(cog, ctx2, "common", name_and_series="Sora | Some Anime")
+
+    await cog.config.guild(guild).drop_size.set(2)
+    await cog.config.guild(guild).decoys_enabled.set(False)
+    await cog.config.guild(guild).claim_cooldown_seconds.set(0)
+
+    await cog._post_drop(channel, guild, is_test=False)
+    drop_message = channel.sent[-1]
+    drop = cog.active_drops[drop_message.id]
+    assert len(drop.cards) == 2
+
+    emoji_a = drop.cards[0]["emoji"]
+    emoji_b = drop.cards[1]["emoji"]
+    reaction_a = next(r for r in drop_message.reactions if r.emoji == emoji_a)
+    reaction_b = next(r for r in drop_message.reactions if r.emoji == emoji_b)
+    # greedy reacts to both, trying to claim all the cards; other only
+    # reacts to the second one
+    reaction_a._reactor_objs = [greedy]
+    reaction_b._reactor_objs = [greedy, other]
+
+    await cog._resolve_claim_window(channel.id, drop_message.id, emoji_a, window=0)
+    await cog._resolve_claim_window(channel.id, drop_message.id, emoji_b, window=0)
+
+    greedy_state = await cog._member_state(greedy)
+    other_state = await cog._member_state(other)
+    assert len(greedy_state.collection) == 1, f"one person should win exactly one card, got {len(greedy_state.collection)}"
+    # excluded from card B entirely -- the OTHER reactor wins it instead of
+    # the card going unclaimed
+    assert len(other_state.collection) == 1, "the second card should still go to someone, not be forfeited"
+    assert drop.claimed_positions == {0, 1}
+
+
+@pytest.mark.asyncio
+async def test_testdrop_reports_empty_pool_instead_of_silently_doing_nothing(cog):
+    """Live bug report: an admin ran .card setchannel then .card testdrop
+    before adding any characters, and testdrop silently did nothing -- no
+    error, no drop, no feedback at all. _post_drop's empty-pool guard used
+    to be a bare `return`; it must now report why, and the command must
+    relay that back to the admin instead of swallowing it."""
+    guild = FakeGuild(8)
+    admin = FakeMember(80, guild)
+    channel = FakeChannel(800, guild)
+    cog.bot.register_channel(channel)
+    ctx = FakeCtx(admin, guild, channel)
+
+    await cog.card.commands["setchannel"].callback(cog, ctx, channel)
+    messages_before = len(ctx.sent)
+
+    await cog.card.commands["testdrop"].callback(cog, ctx)
+
+    new_messages = ctx.sent[messages_before:]
+    assert len(new_messages) == 1, "testdrop with an empty pool must say something, not nothing"
+    assert "pool is empty" in new_messages[0].content.lower()
+    # and, critically, no drop image was actually posted
+    assert not any(m.files for m in new_messages)
+
+
+@pytest.mark.asyncio
+async def test_first_ever_drop_not_blocked_by_monotonic_clock_sentinel(cog, monkeypatch):
+    """Regression test: last_drop_time used to default to 0.0 for a guild
+    that had never dropped, compared as `now - last < cooldown` against
+    time.monotonic(). monotonic()'s reference point is undefined -- it is
+    NOT guaranteed to be a large number -- so on a host/sandbox where it
+    happens to return something smaller than drop_cooldown_seconds, a
+    guild's very first-ever drop would be incorrectly treated as still on
+    cooldown and silently skipped. Pin monotonic() to a small value to
+    reproduce that condition directly, instead of hoping the real clock
+    happens to be small when the suite runs."""
+    monkeypatch.setattr(cc_module.time, "monotonic", lambda: 50.0)
+
+    guild = FakeGuild(11)
+    admin = FakeMember(110, guild)
+    author = FakeMember(111, guild)
+    guild.members = {110: admin, 111: author}
+
+    channel = FakeChannel(1100, guild)
+    cog.bot.register_channel(channel)
+    ctx = FakeCtx(admin, guild, channel, attachments=[FakeAttachment(fake_art_bytes((40, 200, 90)))])
+    await cog.card.commands["addcard"].callback(cog, ctx, "common", name_and_series="Kana | Some Anime")
+    await cog.card.commands["setchannel"].callback(cog, ctx, channel)
+    await cog.config.guild(guild).drop_chance.set(1.0)
+    await cog.config.guild(guild).drop_cooldown_seconds.set(3600)  # larger than the pinned monotonic() value
+
+    assert guild.id not in cog.last_drop_time  # this guild has never dropped
+
+    class FakeMessage2:
+        def __init__(self, author, channel):
+            self.author = author
+            self.channel = channel
+            self.guild = channel.guild
+
+    await cog.on_message(FakeMessage2(author, channel))
+
+    drop_messages = [m for m in channel.sent if m.files]
+    assert len(drop_messages) == 1, "a guild's first-ever drop must not be blocked by the cooldown check"
+
+
+@pytest.mark.asyncio
+async def test_concurrent_messages_never_chain_two_drops_past_the_cooldown(cog):
+    """Regression test for the drop-cooldown race: on_message used to
+    check-then-set self.last_drop_time across two real Config awaits with
+    no lock, so two messages arriving close together could both pass the
+    cooldown check before either recorded a drop -- silently defeating
+    drop_cooldown_seconds (locked decision #3: 'a cooldown afterward so it
+    can't chain'). A per-guild asyncio.Lock now makes that decision atomic."""
+    guild = FakeGuild(9)
+    admin = FakeMember(90, guild)
+    author = FakeMember(91, guild)
+    guild.members = {90: admin, 91: author}
+
+    channel = FakeChannel(900, guild)
+    cog.bot.register_channel(channel)
+    ctx = FakeCtx(admin, guild, channel, attachments=[FakeAttachment(fake_art_bytes((90, 40, 200)))])
+    await cog.card.commands["addcard"].callback(cog, ctx, "common", name_and_series="Nell | Some Anime")
+    await cog.card.commands["setchannel"].callback(cog, ctx, channel)
+    # guarantee a drop fires on every qualifying message, and never on
+    # cooldown, so the *only* thing that can prevent a second drop is the
+    # lock -- this isolates the race from should_drop's own randomness
+    await cog.config.guild(guild).drop_chance.set(1.0)
+    await cog.config.guild(guild).drop_cooldown_seconds.set(3600)
+
+    class FakeMessage2:
+        def __init__(self, author, channel):
+            self.author = author
+            self.channel = channel
+            self.guild = channel.guild
+
+    messages_before = len(channel.sent)
+
+    # two "messages" handled concurrently, as if they arrived back to back
+    # (on_message is decorated only with @commands.Cog.listener(), which
+    # doesn't wrap it -- it's a plain bound method, unlike the .card
+    # subcommands above which go through _FakeCommand/.callback)
+    await asyncio.gather(
+        cog.on_message(FakeMessage2(author, channel)),
+        cog.on_message(FakeMessage2(author, channel)),
+    )
+
+    drop_messages = [m for m in channel.sent[messages_before:] if m.files]
+    assert len(drop_messages) == 1, f"cooldown should limit this to one drop, got {len(drop_messages)}"

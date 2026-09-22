@@ -19,7 +19,7 @@ in this project).
 
 import io
 from pathlib import Path
-from typing import List, Optional, Sequence, Tuple
+from typing import Optional, Sequence, Tuple
 
 from PIL import Image, ImageDraw, ImageFont
 
@@ -117,10 +117,17 @@ def render_card(
     image_bytes: bytes,
     emoji: Optional[str] = None,
     size: Tuple[int, int] = CARD_IMAGE_SIZE,
+    quantity: int = 1,
 ) -> Image.Image:
     """Build one card tile: art, rarity-colored border, name plate, and
     (if given) the claim emoji burned into the bottom-right corner. `emoji`
-    is omitted for gallery tiles, which don't need a claim badge."""
+    is omitted for gallery tiles, which don't need a claim badge.
+
+    `quantity` > 1 draws a small "×N" badge in the top-left corner -- used by
+    the gallery to show a member holds a tradeable spare copy (see
+    constants.MAX_COPIES_KEPT) without rendering a second, redundant tile
+    for the same character. Drop tiles never pass a quantity, so this never
+    shows up outside the gallery."""
     w, h = size
     color = RARITY_COLORS.get(card.rarity, RARITY_COLORS["common"])
 
@@ -163,6 +170,20 @@ def render_card(
             )
             canvas.alpha_composite(backing, (bx - 5, by - 5))
             canvas.alpha_composite(badge, (bx, by))
+
+    if quantity > 1:
+        qty_font = _font(16, bold=True)
+        qty_text = f"×{quantity}"
+        qty_draw = ImageDraw.Draw(canvas)
+        bbox = qty_draw.textbbox((0, 0), qty_text, font=qty_font)
+        text_w, text_h = bbox[2] - bbox[0], bbox[3] - bbox[1]
+        pad = 6
+        badge_w, badge_h = text_w + pad * 2, text_h + pad * 2
+        qty_badge = Image.new("RGBA", (badge_w, badge_h), (0, 0, 0, 0))
+        qty_bd = ImageDraw.Draw(qty_badge)
+        qty_bd.rounded_rectangle([(0, 0), (badge_w - 1, badge_h - 1)], radius=8, fill=(0, 0, 0, 190))
+        qty_bd.text((pad - bbox[0], pad - bbox[1]), qty_text, font=qty_font, fill=TEXT_WHITE)
+        canvas.alpha_composite(qty_badge, (10, 10))
 
     return canvas
 
@@ -208,52 +229,61 @@ def render_drop(
 
 def render_gallery(
     entries: Sequence[Tuple[Card, bytes]],
-    favorite_card_id: Optional[int] = None,
+    showcase_card_ids: Sequence[int] = (),
     columns: int = GALLERY_COLUMNS,
+    quantities: Optional[dict] = None,
 ) -> io.BytesIO:
-    """Build a member's collection gallery. The favorite card (if any and if
-    present in `entries`) is rendered larger and placed first; everything
-    else follows in a uniform grid, in the order given."""
+    """Build a member's collection gallery. Showcase cards (up to a few, in
+    showcase order) render larger in a header row; the full grid below still
+    includes every owned card -- showcased ones too -- so the grid alone
+    stays a complete view of the collection rather than "everything except
+    what's pinned up top".
+
+    `entries` should have exactly one (Card, image_bytes) pair per *unique*
+    owned card_id -- a member holding a tradeable spare (see
+    constants.MAX_COPIES_KEPT) still gets one tile, not two identical ones.
+    `quantities`, if given, maps card_id -> how many copies the member
+    holds; any id with a count > 1 gets a small "xN" badge on its tile
+    instead of a duplicate tile."""
     if not entries:
         raise ValueError("render_gallery needs at least one card")
 
-    ordered: List[Tuple[Card, bytes]] = list(entries)
-    favorite_entry = None
-    if favorite_card_id is not None:
-        for i, (card, image_bytes) in enumerate(ordered):
-            if card.card_id == favorite_card_id:
-                favorite_entry = ordered.pop(i)
-                break
+    quantities = quantities or {}
+    by_id = {card.card_id: (card, image_bytes) for card, image_bytes in entries}
+    showcase_entries = [by_id[cid] for cid in showcase_card_ids if cid in by_id]
 
     tile_w, tile_h = GALLERY_TILE_SIZE
     fav_w, fav_h = GALLERY_FAVORITE_TILE_SIZE
     padding = 16
 
-    rows = -(-len(ordered) // columns) if ordered else 0
+    rows = -(-len(entries) // columns)
     grid_w = columns * tile_w + (columns + 1) * padding
-    grid_h = rows * tile_h + (rows + 1) * padding if rows else padding
+    grid_h = rows * tile_h + (rows + 1) * padding
 
     header_h = 0
-    if favorite_entry is not None:
+    header_w = 0
+    if showcase_entries:
         header_h = fav_h + padding * 2
+        header_w = len(showcase_entries) * fav_w + (len(showcase_entries) + 1) * padding
 
-    total_w = max(grid_w, fav_w + padding * 2)
+    total_w = max(grid_w, header_w)
     total_h = header_h + grid_h
 
     canvas = Image.new("RGBA", (total_w, total_h), (20, 20, 24, 255))
 
-    if favorite_entry is not None:
-        card, image_bytes = favorite_entry
-        fav_tile = render_card(card, image_bytes, size=(fav_w, fav_h))
+    if showcase_entries:
         star_font = _font(18, bold=True)
-        star_draw = ImageDraw.Draw(fav_tile)
-        star_draw.text((14, fav_h - NAME_PLATE_HEIGHT - 30), "★ FAVORITE", font=star_font, fill=(241, 196, 15))
-        canvas.alpha_composite(fav_tile, (padding, padding))
+        for i, (card, image_bytes) in enumerate(showcase_entries):
+            tile = render_card(card, image_bytes, size=(fav_w, fav_h), quantity=quantities.get(card.card_id, 1))
+            star_draw = ImageDraw.Draw(tile)
+            star_draw.text((14, fav_h - NAME_PLATE_HEIGHT - 30), "★ SHOWCASE", font=star_font, fill=(241, 196, 15))
+            x = padding + i * (fav_w + padding)
+            canvas.alpha_composite(tile, (x, padding))
 
-    for i, (card, image_bytes) in enumerate(ordered):
+    for i, (card, image_bytes) in enumerate(entries):
         col = i % columns
         row = i // columns
-        tile = render_card(card, image_bytes, size=(tile_w, tile_h))
+        tile = render_card(card, image_bytes, size=(tile_w, tile_h), quantity=quantities.get(card.card_id, 1))
         x = padding + col * (tile_w + padding)
         y = header_h + padding + row * (tile_h + padding)
         canvas.alpha_composite(tile, (x, y))

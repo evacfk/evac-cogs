@@ -10,7 +10,9 @@ can inject a seeded one instead of depending on the global random module.
 import random
 import time
 import uuid
-from typing import Iterable, List, Optional, Sequence
+from datetime import datetime
+from typing import Iterable, List, Optional, Sequence, Tuple
+from zoneinfo import ZoneInfo
 
 from .constants import TIERS
 from .models import ActiveDrop, Card, SellToken
@@ -170,9 +172,57 @@ def sell_price(rarity: str, sell_prices: dict) -> int:
     return int(sell_prices.get(rarity, 0))
 
 
-def would_be_dupe(member_collection: Sequence[int], card_id: int) -> bool:
-    """Read-only check used by test-mode claims: would this card have been a
-    new pickup or a duplicate, against the member's *real* collection --
-    without writing anything. Lets a test claim show a realistic outcome."""
-    return card_id in member_collection
+def claim_outcome(member_collection: Sequence[int], card_id: int, max_copies: int) -> str:
+    """What claiming `card_id` would do to a member currently holding
+    `member_collection` (a list of owned card_ids -- duplicates of the same
+    id are allowed up to `max_copies`, see constants.MAX_COPIES_KEPT):
+
+    - "new": the member owns none yet -- becomes their first copy.
+    - "duplicate": the member owns at least one but fewer than `max_copies`
+      -- becomes an extra, still-tradeable copy (a real gallery/collection
+      entry, giftable with `.card give`), not converted to currency.
+    - "sell_token": the member is already at `max_copies` -- this claim
+      converts straight to a sell token instead of piling up a 3rd+ copy,
+      so duplicates stay tradeable without being hoardable indefinitely.
+
+    Read-only: takes the collection as given and returns a verdict, doesn't
+    mutate anything. Used both for a real claim (whose result the caller
+    then applies) and for a test-mode claim preview (whose result the
+    caller only displays)."""
+    count = list(member_collection).count(card_id)
+    if count >= max_copies:
+        return "sell_token"
+    if count == 0:
+        return "new"
+    return "duplicate"
+
+
+def today_str(tz: str, now: Optional[datetime] = None) -> str:
+    """Today's date (ISO, e.g. '2026-09-22') in `tz`. `now` is injectable so
+    quota logic is testable without depending on the real wall clock."""
+    moment = now if now is not None else datetime.now(ZoneInfo(tz))
+    return moment.date().isoformat()
+
+
+def has_quota_remaining(daily_claims: int, daily_claims_date: str, quota: int, today: str) -> bool:
+    """Daily claim quota check (locked decision: resets at local midnight,
+    not a rolling window). `quota <= 0` disables the check entirely (an
+    admin-configured "unlimited" sentinel). The reset itself is lazy: a
+    `daily_claims_date` that isn't today just means the stored count is
+    stale and the member has their full quota again -- nothing has to run
+    at midnight to make that true."""
+    if quota <= 0:
+        return True
+    if daily_claims_date != today:
+        return True
+    return daily_claims < quota
+
+
+def record_claim(daily_claims: int, daily_claims_date: str, today: str) -> Tuple[int, str]:
+    """Returns the (daily_claims, daily_claims_date) pair to persist after a
+    real claim. Same lazy-reset logic as has_quota_remaining: a stale date
+    starts the count over at 1 instead of incrementing a stale number."""
+    if daily_claims_date != today:
+        return 1, today
+    return daily_claims + 1, today
 
