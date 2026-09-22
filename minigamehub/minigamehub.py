@@ -48,6 +48,78 @@ def _fmt_range(lo, hi) -> str:
     return f"{lo:,}-{hi:,}"
 
 
+def _stagger(games: dict, now: float, sep: float, reroll=()) -> None:
+    """Give every enabled game its own future slot, at least `sep` apart.
+
+    - Games in `reroll` get a fresh random time from their own min/max window.
+    - Any other enabled game that is overdue (e.g. piled up while chat was
+      quiet or another game was running) gets a fresh short random time
+      instead of firing back-to-back.
+    - Then timers are walked in order and any two closer than `sep` are
+      nudged apart, so no two games land on top of each other.
+    Mutates `games` in place.
+    """
+    for k, g in games.items():
+        if not g.get("enabled"):
+            continue
+        lo, hi = g["min_frequency"], g["max_frequency"]
+        if k in reroll:
+            g["next_spawn"] = now + random.uniform(lo, hi)
+        elif g.get("next_spawn", 0) <= now:
+            g["next_spawn"] = now + random.uniform(sep, max(sep, lo))
+    order = sorted((k for k, g in games.items() if g.get("enabled")), key=lambda k: games[k]["next_spawn"])
+    prev = None
+    for k in order:
+        t = games[k]["next_spawn"]
+        if prev is not None and t < prev + sep:
+            t = prev + sep + random.uniform(0, sep)
+            games[k]["next_spawn"] = t
+        prev = t
+
+
+def _schedule_lines(games: dict, now: float) -> list:
+    rows = []
+    for k in GAME_KEYS:
+        g = games[k]
+        if g.get("enabled"):
+            rows.append((g.get("next_spawn", 0), k))
+    rows.sort()
+    lines = []
+    for ts, k in rows:
+        d = ts - now
+        lines.append(f"{k:<12} {'due now' if d <= 0 else 'in ' + _fmt_secs(d)}")
+    off = [k for k in GAME_KEYS if not games[k].get("enabled")]
+    if off:
+        lines.append(f"{'(off)':<12} {', '.join(off)}")
+    return lines
+
+
+class ScheduleView(discord.ui.View):
+    """`.mgh schedule` output with a Shuffle button that re-rolls every timer."""
+
+    def __init__(self, cog: "MinigameHub", guild: discord.Guild):
+        super().__init__(timeout=300)
+        self.cog = cog
+        self.guild = guild
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        member = interaction.user
+        role = self.guild.get_role(MOD_ROLE_ID)
+        ok = (
+            await self.cog.bot.is_owner(member)
+            or getattr(member, "guild_permissions", None) and member.guild_permissions.manage_guild
+            or (role is not None and role in getattr(member, "roles", []))
+        )
+        if not ok:
+            await interaction.response.send_message("Mods only.", ephemeral=True)
+        return bool(ok)
+
+    @discord.ui.button(label="Shuffle", emoji="\U0001F500", style=discord.ButtonStyle.primary)
+    async def shuffle(self, interaction: discord.Interaction, button: discord.ui.Button):
+        lines = await self.cog._shuffle(self.guild)
+        await interaction.response.edit_message(content=box("\n".join(lines), lang="text"), view=self)
+
+
 def _fmt_secs(seconds) -> str:
     seconds = int(seconds)
     if seconds < 120:
@@ -188,8 +260,20 @@ class MinigameHub(commands.Cog):
         key = random.choice(candidates)
         game_conf = guild_conf["games"][key]
 
+        # Claim the slot now so the next tick can't fire a second game before
+        # the game handler sets active_game itself.
+        self.active_game[guild.id] = key
         await self.config.guild(guild).last_game.set(key)
         self.bot.loop.create_task(self._run_game(guild, channel, key, game_conf))
+
+    async def _shuffle(self, guild: discord.Guild) -> list:
+        """Re-roll every enabled game's timer from its own window, spaced apart."""
+        sep = await self.config.guild(guild).min_separation()
+        now = time.time()
+        async with self.config.guild(guild).games() as games:
+            _stagger(games, now, sep, reroll=set(games))
+            lines = _schedule_lines(games, now)
+        return lines
 
     async def _run_game(self, guild: discord.Guild, channel: discord.TextChannel, key: str, game_conf: dict) -> None:
         try:
@@ -197,11 +281,15 @@ class MinigameHub(commands.Cog):
         except Exception:
             log.exception("MinigameHub game %r crashed in guild %s", key, guild.id)
         finally:
-            self.active_game.pop(guild.id, None)
-            min_f, max_f = game_conf["min_frequency"], game_conf["max_frequency"]
-            next_spawn = time.time() + random.uniform(min_f, max_f)
-            async with self.config.guild(guild).games() as games:
-                games[key]["next_spawn"] = next_spawn
+            # Hold the slot until timers are rewritten so a tick landing during
+            # these awaits can't see stale timers and fire again immediately.
+            self.active_game[guild.id] = key
+            try:
+                sep = await self.config.guild(guild).min_separation()
+                async with self.config.guild(guild).games() as games:
+                    _stagger(games, time.time(), sep, reroll={key})
+            finally:
+                self.active_game.pop(guild.id, None)
 
     # ------------------------------------------------------------------ #
     # Admin command tree
@@ -221,15 +309,36 @@ class MinigameHub(commands.Cog):
         state = "enabled" if not current else "disabled"
         if not current:
             await self._seed_scenarios(ctx.guild)
-            # Kick each enabled game's spawn window off shortly rather than
-            # making people wait out whatever next_spawn was left over from
-            # before -- staggered per game so they don't all fire in a burst.
-            now = time.time()
-            async with self.config.guild(ctx.guild).games() as games:
-                for k in GAME_KEYS:
-                    if games[k]["enabled"]:
-                        games[k]["next_spawn"] = now + random.uniform(30, 300)
+            # Fresh, spaced-out timers for every game rather than whatever
+            # was left over from before.
+            await self._shuffle(ctx.guild)
         await ctx.send(f"MinigameHub is now **{state}** in this server.")
+
+    @minigamehub.command(name="schedule")
+    async def mgh_schedule(self, ctx: commands.Context):
+        """Show when each game fires next, with a Shuffle button."""
+        games = await self.config.guild(ctx.guild).games()
+        lines = _schedule_lines(games, time.time())
+        await ctx.send(box("\n".join(lines), lang="text"), view=ScheduleView(self, ctx.guild))
+
+    @minigamehub.command(name="shuffle")
+    async def mgh_shuffle(self, ctx: commands.Context):
+        """Re-roll every game's timer to a new random time from its own frequency, spaced apart."""
+        lines = await self._shuffle(ctx.guild)
+        await ctx.send(box("\n".join(lines), lang="text"), view=ScheduleView(self, ctx.guild))
+
+    @minigamehub.command(name="spacing")
+    async def mgh_spacing(self, ctx: commands.Context, minutes: Optional[float] = None):
+        """Show or set the minimum minutes between any two games' scheduled times."""
+        if minutes is None:
+            sep = await self.config.guild(ctx.guild).min_separation()
+            await ctx.send(f"Minimum spacing between games: {sep / 60:g} min.")
+            return
+        if minutes < 0:
+            await ctx.send("Spacing can't be negative.")
+            return
+        await self.config.guild(ctx.guild).min_separation.set(round(minutes * 60))
+        await ctx.send(f"Minimum spacing between games set to {minutes:g} min.")
 
     @minigamehub.command(name="channel")
     async def mgh_channel(self, ctx: commands.Context, channel: Optional[discord.TextChannel] = None):
@@ -313,11 +422,12 @@ class MinigameHub(commands.Cog):
         if game_key not in GAME_KEYS:
             await ctx.send(f"Unknown game key. Choose from: {humanize_list(GAME_KEYS)}")
             return
+        sep = await self.config.guild(ctx.guild).min_separation()
         async with self.config.guild(ctx.guild).games() as games:
             games[game_key]["enabled"] = not games[game_key]["enabled"]
             state = "enabled" if games[game_key]["enabled"] else "disabled"
             if games[game_key]["enabled"]:
-                games[game_key]["next_spawn"] = time.time() + random.uniform(30, 300)
+                _stagger(games, time.time(), sep, reroll={game_key})
         await ctx.send(f"`{game_key}` is now **{state}**.")
 
     @mgh_game.command(name="frequency")
@@ -333,9 +443,12 @@ class MinigameHub(commands.Cog):
         if min_seconds <= 0 or max_seconds < min_seconds:
             await ctx.send("min_minutes must be positive and max_minutes >= min_minutes.")
             return
+        sep = await self.config.guild(ctx.guild).min_separation()
         async with self.config.guild(ctx.guild).games() as games:
             games[game_key]["min_frequency"] = min_seconds
             games[game_key]["max_frequency"] = max_seconds
+            # Re-roll this game against its new window so an old timer doesn't linger.
+            _stagger(games, time.time(), sep, reroll={game_key})
         await ctx.send(f"`{game_key}` frequency set to {min_minutes:g}-{max_minutes:g} min ({_fmt_secs(min_seconds)}-{_fmt_secs(max_seconds)}).")
 
     @mgh_game.command(name="reward")

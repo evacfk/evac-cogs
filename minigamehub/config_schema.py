@@ -125,6 +125,11 @@ DEFAULT_GUILD = {
     },
 
     "last_game": None,
+
+    # Minimum seconds between any two games' scheduled times. Used only to
+    # nudge colliding timers apart -- each game still runs on its own
+    # random frequency.
+    "min_separation": 120,
 }
 
 DEFAULT_MEMBER = {
