@@ -50,6 +50,7 @@ DEFAULT_MEMBER = {
 DEFAULT_GUILD = {
     "quota": DEFAULT_QUOTA,
     "channel_id": None,
+    "rating_channel_id": None,  # nightly/weekly rating posts; falls back to channel_id when unset
     "job_role_id": DEFAULT_JOB_ROLE_ID,
     "strike_window_days": DEFAULT_STRIKE_WINDOW_DAYS,
     "strike_threshold": DEFAULT_STRIKE_THRESHOLD,

@@ -178,7 +178,7 @@ class PhotoDrop(commands.Cog):
         configured = await self.config.guild(guild).rater_id()
         return configured or guild.owner_id
 
-    async def _post_rating_prompts(self, guild: discord.Guild, channel: discord.TextChannel, member: discord.Member, date_key: str) -> None:
+    async def _post_rating_prompts(self, guild: discord.Guild, channel: discord.TextChannel | discord.Thread, member: discord.Member, date_key: str) -> None:
         """Post one rating message per photo `member` submitted on `date_key`,
         each with its own GOAT/Good/Mid/Bad buttons directly under it.
         """
@@ -205,6 +205,36 @@ class PhotoDrop(commands.Cog):
     async def _member_channel(self, guild: discord.Guild) -> discord.TextChannel | None:
         channel_id = await self.config.guild(guild).channel_id()
         return guild.get_channel(channel_id) if channel_id else None
+
+    async def _rating_channel(self, guild: discord.Guild) -> discord.TextChannel | discord.Thread | None:
+        """Where nightly rating prompts and the weekly/manual polls post.
+
+        May be a plain channel or a thread -- `get_channel_or_thread` is
+        required here, not `get_channel`, since Guild.get_channel() never
+        resolves threads and would silently send this back through the
+        main-channel fallback below even when a valid thread was set.
+
+        If it's a *locked* thread that's gone archived (e.g. after a
+        stretch with nobody holding the job role), a plain `.send()` won't
+        auto-unarchive it the way it would for an unlocked thread -- Discord
+        requires an explicit unarchive from someone with `manage_threads`
+        first. The bot has that via admin, so do it here rather than let a
+        rating post silently fail on locked-thread setups.
+
+        Falls back to the main drop channel (`channel_id`) if a dedicated
+        rating channel was never set with `.pp set ratingchannel`.
+        """
+        rating_channel_id = await self.config.guild(guild).rating_channel_id()
+        if rating_channel_id:
+            channel = guild.get_channel_or_thread(rating_channel_id)
+            if channel is not None:
+                if isinstance(channel, discord.Thread) and channel.archived and channel.locked:
+                    try:
+                        await channel.edit(archived=False)
+                    except discord.HTTPException:
+                        log.warning("Could not unarchive locked rating thread %s", channel.id)
+                return channel
+        return await self._member_channel(guild)
 
     # ------------------------------------------------------------------
     # Strike -> role removal
@@ -445,7 +475,7 @@ class PhotoDrop(commands.Cog):
             await ctx.send("Date must be YYYY-MM-DD.")
             return
 
-        channel = await self._member_channel(ctx.guild)
+        channel = await self._rating_channel(ctx.guild)
         if channel is None:
             await ctx.send("No channel configured. Set one with `.pp set channel #channel` first.")
             return
@@ -487,9 +517,22 @@ class PhotoDrop(commands.Cog):
 
     @pp_set.command(name="channel")
     async def pp_set_channel(self, ctx: commands.Context, channel: discord.TextChannel):
-        """Set the shared channel for drops, shift reports, and polls."""
+        """Set the shared channel for drops, shift reports, and the end-of-day reminder."""
         await self.config.guild(ctx.guild).channel_id.set(channel.id)
         await ctx.send(f"Channel set to {channel.mention}.")
+
+    @pp_set.command(name="ratingchannel")
+    async def pp_set_ratingchannel(
+        self, ctx: commands.Context, channel: discord.TextChannel | discord.Thread
+    ):
+        """Set the channel (or thread) for nightly rating prompts and weekly/manual polls.
+
+        Accepts a thread as well as a regular channel -- e.g. a public
+        thread you made under your main channel, used just for ratings.
+        Falls back to the main `.pp set channel` if never set.
+        """
+        await self.config.guild(ctx.guild).rating_channel_id.set(channel.id)
+        await ctx.send(f"Rating channel set to {channel.mention}.")
 
     @pp_set.command(name="role")
     async def pp_set_role(self, ctx: commands.Context, role: discord.Role):
@@ -555,7 +598,7 @@ class PhotoDrop(commands.Cog):
             await ctx.send("Date must be YYYY-MM-DD.")
             return
 
-        channel = await self._member_channel(ctx.guild)
+        channel = await self._rating_channel(ctx.guild)
         if channel is None:
             await ctx.send("No channel configured. Set one with `.pp set channel #channel` first.")
             return
@@ -635,7 +678,7 @@ class PhotoDrop(commands.Cog):
     # Poll posting + tracking
     # ------------------------------------------------------------------
 
-    async def _post_poll(self, channel: discord.TextChannel, question: str, entries: list[tuple[str, str, Path]], kind: str) -> None:
+    async def _post_poll(self, channel: discord.TextChannel | discord.Thread, question: str, entries: list[tuple[str, str, Path]], kind: str) -> None:
         """entries: [(letter, label, image_path), ...]. Posts the photo embed
         message first, then the native poll with matching lettered options.
         """
@@ -661,7 +704,12 @@ class PhotoDrop(commands.Cog):
 
     async def _close_poll(self, guild: discord.Guild, message_id: str, record: dict) -> None:
         gconf = self.config.guild(guild)
-        channel = guild.get_channel(record["channel_id"])
+        # get_channel_or_thread, not get_channel: the poll may have been
+        # posted in a thread (e.g. a rating thread set via
+        # `.pp set ratingchannel`), and get_channel() never resolves
+        # threads -- using it here would silently drop every poll posted
+        # in a thread with no results ever posted and no error.
+        channel = guild.get_channel_or_thread(record["channel_id"])
         if channel is None:
             async with gconf.active_polls() as active_polls:
                 active_polls.pop(message_id, None)
@@ -774,7 +822,7 @@ class PhotoDrop(commands.Cog):
 
         if last_rollover is not None:
             missed = models.missed_days(last_rollover, today)
-            channel = await self._member_channel(guild)
+            channel = await self._rating_channel(guild)
             for member in holders:
                 for date_key in missed:
                     if not await self._holds_role(member):
@@ -810,7 +858,7 @@ class PhotoDrop(commands.Cog):
         if await gconf.last_weekly_poll_date() == today:
             return
 
-        channel = await self._member_channel(guild)
+        channel = await self._rating_channel(guild)
         holders = await self._current_holders(guild)
         if channel is None or not holders:
             await gconf.last_weekly_poll_date.set(today)
