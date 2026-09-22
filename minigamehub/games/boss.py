@@ -88,11 +88,15 @@ class _BossView(discord.ui.View):
             return
         self.last_attack[interaction.user.id] = now
 
-        member = self.guild.get_member(interaction.user.id) or interaction.user
-        currency = await bank.get_currency_name(self.guild)
-        landed = random.randint(1, 100) <= self.game_conf["hit_chance"]
+        # Silently acknowledge the click -- no per-attack ephemeral popup to
+        # dismiss anymore. The HP bar (render_loop, batched on
+        # hp_update_interval) is the only visible feedback on a hit/miss now.
+        # Deferring immediately, before the Config writes below, also means
+        # a slow attack can't miss Discord's 3-second ack window.
+        await interaction.response.defer()
 
-        note = " (test)" if self.dry_run else ""
+        member = self.guild.get_member(interaction.user.id) or interaction.user
+        landed = random.randint(1, 100) <= self.game_conf["hit_chance"]
 
         if landed:
             dmg = random.randint(*self.game_conf["damage_per_hit"])
@@ -107,16 +111,14 @@ class _BossView(discord.ui.View):
             self.reward_dealt[member.id] = self.reward_dealt.get(member.id, 0) + actual
             if not self.dry_run:
                 await stats.record_result(self.cog.config, member, "boss", good=True)
-
-            text = self.scenario["good"].format(user=member.mention, amount=f"{actual:,}", currency=currency)
-            await interaction.response.send_message(f"{text} (-{dmg} HP){note}", ephemeral=True)
         else:
             raw_penalty = random.randint(*self.tier["penalty"])
-            penalty = await pacing.settle_penalty(member, raw_penalty, dry_run=self.dry_run)
+            # Return value (actual amount deducted) only fed the ephemeral
+            # message text before; the deduction itself happens as a side
+            # effect of this call, so the await still has to happen.
+            await pacing.settle_penalty(member, raw_penalty, dry_run=self.dry_run)
             if not self.dry_run:
                 await stats.record_result(self.cog.config, member, "boss", good=False)
-            text = self.scenario["bad"].format(user=member.mention, amount=f"{penalty:,}", currency=currency)
-            await interaction.response.send_message(f"{text}{note}", ephemeral=True)
 
         self._dirty = True
         if self.hp <= 0:
