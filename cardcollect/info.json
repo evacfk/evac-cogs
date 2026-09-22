@@ -1,0 +1,13 @@
+{
+    "author": ["evac"],
+    "min_bot_version": "3.5.0",
+    "description": "Ambient anime-character card collecting. Cards drop as the channel talks; a random claim emoji is burned onto each card's art, so you have to actually look at each card (not just react fastest) to claim it. Collect, trade, sell duplicates for wondercoin, and build a gallery.",
+    "hidden": false,
+    "install_msg": "Thanks for installing cardcollect! Set a drop channel with `.card setchannel #channel`, then bulk-import a starter character pool with `.card importpool <count>` (pulls top-favourited female AniList characters) or add your own one at a time with `.card addcard`. Turn on `.card testmode true` and try `.card testdrop` before going live -- test claims run the full mechanic but award nothing. Run `.card diagnostics` after a few days live to get real sizing suggestions for drop_chance/drop_cooldown_seconds instead of guessing.",
+    "requirements": ["Pillow"],
+    "short": "Ambient anime-character card collecting with an emoji-search claim mechanic.",
+    "tags": ["cards", "collecting", "economy", "minigame"],
+    "type": "COG",
+    "name": "cardcollect",
+    "end_user_data_statement": "This cog stores, per member, their card collection, favorite card, and pending sell tokens. This data is stored locally in the bot's data folder and is not shared externally."
+}
