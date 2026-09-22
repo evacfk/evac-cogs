@@ -37,8 +37,14 @@ from .constants import (
     DEFAULT_WEEKLY_POLL_WEEKDAY,
     POLL_CLOSE_GRACE_MINUTES,
     POLL_LETTERS,
+    RATING_BAD,
+    RATING_GOAT,
+    RATING_GOOD,
+    RATING_LABELS,
+    RATING_MID,
     STATUS_FULL,
     STATUS_TARDY,
+    VALID_RATINGS,
     WEEKDAY_NAMES,
 )
 
@@ -48,6 +54,76 @@ except ImportError:  # pragma: no cover - only hit if discord.py lacks ext.tasks
     tasks = None
 
 log = logging.getLogger("red.photodrop")
+
+
+class _RatingView(discord.ui.View):
+    """One persistent view, shared by every rating-prompt message ever sent.
+
+    Buttons use fixed custom_ids (not per-message ones) so this same view,
+    re-registered via `bot.add_view()` on every cog load, keeps working for
+    messages sent in a previous bot run -- ratings wait indefinitely, so
+    that has to survive restarts. Which specific member/date/photo a click
+    applies to is looked up from `pending_ratings` in guild Config, keyed by
+    the clicked message's id, not from anything baked into the view itself.
+
+    Because this ONE view instance is shared across every rating message,
+    its buttons are never mutated (no disabling in place) -- that would
+    affect every other live prompt using the same instance. Finishing a
+    rating replaces the message's view with `None` instead.
+    """
+
+    def __init__(self, cog: "PhotoDrop"):
+        super().__init__(timeout=None)
+        self.cog = cog
+
+    async def _handle(self, interaction: discord.Interaction, rating: str) -> None:
+        guild = interaction.guild
+        if guild is None:
+            return
+
+        rater_id = await self.cog._rater_id(guild)
+        if rater_id is None or interaction.user.id != rater_id:
+            await interaction.response.send_message("Only the configured rater can rate these.", ephemeral=True)
+            return
+
+        gconf = self.cog.config.guild(guild)
+        pending = await gconf.pending_ratings()
+        record = pending.get(str(interaction.message.id))
+        if record is None:
+            await interaction.response.send_message("This rating prompt is no longer active.", ephemeral=True)
+            return
+
+        member = guild.get_member(record["member_id"])
+        member_name = member.display_name if member is not None else f"User {record['member_id']}"
+
+        mconf = self.cog.config.member_from_ids(guild.id, record["member_id"])
+        member_state = await mconf.all()
+        updated = models.set_rating(member_state, record["date_key"], record["photo_index"], rating)
+        await mconf.history.set(updated["history"])
+
+        raw_paths = storage.list_photos(self.cog.data_dir, record["member_id"], record["date_key"])
+        photo_count = len(raw_paths) or record["photo_index"] + 1
+        embed = embeds.rated_embed(member_name, record["date_key"], record["photo_index"], photo_count, rating)
+        await interaction.response.edit_message(embed=embed, view=None)
+
+        async with gconf.pending_ratings() as pending_write:
+            pending_write.pop(str(interaction.message.id), None)
+
+    @discord.ui.button(label="GOAT", emoji="\N{GOAT}", style=discord.ButtonStyle.success, custom_id="pdrop_rate_goat")
+    async def goat_button(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        await self._handle(interaction, RATING_GOAT)
+
+    @discord.ui.button(label="Good", style=discord.ButtonStyle.primary, custom_id="pdrop_rate_good")
+    async def good_button(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        await self._handle(interaction, RATING_GOOD)
+
+    @discord.ui.button(label="Mid", style=discord.ButtonStyle.secondary, custom_id="pdrop_rate_mid")
+    async def mid_button(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        await self._handle(interaction, RATING_MID)
+
+    @discord.ui.button(label="Bad", style=discord.ButtonStyle.danger, custom_id="pdrop_rate_bad")
+    async def bad_button(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        await self._handle(interaction, RATING_BAD)
 
 
 class PhotoDrop(commands.Cog):
@@ -60,6 +136,9 @@ class PhotoDrop(commands.Cog):
         self.config.register_guild(**DEFAULT_GUILD)
         self.config.register_member(**DEFAULT_MEMBER)
         self.data_dir: Path = cog_data_path(self)
+
+        self._rating_view = _RatingView(self)
+        self.bot.add_view(self._rating_view)
 
         if tasks is not None:
             self._rollover_loop.start()
@@ -92,6 +171,31 @@ class PhotoDrop(commands.Cog):
     async def _holds_role(self, member: discord.Member) -> bool:
         role = await self._job_role(member.guild)
         return role is not None and role in member.roles
+
+    async def _rater_id(self, guild: discord.Guild) -> int | None:
+        configured = await self.config.guild(guild).rater_id()
+        return configured or guild.owner_id
+
+    async def _post_rating_prompts(self, guild: discord.Guild, channel: discord.TextChannel, member: discord.Member, date_key: str) -> None:
+        """Post one rating message per photo `member` submitted on `date_key`,
+        each with its own GOAT/Good/Mid/Bad buttons directly under it.
+        """
+        raw_paths = storage.list_photos(self.data_dir, member.id, date_key)
+        if not raw_paths:
+            return
+        gconf = self.config.guild(guild)
+        for index, path in enumerate(raw_paths):
+            embed = embeds.rating_prompt_embed(member.display_name, date_key, index, len(raw_paths))
+            filename = f"rate_{member.id}_{date_key}_{index}{path.suffix}"
+            file = discord.File(str(path), filename=filename)
+            embed.set_image(url=f"attachment://{filename}")
+            message = await channel.send(embed=embed, file=file, view=self._rating_view)
+            async with gconf.pending_ratings() as pending:
+                pending[str(message.id)] = {
+                    "member_id": member.id,
+                    "date_key": date_key,
+                    "photo_index": index,
+                }
 
     def _channel_mismatch_message(self, channel: discord.TextChannel) -> str:
         return f"Photo drops happen in {channel.mention}."
@@ -418,6 +522,101 @@ class PhotoDrop(commands.Cog):
         await self.config.guild(ctx.guild).strike_threshold.set(threshold)
         await ctx.send(f"Strike threshold set to {threshold}.")
 
+    @pp_set.command(name="rater")
+    async def pp_set_rater(self, ctx: commands.Context, user: discord.Member):
+        """Set who can click GOAT/Good/Mid/Bad on the nightly rating prompts (defaults to the server owner)."""
+        await self.config.guild(ctx.guild).rater_id.set(user.id)
+        await ctx.send(f"Rater set to {user.display_name}.")
+
+    # -- ratephotos / rated -------------------------------------------------------
+
+    @pp.command(name="ratephotos")
+    @commands.guild_only()
+    @commands.mod_or_permissions(manage_roles=True)
+    async def pp_ratephotos(self, ctx: commands.Context, user: discord.Member, date: str):
+        """Manually (re-)post the rating prompts for one person's one day."""
+        try:
+            models.parse_day_key(date)
+        except ValueError:
+            await ctx.send("Date must be YYYY-MM-DD.")
+            return
+
+        channel = await self._member_channel(ctx.guild)
+        if channel is None:
+            await ctx.send("No channel configured. Set one with `.pp set channel #channel` first.")
+            return
+
+        raw_paths = storage.list_photos(self.data_dir, user.id, date)
+        if not raw_paths:
+            await ctx.send(f"No photos on file for {user.display_name} on {date}.")
+            return
+
+        await self._post_rating_prompts(ctx.guild, channel, user, date)
+        if channel.id != ctx.channel.id:
+            await ctx.send(f"Rating prompts posted in {channel.mention} for {user.display_name} — {date}.")
+        else:
+            await ctx.send(f"Rating prompts posted for {user.display_name} — {date}.")
+
+    @pp.command(name="rated")
+    @commands.guild_only()
+    async def pp_rated(self, ctx: commands.Context, rating: str, month: int | None = None, year: int | None = None):
+        """Browse every photo rated GOAT/Good/Mid/Bad, optionally narrowed to one month."""
+        rating = rating.lower()
+        if rating not in VALID_RATINGS:
+            await ctx.send("Rating must be one of: goat, good, mid, bad.")
+            return
+
+        year = year or models.now_local(DEFAULT_TIMEZONE).year
+        month_prefix = f"{year:04d}-{month:02d}-" if month else None
+
+        all_members = await self.config.all_members(ctx.guild)
+        matches: list[tuple[int, str, int]] = []
+        for member_id, data in all_members.items():
+            for date_key, entry in data.get("history", {}).items():
+                if month_prefix is not None and not date_key.startswith(month_prefix):
+                    continue
+                for index_str, entry_rating in entry.get("ratings", {}).items():
+                    if entry_rating == rating:
+                        matches.append((member_id, date_key, int(index_str)))
+
+        if not matches:
+            await ctx.send(f"No photos rated {rating.upper()} yet.")
+            return
+
+        matches.sort(key=lambda m: m[1], reverse=True)
+        gallery_cap = 24
+        shown = matches[:gallery_cap]
+
+        photo_paths = []
+        lines = []
+        for member_id, date_key, index in shown:
+            raw_paths = storage.list_photos(self.data_dir, member_id, date_key)
+            if index >= len(raw_paths):
+                continue
+            photo_paths.append(raw_paths[index])
+            member = ctx.guild.get_member(member_id)
+            name = member.display_name if member is not None else f"User {member_id}"
+            lines.append(f"{name} — {date_key} (#{index + 1})")
+
+        if not photo_paths:
+            await ctx.send(f"No photos rated {rating.upper()} are still on disk.")
+            return
+
+        out_path = self.data_dir / "collages" / "rated" / f"{rating}.png"
+        collage.save_gallery_collage(photo_paths, out_path)
+        filename = f"rated_{rating}.png"
+        file = discord.File(str(out_path), filename=filename)
+
+        title = f"{RATING_LABELS[rating]} photos"
+        if len(matches) > len(shown):
+            title += f" (showing {len(shown)} most recent of {len(matches)})"
+        else:
+            title += f" ({len(shown)})"
+
+        embed = discord.Embed(title=title, description="\n".join(lines), color=embeds.RATING_COLORS[rating])
+        embed.set_image(url=f"attachment://{filename}")
+        await ctx.send(embed=embed, file=file)
+
     # ------------------------------------------------------------------
     # Poll posting + tracking
     # ------------------------------------------------------------------
@@ -533,6 +732,12 @@ class PhotoDrop(commands.Cog):
         for each member: once someone is fired mid-loop, no further missed
         days are recorded against them -- they're no longer the job holder,
         so a day after their firing isn't a day they failed at the job.
+
+        As each day is settled here for the first time, if it ended up
+        Full or Tardy (i.e. there are photos), the owner-rating prompts for
+        those photos are posted too -- "right as the day passes over", once
+        per day per photo, same as the no-show check itself never repeats
+        for a date once it's been processed.
         """
         gconf = self.config.guild(guild)
         holders = await self._current_holders(guild)
@@ -546,6 +751,7 @@ class PhotoDrop(commands.Cog):
 
         if last_rollover is not None:
             missed = models.missed_days(last_rollover, today)
+            channel = await self._member_channel(guild)
             for member in holders:
                 for date_key in missed:
                     if not await self._holds_role(member):
@@ -558,6 +764,11 @@ class PhotoDrop(commands.Cog):
                         await mconf.strikes.set(updated["strikes"])
                         await mconf.history.set(updated["history"])
                         await self._check_and_apply_strikes(guild, member)
+                        member_state = updated
+
+                    status = models.calendar_status(member_state, date_key)
+                    if channel is not None and status in (STATUS_FULL, STATUS_TARDY):
+                        await self._post_rating_prompts(guild, channel, member, date_key)
 
         await gconf.last_rollover_date.set(today)
 

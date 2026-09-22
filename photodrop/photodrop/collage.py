@@ -208,3 +208,39 @@ def save_month_collage(day_entries: list[tuple[int, str, Path | None]], out_path
     out_path.parent.mkdir(parents=True, exist_ok=True)
     image.save(out_path, format="PNG", optimize=True)
     return out_path
+
+
+# ----------------------------------------------------------------------
+# Rating gallery collage (`.pp rated <rating>`)
+# ----------------------------------------------------------------------
+
+GALLERY_TILE_SIZE = (220, 220)
+
+
+def build_gallery_collage(photo_paths: list[Path]) -> Image.Image:
+    """Compact grid of raw photos, no badges -- who/when for each tile is
+    sent as a companion text list by the caller (`.pp rated`), since it
+    won't fit legibly burned into a tile this small.
+    """
+    if not photo_paths:
+        raise ValueError("build_gallery_collage requires at least one photo")
+
+    cols, rows = _grid_dims_square(len(photo_paths))
+    tile_w, tile_h = GALLERY_TILE_SIZE
+    canvas_w = cols * tile_w + (cols - 1) * GAP
+    canvas_h = rows * tile_h + (rows - 1) * GAP
+    canvas = Image.new("RGB", (canvas_w, canvas_h), BG_COLOR)
+
+    for i, path in enumerate(photo_paths):
+        tile = _fit_tile_sized(path, GALLERY_TILE_SIZE)
+        col, row = i % cols, i // cols
+        canvas.paste(tile, (col * (tile_w + GAP), row * (tile_h + GAP)))
+
+    return canvas
+
+
+def save_gallery_collage(photo_paths: list[Path], out_path: Path) -> Path:
+    image = build_gallery_collage(photo_paths)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    image.save(out_path, format="PNG", optimize=True)
+    return out_path

@@ -14,6 +14,7 @@ from .constants import (
     STATUS_NO_SHOW,
     STATUS_PTO,
     STATUS_TARDY,
+    VALID_RATINGS,
 )
 
 
@@ -157,6 +158,32 @@ def restore_streak(member: dict, value: int) -> dict:
 def clear_strikes(member: dict) -> dict:
     member = dict(member)
     member["strikes"] = []
+    return member
+
+
+def set_rating(member: dict, date_key: str, photo_index: int, rating: str) -> dict:
+    """Record an owner rating for one specific photo within a day's history
+    entry. No-ops (returns `member` unchanged) if that day has no history
+    entry at all -- the caller (the rating-button handler) is expected to
+    have already confirmed the prompt is still valid via its own pending-
+    ratings bookkeeping; this is just a defensive guard against stale state,
+    not the source of truth for whether a rating is allowed.
+    """
+    if rating not in VALID_RATINGS:
+        raise ValueError(f"Unknown rating: {rating!r}")
+
+    member = dict(member)
+    history = dict(member.get("history", {}))
+    entry = history.get(date_key)
+    if entry is None:
+        return member
+
+    entry = dict(entry)
+    ratings = dict(entry.get("ratings", {}))
+    ratings[str(photo_index)] = rating
+    entry["ratings"] = ratings
+    history[date_key] = entry
+    member["history"] = history
     return member
 
 

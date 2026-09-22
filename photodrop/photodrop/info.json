@@ -1,10 +1,10 @@
 {
     "author": ["evac"],
     "min_bot_version": "3.5.0",
-    "description": "Role-holder daily photo-drop job: daily quota submissions, a streak, a strike system that controls a job role, PTO, and an automatic weekly Photo of the Week poll. The job role is the single source of truth for who can drop.",
+    "description": "Role-holder daily photo-drop job: daily quota submissions, a streak, a strike system that controls a job role, PTO, an automatic weekly Photo of the Week poll, and a nightly owner rating pass (GOAT/Good/Mid/Bad) on every photo. The job role is the single source of truth for who can drop.",
     "hidden": false,
-    "install_msg": "Thanks for installing photodrop! Commands live under `.pp` or `.pockypolice`. The job role defaults to a hardcoded ID -- confirm it with `.pp set role @role`, then set `.pp set channel #channel` before anyone drops photos. `.pp hire @user` adds the role to get someone started.",
-    "short": "Daily photo-drop job with a streak, a strike system, PTO, and a weekly photo poll.",
+    "install_msg": "Thanks for installing photodrop! Commands live under `.pp` or `.pockypolice`. The job role defaults to a hardcoded ID -- confirm it with `.pp set role @role`, then set `.pp set channel #channel` before anyone drops photos. `.pp hire @user` adds the role to get someone started. Rating buttons default to the server owner -- change that with `.pp set rater @user`. Browse rated photos with `.pp rated goat|good|mid|bad`.",
+    "short": "Daily photo-drop job with a streak, a strike system, PTO, a weekly photo poll, and owner photo ratings.",
     "tags": ["photos", "job", "streak", "poll", "economy-free"],
     "type": "COG"
 }

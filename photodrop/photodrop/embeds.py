@@ -8,12 +8,19 @@ from pathlib import Path
 
 import discord
 
-from .constants import STATUS_EMOJI, STATUS_FULL, STATUS_TARDY
+from .constants import RATING_BAD, RATING_GOAT, RATING_GOOD, RATING_LABELS, RATING_MID, STATUS_EMOJI, STATUS_FULL, STATUS_TARDY
 
 COLOR_FULL = discord.Color.gold()
 COLOR_TARDY = discord.Color.orange()
 COLOR_NO_SHOW = discord.Color.red()
 COLOR_NEUTRAL = discord.Color.dark_grey()
+
+RATING_COLORS = {
+    RATING_GOAT: discord.Color.gold(),
+    RATING_GOOD: discord.Color.green(),
+    RATING_MID: discord.Color.orange(),
+    RATING_BAD: discord.Color.red(),
+}
 
 
 def shift_report_embed(member_display_name: str, outcome: str, photo_count: int, quota: int, streak: int) -> discord.Embed:
@@ -76,6 +83,20 @@ def build_photo_message(entries: list[tuple[str, str, Path]]) -> tuple[list[disc
         embed.set_image(url=f"attachment://{filename}")
         embeds.append(embed)
     return embeds, files
+
+
+def rating_prompt_embed(member_display_name: str, date_key: str, photo_index: int, photo_count: int) -> discord.Embed:
+    title = f"Rate this photo -- {member_display_name}, {date_key}"
+    if photo_count > 1:
+        title += f" (#{photo_index + 1}/{photo_count})"
+    return discord.Embed(title=title, color=COLOR_NEUTRAL)
+
+
+def rated_embed(member_display_name: str, date_key: str, photo_index: int, photo_count: int, rating: str) -> discord.Embed:
+    title = f"{RATING_LABELS[rating]} -- {member_display_name}, {date_key}"
+    if photo_count > 1:
+        title += f" (#{photo_index + 1}/{photo_count})"
+    return discord.Embed(title=title, color=RATING_COLORS[rating])
 
 
 def poll_question_text() -> str:

@@ -15,6 +15,19 @@ STATUS_EMOJI = {
     STATUS_PTO: "\N{DECIDUOUS TREE}",
 }
 
+RATING_GOAT = "goat"
+RATING_GOOD = "good"
+RATING_MID = "mid"
+RATING_BAD = "bad"
+VALID_RATINGS = (RATING_GOAT, RATING_GOOD, RATING_MID, RATING_BAD)
+
+RATING_LABELS = {
+    RATING_GOAT: "\N{GOAT} GOAT",
+    RATING_GOOD: "\N{WHITE HEAVY CHECK MARK} Good",
+    RATING_MID: "\N{NEUTRAL FACE} Mid",
+    RATING_BAD: "\N{THUMBS DOWN SIGN} Bad",
+}
+
 DEFAULT_QUOTA = 3
 DEFAULT_STRIKE_WINDOW_DAYS = 30
 DEFAULT_STRIKE_THRESHOLD = 1  # a single Tardy or no-show revokes the role
@@ -29,7 +42,7 @@ DEFAULT_MEMBER = {
     "streak": 0,
     "strikes": [],  # list of ISO-8601 UTC timestamps, pruned to the rolling window on read
     "history": {
-        # "YYYY-MM-DD" -> {"status": one of STATUS_*, "photo_paths": [...]}
+        # "YYYY-MM-DD" -> {"status": one of STATUS_*, "photo_paths": [...], "ratings": {"0": one of RATING_*, ...}}
     },
 }
 
@@ -42,5 +55,7 @@ DEFAULT_GUILD = {
     "last_rollover_date": None,  # "YYYY-MM-DD", the last local date no-show detection ran for
     "last_weekly_poll_date": None,  # "YYYY-MM-DD" the automatic weekly poll last ran for
     "active_polls": {},  # message_id (str) -> poll bookkeeping dict, see PollRecord in models.py
+    "rater_id": None,  # who can click rating buttons; falls back to the guild owner if unset
+    "pending_ratings": {},  # message_id (str) -> {"member_id", "date_key", "photo_index"}
 }
 

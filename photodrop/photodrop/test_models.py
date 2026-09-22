@@ -171,3 +171,32 @@ class TestCalendarStatus:
     def test_returns_status_for_logged_day(self):
         member, _, _ = models.record_drop(fresh_member(), "2026-09-21", 3, 3, ["a"])
         assert models.calendar_status(member, "2026-09-21") == STATUS_FULL
+
+
+class TestSetRating:
+    def test_records_rating_on_existing_day(self):
+        member, _, _ = models.record_drop(fresh_member(), "2026-09-21", 1, 1, ["a"])
+        updated = models.set_rating(member, "2026-09-21", 0, "goat")
+        assert updated["history"]["2026-09-21"]["ratings"] == {"0": "goat"}
+
+    def test_noop_if_day_has_no_history_entry(self):
+        member = fresh_member()
+        updated = models.set_rating(member, "2026-09-21", 0, "goat")
+        assert updated == member
+
+    def test_rejects_invalid_rating(self):
+        member, _, _ = models.record_drop(fresh_member(), "2026-09-21", 1, 1, ["a"])
+        with pytest.raises(ValueError):
+            models.set_rating(member, "2026-09-21", 0, "amazing")
+
+    def test_multiple_photo_indices_dont_clobber_each_other(self):
+        member, _, _ = models.record_drop(fresh_member(), "2026-09-21", 2, 2, ["a", "b"])
+        member = models.set_rating(member, "2026-09-21", 0, "goat")
+        member = models.set_rating(member, "2026-09-21", 1, "bad")
+        assert member["history"]["2026-09-21"]["ratings"] == {"0": "goat", "1": "bad"}
+
+    def test_rerating_the_same_photo_overwrites(self):
+        member, _, _ = models.record_drop(fresh_member(), "2026-09-21", 1, 1, ["a"])
+        member = models.set_rating(member, "2026-09-21", 0, "mid")
+        member = models.set_rating(member, "2026-09-21", 0, "good")
+        assert member["history"]["2026-09-21"]["ratings"] == {"0": "good"}

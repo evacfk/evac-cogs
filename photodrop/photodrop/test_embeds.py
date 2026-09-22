@@ -38,3 +38,27 @@ class TestCalendarEmbed:
     def test_empty_month_shows_placeholder(self):
         embed = embeds.calendar_embed("evac", "September 2026", [(1, None)])
         assert "No entries" in embed.description
+
+
+class TestRatingPromptEmbed:
+    def test_single_photo_has_no_count_suffix(self):
+        embed = embeds.rating_prompt_embed("evac", "2026-09-21", 0, 1)
+        assert "#1" not in embed.title
+        assert "evac" in embed.title
+        assert "2026-09-21" in embed.title
+
+    def test_multi_photo_shows_index_and_count(self):
+        embed = embeds.rating_prompt_embed("evac", "2026-09-21", 1, 3)
+        assert "#2/3" in embed.title
+
+
+class TestRatedEmbed:
+    def test_title_includes_rating_label_and_uses_rating_color(self):
+        embed = embeds.rated_embed("evac", "2026-09-21", 0, 1, "goat")
+        assert "GOAT" in embed.title
+        assert embed.color == embeds.RATING_COLORS["goat"]
+
+    def test_different_ratings_use_different_colors(self):
+        goat = embeds.rated_embed("evac", "2026-09-21", 0, 1, "goat")
+        bad = embeds.rated_embed("evac", "2026-09-21", 0, 1, "bad")
+        assert goat.color != bad.color

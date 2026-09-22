@@ -28,6 +28,10 @@ except ImportError:
             return cls("red")
 
         @classmethod
+        def green(cls):
+            return cls("green")
+
+        @classmethod
         def dark_grey(cls):
             return cls("dark_grey")
 
@@ -60,6 +64,20 @@ except ImportError:
     class _NotFound(Exception):
         pass
 
+    class _View:
+        """Enough of discord.ui.View for a class body defining buttons to
+        construct cleanly -- never actually dispatches interactions here.
+        """
+
+        def __init__(self, *args, **kwargs):
+            self.children = []
+
+    def _button_decorator(*args, **kwargs):
+        def deco(f):
+            return f
+
+        return deco
+
     discord_stub.Embed = _Embed
     discord_stub.Color = _Color
     discord_stub.File = _File
@@ -70,6 +88,9 @@ except ImportError:
     discord_stub.Member = object
     discord_stub.Role = object
     discord_stub.TextChannel = object
+    discord_stub.Interaction = object
+    discord_stub.ButtonStyle = types.SimpleNamespace(success="success", primary="primary", secondary="secondary", danger="danger")
+    discord_stub.ui = types.SimpleNamespace(View=_View, Button=object, button=_button_decorator)
     sys.modules["discord"] = discord_stub
 
 try:
