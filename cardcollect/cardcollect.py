@@ -35,6 +35,7 @@ from .constants import (
     DEFAULT_DROP_WEIGHTS,
     DEFAULT_SELL_PRICES,
     DEFAULT_TIER_CUTOFFS,
+    DEFAULT_WRONG_GUESS_PENALTY_SECONDS,
     EMOJI_POOL,
     MAX_COPIES_KEPT,
     MAX_SHOWCASE_SLOTS,
@@ -55,6 +56,7 @@ DEFAULT_GUILD = {
     "decoy_count": DEFAULT_DECOY_COUNT,
     "claim_window_seconds": DEFAULT_CLAIM_WINDOW_SECONDS,
     "claim_cooldown_seconds": DEFAULT_CLAIM_COOLDOWN_SECONDS,
+    "wrong_guess_penalty_seconds": DEFAULT_WRONG_GUESS_PENALTY_SECONDS,
     "claim_quota": DEFAULT_CLAIM_QUOTA,
     "sell_prices": dict(DEFAULT_SELL_PRICES),
     "test_mode": False,
@@ -87,6 +89,10 @@ class CardCollect(commands.Cog):
         self.pending_windows: Dict[Tuple[int, str], bool] = {}  # (message_id, emoji) -> scheduled
         self.last_drop_time: Dict[int, float] = {}  # guild_id -> monotonic time
         self.claim_cooldown_until: Dict[int, float] = {}  # user_id -> monotonic time
+        # set by a wrong (decoy) reaction guess -- see on_raw_reaction_add.
+        # Excludes a user from *winning* any drop while active, checked
+        # alongside claim_cooldown_until in _resolve_claim_window.
+        self.wrong_guess_penalty_until: Dict[int, float] = {}  # user_id -> monotonic time
         self._drop_locks: Dict[int, asyncio.Lock] = {}  # guild_id -> lock
         # AniList's public API rate-limits aggressively; without this, two
         # `.card importpool` runs fired close together each start their own
@@ -315,13 +321,40 @@ class CardCollect(commands.Cog):
         if drop is None:
             return
 
+        # One reaction is each member's "shot" at this drop -- once it's
+        # used (on a decoy, or on a still-open real card), every further
+        # reaction of theirs on this message is inert. This is what makes
+        # "click every emoji until something hits" no longer work: you have
+        # to actually look at the card art and pick once.
+        if payload.user_id in drop.reacted_users:
+            return
+
         emoji = str(payload.emoji)
+
         if not drop.is_real_emoji(emoji):
+            # a genuine wrong guess -- spends the shot and, on a real drop,
+            # costs a temporary lockout from *winning* any drop. Test drops
+            # still enforce the one-shot gate (so `.card testdrop` previews
+            # the real interaction accurately), but never set the penalty
+            # itself -- same test-mode exemption claim_cooldown_until and
+            # the daily quota already get in _resolve_claim_window, so
+            # testing decoys can't lock an admin out of winning real drops.
+            drop.reacted_users.add(payload.user_id)
+            if not drop.is_test:
+                conf = self.config.guild_from_id(payload.guild_id)
+                penalty = await conf.wrong_guess_penalty_seconds()
+                if penalty > 0:
+                    self.wrong_guess_penalty_until[payload.user_id] = time.monotonic() + penalty
             return
 
         card_entry = drop.emoji_for(emoji)
         if card_entry["position"] in drop.claimed_positions:
+            # the drop image gives no visual sign a card is already gone,
+            # so landing on one isn't the member's fault -- don't burn
+            # their shot for it, let them try again
             return
+
+        drop.reacted_users.add(payload.user_id)
 
         key = (payload.message_id, emoji)
         if key in self.pending_windows:
@@ -390,6 +423,8 @@ class CardCollect(commands.Cog):
                 # still independently claimable by everyone else
                 continue
             if self.claim_cooldown_until.get(user.id, 0.0) > now:
+                continue
+            if self.wrong_guess_penalty_until.get(user.id, 0.0) > now:
                 continue
             if claim_quota > 0:
                 # a plain reactor.users() User, not a guild Member -- no
@@ -744,6 +779,24 @@ class CardCollect(commands.Cog):
             return
         await self.config.guild(ctx.guild).claim_quota.set(quota)
         await ctx.send(f"Daily claim quota set to {quota if quota > 0 else 'unlimited'}.")
+
+    @card_set.command(name="decoycount")
+    async def card_set_decoycount(self, ctx: commands.Context, count: int):
+        """How many decoy reactions get added alongside the real ones per drop."""
+        if count < 0:
+            await ctx.send("Decoy count can't be negative.")
+            return
+        await self.config.guild(ctx.guild).decoy_count.set(count)
+        await ctx.send(f"Decoy count set to {count}.")
+
+    @card_set.command(name="wrongguesspenalty")
+    async def card_set_wrongguesspenalty(self, ctx: commands.Context, seconds: int):
+        """How long a wrong (decoy) reaction guess locks a member out of *winning* any drop. 0 = no penalty."""
+        if seconds < 0:
+            await ctx.send("Penalty can't be negative -- use 0 to disable it.")
+            return
+        await self.config.guild(ctx.guild).wrong_guess_penalty_seconds.set(seconds)
+        await ctx.send(f"Wrong-guess penalty set to {seconds} second(s).")
 
     @card.command(name="addcard")
     @commands.guild_only()

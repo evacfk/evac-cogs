@@ -137,6 +137,7 @@ class ActiveDrop:
     claimed_positions: set = field(default_factory=set)  # positions already resolved
     claimed_by: set = field(default_factory=set)  # user ids who already won a card from this drop
     is_test: bool = False  # test-mode drop: claims resolve fully but nothing is awarded
+    reacted_users: set = field(default_factory=set)  # user ids who've used their one shot on this drop
 
     def emoji_for(self, emoji: str) -> Optional[dict]:
         for c in self.cards:

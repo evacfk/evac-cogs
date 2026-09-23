@@ -37,7 +37,13 @@ DEFAULT_CLAIM_WINDOW_SECONDS = 1.0
 DEFAULT_CLAIM_COOLDOWN_SECONDS = 300  # 5 minutes
 
 DEFAULT_DECOYS_ENABLED = True
-DEFAULT_DECOY_COUNT = 5  # extra decoy reactions added alongside the 3 real ones
+DEFAULT_DECOY_COUNT = 10  # extra decoy reactions added alongside the 3 real ones
+
+# One reaction per drop per member: the first reaction they add is their only
+# "shot" (see cardcollect.on_raw_reaction_add). A wrong (decoy) guess spends
+# that shot and additionally locks them out of *winning* any drop for this
+# long, to make spam-reacting a real cost instead of a free extra guess.
+DEFAULT_WRONG_GUESS_PENALTY_SECONDS = 120  # 2 minutes
 
 DEFAULT_CLAIM_QUOTA = 10  # max real claims per member per day; 0 = unlimited
 MAX_SHOWCASE_SLOTS = 3  # how many cards a member can pin in their gallery header

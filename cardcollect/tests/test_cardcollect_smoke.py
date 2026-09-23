@@ -12,6 +12,7 @@ that's the newest and most bug-prone part of this cog.
 
 import asyncio
 import io
+import time
 
 import pytest
 from PIL import Image
@@ -127,6 +128,18 @@ class FakeBot:
 
     def get_channel(self, channel_id):
         return self._channels.get(channel_id)
+
+
+class FakeRawReactionPayload:
+    """Duck-typed stand-in for discord.RawReactionActionEvent -- only the
+    attributes on_raw_reaction_add actually reads."""
+
+    def __init__(self, guild_id, user_id, message_id, channel_id, emoji):
+        self.guild_id = guild_id
+        self.user_id = user_id
+        self.message_id = message_id
+        self.channel_id = channel_id
+        self.emoji = emoji
 
 
 class FakeAttachment:
@@ -1328,3 +1341,261 @@ async def test_concurrent_messages_never_chain_two_drops_past_the_cooldown(cog):
 
     drop_messages = [m for m in channel.sent[messages_before:] if m.files]
     assert len(drop_messages) == 1, f"cooldown should limit this to one drop, got {len(drop_messages)}"
+
+
+# ---------------------------------------------------------------------------
+# one-shot-per-drop claim mechanic (option 2): a member's first reaction on
+# a drop is their only "shot" -- exercised through on_raw_reaction_add
+# itself, not just _resolve_claim_window, since the gating lives there.
+# ---------------------------------------------------------------------------
+
+
+async def _drain_new_tasks(before_tasks):
+    """asyncio.create_task inside on_raw_reaction_add fires and forgets a
+    _resolve_claim_window task; awaiting it directly (rather than sleeping
+    and hoping) keeps these tests deterministic and avoids leaking a
+    pending task past the end of the test."""
+    after = asyncio.all_tasks() - before_tasks - {asyncio.current_task()}
+    if after:
+        await asyncio.gather(*after)
+
+
+@pytest.mark.asyncio
+async def test_on_raw_reaction_add_one_shot_per_drop(cog):
+    guild = FakeGuild(200)
+    admin = FakeMember(2000, guild)
+    reactor = FakeMember(2001, guild)
+    guild.members = {2000: admin, 2001: reactor}
+
+    channel = FakeChannel(20000, guild)
+    cog.bot.register_channel(channel)
+    ctx = FakeCtx(admin, guild, channel, attachments=[FakeAttachment(fake_art_bytes((1, 2, 3)))])
+    await cog.card.commands["addcard"].callback(cog, ctx, "common", name_and_series="A | Anime")
+    ctx2 = FakeCtx(admin, guild, channel, attachments=[FakeAttachment(fake_art_bytes((4, 5, 6)))])
+    await cog.card.commands["addcard"].callback(cog, ctx2, "common", name_and_series="B | Anime")
+
+    await cog.config.guild(guild).drop_size.set(2)
+    await cog.config.guild(guild).decoys_enabled.set(False)
+    await cog.config.guild(guild).claim_window_seconds.set(0)
+
+    await cog._post_drop(channel, guild, is_test=False)
+    drop_message = channel.sent[-1]
+    drop = cog.active_drops[drop_message.id]
+    assert len(drop.cards) == 2
+    emoji_a = drop.cards[0]["emoji"]
+    emoji_b = drop.cards[1]["emoji"]
+
+    reaction_a = next(r for r in drop_message.reactions if r.emoji == emoji_a)
+    reaction_b = next(r for r in drop_message.reactions if r.emoji == emoji_b)
+    reaction_a._reactor_objs = [reactor]
+    reaction_b._reactor_objs = [reactor]
+
+    before_tasks = asyncio.all_tasks()
+    await cog.on_raw_reaction_add(
+        FakeRawReactionPayload(guild.id, reactor.id, drop_message.id, channel.id, emoji_a)
+    )
+    # second reaction, on a different but still-open real card -- must be
+    # ignored entirely: the first reaction already used this member's one
+    # shot at this drop
+    await cog.on_raw_reaction_add(
+        FakeRawReactionPayload(guild.id, reactor.id, drop_message.id, channel.id, emoji_b)
+    )
+    await _drain_new_tasks(before_tasks)
+
+    reactor_state = await cog._member_state(reactor)
+    assert reactor_state.collection == [drop.cards[0]["card_id"]], (
+        "member should only win the card from their first reaction -- a "
+        "second reaction on another open card must not spend a fresh shot"
+    )
+    assert reactor.id in drop.reacted_users
+
+
+@pytest.mark.asyncio
+async def test_on_raw_reaction_add_decoy_guess_spends_shot_and_sets_penalty(cog):
+    guild = FakeGuild(201)
+    admin = FakeMember(2010, guild)
+    reactor = FakeMember(2011, guild)
+    guild.members = {2010: admin, 2011: reactor}
+
+    channel = FakeChannel(20100, guild)
+    cog.bot.register_channel(channel)
+    ctx = FakeCtx(admin, guild, channel, attachments=[FakeAttachment(fake_art_bytes((7, 8, 9)))])
+    await cog.card.commands["addcard"].callback(cog, ctx, "common", name_and_series="C | Anime")
+
+    await cog.config.guild(guild).decoys_enabled.set(True)
+    await cog.config.guild(guild).decoy_count.set(5)
+    await cog.config.guild(guild).wrong_guess_penalty_seconds.set(120)
+    await cog.config.guild(guild).claim_window_seconds.set(0)
+
+    await cog._post_drop(channel, guild, is_test=False)
+    drop_message = channel.sent[-1]
+    drop = cog.active_drops[drop_message.id]
+    assert drop.decoy_emojis, "need at least one decoy to exercise this path"
+    decoy_emoji = drop.decoy_emojis[0]
+
+    before = time.monotonic()
+    await cog.on_raw_reaction_add(
+        FakeRawReactionPayload(guild.id, reactor.id, drop_message.id, channel.id, decoy_emoji)
+    )
+
+    assert reactor.id in drop.reacted_users
+    assert cog.wrong_guess_penalty_until.get(reactor.id, 0.0) > before
+
+    # their shot is now spent -- a reaction on a real, still-open card does
+    # nothing either
+    real_emoji = drop.cards[0]["emoji"]
+    reaction = next(r for r in drop_message.reactions if r.emoji == real_emoji)
+    reaction._reactor_objs = [reactor]
+    before_tasks = asyncio.all_tasks()
+    await cog.on_raw_reaction_add(
+        FakeRawReactionPayload(guild.id, reactor.id, drop_message.id, channel.id, real_emoji)
+    )
+    await _drain_new_tasks(before_tasks)
+
+    reactor_state = await cog._member_state(reactor)
+    assert reactor_state.collection == [], "the decoy guess should have used up their only shot"
+
+
+@pytest.mark.asyncio
+async def test_on_raw_reaction_add_ignores_already_claimed_card_without_spending_shot(cog):
+    guild = FakeGuild(202)
+    admin = FakeMember(2020, guild)
+    reactor = FakeMember(2021, guild)
+    guild.members = {2020: admin, 2021: reactor}
+
+    channel = FakeChannel(20200, guild)
+    cog.bot.register_channel(channel)
+    ctx = FakeCtx(admin, guild, channel, attachments=[FakeAttachment(fake_art_bytes((11, 22, 33)))])
+    await cog.card.commands["addcard"].callback(cog, ctx, "common", name_and_series="D | Anime")
+    ctx2 = FakeCtx(admin, guild, channel, attachments=[FakeAttachment(fake_art_bytes((44, 55, 66)))])
+    await cog.card.commands["addcard"].callback(cog, ctx2, "common", name_and_series="E | Anime")
+
+    await cog.config.guild(guild).drop_size.set(2)
+    await cog.config.guild(guild).decoys_enabled.set(False)
+    await cog.config.guild(guild).claim_window_seconds.set(0)
+
+    await cog._post_drop(channel, guild, is_test=False)
+    drop_message = channel.sent[-1]
+    drop = cog.active_drops[drop_message.id]
+    emoji_a = drop.cards[0]["emoji"]
+    emoji_b = drop.cards[1]["emoji"]
+
+    # simulate card A having already been claimed by someone else, via a
+    # reaction that landed a split second earlier
+    drop.claimed_positions.add(drop.cards[0]["position"])
+
+    await cog.on_raw_reaction_add(
+        FakeRawReactionPayload(guild.id, reactor.id, drop_message.id, channel.id, emoji_a)
+    )
+    assert reactor.id not in drop.reacted_users, (
+        "landing on an already-claimed card isn't the member's fault -- it must not burn their shot"
+    )
+
+    # their shot is still available -- a reaction on the still-open card
+    # works normally
+    reaction_b = next(r for r in drop_message.reactions if r.emoji == emoji_b)
+    reaction_b._reactor_objs = [reactor]
+    before_tasks = asyncio.all_tasks()
+    await cog.on_raw_reaction_add(
+        FakeRawReactionPayload(guild.id, reactor.id, drop_message.id, channel.id, emoji_b)
+    )
+    await _drain_new_tasks(before_tasks)
+
+    reactor_state = await cog._member_state(reactor)
+    assert reactor_state.collection == [drop.cards[1]["card_id"]]
+
+
+@pytest.mark.asyncio
+async def test_wrong_guess_penalty_excludes_reactor_from_winning(cog):
+    guild = FakeGuild(203)
+    admin = FakeMember(2030, guild)
+    penalized = FakeMember(2031, guild)
+    other = FakeMember(2032, guild)
+    guild.members = {2030: admin, 2031: penalized, 2032: other}
+
+    channel = FakeChannel(20300, guild)
+    cog.bot.register_channel(channel)
+    ctx = FakeCtx(admin, guild, channel, attachments=[FakeAttachment(fake_art_bytes((77, 88, 99)))])
+    await cog.card.commands["addcard"].callback(cog, ctx, "common", name_and_series="F | Anime")
+
+    await cog.config.guild(guild).claim_cooldown_seconds.set(0)
+    cog.wrong_guess_penalty_until[penalized.id] = time.monotonic() + 120
+
+    await cog._post_drop(channel, guild, is_test=False)
+    drop_message = channel.sent[-1]
+    drop = cog.active_drops[drop_message.id]
+    real_emoji = drop.cards[0]["emoji"]
+    card_id = drop.cards[0]["card_id"]
+
+    reaction = next(r for r in drop_message.reactions if r.emoji == real_emoji)
+    reaction._reactor_objs = [penalized, other]
+
+    await cog._resolve_claim_window(channel.id, drop_message.id, real_emoji, window=0)
+
+    penalized_state = await cog._member_state(penalized)
+    other_state = await cog._member_state(other)
+    assert card_id not in penalized_state.collection, "a member under the wrong-guess penalty must not win"
+    assert card_id in other_state.collection, "the card should still go to the other eligible reactor"
+
+
+@pytest.mark.asyncio
+async def test_card_set_decoycount_and_wrongguesspenalty_commands(cog):
+    guild = FakeGuild(204)
+    admin = FakeMember(2040, guild)
+    channel = FakeChannel(20400, guild)
+    ctx = FakeCtx(admin, guild, channel)
+
+    await cog.card.commands["set"].commands["decoycount"].callback(cog, ctx, 12)
+    assert await cog.config.guild(guild).decoy_count() == 12
+    assert "12" in ctx.sent[-1].content
+
+    ctx2 = FakeCtx(admin, guild, channel)
+    await cog.card.commands["set"].commands["decoycount"].callback(cog, ctx2, -1)
+    assert "negative" in ctx2.sent[-1].content.lower()
+    assert await cog.config.guild(guild).decoy_count() == 12  # unchanged
+
+    ctx3 = FakeCtx(admin, guild, channel)
+    await cog.card.commands["set"].commands["wrongguesspenalty"].callback(cog, ctx3, 90)
+    assert await cog.config.guild(guild).wrong_guess_penalty_seconds() == 90
+    assert "90" in ctx3.sent[-1].content
+
+    ctx4 = FakeCtx(admin, guild, channel)
+    await cog.card.commands["set"].commands["wrongguesspenalty"].callback(cog, ctx4, -5)
+    assert "negative" in ctx4.sent[-1].content.lower()
+    assert await cog.config.guild(guild).wrong_guess_penalty_seconds() == 90  # unchanged
+
+
+@pytest.mark.asyncio
+async def test_decoy_guess_on_a_test_drop_does_not_set_a_real_penalty(cog):
+    """An admin previewing the decoy/one-shot mechanic with `.card testdrop`
+    must not walk away with a real wrong_guess_penalty_until entry -- that
+    would lock them out of winning *actual* drops afterward, the same
+    test-mode exemption claim_cooldown_until and the daily quota already
+    get in _resolve_claim_window. The one-shot gate itself (reacted_users)
+    still applies in test mode, so the preview is otherwise accurate."""
+    guild = FakeGuild(205)
+    admin = FakeMember(2050, guild)
+    channel = FakeChannel(20500, guild)
+    cog.bot.register_channel(channel)
+    ctx = FakeCtx(admin, guild, channel, attachments=[FakeAttachment(fake_art_bytes((3, 6, 9)))])
+    await cog.card.commands["addcard"].callback(cog, ctx, "common", name_and_series="G | Anime")
+
+    await cog.config.guild(guild).decoys_enabled.set(True)
+    await cog.config.guild(guild).decoy_count.set(5)
+    await cog.config.guild(guild).wrong_guess_penalty_seconds.set(120)
+
+    await cog._post_drop(channel, guild, is_test=True)
+    drop_message = channel.sent[-1]
+    drop = cog.active_drops[drop_message.id]
+    assert drop.is_test is True
+    assert drop.decoy_emojis, "need at least one decoy to exercise this path"
+    decoy_emoji = drop.decoy_emojis[0]
+
+    await cog.on_raw_reaction_add(
+        FakeRawReactionPayload(guild.id, admin.id, drop_message.id, channel.id, decoy_emoji)
+    )
+
+    # the one-shot gate still fired (this is a real part of the preview)...
+    assert admin.id in drop.reacted_users
+    # ...but no real penalty should have been recorded against them
+    assert admin.id not in cog.wrong_guess_penalty_until
