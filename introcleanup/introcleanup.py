@@ -4,6 +4,45 @@ from datetime import datetime, timezone, timedelta
 from redbot.core import commands, Config
 from redbot.core.bot import Red
 
+MAX_RETRIES = 5
+
+
+async def _safe_delete(msg: discord.Message) -> bool:
+    """Delete a single message, retrying on 429. Returns True if deleted."""
+    for attempt in range(MAX_RETRIES):
+        try:
+            await msg.delete()
+            return True
+        except discord.NotFound:
+            return False
+        except discord.HTTPException as e:
+            if e.status == 429:
+                retry_after = float(getattr(e, "retry_after", None) or 5)
+                await asyncio.sleep(retry_after + 0.5)
+            else:
+                return False
+    return False
+
+
+async def _safe_bulk_delete(channel: discord.TextChannel, chunk: list) -> tuple[int, list]:
+    """
+    Bulk-delete a chunk of messages (2–100, all <14 days old).
+    Returns (deleted_count, failed_messages) where failed_messages need
+    individual deletion fallback.
+    """
+    for attempt in range(MAX_RETRIES):
+        try:
+            await channel.delete_messages(chunk)
+            return len(chunk), []
+        except discord.HTTPException as e:
+            if e.status == 429:
+                retry_after = float(getattr(e, "retry_after", None) or 5)
+                await asyncio.sleep(retry_after + 0.5)
+            else:
+                # Non-429 error — fall back to individual
+                return 0, chunk
+    return 0, chunk
+
 
 class IntroCleanup(commands.Cog):
     """Deletes intro messages from members who leave, are kicked, or banned."""
@@ -40,8 +79,7 @@ class IntroCleanup(commands.Cog):
                 log_channel = guild.get_channel(log_id)
                 if log_channel:
                     await self._post_log(log_channel, member, deleted_count, trigger="left/kicked/banned")
-        except Exception as e:
-            # Log to bot owner or stderr so errors don't silently vanish
+        except Exception:
             self.bot.logger.exception(
                 "IntroCleanup: error handling member_remove for %s (%d)", member, member.id
             )
@@ -130,7 +168,6 @@ class IntroCleanup(commands.Cog):
             lines = [f"**Dry run result:** {total_msgs} message(s) from {total_users} former member(s) would be deleted."]
             for uid, msgs in to_delete.items():
                 lines.append(f"• <@{uid}> (ID: {uid}) — {len(msgs)} message(s)")
-            # chunk to avoid 2000-char limit
             chunks = []
             current = []
             for line in lines:
@@ -154,52 +191,40 @@ class IntroCleanup(commands.Cog):
             bulk = [m for m in msgs if m.created_at > cutoff]
             old = [m for m in msgs if m.created_at <= cutoff]
 
-            # Bulk delete (≤100 at a time, <14 days; requires 2+ messages)
+            # Bulk delete recent messages (≤100 at a time, requires 2+)
             for i in range(0, len(bulk), 100):
                 chunk = bulk[i:i + 100]
                 if len(chunk) == 1:
-                    try:
-                        await chunk[0].delete()
+                    if await _safe_delete(chunk[0]):
                         deleted_total += 1
-                    except discord.NotFound:
-                        pass
-                    await asyncio.sleep(1.1)
+                    await asyncio.sleep(1.5)
                     continue
-                try:
-                    await intros_channel.delete_messages(chunk)
-                    deleted_total += len(chunk)
-                except discord.HTTPException:
-                    # Fall back to individual on error
-                    for m in chunk:
-                        try:
-                            await m.delete()
-                            deleted_total += 1
-                        except discord.NotFound:
-                            pass
-                        await asyncio.sleep(1.1)
-                await asyncio.sleep(0.5)
+                count, fallback = await _safe_bulk_delete(intros_channel, chunk)
+                deleted_total += count
+                for m in fallback:
+                    if await _safe_delete(m):
+                        deleted_total += 1
+                    await asyncio.sleep(1.5)
+                if not fallback:
+                    await asyncio.sleep(0.5)
 
-            # Individual delete for old messages
+            # Individual delete for old messages (>14 days, can't bulk)
             for m in old:
-                try:
-                    await m.delete()
+                if await _safe_delete(m):
                     deleted_total += 1
-                except discord.NotFound:
-                    pass
-                await asyncio.sleep(1.1)
+                await asyncio.sleep(1.5)
 
-            # Log each user
+            # Log this user
             if log_id:
                 log_channel = ctx.guild.get_channel(log_id)
                 if log_channel:
-                    count = len(msgs)
                     embed = discord.Embed(
                         title="IntroCleanup — Sweep",
                         color=discord.Color.orange(),
                         timestamp=datetime.now(timezone.utc),
                     )
                     embed.add_field(name="User ID", value=str(uid), inline=True)
-                    embed.add_field(name="Messages Deleted", value=str(count), inline=True)
+                    embed.add_field(name="Messages Deleted", value=str(len(msgs)), inline=True)
                     embed.add_field(name="Trigger", value="manual sweep", inline=True)
                     embed.set_footer(text=f"Swept by {ctx.author} ({ctx.author.id})")
                     try:
@@ -233,38 +258,26 @@ class IntroCleanup(commands.Cog):
 
         deleted = 0
 
-        # Bulk delete in batches of 100 (requires 2+ messages; fall back for single)
         for i in range(0, len(to_bulk), 100):
             chunk = to_bulk[i:i + 100]
             if len(chunk) == 1:
-                try:
-                    await chunk[0].delete()
+                if await _safe_delete(chunk[0]):
                     deleted += 1
-                except discord.NotFound:
-                    pass
-                await asyncio.sleep(1.1)
+                await asyncio.sleep(1.5)
                 continue
-            try:
-                await channel.delete_messages(chunk)
-                deleted += len(chunk)
-            except discord.HTTPException:
-                for m in chunk:
-                    try:
-                        await m.delete()
-                        deleted += 1
-                    except discord.NotFound:
-                        pass
-                    await asyncio.sleep(1.1)
-            await asyncio.sleep(0.5)
+            count, fallback = await _safe_bulk_delete(channel, chunk)
+            deleted += count
+            for m in fallback:
+                if await _safe_delete(m):
+                    deleted += 1
+                await asyncio.sleep(1.5)
+            if not fallback:
+                await asyncio.sleep(0.5)
 
-        # Individual delete for old messages
         for m in to_single:
-            try:
-                await m.delete()
+            if await _safe_delete(m):
                 deleted += 1
-            except discord.NotFound:
-                pass
-            await asyncio.sleep(1.1)
+            await asyncio.sleep(1.5)
 
         return deleted
 
