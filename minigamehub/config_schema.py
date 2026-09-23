@@ -62,7 +62,9 @@ DEFAULT_GUILD = {
             },
             "safe_animals": {
                 # key -> percent of the shooter's balance taken as a penalty
-                "eagle": {"penalty_pct": 8.0},
+                # for shooting it, and the reward range paid out for saluting
+                # it instead.
+                "eagle": {"penalty_pct": 8.0, "salute_reward": [50, 200]},
             },
         },
         "lootdrop": {

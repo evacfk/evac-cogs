@@ -26,7 +26,7 @@ from .activity import ActivityTracker, is_channel_active
 from .config_schema import DEFAULT_GUILD, DEFAULT_MEMBER
 from .constants import CONFIG_IDENTIFIER, GAME_KEYS, MOD_ROLE_ID, RESET_TIMEZONE, SCHEDULER_TICK_SECONDS
 from .games import GAME_REGISTRY
-from .settings_ui import ConfigView
+from .settings_ui import ConfigView, HuntAnimalsView
 
 log = logging.getLogger("red.minigamehub")
 
@@ -371,6 +371,14 @@ class MinigameHub(commands.Cog):
         view = ConfigView(self.config, ctx.guild)
         embed = await view.build_embed()
         await ctx.send(embed=embed, view=view)
+
+    @minigamehub.command(name="huntanimals")
+    async def mgh_huntanimals(self, ctx: commands.Context):
+        """Add/edit/remove hunt's animal pool (emoji + spawn text) with a GUI --
+        no JSON, no exact command syntax to remember."""
+        games = await self.config.guild(ctx.guild).games()
+        view = HuntAnimalsView(self.config, ctx.guild, games["hunt"]["animals"])
+        await ctx.send(embed=view.build_embed(), view=view)
 
     @minigamehub.command(name="test")
     async def mgh_test(self, ctx: commands.Context, game_key: str):
@@ -859,6 +867,99 @@ class MinigameHub(commands.Cog):
             else:
                 games["boss"]["scenarios"].extend(new_scenarios)
         await ctx.send(f"Imported {len(new_scenarios)} boss scenario(s){' (replaced pool)' if replace else ''}.")
+
+    # -- safe-animal CRUD (hunt) ------------------------------------------ #
+
+    @minigamehub.group(name="huntsafe")
+    async def mgh_huntsafe(self, ctx: commands.Context):
+        """Manage hunt's safe animals -- the penalty for shooting one and the
+        reward for saluting it instead."""
+
+    @mgh_huntsafe.command(name="list")
+    async def mgh_huntsafe_list(self, ctx: commands.Context):
+        """Show every safe animal with its shoot penalty and salute reward."""
+        async with self.config.guild(ctx.guild).games() as games:
+            safe_animals = games["hunt"]["safe_animals"]
+        if not safe_animals:
+            await ctx.send("No safe animals configured -- every animal in the pool can be shot freely.")
+            return
+        lines = []
+        for key, conf in safe_animals.items():
+            pct = conf.get("penalty_pct", 0)
+            lo, hi = conf.get("salute_reward", [0, 0])
+            lines.append(f"{key:<12} penalty {pct:g}% of balance | salute reward {_fmt_range(lo, hi)}")
+        await ctx.send(box("\n".join(lines), lang="text"))
+
+    @mgh_huntsafe.command(name="add")
+    async def mgh_huntsafe_add(
+        self, ctx: commands.Context, animal_key: str, penalty_pct: float, reward_min: int, reward_max: int,
+    ):
+        """Mark an animal in hunt's pool as safe: shooting it costs `penalty_pct`
+        of the shooter's balance, saluting it instead pays out `reward_min`-`reward_max`.
+
+        Example: `.minigamehub huntsafe add eagle 8 50 200`
+        """
+        animal_key = animal_key.lower()
+        if penalty_pct < 0 or penalty_pct > 100:
+            await ctx.send("penalty_pct must be between 0 and 100.")
+            return
+        if reward_min < 0 or reward_max < reward_min:
+            await ctx.send("reward_min must be >= 0 and reward_max >= reward_min.")
+            return
+        async with self.config.guild(ctx.guild).games() as games:
+            if animal_key not in games["hunt"]["animals"]:
+                await ctx.send(
+                    f"`{animal_key}` isn't in hunt's animal pool -- see `.minigamehub game hunt settings` "
+                    "for the current pool, or add it there first."
+                )
+                return
+            games["hunt"]["safe_animals"][animal_key] = {
+                "penalty_pct": penalty_pct,
+                "salute_reward": [reward_min, reward_max],
+            }
+        await ctx.send(
+            f"`{animal_key}` is now safe: shooting it costs {penalty_pct:g}% of balance, "
+            f"saluting it pays {_fmt_range(reward_min, reward_max)}."
+        )
+
+    @mgh_huntsafe.command(name="remove")
+    async def mgh_huntsafe_remove(self, ctx: commands.Context, animal_key: str):
+        """Unmark an animal as safe -- it goes back to a normal reward-only shoot."""
+        animal_key = animal_key.lower()
+        async with self.config.guild(ctx.guild).games() as games:
+            if animal_key not in games["hunt"]["safe_animals"]:
+                await ctx.send(f"`{animal_key}` isn't currently marked safe.")
+                return
+            del games["hunt"]["safe_animals"][animal_key]
+        await ctx.send(f"`{animal_key}` is no longer safe.")
+
+    @mgh_huntsafe.command(name="penalty")
+    async def mgh_huntsafe_penalty(self, ctx: commands.Context, animal_key: str, penalty_pct: float):
+        """Change just the shoot penalty for an already-safe animal."""
+        animal_key = animal_key.lower()
+        if penalty_pct < 0 or penalty_pct > 100:
+            await ctx.send("penalty_pct must be between 0 and 100.")
+            return
+        async with self.config.guild(ctx.guild).games() as games:
+            if animal_key not in games["hunt"]["safe_animals"]:
+                await ctx.send(f"`{animal_key}` isn't marked safe yet -- use `.minigamehub huntsafe add` first.")
+                return
+            games["hunt"]["safe_animals"][animal_key]["penalty_pct"] = penalty_pct
+        await ctx.send(f"`{animal_key}` shoot penalty set to {penalty_pct:g}% of balance.")
+
+    @mgh_huntsafe.command(name="reward")
+    async def mgh_huntsafe_reward(self, ctx: commands.Context, animal_key: str, reward_min: int, reward_max: int):
+        """Change just the salute reward range for an already-safe animal."""
+        animal_key = animal_key.lower()
+        if reward_min < 0 or reward_max < reward_min:
+            await ctx.send("reward_min must be >= 0 and reward_max >= reward_min.")
+            return
+        async with self.config.guild(ctx.guild).games() as games:
+            if animal_key not in games["hunt"]["safe_animals"]:
+                await ctx.send(f"`{animal_key}` isn't marked safe yet -- use `.minigamehub huntsafe add` first.")
+                return
+            games["hunt"]["safe_animals"][animal_key]["salute_reward"] = [reward_min, reward_max]
+        await ctx.send(f"`{animal_key}` salute reward set to {_fmt_range(reward_min, reward_max)}.")
 
     # -- migration from the four old cogs -------------------------------- #
 

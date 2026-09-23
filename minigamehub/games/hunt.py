@@ -142,8 +142,19 @@ async def spawn(cog, channel: discord.TextChannel, game_conf: dict, dry_run: boo
             return
 
         if is_safe and saluted:
+            # .get() with a zero-range fallback, not direct indexing -- a
+            # guild whose safe_animals entry was set before salute_reward
+            # existed (via the old `.mgh game hunt settings` JSON patch, or
+            # backfilled by _seed_scenarios before this field was added to
+            # config_schema.py) won't have this key yet, and shouldn't KeyError.
+            min_r, max_r = game_conf["safe_animals"][animal_key].get("salute_reward", [0, 0])
+            base = random.randint(min_r, max_r) if max_r > 0 else 0
+            actual = await pacing.settle_reward(cog.config, member, base, dry_run=dry_run)
+            if not dry_run:
+                await stats.record_result(cog.config, member, "hunt", good=True)
             try:
-                await channel.send(f"{prefix}{member.mention} saluted the {animal_key}. Good instincts!")
+                reward_txt = f" and earned {actual:,} {currency}!{note}" if actual > 0 else f"!{note}"
+                await channel.send(f"{prefix}{member.mention} saluted the {animal_key}{reward_txt} Good instincts!")
             except discord.HTTPException:
                 pass
             return
