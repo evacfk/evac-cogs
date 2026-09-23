@@ -1,0 +1,13 @@
+{
+    "name": "IntroCleanup",
+    "short": "Deletes intro messages from members who leave the server.",
+    "description": "Watches #intros and deletes all messages posted by members who leave, are kicked, or are banned. Also provides a sweep command to backfill-clean the existing channel history.",
+    "end_user_data_statement": "This cog stores channel and log channel IDs per guild.",
+    "install_msg": "Use `[p]introcleanup setchannel #channel` to set the intros channel and `[p]introcleanup setlog #channel` to set the log channel.",
+    "author": ["evacfk"],
+    "version": "1.0.0",
+    "min_bot_version": "3.5.0",
+    "hidden": false,
+    "disabled": false,
+    "type": "COG"
+}
