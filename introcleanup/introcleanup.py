@@ -23,22 +23,28 @@ class IntroCleanup(commands.Cog):
     @commands.Cog.listener()
     async def on_member_remove(self, member: discord.Member):
         guild = member.guild
-        intros_id = await self.config.guild(guild).intros_channel_id()
-        log_id = await self.config.guild(guild).log_channel_id()
+        try:
+            intros_id = await self.config.guild(guild).intros_channel_id()
+            log_id = await self.config.guild(guild).log_channel_id()
 
-        if not intros_id:
-            return
+            if not intros_id:
+                return
 
-        intros_channel = guild.get_channel(intros_id)
-        if not intros_channel:
-            return
+            intros_channel = guild.get_channel(intros_id)
+            if not intros_channel:
+                return
 
-        deleted_count = await self._delete_member_messages(intros_channel, member.id)
+            deleted_count = await self._delete_member_messages(intros_channel, member.id)
 
-        if deleted_count and log_id:
-            log_channel = guild.get_channel(log_id)
-            if log_channel:
-                await self._post_log(log_channel, member, deleted_count, trigger="left/kicked/banned")
+            if deleted_count and log_id:
+                log_channel = guild.get_channel(log_id)
+                if log_channel:
+                    await self._post_log(log_channel, member, deleted_count, trigger="left/kicked/banned")
+        except Exception as e:
+            # Log to bot owner or stderr so errors don't silently vanish
+            self.bot.logger.exception(
+                "IntroCleanup: error handling member_remove for %s (%d)", member, member.id
+            )
 
     # ------------------------------------------------------------------
     # Commands
@@ -148,9 +154,17 @@ class IntroCleanup(commands.Cog):
             bulk = [m for m in msgs if m.created_at > cutoff]
             old = [m for m in msgs if m.created_at <= cutoff]
 
-            # Bulk delete (≤100 at a time, <14 days)
+            # Bulk delete (≤100 at a time, <14 days; requires 2+ messages)
             for i in range(0, len(bulk), 100):
                 chunk = bulk[i:i + 100]
+                if len(chunk) == 1:
+                    try:
+                        await chunk[0].delete()
+                        deleted_total += 1
+                    except discord.NotFound:
+                        pass
+                    await asyncio.sleep(1.1)
+                    continue
                 try:
                     await intros_channel.delete_messages(chunk)
                     deleted_total += len(chunk)
@@ -219,9 +233,17 @@ class IntroCleanup(commands.Cog):
 
         deleted = 0
 
-        # Bulk delete in batches of 100
+        # Bulk delete in batches of 100 (requires 2+ messages; fall back for single)
         for i in range(0, len(to_bulk), 100):
             chunk = to_bulk[i:i + 100]
+            if len(chunk) == 1:
+                try:
+                    await chunk[0].delete()
+                    deleted += 1
+                except discord.NotFound:
+                    pass
+                await asyncio.sleep(1.1)
+                continue
             try:
                 await channel.delete_messages(chunk)
                 deleted += len(chunk)
@@ -258,7 +280,8 @@ class IntroCleanup(commands.Cog):
             color=discord.Color.red(),
             timestamp=datetime.now(timezone.utc),
         )
-        embed.set_author(name=str(member), icon_url=member.display_avatar.url)
+        avatar_url = member.display_avatar.url if member.display_avatar else None
+        embed.set_author(name=str(member), icon_url=avatar_url)
         embed.add_field(name="User", value=f"{member.mention} ({member.id})", inline=False)
         embed.add_field(name="Messages Deleted", value=str(count), inline=True)
         embed.add_field(name="Trigger", value=trigger, inline=True)
