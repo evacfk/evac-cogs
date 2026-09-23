@@ -44,10 +44,11 @@ class IntroCleanup(commands.Cog):
     # Commands
     # ------------------------------------------------------------------
 
-    @commands.group(name="introcleanup", aliases=["ic"])
+    @commands.group(name="introcleanup", aliases=["ic"], invoke_without_command=True)
     @commands.admin_or_permissions(manage_guild=True)
     async def introcleanup(self, ctx: commands.Context):
         """Manage the IntroCleanup cog."""
+        await ctx.send_help(ctx.command)
 
     @introcleanup.command(name="setchannel")
     async def setchannel(self, ctx: commands.Context, channel: discord.TextChannel):
@@ -127,7 +128,7 @@ class IntroCleanup(commands.Cog):
             chunks = []
             current = []
             for line in lines:
-                if sum(len(l) for l in current) + len(line) > 1900:
+                if sum(len(x) for x in current) + len(line) > 1900:
                     chunks.append("\n".join(current))
                     current = [line]
                 else:
@@ -177,11 +178,6 @@ class IntroCleanup(commands.Cog):
             if log_id:
                 log_channel = ctx.guild.get_channel(log_id)
                 if log_channel:
-                    # Reconstruct a fake member-like object for logging
-                    fake = discord.Object(id=uid)
-                    fake.display_name = f"Unknown User"
-                    fake.name = str(uid)
-                    fake.discriminator = "0000"
                     count = len(msgs)
                     embed = discord.Embed(
                         title="IntroCleanup — Sweep",
