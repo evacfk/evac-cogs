@@ -14,6 +14,7 @@ import asyncio
 import io
 import time
 
+import discord
 import pytest
 from PIL import Image
 
@@ -36,10 +37,15 @@ class FakeUser:
     def __init__(self, id_, bot=False):
         self.id = id_
         self.bot = bot
+        self.dms = []  # content of every .send() call, for asserting DM behavior
 
     @property
     def mention(self):
         return f"<@{self.id}>"
+
+    async def send(self, content=None, **kwargs):
+        self.dms.append(content)
+        return content
 
 
 class FakeMember(FakeUser):
@@ -1599,3 +1605,80 @@ async def test_decoy_guess_on_a_test_drop_does_not_set_a_real_penalty(cog):
     assert admin.id in drop.reacted_users
     # ...but no real penalty should have been recorded against them
     assert admin.id not in cog.wrong_guess_penalty_until
+
+
+@pytest.mark.asyncio
+async def test_decoy_guess_dms_the_reactor_with_the_penalty_duration(cog):
+    """There's no interaction token on a raw reaction event, so a true
+    Discord ephemeral reply isn't possible here -- a DM is the closest
+    thing that's actually private to just the person who guessed wrong.
+    It should mention how long they're locked out for."""
+    guild = FakeGuild(206)
+    admin = FakeMember(2060, guild)
+    reactor = FakeMember(2061, guild)
+    guild.members = {2060: admin, 2061: reactor}
+
+    channel = FakeChannel(20600, guild)
+    cog.bot.register_channel(channel)
+    ctx = FakeCtx(admin, guild, channel, attachments=[FakeAttachment(fake_art_bytes((12, 34, 56)))])
+    await cog.card.commands["addcard"].callback(cog, ctx, "common", name_and_series="H | Anime")
+
+    await cog.config.guild(guild).decoys_enabled.set(True)
+    await cog.config.guild(guild).decoy_count.set(5)
+    await cog.config.guild(guild).wrong_guess_penalty_seconds.set(90)
+
+    await cog._post_drop(channel, guild, is_test=False)
+    drop_message = channel.sent[-1]
+    drop = cog.active_drops[drop_message.id]
+    assert drop.decoy_emojis, "need at least one decoy to exercise this path"
+    decoy_emoji = drop.decoy_emojis[0]
+
+    await cog.on_raw_reaction_add(
+        FakeRawReactionPayload(guild.id, reactor.id, drop_message.id, channel.id, decoy_emoji)
+    )
+
+    assert len(reactor.dms) == 1, "a wrong guess should DM the reactor exactly once"
+    assert "90" in reactor.dms[0]
+    assert admin.dms == [], "only the person who guessed wrong should get a DM"
+
+
+@pytest.mark.asyncio
+async def test_decoy_guess_dm_failure_is_swallowed(cog):
+    """A member with DMs closed is a routine, expected case (Forbidden), not
+    something that should crash reaction handling or otherwise surface to
+    the channel."""
+    guild = FakeGuild(207)
+    admin = FakeMember(2070, guild)
+    reactor = FakeMember(2071, guild)
+    guild.members = {2070: admin, 2071: reactor}
+
+    class FakeHTTPResponse:
+        status = 403
+        reason = "Forbidden"
+
+    async def closed_dms(*args, **kwargs):
+        raise discord.Forbidden(response=FakeHTTPResponse(), message="Cannot send messages to this user")
+
+    reactor.send = closed_dms
+
+    channel = FakeChannel(20700, guild)
+    cog.bot.register_channel(channel)
+    ctx = FakeCtx(admin, guild, channel, attachments=[FakeAttachment(fake_art_bytes((65, 43, 21)))])
+    await cog.card.commands["addcard"].callback(cog, ctx, "common", name_and_series="I | Anime")
+
+    await cog.config.guild(guild).decoys_enabled.set(True)
+    await cog.config.guild(guild).decoy_count.set(5)
+    await cog.config.guild(guild).wrong_guess_penalty_seconds.set(60)
+
+    await cog._post_drop(channel, guild, is_test=False)
+    drop_message = channel.sent[-1]
+    drop = cog.active_drops[drop_message.id]
+    decoy_emoji = drop.decoy_emojis[0]
+
+    # must not raise -- a closed-DM Forbidden is expected, not exceptional
+    await cog.on_raw_reaction_add(
+        FakeRawReactionPayload(guild.id, reactor.id, drop_message.id, channel.id, decoy_emoji)
+    )
+
+    # the actual penalty must still have been applied even though the DM failed
+    assert reactor.id in cog.wrong_guess_penalty_until

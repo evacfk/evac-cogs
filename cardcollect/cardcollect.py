@@ -312,6 +312,36 @@ class CardCollect(commands.Cog):
     # claim resolution
     # ------------------------------------------------------------------
 
+    async def _dm_decoy_result(self, payload: discord.RawReactionActionEvent, penalty_seconds: float, is_test: bool):
+        """Best-effort DM to whoever just burned their shot on a decoy.
+        There's no interaction token on a raw reaction event, so a true
+        ephemeral reply (Discord's own "only you can see this") isn't
+        possible here -- a DM is the closest thing that's actually private
+        to just them. Silently does nothing if the member can't be
+        resolved or has DMs closed; this is flavor text, not something
+        that should ever surface an error or fall back to the channel."""
+        channel = self.bot.get_channel(payload.channel_id)
+        guild = getattr(channel, "guild", None)
+        member = guild.get_member(payload.user_id) if guild else None
+        if member is None:
+            return
+
+        if is_test:
+            text = "❌ Wrong guess — that was a decoy, not a real card. (Test mode, so no real penalty this time.)"
+        elif penalty_seconds > 0:
+            text = (
+                "❌ Wrong guess — that was a decoy, not a real card. You're locked out of "
+                f"winning any drop for {int(penalty_seconds)}s. Now watch everyone else collect "
+                "the cards. Cuck! \U0001f921"
+            )
+        else:
+            text = "❌ Wrong guess — that was a decoy, not a real card."
+
+        try:
+            await member.send(text)
+        except (discord.Forbidden, discord.HTTPException):
+            pass
+
     @commands.Cog.listener()
     async def on_raw_reaction_add(self, payload: discord.RawReactionActionEvent):
         if payload.guild_id is None or payload.user_id == self.bot.user.id:
@@ -340,11 +370,13 @@ class CardCollect(commands.Cog):
             # the daily quota already get in _resolve_claim_window, so
             # testing decoys can't lock an admin out of winning real drops.
             drop.reacted_users.add(payload.user_id)
+            penalty = 0
             if not drop.is_test:
                 conf = self.config.guild_from_id(payload.guild_id)
                 penalty = await conf.wrong_guess_penalty_seconds()
                 if penalty > 0:
                     self.wrong_guess_penalty_until[payload.user_id] = time.monotonic() + penalty
+            await self._dm_decoy_result(payload, penalty, drop.is_test)
             return
 
         card_entry = drop.emoji_for(emoji)
