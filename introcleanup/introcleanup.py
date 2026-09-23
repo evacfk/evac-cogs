@@ -4,21 +4,25 @@ from datetime import datetime, timezone, timedelta
 from redbot.core import commands, Config
 from redbot.core.bot import Red
 
-MAX_RETRIES = 5
+MAX_RETRIES = 8
+DELETE_DELAY = 2.0  # seconds between individual deletes
 
 
 async def _safe_delete(msg: discord.Message) -> bool:
-    """Delete a single message, retrying on 429. Returns True if deleted."""
+    """Delete a single message, retrying on any rate limit. Returns True if deleted."""
     for attempt in range(MAX_RETRIES):
         try:
             await msg.delete()
             return True
         except discord.NotFound:
             return False
+        except discord.RateLimited as e:
+            # discord.py raises RateLimited when retry_after exceeds max_ratelimit_timeout
+            await asyncio.sleep(e.retry_after + 1.0)
         except discord.HTTPException as e:
             if e.status == 429:
-                retry_after = float(getattr(e, "retry_after", None) or 5)
-                await asyncio.sleep(retry_after + 0.5)
+                # Global rate limit or one discord.py didn't auto-handle
+                await asyncio.sleep(10.0)
             else:
                 return False
     return False
@@ -34,10 +38,11 @@ async def _safe_bulk_delete(channel: discord.TextChannel, chunk: list) -> tuple[
         try:
             await channel.delete_messages(chunk)
             return len(chunk), []
+        except discord.RateLimited as e:
+            await asyncio.sleep(e.retry_after + 1.0)
         except discord.HTTPException as e:
             if e.status == 429:
-                retry_after = float(getattr(e, "retry_after", None) or 5)
-                await asyncio.sleep(retry_after + 0.5)
+                await asyncio.sleep(10.0)
             else:
                 # Non-429 error — fall back to individual
                 return 0, chunk
@@ -197,22 +202,22 @@ class IntroCleanup(commands.Cog):
                 if len(chunk) == 1:
                     if await _safe_delete(chunk[0]):
                         deleted_total += 1
-                    await asyncio.sleep(1.5)
+                    await asyncio.sleep(DELETE_DELAY)
                     continue
                 count, fallback = await _safe_bulk_delete(intros_channel, chunk)
                 deleted_total += count
                 for m in fallback:
                     if await _safe_delete(m):
                         deleted_total += 1
-                    await asyncio.sleep(1.5)
+                    await asyncio.sleep(DELETE_DELAY)
                 if not fallback:
-                    await asyncio.sleep(0.5)
+                    await asyncio.sleep(1.0)
 
             # Individual delete for old messages (>14 days, can't bulk)
             for m in old:
                 if await _safe_delete(m):
                     deleted_total += 1
-                await asyncio.sleep(1.5)
+                await asyncio.sleep(DELETE_DELAY)
 
             # Log this user
             if log_id:
@@ -263,21 +268,21 @@ class IntroCleanup(commands.Cog):
             if len(chunk) == 1:
                 if await _safe_delete(chunk[0]):
                     deleted += 1
-                await asyncio.sleep(1.5)
+                await asyncio.sleep(DELETE_DELAY)
                 continue
             count, fallback = await _safe_bulk_delete(channel, chunk)
             deleted += count
             for m in fallback:
                 if await _safe_delete(m):
                     deleted += 1
-                await asyncio.sleep(1.5)
+                await asyncio.sleep(DELETE_DELAY)
             if not fallback:
-                await asyncio.sleep(0.5)
+                await asyncio.sleep(1.0)
 
         for m in to_single:
             if await _safe_delete(m):
                 deleted += 1
-            await asyncio.sleep(1.5)
+            await asyncio.sleep(DELETE_DELAY)
 
         return deleted
 
