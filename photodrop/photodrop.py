@@ -703,7 +703,23 @@ class PhotoDrop(commands.Cog):
             }
 
     async def _close_poll(self, guild: discord.Guild, message_id: str, record: dict) -> None:
+        """Post a poll's results exactly once, however many times this gets called.
+
+        Removes the poll from `active_polls` FIRST, before doing anything
+        else, and bails out immediately if it was already gone. That makes
+        this safe to call twice for the same poll -- which does happen: if
+        the bot restarts, or the cog reloads, between posting results and
+        the old code's pop() (it used to pop last), `_run_poll_close_check`
+        would find the same "expired but still active" entry on its next
+        tick and post the identical results a second time. Popping first
+        means a second call always finds nothing to do.
+        """
         gconf = self.config.guild(guild)
+        async with gconf.active_polls() as active_polls:
+            removed = active_polls.pop(message_id, None)
+        if removed is None:
+            return
+
         # get_channel_or_thread, not get_channel: the poll may have been
         # posted in a thread (e.g. a rating thread set via
         # `.pp set ratingchannel`), and get_channel() never resolves
@@ -711,15 +727,11 @@ class PhotoDrop(commands.Cog):
         # in a thread with no results ever posted and no error.
         channel = guild.get_channel_or_thread(record["channel_id"])
         if channel is None:
-            async with gconf.active_polls() as active_polls:
-                active_polls.pop(message_id, None)
             return
 
         try:
             message = await channel.fetch_message(int(message_id))
         except discord.NotFound:
-            async with gconf.active_polls() as active_polls:
-                active_polls.pop(message_id, None)
             return
 
         poll = message.poll
@@ -739,8 +751,6 @@ class PhotoDrop(commands.Cog):
                 results_embed.set_footer(text="It's a tie.")
 
         await channel.send(embed=results_embed)
-        async with gconf.active_polls() as active_polls:
-            active_polls.pop(message_id, None)
 
     # ------------------------------------------------------------------
     # Scheduled tasks
