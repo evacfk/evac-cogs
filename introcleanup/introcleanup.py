@@ -17,14 +17,21 @@ async def _safe_delete(msg: discord.Message) -> bool:
         except discord.NotFound:
             return False
         except discord.RateLimited as e:
-            # discord.py raises RateLimited when retry_after exceeds max_ratelimit_timeout
-            await asyncio.sleep(e.retry_after + 1.0)
+            await asyncio.sleep(float(e.retry_after) + 1.0)
         except discord.HTTPException as e:
             if e.status == 429:
-                # Global rate limit or one discord.py didn't auto-handle
-                await asyncio.sleep(10.0)
+                # Parse retry_after from response headers or body if available
+                retry_after = 10.0
+                try:
+                    retry_after = float(e.response.headers.get("Retry-After", 10))
+                except Exception:
+                    pass
+                await asyncio.sleep(retry_after + 1.0)
             else:
                 return False
+        except Exception:
+            # Catch-all so nothing escapes the retry loop
+            await asyncio.sleep(5.0)
     return False
 
 
@@ -39,13 +46,19 @@ async def _safe_bulk_delete(channel: discord.TextChannel, chunk: list) -> tuple[
             await channel.delete_messages(chunk)
             return len(chunk), []
         except discord.RateLimited as e:
-            await asyncio.sleep(e.retry_after + 1.0)
+            await asyncio.sleep(float(e.retry_after) + 1.0)
         except discord.HTTPException as e:
             if e.status == 429:
-                await asyncio.sleep(10.0)
+                retry_after = 10.0
+                try:
+                    retry_after = float(e.response.headers.get("Retry-After", 10))
+                except Exception:
+                    pass
+                await asyncio.sleep(retry_after + 1.0)
             else:
-                # Non-429 error — fall back to individual
                 return 0, chunk
+        except Exception:
+            await asyncio.sleep(5.0)
     return 0, chunk
 
 
