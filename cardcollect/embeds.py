@@ -10,6 +10,7 @@ from typing import Dict, List, Optional, Sequence, Tuple
 import discord
 
 from .constants import ACTIVITY_TIMEZONE, TIERS
+from .imagegen import RARITY_COLORS
 from .models import Card, SellToken
 
 RARITY_EMOJI = {
@@ -27,6 +28,15 @@ def _rarity_line(rarity: str) -> str:
     return f"{RARITY_EMOJI.get(rarity, '')} {rarity.title()}"
 
 
+def _rarity_color(rarity: str) -> discord.Color:
+    """Same rarity->color mapping imagegen.py uses for a card's border, so
+    the claim embed's accent bar matches the card art itself instead of
+    always being flat purple -- live feedback: "can the embed border be the
+    color of the rarity?"."""
+    r, g, b = RARITY_COLORS.get(rarity, RARITY_COLORS["common"])
+    return discord.Color.from_rgb(r, g, b)
+
+
 def claim_result_embed(
     card: Card,
     claimant: discord.abc.User,
@@ -36,16 +46,17 @@ def claim_result_embed(
 ) -> discord.Embed:
     if is_test:
         title = "Test claim (nothing awarded)"
-        color = TEST_COLOR
+        color = TEST_COLOR  # always red, regardless of rarity -- the whole point is that
+        # it reads as "not a real claim" at a glance, not blended in with real ones
     elif outcome == "sell_token":
         title = "Duplicate — converted to a sell token"
-        color = EMBED_COLOR
+        color = _rarity_color(card.rarity)
     elif outcome == "duplicate":
         title = "Duplicate claimed — spare copy!"
-        color = EMBED_COLOR
+        color = _rarity_color(card.rarity)
     else:
         title = "New card claimed!"
-        color = EMBED_COLOR
+        color = _rarity_color(card.rarity)
 
     embed = discord.Embed(title=title, color=color)
     embed.add_field(name="Card", value=f"**{card.name}** ({card.series})", inline=True)
