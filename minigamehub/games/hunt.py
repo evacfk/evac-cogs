@@ -164,7 +164,12 @@ async def spawn(cog, channel: discord.TextChannel, game_conf: dict, dry_run: boo
             # Shot a safe animal -- penalty as % of the shooter's current balance.
             penalty_pct = animal_conf.get("penalty_pct", 0)
             balance = await bank.get_balance(member)
-            raw_penalty = max(1, round(balance * (penalty_pct / 100))) if balance > 0 else 0
+            # An explicit 0% penalty (settable via `.mgh huntsafe penalty` or
+            # the Edit GUI) should mean no penalty at all -- max(1, ...) would
+            # otherwise still floor it to 1 currency for anyone with a
+            # positive balance, silently overriding a deliberate "no penalty"
+            # setting.
+            raw_penalty = max(1, round(balance * (penalty_pct / 100))) if balance > 0 and penalty_pct > 0 else 0
             penalty = await pacing.settle_penalty(member, raw_penalty, dry_run=dry_run)
             if not dry_run:
                 await stats.record_result(cog.config, member, "hunt", good=False)

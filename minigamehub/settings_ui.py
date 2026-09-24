@@ -308,7 +308,13 @@ class ConfigView(discord.ui.View):
 _ANIMAL_KEY_RE = re.compile(r"^[a-z0-9_]{1,32}$")
 _YES_WORDS = {"y", "yes", "true", "1", "safe"}
 _NO_WORDS = {"n", "no", "false", "0"}
-_RANGE_SPLIT_RE = re.compile(r"[-,\s]+")
+# Anchored, digits-only on each side of the separator -- deliberately not a
+# split-then-filter approach, since splitting "-5-10" on `[-,\s]+` silently
+# eats the leading minus and produces (5, 10) instead of rejecting it (bug
+# caught in review, 2026-09-24): the leading "-" just looks like another
+# separator to a plain split, so a bare negative number needs its own
+# non-match here rather than being filtered out after the fact.
+_RANGE_RE = re.compile(r"^\s*(\d+)\s*[-,\s]+\s*(\d+)\s*$")
 
 
 def _animal_label(key: str, conf: dict) -> str:
@@ -332,15 +338,15 @@ def _animal_reward_range(animal_conf: Optional[dict]):
 def _parse_range(raw: str):
     """Parse a combined "50-200" / "50, 200" / "50 200" range field into
     (lo, hi) ints. Raises ValueError with a human-readable message on
-    anything else -- including a bare negative number, which `-` would
-    otherwise split on; rewards are never negative here so that's fine to
-    reject rather than special-case."""
-    parts = [p for p in _RANGE_SPLIT_RE.split(raw.strip()) if p]
-    if len(parts) != 2:
-        raise ValueError("must be two numbers, e.g. 50-200")
-    lo, hi = int(parts[0]), int(parts[1])
-    if lo < 0 or hi < lo:
-        raise ValueError("minimum must be >= 0 and maximum >= minimum")
+    anything else -- including a bare/leading negative number (e.g. "-5-10"
+    or "-5"); rewards are never negative here so that's fine to reject
+    rather than try to special-case a signed number out of it."""
+    m = _RANGE_RE.match(raw)
+    if not m:
+        raise ValueError("must be two non-negative numbers, e.g. 50-200")
+    lo, hi = int(m.group(1)), int(m.group(2))
+    if hi < lo:
+        raise ValueError("maximum must be >= minimum")
     return lo, hi
 
 
