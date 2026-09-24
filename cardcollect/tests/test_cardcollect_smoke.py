@@ -106,6 +106,7 @@ class FakeChannel:
         self._messages = {}
         self._next_id = 1
         self.sent = []
+        self.fetch_message_calls = 0
         guild.channels[id_] = self
 
     @property
@@ -120,6 +121,7 @@ class FakeChannel:
         return msg
 
     async def fetch_message(self, message_id):
+        self.fetch_message_calls += 1
         await asyncio.sleep(0)  # real suspension point, see FakeReaction.users
         return self._messages[message_id]
 
@@ -1682,3 +1684,68 @@ async def test_decoy_guess_dm_failure_is_swallowed(cog):
 
     # the actual penalty must still have been applied even though the DM failed
     assert reactor.id in cog.wrong_guess_penalty_until
+
+
+@pytest.mark.asyncio
+async def test_concurrent_resolutions_for_the_same_drop_reuse_one_message_fetch(cog):
+    """Live bug report: a fresh 3-card drop where all 3 cards get claimed
+    within the same second or two used to fire an independent
+    channel.fetch_message() per card, all hitting the exact same message --
+    redundant enough (2-3+ near-simultaneous GETs to the same message) to
+    occasionally trip Discord's per-route rate limit. discord.py handles a
+    429 by sleeping and retrying rather than raising, so nothing was ever
+    lost -- but a claim embed could sit unposted for several seconds until
+    its window's fetch finally went through, which is exactly what was
+    reported (third card only showed up "if delayed"). Concurrent
+    resolutions for the same message should now share one fetch."""
+    guild = FakeGuild(210)
+    admin = FakeMember(2100, guild)
+    reactor_a = FakeMember(2101, guild)
+    reactor_b = FakeMember(2102, guild)
+    reactor_c = FakeMember(2103, guild)
+    guild.members = {2100: admin, 2101: reactor_a, 2102: reactor_b, 2103: reactor_c}
+
+    channel = FakeChannel(21000, guild)
+    cog.bot.register_channel(channel)
+    for i, color in enumerate([(1, 2, 3), (4, 5, 6), (7, 8, 9)]):
+        ctx = FakeCtx(admin, guild, channel, attachments=[FakeAttachment(fake_art_bytes(color))])
+        await cog.card.commands["addcard"].callback(cog, ctx, "common", name_and_series=f"Card{i} | Anime")
+
+    await cog.config.guild(guild).drop_size.set(3)
+    await cog.config.guild(guild).decoys_enabled.set(False)
+    await cog.config.guild(guild).claim_cooldown_seconds.set(0)
+
+    await cog._post_drop(channel, guild, is_test=False)
+    drop_message = channel.sent[-1]
+    drop = cog.active_drops[drop_message.id]
+    assert len(drop.cards) == 3
+
+    reactors = [reactor_a, reactor_b, reactor_c]
+    for card_entry, reactor in zip(drop.cards, reactors):
+        reaction = next(r for r in drop_message.reactions if r.emoji == card_entry["emoji"])
+        reaction._reactor_objs = [reactor]
+
+    fetch_calls_before = channel.fetch_message_calls
+    # all three cards claimed at once, as if reacted to within the same
+    # second -- resolve them concurrently, same as real near-simultaneous
+    # claim windows would
+    await asyncio.gather(*(
+        cog._resolve_claim_window(channel.id, drop_message.id, card_entry["emoji"], window=0)
+        for card_entry in drop.cards
+    ))
+
+    assert channel.fetch_message_calls - fetch_calls_before == 1, (
+        "concurrent resolutions for the same message should share one fetch, not one each -- "
+        f"got {channel.fetch_message_calls - fetch_calls_before}"
+    )
+
+    # and correctness wasn't sacrificed for the dedup -- all three still resolved correctly
+    for card_entry, reactor in zip(drop.cards, reactors):
+        state = await cog._member_state(reactor)
+        assert card_entry["card_id"] in state.collection
+
+    # the drop is fully resolved -- its message-fetch cache/lock entries
+    # must be cleaned up too, not just active_drops itself
+    assert drop_message.id not in cog.active_drops
+    assert drop_message.id not in cog._message_cache
+    assert drop_message.id not in cog._message_fetch_locks

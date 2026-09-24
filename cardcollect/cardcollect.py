@@ -93,6 +93,23 @@ class CardCollect(commands.Cog):
         # Excludes a user from *winning* any drop while active, checked
         # alongside claim_cooldown_until in _resolve_claim_window.
         self.wrong_guess_penalty_until: Dict[int, float] = {}  # user_id -> monotonic time
+        # A fresh multi-card drop is often claimed almost all at once -- each
+        # real card triggers its own _resolve_claim_window task, and every
+        # one of those used to independently call channel.fetch_message()
+        # for the exact same message. That's redundant enough (2-3+ near-
+        # simultaneous GETs to the same message) to occasionally trip
+        # Discord's per-route rate limit; discord.py handles a 429 by
+        # sleeping and retrying rather than raising, so nothing was ever
+        # lost -- but a claim embed could sit unposted for several seconds
+        # until its window's fetch finally went through (live bug report:
+        # a 3-card drop where the third claim only appeared "if delayed").
+        # See _get_drop_message: a very-short-lived cache means concurrent
+        # resolutions for the same message share one fetch instead of each
+        # firing their own -- the actual reactor list always comes from a
+        # separate, always-fresh reaction.users() call per emoji, so this
+        # never risks stale claim data, only avoids a redundant GET.
+        self._message_cache: Dict[int, Tuple[discord.Message, float]] = {}  # message_id -> (message, fetched_at)
+        self._message_fetch_locks: Dict[int, asyncio.Lock] = {}  # message_id -> lock
         self._drop_locks: Dict[int, asyncio.Lock] = {}  # guild_id -> lock
         # AniList's public API rate-limits aggressively; without this, two
         # `.card importpool` runs fired close together each start their own
@@ -183,6 +200,39 @@ class CardCollect(commands.Cog):
             lock = asyncio.Lock()
             self._drop_locks[guild_id] = lock
         return lock
+
+    _MESSAGE_CACHE_TTL_SECONDS = 0.5
+
+    async def _get_drop_message(self, channel: discord.abc.Messageable, message_id: int) -> discord.Message:
+        """Fetch a drop's message, reusing a very-recent fetch instead of
+        hitting the API again -- see the comment on self._message_cache in
+        __init__. Concurrent callers for the same message_id coalesce
+        behind a lock instead of each firing their own fetch_message()."""
+        now = time.monotonic()
+        cached = self._message_cache.get(message_id)
+        if cached is not None and now - cached[1] < self._MESSAGE_CACHE_TTL_SECONDS:
+            return cached[0]
+
+        lock = self._message_fetch_locks.setdefault(message_id, asyncio.Lock())
+        async with lock:
+            # re-check after acquiring the lock -- a concurrent resolution
+            # may have already fetched it while this one was waiting
+            now = time.monotonic()
+            cached = self._message_cache.get(message_id)
+            if cached is not None and now - cached[1] < self._MESSAGE_CACHE_TTL_SECONDS:
+                return cached[0]
+            message = await channel.fetch_message(message_id)
+            self._message_cache[message_id] = (message, time.monotonic())
+            return message
+
+    def _forget_drop(self, message_id: int):
+        """Clean up every in-memory structure keyed by a drop's message_id
+        once it's fully resolved -- without this, self._message_cache and
+        self._message_fetch_locks would grow by one entry per drop ever
+        posted, forever."""
+        self.active_drops.pop(message_id, None)
+        self._message_cache.pop(message_id, None)
+        self._message_fetch_locks.pop(message_id, None)
 
     # ------------------------------------------------------------------
     # drop trigger
@@ -425,21 +475,21 @@ class CardCollect(commands.Cog):
                 channel = await self.bot.fetch_channel(channel_id)
             except discord.HTTPException:
                 if len(drop.claimed_positions) >= len(drop.cards):
-                    self.active_drops.pop(message_id, None)
+                    self._forget_drop(message_id)
                 return
         guild = channel.guild
 
         try:
-            message = await channel.fetch_message(message_id)
+            message = await self._get_drop_message(channel, message_id)
         except discord.HTTPException:
             if len(drop.claimed_positions) >= len(drop.cards):
-                self.active_drops.pop(message_id, None)
+                self._forget_drop(message_id)
             return
 
         reaction = discord.utils.find(lambda r: str(r.emoji) == emoji, message.reactions)
         if reaction is None:
             if len(drop.claimed_positions) >= len(drop.cards):
-                self.active_drops.pop(message_id, None)
+                self._forget_drop(message_id)
             return
 
         now = time.monotonic()
@@ -471,7 +521,7 @@ class CardCollect(commands.Cog):
 
         if not reactor_ids:
             if len(drop.claimed_positions) >= len(drop.cards):
-                self.active_drops.pop(message_id, None)
+                self._forget_drop(message_id)
             return
 
         winner_id = engine.resolve_claim(reactor_ids)
@@ -481,13 +531,13 @@ class CardCollect(commands.Cog):
                 member = await guild.fetch_member(winner_id)
             except discord.HTTPException:
                 if len(drop.claimed_positions) >= len(drop.cards):
-                    self.active_drops.pop(message_id, None)
+                    self._forget_drop(message_id)
                 return
 
         card = await self._card_by_id(guild, card_entry["card_id"])
         if card is None:
             if len(drop.claimed_positions) >= len(drop.cards):
-                self.active_drops.pop(message_id, None)
+                self._forget_drop(message_id)
             return
 
         # one card per person per drop: mark the winner before the reward
@@ -535,7 +585,7 @@ class CardCollect(commands.Cog):
         await channel.send(embed=embed)
 
         if len(drop.claimed_positions) >= len(drop.cards):
-            self.active_drops.pop(message_id, None)
+            self._forget_drop(message_id)
 
     # ------------------------------------------------------------------
     # commands
