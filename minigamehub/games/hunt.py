@@ -22,6 +22,12 @@ Design doc per-game-type notes:
    silently failed to match, and the bot's own add_reaction() call round-
    tripped the raw string through manual `<>` stripping instead of Discord.py's
    own emoji parsing.
+8. Per-animal safe-word override -- a safe animal can say something other
+   than the game-wide `safe_word` (e.g. a crow using "caw" instead of
+   "salute"), set via the animal's `safe_animals` entry's `safe_word` key.
+   Falls back to the game-wide word when unset. The safe *reaction* emoji
+   stays game-wide only -- not asked for, and there's no way to hint a
+   per-animal emoji to players the way spawn text already hints a word.
 """
 import asyncio
 import logging
@@ -85,7 +91,13 @@ async def spawn(cog, channel: discord.TextChannel, game_conf: dict, dry_run: boo
                 pass
 
         shoot_word = game_conf["shoot_word"].strip().lower()
-        safe_word = game_conf["safe_word"].strip().lower()
+        # An animal can override the game-wide safe word with its own (e.g. a
+        # crow using "caw" instead of the default "salute") via the
+        # `safe_word` key on its safe_animals entry -- falls back to the
+        # game-wide word when unset. Meaningless when the animal isn't safe,
+        # but harmless either way since `is_safe` already gates whether the
+        # safe pattern is ever checked against.
+        safe_word = ((animal_conf or {}).get("safe_word") or game_conf["safe_word"]).strip().lower()
         # Exact-equality was too strict in practice -- "bang!" or "BANG." never
         # matched, only bare "bang" did, which just pushed everyone onto the
         # reaction instead. Allow trailing punctuation/whitespace while still

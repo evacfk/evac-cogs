@@ -873,8 +873,9 @@ class MinigameHub(commands.Cog):
 
     @minigamehub.group(name="huntsafe")
     async def mgh_huntsafe(self, ctx: commands.Context):
-        """Manage hunt's safe animals -- the penalty for shooting one and the
-        reward for saluting it instead."""
+        """Manage hunt's safe animals -- the penalty for shooting one, the
+        reward for saluting it instead, and optionally its own safe word in
+        place of the game-wide one (e.g. "caw" for a crow)."""
 
     @mgh_huntsafe.command(name="list")
     async def mgh_huntsafe_list(self, ctx: commands.Context):
@@ -894,7 +895,9 @@ class MinigameHub(commands.Cog):
         for key, conf in safe_only.items():
             pct = conf.get("penalty_pct", 0)
             lo, hi = conf.get("reward_range") or conf.get("salute_reward", [0, 0])
-            lines.append(f"{key:<12} penalty {pct:g}% of balance | salute reward {_fmt_range(lo, hi)}")
+            word = conf.get("safe_word")
+            word_txt = f" | safe word: {word}" if word else ""
+            lines.append(f"{key:<12} penalty {pct:g}% of balance | salute reward {_fmt_range(lo, hi)}{word_txt}")
         await ctx.send(box("\n".join(lines), lang="text"))
 
     @mgh_huntsafe.command(name="add")
@@ -972,6 +975,34 @@ class MinigameHub(commands.Cog):
             conf.pop("salute_reward", None)
             conf["reward_range"] = [reward_min, reward_max]
         await ctx.send(f"`{animal_key}` salute reward set to {_fmt_range(reward_min, reward_max)}.")
+
+    @mgh_huntsafe.command(name="word")
+    async def mgh_huntsafe_word(self, ctx: commands.Context, animal_key: str, *, word: str):
+        """Give an already-safe animal its own safe word in place of the
+        game-wide one (e.g. `.minigamehub huntsafe word crow caw`).
+
+        Pass `default` to drop the override and go back to the game-wide
+        safe word.
+        """
+        animal_key = animal_key.lower()
+        word = word.strip()
+        reset = word.lower() in ("default", "reset", "none")
+        if not reset and not (1 <= len(word) <= 30):
+            await ctx.send("Safe word must be 1-30 characters (or `default` to reset).")
+            return
+        async with self.config.guild(ctx.guild).games() as games:
+            conf = games["hunt"]["safe_animals"].get(animal_key)
+            if not conf or not conf.get("safe", True):
+                await ctx.send(f"`{animal_key}` isn't marked safe yet -- use `.minigamehub huntsafe add` first.")
+                return
+            if reset:
+                conf.pop("safe_word", None)
+            else:
+                conf["safe_word"] = word.lower()
+        if reset:
+            await ctx.send(f"`{animal_key}` now uses the game-wide safe word.")
+        else:
+            await ctx.send(f"`{animal_key}`'s safe word is now `{word.lower()}`.")
 
     # -- migration from the four old cogs -------------------------------- #
 

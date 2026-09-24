@@ -69,6 +69,9 @@ DEFAULT_GUILD = {
                 # (penalty_pct is stored either way but only ever applied
                 # while "safe" is True). An animal key with no entry here at
                 # all just uses the game-wide reward_range, unaffected.
+                # Optional "safe_word" overrides the game-wide safe_word for
+                # just this animal (e.g. "caw" for a crow) -- unset means it
+                # uses the game-wide word. Only meaningful while "safe": True.
                 "eagle": {"safe": True, "penalty_pct": 8.0, "reward_range": [50, 200]},
             },
         },

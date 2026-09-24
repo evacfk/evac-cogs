@@ -294,11 +294,12 @@ class ConfigView(discord.ui.View):
 # and `scenario remove`.
 #
 # Edit covers everything about an animal in one modal: emoji, spawn text,
-# whether it's safe, its shoot penalty, and its reward range -- where that
-# last field means two different things depending on the safe flag (salute
-# reward if safe, shoot reward override if not) rather than being two
-# separate fields, since Discord modals cap out at 5 text inputs and
-# key+emoji+text+safe+penalty+reward_min+reward_max would be 7. The
+# whether it's safe (and optionally its own safe word instead of the
+# game-wide one, e.g. "caw" for a crow), its shoot penalty, and its reward
+# range -- where that last field means two different things depending on the
+# safe flag (salute reward if safe, shoot reward override if not) rather than
+# being two separate fields, since Discord modals cap out at 5 text inputs
+# and key+emoji+text+safe+word+penalty+reward_min+reward_max would be 8. The
 # `.minigamehub huntsafe` text commands still work identically underneath --
 # this is just a second front end onto the same `safe_animals` Config data
 # (which, despite the name, now holds an entry for any animal with an
@@ -306,6 +307,7 @@ class ConfigView(discord.ui.View):
 
 _ANIMAL_KEY_RE = re.compile(r"^[a-z0-9_]{1,32}$")
 _YES_WORDS = {"y", "yes", "true", "1", "safe"}
+_NO_WORDS = {"n", "no", "false", "0"}
 _RANGE_SPLIT_RE = re.compile(r"[-,\s]+")
 
 
@@ -342,6 +344,22 @@ def _parse_range(raw: str):
     return lo, hi
 
 
+def _parse_safe_field(raw: str):
+    """Parse the modal's combined Safe field: "yes" / "no" / a custom safe
+    word (e.g. "caw"). Returns (is_safe, custom_word) where custom_word is
+    None for plain yes/no (meaning: use the game-wide safe word, or n/a).
+    Raises ValueError on an empty or too-long custom word."""
+    val = raw.strip()
+    lower = val.lower()
+    if lower in _NO_WORDS:
+        return False, None
+    if lower in _YES_WORDS:
+        return True, None
+    if not (1 <= len(val) <= 30):
+        raise ValueError("must be \"yes\", \"no\", or a custom safe word (1-30 characters)")
+    return True, lower
+
+
 def _safe_suffix(key: str, safe_animals: dict) -> str:
     conf = safe_animals.get(key)
     if not conf:
@@ -350,7 +368,9 @@ def _safe_suffix(key: str, safe_animals: dict) -> str:
     lo, hi = _animal_reward_range(conf) or (0, 0)
     if is_safe:
         pct = conf.get("penalty_pct", 0)
-        return f"  \U0001F6E1️ safe -- shoot penalty {pct:g}% of balance, salute reward {lo:,}-{hi:,}"
+        word = conf.get("safe_word")
+        word_txt = f" (say \"{word}\")" if word else ""
+        return f"  \U0001F6E1️ safe -- shoot penalty {pct:g}% of balance, salute reward {lo:,}-{hi:,}{word_txt}"
     return f"  \U0001F3AF shoot reward {lo:,}-{hi:,} (overrides the game default)"
 
 
@@ -360,7 +380,9 @@ def _select_description(key: str, conf: dict, safe_animals: dict) -> str:
         return conf.get("text") or ""
     lo, hi = _animal_reward_range(econ) or (0, 0)
     if econ.get("safe", True):
-        return f"safe -- {econ.get('penalty_pct', 0):g}% penalty / {lo}-{hi} salute reward"
+        word = econ.get("safe_word")
+        word_txt = f", say '{word}'" if word else ""
+        return f"safe -- {econ.get('penalty_pct', 0):g}% penalty / {lo}-{hi} salute reward{word_txt}"
     return f"shoot reward {lo}-{hi} (overrides default)"
 
 
@@ -497,10 +519,15 @@ class _AnimalAddModal(discord.ui.Modal):
 
 class _AnimalEditModal(discord.ui.Modal):
     """Everything about one animal in a single form: emoji, spawn text,
-    whether it's safe, its shoot penalty (only applied while safe), and its
-    reward range -- salute reward if safe, shoot reward override if not.
-    `econ` is the animal's current `safe_animals` entry, or None if it's
-    never had one (plain reward-range-from-the-game-default animal)."""
+    whether it's safe (and optionally its own safe word, e.g. "caw" for a
+    crow instead of the game-wide "salute"), its shoot penalty (only applied
+    while safe), and its reward range -- salute reward if safe, shoot reward
+    override if not. `econ` is the animal's current `safe_animals` entry, or
+    None if it's never had one (plain reward-range-from-the-game-default
+    animal). The Safe field does triple duty ("yes" / "no" / a custom safe
+    word) rather than being its own field, since Discord modals cap out at 5
+    text inputs and key+emoji+text+safe+word+penalty+reward_min+reward_max
+    would be 8."""
 
     def __init__(self, parent_view: "HuntAnimalsView", key: str, current: dict, econ: Optional[dict]):
         super().__init__(title=f"Edit: {key}"[:45])
@@ -509,9 +536,13 @@ class _AnimalEditModal(discord.ui.Modal):
         is_safe = econ.get("safe", True) if econ else False
         pct = econ.get("penalty_pct", 8) if econ else 8
         lo, hi = _animal_reward_range(econ) or (50, 200)
+        custom_word = econ.get("safe_word") if econ else None
+        safe_default = custom_word if custom_word else ("yes" if is_safe else "no")
         self.emoji_input = discord.ui.TextInput(label="Emoji", default=current.get("emoji", ""), max_length=100)
         self.text_input = discord.ui.TextInput(label="Spawn text", default=current.get("text", ""), max_length=200)
-        self.safe_input = discord.ui.TextInput(label="Safe? (yes/no)", default="yes" if is_safe else "no", max_length=5)
+        self.safe_input = discord.ui.TextInput(
+            label="Safe? (yes / no / a custom safe word)", default=safe_default, max_length=30,
+        )
         self.penalty_input = discord.ui.TextInput(
             label="Shoot penalty % (only used if safe)", default=f"{pct:g}", max_length=10,
         )
@@ -525,8 +556,8 @@ class _AnimalEditModal(discord.ui.Modal):
         self.add_item(self.reward_input)
 
     async def on_submit(self, interaction: discord.Interaction):
-        is_safe = self.safe_input.value.strip().lower() in _YES_WORDS
         try:
+            is_safe, custom_word = _parse_safe_field(self.safe_input.value)
             pct = float(self.penalty_input.value)
             reward_min, reward_max = _parse_range(self.reward_input.value)
         except ValueError as e:
@@ -545,11 +576,14 @@ class _AnimalEditModal(discord.ui.Modal):
             # penalty_pct is stored even when not safe, so flipping Safe back
             # to yes later remembers whatever penalty was last entered rather
             # than resetting to a default.
-            games["hunt"]["safe_animals"][self.key] = {
+            entry = {
                 "safe": is_safe,
                 "penalty_pct": pct,
                 "reward_range": [reward_min, reward_max],
             }
+            if custom_word:
+                entry["safe_word"] = custom_word
+            games["hunt"]["safe_animals"][self.key] = entry
             self.parent_view.animals = animals
             self.parent_view.safe_animals = games["hunt"]["safe_animals"]
         self.parent_view._rebuild_items()
@@ -595,7 +629,7 @@ class HuntAnimalsView(discord.ui.View):
             if len(desc) > 4000:
                 desc = desc[:4000] + "\n...(list truncated -- see `.minigamehub game hunt settings` for the full pool)"
         embed = discord.Embed(title="\U0001F985 Hunt animal pool", description=desc, color=discord.Color.blurple())
-        embed.set_footer(text="Select an animal, then Edit to set safe status, shoot penalty, and reward range.")
+        embed.set_footer(text="Select an animal, then Edit to set safe status (optionally its own safe word), shoot penalty, and reward range.")
         return embed
 
     async def refresh(self, interaction: discord.Interaction):
