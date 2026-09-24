@@ -99,6 +99,48 @@ class FakeMessage:
         self.reactions.append(FakeReaction(emoji))
 
 
+class FakeReactionSnapshot:
+    """Stand-in for a real discord.Reaction as it comes back from a
+    *fetched* Message. Mirrors discord.py's actual behavior (confirmed by
+    reading its source): Reaction.count is captured once, when the parent
+    Message is constructed, and Reaction.users() bounds its own pagination
+    loop by that frozen count -- even though each individual page of
+    results is still a live API call. So a snapshot's users() here still
+    reads from the *live* underlying reactor list (new reactors really do
+    show up in later pages, for a page that still gets fetched), but it
+    never consumes more than `count` results, however many more reactors
+    have joined since. Without this, the test fakes have no way to
+    reproduce the actual bug a stale cached Message can cause: silently
+    dropping a legitimate later reactor from a claim's fairness pool."""
+
+    def __init__(self, live_reaction: "FakeReaction"):
+        self.emoji = live_reaction.emoji
+        self._live = live_reaction
+        self.count = len(live_reaction._reactor_objs)
+
+    async def users(self):
+        await asyncio.sleep(0)  # real suspension point, see FakeReaction.users
+        for u in self._live._reactor_objs[: self.count]:
+            yield u
+
+
+class FakeMessageSnapshot:
+    """A frozen-at-fetch-time view of a FakeMessage -- what
+    FakeChannel.fetch_message actually hands back, so that caching (or
+    reusing) a fetched message in the code under test can't accidentally
+    see live mutations made to the real FakeMessage/FakeReaction objects
+    after the fetch happened, the same way a real discord.Message from
+    fetch_message() wouldn't."""
+
+    def __init__(self, live_message: "FakeMessage"):
+        self.id = live_message.id
+        self.channel = live_message.channel
+        self.content = live_message.content
+        self.embeds = live_message.embeds
+        self.files = live_message.files
+        self.reactions = [FakeReactionSnapshot(r) for r in live_message.reactions]
+
+
 class FakeChannel:
     def __init__(self, id_, guild):
         self.id = id_
@@ -123,7 +165,11 @@ class FakeChannel:
     async def fetch_message(self, message_id):
         self.fetch_message_calls += 1
         await asyncio.sleep(0)  # real suspension point, see FakeReaction.users
-        return self._messages[message_id]
+        # a real fetch_message() snapshots reaction counts at this instant
+        # (see FakeMessageSnapshot) -- returning the live FakeMessage
+        # itself would let the code under test see reactions added *after*
+        # this call, which a real cached discord.Message never could
+        return FakeMessageSnapshot(self._messages[message_id])
 
 
 class FakeBot:
@@ -1749,3 +1795,78 @@ async def test_concurrent_resolutions_for_the_same_drop_reuse_one_message_fetch(
     assert drop_message.id not in cog.active_drops
     assert drop_message.id not in cog._message_cache
     assert drop_message.id not in cog._message_fetch_locks
+
+
+@pytest.mark.asyncio
+async def test_second_reactor_on_an_already_pending_card_is_not_lost_to_a_stale_cache(cog):
+    """Regression test for a subtler correctness risk in the fetch_message
+    caching fix above: discord.py's Reaction.users() bounds its own
+    pagination by Reaction.count, a snapshot captured when the *parent*
+    Message was fetched -- not a live value. If card B's cached Message
+    predates a second reactor joining B's still-open window, reusing that
+    cache would silently exclude them from the claim's fairness pool
+    (locked decision #8), not just serve slightly-stale data. The cache
+    must be invalidated on every reaction to a still-open card, not just
+    the first/triggering one."""
+    guild = FakeGuild(211)
+    admin = FakeMember(2110, guild)
+    reactor1 = FakeMember(2111, guild)  # claims card A, warming the cache
+    reactor2 = FakeMember(2112, guild)  # card B's first reactor
+    reactor3 = FakeMember(2113, guild)  # card B's SECOND reactor -- joins after the cache is warm
+    guild.members = {2110: admin, 2111: reactor1, 2112: reactor2, 2113: reactor3}
+
+    channel = FakeChannel(21100, guild)
+    cog.bot.register_channel(channel)
+    for i, color in enumerate([(11, 22, 33), (44, 55, 66)]):
+        ctx = FakeCtx(admin, guild, channel, attachments=[FakeAttachment(fake_art_bytes(color))])
+        await cog.card.commands["addcard"].callback(cog, ctx, "common", name_and_series=f"Stale{i} | Anime")
+
+    await cog.config.guild(guild).drop_size.set(2)
+    await cog.config.guild(guild).decoys_enabled.set(False)
+    await cog.config.guild(guild).claim_cooldown_seconds.set(0)
+    # deliberately huge -- on_raw_reaction_add's own auto-scheduled
+    # resolution must never fire during this test; resolution timing is
+    # driven by hand below so the race is reproduced deterministically
+    await cog.config.guild(guild).claim_window_seconds.set(100)
+
+    await cog._post_drop(channel, guild, is_test=False)
+    drop_message = channel.sent[-1]
+    drop = cog.active_drops[drop_message.id]
+    card_a, card_b = drop.cards[0], drop.cards[1]
+    reaction_a = next(r for r in drop_message.reactions if r.emoji == card_a["emoji"])
+    reaction_b = next(r for r in drop_message.reactions if r.emoji == card_b["emoji"])
+
+    # step 1: card A resolves first, on its own -- this is what warms the
+    # message cache (a fetch happens because nothing's cached yet)
+    reaction_a._reactor_objs = [reactor1]
+    await cog._resolve_claim_window(channel.id, drop_message.id, card_a["emoji"], window=0)
+    assert drop_message.id in cog._message_cache, "card A's resolution should have warmed the cache"
+
+    # step 2: card B's first reactor arrives -- at this point B's Reaction
+    # object has no real users yet in the warm cache (nobody had reacted to
+    # it when card A's fetch happened)
+    reaction_b._reactor_objs = [reactor2]
+    await cog.on_raw_reaction_add(
+        FakeRawReactionPayload(guild.id, reactor2.id, drop_message.id, channel.id, card_b["emoji"])
+    )
+
+    # step 3: a SECOND reactor joins card B's still-open window -- this is
+    # the reactor a stale cache would silently drop, since Reaction.count
+    # in the cached snapshot wouldn't have counted them
+    reaction_b._reactor_objs = [reactor2, reactor3]
+    await cog.on_raw_reaction_add(
+        FakeRawReactionPayload(guild.id, reactor3.id, drop_message.id, channel.id, card_b["emoji"])
+    )
+
+    # now resolve card B for real, and confirm BOTH reactors were actually
+    # eligible -- not just the first one a stale cache would have known about
+    await cog._resolve_claim_window(channel.id, drop_message.id, card_b["emoji"], window=0)
+
+    state2 = await cog._member_state(reactor2)
+    state3 = await cog._member_state(reactor3)
+    winners = [s for s in (state2, state3) if card_b["card_id"] in s.collection]
+    assert len(winners) == 1, (
+        "card B should go to exactly one of its two real reactors -- if the cache is stale "
+        "(never invalidated on new reactions to an already-pending card), the resolution reads "
+        "a snapshot frozen before either of them had reacted, and card B goes unclaimed instead"
+    )

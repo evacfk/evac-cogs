@@ -103,12 +103,19 @@ class CardCollect(commands.Cog):
         # lost -- but a claim embed could sit unposted for several seconds
         # until its window's fetch finally went through (live bug report:
         # a 3-card drop where the third claim only appeared "if delayed").
-        # See _get_drop_message: a very-short-lived cache means concurrent
-        # resolutions for the same message share one fetch instead of each
-        # firing their own -- the actual reactor list always comes from a
-        # separate, always-fresh reaction.users() call per emoji, so this
-        # never risks stale claim data, only avoids a redundant GET.
-        self._message_cache: Dict[int, Tuple[discord.Message, float]] = {}  # message_id -> (message, fetched_at)
+        # See _get_drop_message: concurrent resolutions for the same message
+        # share one fetch instead of each firing their own. The cache is
+        # invalidated (never time-boxed) the instant a new reaction lands on
+        # a still-open real card -- see on_raw_reaction_add -- because
+        # Reaction.users() bounds its own pagination by Reaction.count,
+        # which is a snapshot captured when the *parent Message* was
+        # fetched, not live. A reused-but-stale Message could therefore
+        # silently under-count a card's reactors (missing a legitimate
+        # second/third reactor who joined after that snapshot), not just
+        # serve slightly-old data -- a time-based-only cache would have that
+        # gap for any claim_window_seconds shorter than the cache's TTL, so
+        # correctness here must not depend on that value at all.
+        self._message_cache: Dict[int, discord.Message] = {}  # message_id -> message
         self._message_fetch_locks: Dict[int, asyncio.Lock] = {}  # message_id -> lock
         self._drop_locks: Dict[int, asyncio.Lock] = {}  # guild_id -> lock
         # AniList's public API rate-limits aggressively; without this, two
@@ -201,29 +208,42 @@ class CardCollect(commands.Cog):
             self._drop_locks[guild_id] = lock
         return lock
 
-    _MESSAGE_CACHE_TTL_SECONDS = 0.5
-
     async def _get_drop_message(self, channel: discord.abc.Messageable, message_id: int) -> discord.Message:
-        """Fetch a drop's message, reusing a very-recent fetch instead of
-        hitting the API again -- see the comment on self._message_cache in
-        __init__. Concurrent callers for the same message_id coalesce
-        behind a lock instead of each firing their own fetch_message()."""
-        now = time.monotonic()
+        """Fetch a drop's message, reusing an already-fetched copy instead
+        of hitting the API again -- see the comment on self._message_cache
+        in __init__. There's no time limit on reuse: correctness instead
+        relies on _invalidate_message_cache being called (from
+        on_raw_reaction_add) the instant any new reaction lands on a
+        still-open real card, so a cached message is never read after a
+        reaction it doesn't yet reflect. Concurrent callers for the same
+        message_id coalesce behind a lock instead of each firing their own
+        fetch_message()."""
         cached = self._message_cache.get(message_id)
-        if cached is not None and now - cached[1] < self._MESSAGE_CACHE_TTL_SECONDS:
-            return cached[0]
+        if cached is not None:
+            return cached
 
         lock = self._message_fetch_locks.setdefault(message_id, asyncio.Lock())
         async with lock:
             # re-check after acquiring the lock -- a concurrent resolution
             # may have already fetched it while this one was waiting
-            now = time.monotonic()
             cached = self._message_cache.get(message_id)
-            if cached is not None and now - cached[1] < self._MESSAGE_CACHE_TTL_SECONDS:
-                return cached[0]
+            if cached is not None:
+                return cached
             message = await channel.fetch_message(message_id)
-            self._message_cache[message_id] = (message, time.monotonic())
+            self._message_cache[message_id] = message
             return message
+
+    def _invalidate_message_cache(self, message_id: int):
+        """Drop any cached Message for this drop. Called from
+        on_raw_reaction_add for every reaction to a still-open real card
+        (not just the first, triggering one) -- Reaction.users() bounds its
+        own pagination by Reaction.count, a snapshot captured when the
+        *parent Message* was fetched, not a live value. Reusing a Message
+        fetched before a card's second or third reactor joined would
+        silently exclude that reactor from the claim's fairness pool
+        (locked decision #8) rather than just serve slightly-old data, so
+        the cache must never outlive a reaction it doesn't yet reflect."""
+        self._message_cache.pop(message_id, None)
 
     def _forget_drop(self, message_id: int):
         """Clean up every in-memory structure keyed by a drop's message_id
@@ -437,6 +457,12 @@ class CardCollect(commands.Cog):
             return
 
         drop.reacted_users.add(payload.user_id)
+        # invalidate unconditionally, not just for the first/triggering
+        # reactor on this card -- a second or third reactor joining an
+        # already-pending window must also force the eventual resolution
+        # to re-fetch, or their reaction could be missed (see
+        # _invalidate_message_cache)
+        self._invalidate_message_cache(payload.message_id)
 
         key = (payload.message_id, emoji)
         if key in self.pending_windows:

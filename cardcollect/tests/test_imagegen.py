@@ -126,3 +126,62 @@ def test_render_gallery_missing_quantities_entry_defaults_to_one():
     buf = imagegen.render_gallery(entries, showcase_card_ids=[], quantities={})
     img = Image.open(buf)
     img.verify()
+
+
+def test_render_card_show_id_draws_a_badge():
+    # regression test: gallery tiles need *something* a member can actually
+    # type into `.card showcase add <card>` -- long names get truncated by
+    # the name-plate width (live bug report), so the ID badge is the only
+    # reliable option. Same pixel-diff approach as the quantity badge test:
+    # compare the top-right corner (where the badge is drawn) with and
+    # without show_id, since a crop of the actual PNG doesn't depend on font
+    # rendering specifics the way asserting on exact pixel values would.
+    card = Card(1, "A", "S", "common", "1.png")
+    art = fake_art((10, 10, 10))
+    plain = imagegen.render_card(card, art, size=(140, 196), show_id=False)
+    with_id = imagegen.render_card(card, art, size=(140, 196), show_id=True)
+    corner_plain = plain.crop((100, 0, 140, 30)).tobytes()
+    corner_with_id = with_id.crop((100, 0, 140, 30)).tobytes()
+    assert corner_plain != corner_with_id
+
+
+def test_render_card_show_id_defaults_to_off_for_drop_tiles():
+    # drop tiles must never reveal the card_id -- only the claim emoji
+    # should identify a card there. render_card's default (no show_id
+    # passed) is what render_drop relies on, so pin that default explicitly
+    # rather than trusting render_drop's own tests to catch a regression.
+    card = Card(1, "A", "S", "common", "1.png")
+    art = fake_art((10, 10, 10))
+    default = imagegen.render_card(card, art, size=(140, 196))
+    explicit_off = imagegen.render_card(card, art, size=(140, 196), show_id=False)
+    assert default.tobytes() == explicit_off.tobytes()
+
+
+def test_render_gallery_tiles_show_the_card_id(monkeypatch):
+    # end-to-end: render_gallery must actually request show_id=True on every
+    # tile it builds (both the showcase header and the main grid), not just
+    # leave the capability available on render_card unused. A pixel-diff
+    # against the finished PNG is the wrong tool here -- the rounded-corner
+    # mask alone makes a composited gallery tile differ from a freestanding
+    # one regardless of the badge, which would make this pass even with the
+    # bug present. Spying on render_card's actual call kwargs is precise
+    # instead of guessing at pixels.
+    calls = []
+    real_render_card = imagegen.render_card
+
+    def spy_render_card(*args, **kwargs):
+        calls.append(kwargs.get("show_id", False))
+        return real_render_card(*args, **kwargs)
+
+    monkeypatch.setattr(imagegen, "render_card", spy_render_card)
+
+    entries = [
+        (Card(1, "A", "S", "common", "1.png"), fake_art((10, 10, 10))),
+        (Card(2, "B", "S", "rare", "2.png"), fake_art((50, 50, 200))),
+    ]
+    imagegen.render_gallery(entries, showcase_card_ids=[1])
+
+    # one call for the showcase header tile (card 1) + one per grid tile
+    # (cards 1 and 2) = 3 total; every single one must pass show_id=True
+    assert len(calls) == 3
+    assert all(calls), "render_gallery must request show_id=True on every tile it builds"

@@ -118,6 +118,7 @@ def render_card(
     emoji: Optional[str] = None,
     size: Tuple[int, int] = CARD_IMAGE_SIZE,
     quantity: int = 1,
+    show_id: bool = False,
 ) -> Image.Image:
     """Build one card tile: art, rarity-colored border, name plate, and
     (if given) the claim emoji burned into the bottom-right corner. `emoji`
@@ -127,7 +128,15 @@ def render_card(
     the gallery to show a member holds a tradeable spare copy (see
     constants.MAX_COPIES_KEPT) without rendering a second, redundant tile
     for the same character. Drop tiles never pass a quantity, so this never
-    shows up outside the gallery."""
+    shows up outside the gallery.
+
+    `show_id` draws a small "#<card_id>" badge in the top-right corner --
+    used by the gallery so a member has something to actually type into
+    `.card showcase add <card>` (live bug report: card names get truncated
+    by the name-plate width, e.g. "Isuzu Sento..." for "Isuzu Sento(mi)ya",
+    and the gallery previously showed neither the full name nor the ID, so
+    there was nothing usable to type). Drop tiles never pass this -- the
+    claim emoji is the only thing that should identify a card there."""
     w, h = size
     color = RARITY_COLORS.get(card.rarity, RARITY_COLORS["common"])
 
@@ -184,6 +193,20 @@ def render_card(
         qty_bd.rounded_rectangle([(0, 0), (badge_w - 1, badge_h - 1)], radius=8, fill=(0, 0, 0, 190))
         qty_bd.text((pad - bbox[0], pad - bbox[1]), qty_text, font=qty_font, fill=TEXT_WHITE)
         canvas.alpha_composite(qty_badge, (10, 10))
+
+    if show_id:
+        id_font = _font(16, bold=True)
+        id_text = f"#{card.card_id}"
+        id_draw = ImageDraw.Draw(canvas)
+        bbox = id_draw.textbbox((0, 0), id_text, font=id_font)
+        text_w, text_h = bbox[2] - bbox[0], bbox[3] - bbox[1]
+        pad = 6
+        badge_w, badge_h = text_w + pad * 2, text_h + pad * 2
+        id_badge = Image.new("RGBA", (badge_w, badge_h), (0, 0, 0, 0))
+        id_bd = ImageDraw.Draw(id_badge)
+        id_bd.rounded_rectangle([(0, 0), (badge_w - 1, badge_h - 1)], radius=8, fill=(0, 0, 0, 190))
+        id_bd.text((pad - bbox[0], pad - bbox[1]), id_text, font=id_font, fill=TEXT_WHITE)
+        canvas.alpha_composite(id_badge, (w - badge_w - 10, 10))
 
     return canvas
 
@@ -274,7 +297,9 @@ def render_gallery(
     if showcase_entries:
         star_font = _font(18, bold=True)
         for i, (card, image_bytes) in enumerate(showcase_entries):
-            tile = render_card(card, image_bytes, size=(fav_w, fav_h), quantity=quantities.get(card.card_id, 1))
+            tile = render_card(
+                card, image_bytes, size=(fav_w, fav_h), quantity=quantities.get(card.card_id, 1), show_id=True
+            )
             star_draw = ImageDraw.Draw(tile)
             star_draw.text((14, fav_h - NAME_PLATE_HEIGHT - 30), "★ SHOWCASE", font=star_font, fill=(241, 196, 15))
             x = padding + i * (fav_w + padding)
@@ -283,7 +308,9 @@ def render_gallery(
     for i, (card, image_bytes) in enumerate(entries):
         col = i % columns
         row = i // columns
-        tile = render_card(card, image_bytes, size=(tile_w, tile_h), quantity=quantities.get(card.card_id, 1))
+        tile = render_card(
+            card, image_bytes, size=(tile_w, tile_h), quantity=quantities.get(card.card_id, 1), show_id=True
+        )
         x = padding + col * (tile_w + padding)
         y = header_h + padding + row * (tile_h + padding)
         canvas.alpha_composite(tile, (x, y))
