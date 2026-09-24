@@ -292,28 +292,63 @@ class ConfigView(discord.ui.View):
 # buttons -- Add and Edit open a modal (key+emoji+text / emoji+text), Remove
 # acts immediately on whatever's selected, same no-extra-confirmation
 # convention as `.minigamehub huntsafe remove` and `scenario remove`.
+#
+# Safe-status (penalty %, salute reward range) is deliberately its own
+# button/modal rather than folded into Add/Edit -- most animals are never
+# "safe" at all, and Discord modals cap out at 5 text inputs, so cramming
+# key+emoji+text+penalty+reward into one form would both hit that limit and
+# show penalty/reward fields on animals that will never use them. The
+# `.minigamehub huntsafe` text commands still work identically underneath --
+# this is just a second front end onto the same `safe_animals` Config data.
 
 _ANIMAL_KEY_RE = re.compile(r"^[a-z0-9_]{1,32}$")
+_YES_WORDS = {"y", "yes", "true", "1", "safe"}
 
 
 def _animal_label(key: str, conf: dict) -> str:
     return f"{conf.get('emoji', '')} {key}".strip()[:100]
 
 
+def _safe_suffix(key: str, safe_animals: dict) -> str:
+    conf = safe_animals.get(key)
+    if not conf:
+        return ""
+    pct = conf.get("penalty_pct", 0)
+    lo, hi = conf.get("salute_reward", [0, 0])
+    return f"  \U0001F6E1️ safe -- shoot penalty {pct:g}% of balance, salute reward {lo:,}-{hi:,}"
+
+
 class _AnimalSelect(discord.ui.Select):
     def __init__(self, parent_view: "HuntAnimalsView"):
+        items = list(parent_view.animals.items())
+        # Discord select menus hard-cap at 25 options. The Add modal already
+        # refuses to grow the pool past 25, but a pool built up before this
+        # GUI existed (via the raw `.mgh game hunt settings` JSON patch)
+        # could already be over that -- truncate defensively rather than
+        # letting discord.ui.Select's own ValueError take the whole command
+        # down. `.minigamehub game hunt settings` still shows/edits the
+        # full pool either way.
+        truncated = len(items) > 25
+        items = items[:25]
         options = [
             discord.SelectOption(
                 label=_animal_label(key, conf) or key,
-                description=(conf.get("text") or "")[:100] or None,
+                description=(
+                    f"safe -- {parent_view.safe_animals[key].get('penalty_pct', 0):g}% penalty / "
+                    f"{'-'.join(str(v) for v in parent_view.safe_animals[key].get('salute_reward', [0, 0]))} reward"
+                    if key in parent_view.safe_animals else (conf.get("text") or "")
+                )[:100] or None,
                 value=key,
                 default=(key == parent_view.selected_key),
             )
-            for key, conf in parent_view.animals.items()
+            for key, conf in items
         ]
         if not options:
             options = [discord.SelectOption(label="(no animals yet -- click Add)", value="_none")]
-        super().__init__(placeholder="Choose an animal to edit or remove...", options=options, min_values=1, max_values=1, row=0, disabled=not parent_view.animals)
+        placeholder = "Choose an animal to edit or remove..."
+        if truncated:
+            placeholder = "Choose an animal (25 of " + str(len(parent_view.animals)) + " shown)..."
+        super().__init__(placeholder=placeholder, options=options, min_values=1, max_values=1, row=0, disabled=not parent_view.animals)
         self.parent_view = parent_view
 
     async def callback(self, interaction: discord.Interaction):
@@ -366,8 +401,28 @@ class _AnimalRemoveButton(discord.ui.Button):
             # behind that nothing can ever trigger again.
             games["hunt"]["safe_animals"].pop(key, None)
             self.parent_view.animals = games["hunt"]["animals"]
+            self.parent_view.safe_animals = games["hunt"]["safe_animals"]
         self.parent_view.selected_key = None
         await self.parent_view.refresh(interaction)
+
+
+class _AnimalSafeButton(discord.ui.Button):
+    def __init__(self, parent_view: "HuntAnimalsView"):
+        super().__init__(
+            label="Safe Settings", style=discord.ButtonStyle.secondary, emoji="\U0001F6E1️",
+            row=2, disabled=parent_view.selected_key is None,
+        )
+        self.parent_view = parent_view
+
+    async def callback(self, interaction: discord.Interaction):
+        key = self.parent_view.selected_key
+        games = await self.parent_view.config.guild(self.parent_view.guild).games()
+        if key not in games["hunt"]["animals"]:
+            self.parent_view.selected_key = None
+            await self.parent_view.refresh(interaction)
+            return
+        current_safe = games["hunt"]["safe_animals"].get(key)
+        await interaction.response.send_modal(_AnimalSafeModal(self.parent_view, key, current_safe))
 
 
 class _AnimalAddModal(discord.ui.Modal):
@@ -393,6 +448,18 @@ class _AnimalAddModal(discord.ui.Modal):
             if key in animals:
                 await interaction.response.send_message(
                     f"`{key}` already exists -- pick a different key, or select it and click Edit instead.",
+                    ephemeral=True,
+                )
+                return
+            if len(animals) >= 25:
+                # Discord's select menus hard-cap at 25 options -- this GUI's
+                # dropdown can't render a 26th animal at all, so refuse the
+                # add here rather than letting a later render crash on a
+                # ValueError from discord.py. `.minigamehub game hunt
+                # settings` still works past this size if it's ever needed.
+                await interaction.response.send_message(
+                    "The animal pool is already at 25, the most this menu can list. "
+                    "Remove one first, or use `.minigamehub game hunt settings` for a bigger pool.",
                     ephemeral=True,
                 )
                 return
@@ -427,15 +494,71 @@ class _AnimalEditModal(discord.ui.Modal):
         await interaction.response.edit_message(embed=embed, view=self.parent_view)
 
 
+class _AnimalSafeModal(discord.ui.Modal):
+    def __init__(self, parent_view: "HuntAnimalsView", key: str, current: Optional[dict]):
+        super().__init__(title=f"Safe settings: {key}"[:45])
+        self.parent_view = parent_view
+        self.key = key
+        pct = current.get("penalty_pct", 8) if current else 8
+        lo, hi = current.get("salute_reward", [50, 200]) if current else [50, 200]
+        self.safe_input = discord.ui.TextInput(
+            label="Safe? (yes/no)", default="yes" if current else "no", max_length=5,
+        )
+        self.penalty_input = discord.ui.TextInput(
+            label="Shoot penalty (% of shooter's balance)", default=f"{pct:g}", max_length=10,
+        )
+        self.reward_min_input = discord.ui.TextInput(label="Salute reward -- minimum", default=str(lo), max_length=10)
+        self.reward_max_input = discord.ui.TextInput(label="Salute reward -- maximum", default=str(hi), max_length=10)
+        self.add_item(self.safe_input)
+        self.add_item(self.penalty_input)
+        self.add_item(self.reward_min_input)
+        self.add_item(self.reward_max_input)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        make_safe = self.safe_input.value.strip().lower() in _YES_WORDS
+        if make_safe:
+            try:
+                pct = float(self.penalty_input.value)
+                reward_min = int(self.reward_min_input.value)
+                reward_max = int(self.reward_max_input.value)
+            except ValueError:
+                await interaction.response.send_message("Penalty and reward fields must be numbers.", ephemeral=True)
+                return
+            if pct < 0 or pct > 100:
+                await interaction.response.send_message("Penalty must be between 0 and 100.", ephemeral=True)
+                return
+            if reward_min < 0 or reward_max < reward_min:
+                await interaction.response.send_message("Reward minimum must be >= 0 and maximum >= minimum.", ephemeral=True)
+                return
+
+        async with self.parent_view.config.guild(self.parent_view.guild).games() as games:
+            if self.key not in games["hunt"]["animals"]:
+                await interaction.response.send_message("That animal was removed by someone else in the meantime.", ephemeral=True)
+                return
+            if make_safe:
+                games["hunt"]["safe_animals"][self.key] = {
+                    "penalty_pct": pct,
+                    "salute_reward": [reward_min, reward_max],
+                }
+            else:
+                games["hunt"]["safe_animals"].pop(self.key, None)
+            self.parent_view.safe_animals = games["hunt"]["safe_animals"]
+        self.parent_view._rebuild_items()
+        embed = self.parent_view.build_embed()
+        await interaction.response.edit_message(embed=embed, view=self.parent_view)
+
+
 class HuntAnimalsView(discord.ui.View):
     """`.minigamehub huntanimals` -- add/edit/remove hunt's animal pool
-    (key, emoji, spawn text) without touching JSON."""
+    (key, emoji, spawn text) and each animal's safe status (shoot penalty,
+    salute reward) without touching JSON or remembering command syntax."""
 
-    def __init__(self, config, guild: discord.Guild, animals: dict):
+    def __init__(self, config, guild: discord.Guild, animals: dict, safe_animals: dict):
         super().__init__(timeout=300)
         self.config = config
         self.guild = guild
         self.animals = animals
+        self.safe_animals = safe_animals
         self.selected_key: Optional[str] = None
         self._rebuild_items()
 
@@ -445,14 +568,26 @@ class HuntAnimalsView(discord.ui.View):
         self.add_item(_AnimalAddButton(self))
         self.add_item(_AnimalEditButton(self))
         self.add_item(_AnimalRemoveButton(self))
+        self.add_item(_AnimalSafeButton(self))
 
     def build_embed(self) -> discord.Embed:
         if not self.animals:
             desc = "No animals in the pool yet -- click **Add** to create one."
         else:
-            desc = "\n".join(f"{_animal_label(key, conf)} -- {conf.get('text', '')}" for key, conf in self.animals.items())
+            desc = "\n".join(
+                f"{_animal_label(key, conf)} -- {conf.get('text', '')}{_safe_suffix(key, self.safe_animals)}"
+                for key, conf in self.animals.items()
+            )
+            # Discord embed descriptions cap at 4096 chars -- the 25-animal
+            # cap above keeps this well under that in practice, but a legacy
+            # pool set via the raw `.mgh game hunt settings` JSON patch could
+            # predate that cap, so truncate rather than risk the send itself
+            # failing with a 400 (same class of bug the diagnostics embed hit
+            # before it was split into two fields).
+            if len(desc) > 4000:
+                desc = desc[:4000] + "\n...(list truncated -- see `.minigamehub game hunt settings` for the full pool)"
         embed = discord.Embed(title="\U0001F985 Hunt animal pool", description=desc, color=discord.Color.blurple())
-        embed.set_footer(text="Safe-animal penalty/reward (who gets fined for shooting, who pays for saluting) -- see `.minigamehub huntsafe`.")
+        embed.set_footer(text="Select an animal, then Safe Settings to set its shoot penalty and salute reward.")
         return embed
 
     async def refresh(self, interaction: discord.Interaction):

@@ -374,10 +374,11 @@ class MinigameHub(commands.Cog):
 
     @minigamehub.command(name="huntanimals")
     async def mgh_huntanimals(self, ctx: commands.Context):
-        """Add/edit/remove hunt's animal pool (emoji + spawn text) with a GUI --
+        """Add/edit/remove hunt's animal pool (emoji + spawn text) and each
+        animal's safe status (shoot penalty, salute reward) with a GUI --
         no JSON, no exact command syntax to remember."""
         games = await self.config.guild(ctx.guild).games()
-        view = HuntAnimalsView(self.config, ctx.guild, games["hunt"]["animals"])
+        view = HuntAnimalsView(self.config, ctx.guild, games["hunt"]["animals"], games["hunt"]["safe_animals"])
         await ctx.send(embed=view.build_embed(), view=view)
 
     @minigamehub.command(name="test")
