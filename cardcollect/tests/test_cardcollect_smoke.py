@@ -1004,6 +1004,11 @@ async def test_showcase_add_remove_and_view(cog):
     view_ctx = FakeCtx(owner, guild, channel)
     await cog.card.commands["showcase"].callback(cog, view_ctx)
     assert str(card_id) in view_ctx.sent[-1].content
+    # regression: `.card showcase` used to be a plain text list ("`303` —
+    # Zero Two"), which live feedback called out as not actually showing
+    # "large versions of the character" -- it must now render an image,
+    # same as `.card` itself does for the full gallery
+    assert view_ctx.sent[-1].files, "populated showcase must send an image, not just text"
 
     remove_ctx = FakeCtx(owner, guild, channel)
     await cog.card.commands["showcase"].commands["remove"].callback(cog, remove_ctx, card_arg=str(card_id))

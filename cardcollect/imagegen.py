@@ -295,13 +295,11 @@ def render_gallery(
     canvas = Image.new("RGBA", (total_w, total_h), (20, 20, 24, 255))
 
     if showcase_entries:
-        star_font = _font(18, bold=True)
         for i, (card, image_bytes) in enumerate(showcase_entries):
             tile = render_card(
                 card, image_bytes, size=(fav_w, fav_h), quantity=quantities.get(card.card_id, 1), show_id=True
             )
-            star_draw = ImageDraw.Draw(tile)
-            star_draw.text((14, fav_h - NAME_PLATE_HEIGHT - 30), "★ SHOWCASE", font=star_font, fill=(241, 196, 15))
+            _draw_showcase_star(tile, fav_h)
             x = padding + i * (fav_w + padding)
             canvas.alpha_composite(tile, (x, padding))
 
@@ -314,6 +312,61 @@ def render_gallery(
         x = padding + col * (tile_w + padding)
         y = header_h + padding + row * (tile_h + padding)
         canvas.alpha_composite(tile, (x, y))
+
+    buf = io.BytesIO()
+    canvas.convert("RGB").save(buf, format="PNG")
+    buf.seek(0)
+    return buf
+
+
+def _draw_showcase_star(tile: Image.Image, tile_h: int) -> None:
+    """Stamp the "★ SHOWCASE" label onto an already-rendered card tile.
+    Shared by render_gallery's header row and render_showcase, below."""
+    star_font = _font(18, bold=True)
+    star_draw = ImageDraw.Draw(tile)
+    star_draw.text((14, tile_h - NAME_PLATE_HEIGHT - 30), "★ SHOWCASE", font=star_font, fill=(241, 196, 15))
+
+
+def render_showcase(
+    entries: Sequence[Tuple[Card, bytes]],
+    quantities: Optional[dict] = None,
+) -> io.BytesIO:
+    """Build a standalone showcase image: just the member's pinned cards,
+    at the same large size render_gallery uses for its header row, side by
+    side -- no grid of the rest of the collection underneath.
+
+    `.card showcase` used to answer with a plain text list ("`303` — Zero
+    Two"), which was the whole point of the feature ("shown larger" per the
+    design doc) in name only -- live feedback: "this should show large
+    versions of the character. what kind of showcase is this". This is
+    what `.card showcase` (no subcommand) now renders instead; the grid
+    view of the *entire* collection, showcase included, stays `.card`'s
+    job (decision #16 -- the grid never excludes showcased cards, so
+    nothing is lost by not repeating them here).
+
+    `entries` must be given in the caller's intended display order (i.e.
+    `MemberState.showcase_card_ids` order) -- unlike render_gallery, there's
+    no separate showcase_card_ids parameter to reorder by, since every
+    entry here *is* a showcase entry."""
+    if not entries:
+        raise ValueError("render_showcase needs at least one card")
+
+    quantities = quantities or {}
+    fav_w, fav_h = GALLERY_FAVORITE_TILE_SIZE
+    padding = 16
+
+    total_w = len(entries) * fav_w + (len(entries) + 1) * padding
+    total_h = fav_h + padding * 2
+
+    canvas = Image.new("RGBA", (total_w, total_h), (20, 20, 24, 255))
+
+    for i, (card, image_bytes) in enumerate(entries):
+        tile = render_card(
+            card, image_bytes, size=(fav_w, fav_h), quantity=quantities.get(card.card_id, 1), show_id=True
+        )
+        _draw_showcase_star(tile, fav_h)
+        x = padding + i * (fav_w + padding)
+        canvas.alpha_composite(tile, (x, padding))
 
     buf = io.BytesIO()
     canvas.convert("RGB").save(buf, format="PNG")

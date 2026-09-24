@@ -673,14 +673,34 @@ class CardCollect(commands.Cog):
                 msg += f"\n{tier_line}"
             await ctx.send(msg)
             return
-        lines = []
+
+        quantities = Counter(state.collection)
+        entries = []
         for card_id in state.showcase_card_ids:
             card = await self._card_by_id(ctx.guild, card_id)
-            lines.append(f"`{card_id}` — {card.name}" if card is not None else f"`{card_id}` — (unknown)")
-        text = f"{whose} showcase ({len(lines)}/{MAX_SHOWCASE_SLOTS}):\n" + "\n".join(lines)
+            image_bytes = self._read_card_image(ctx.guild, card_id)
+            if card is None or image_bytes is None:
+                continue
+            entries.append((card, image_bytes))
+
+        # list IDs/names in the caption too, not just the "#<id>" badge
+        # baked into each tile -- a copy-pasteable line beats squinting at
+        # the picture when all you want is the number for `.card showcase
+        # add/remove` or `.card give`
+        id_list = ", ".join(f"`{c.card_id}` {c.name}" for c, _ in entries)
+        caption = f"{whose} showcase ({len(entries)}/{MAX_SHOWCASE_SLOTS}): {id_list}"
         if tier_line:
-            text += f"\n\n{tier_line}"
-        await ctx.send(text)
+            caption += f"\n{tier_line}"
+
+        if not entries:
+            # every showcased card's art is missing -- fall back to the old
+            # plain-text listing rather than sending nothing at all
+            lines = [f"`{cid}` — (unknown)" for cid in state.showcase_card_ids]
+            await ctx.send(caption + "\n" + "\n".join(lines))
+            return
+
+        showcase_img = imagegen.render_showcase(entries, quantities=quantities)
+        await ctx.send(content=caption, file=discord.File(showcase_img, filename="showcase.png"))
 
     @card_showcase.command(name="add")
     @commands.guild_only()

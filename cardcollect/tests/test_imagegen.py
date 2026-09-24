@@ -157,6 +157,36 @@ def test_render_card_show_id_defaults_to_off_for_drop_tiles():
     assert default.tobytes() == explicit_off.tobytes()
 
 
+def test_render_showcase_produces_valid_png_at_the_large_tile_size():
+    entries = [
+        (Card(1, "A", "S", "common", "1.png"), fake_art((200, 50, 50))),
+        (Card(2, "B", "S", "legendary", "2.png"), fake_art((50, 50, 200))),
+    ]
+    buf = imagegen.render_showcase(entries)
+    img = Image.open(buf)
+    img.verify()
+    # re-open (verify() invalidates the handle) and confirm this actually
+    # used the large favorite-tile size, not the small grid-tile size --
+    # the whole point of this function existing (live feedback: showcase
+    # used to be a plain text list, not large images at all)
+    img2 = Image.open(imagegen.render_showcase(entries))
+    fav_w, fav_h = imagegen.GALLERY_FAVORITE_TILE_SIZE
+    assert img2.height >= fav_h
+    assert img2.width >= 2 * fav_w
+
+
+def test_render_showcase_requires_at_least_one_card():
+    with pytest.raises(ValueError):
+        imagegen.render_showcase([])
+
+
+def test_render_showcase_applies_quantities_without_crashing():
+    entries = [(Card(1, "A", "S", "common", "1.png"), fake_art())]
+    buf = imagegen.render_showcase(entries, quantities={1: 2})
+    img = Image.open(buf)
+    img.verify()
+
+
 def test_render_gallery_tiles_show_the_card_id(monkeypatch):
     # end-to-end: render_gallery must actually request show_id=True on every
     # tile it builds (both the showcase header and the main grid), not just
