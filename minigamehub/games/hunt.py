@@ -38,6 +38,22 @@ from .base import register
 log = logging.getLogger("red.minigamehub.hunt")
 
 
+def _animal_reward_range(animal_conf: dict):
+    """The per-animal custom reward range, if one's been configured -- None
+    if this animal has no economy override at all (game-wide reward_range
+    applies instead). Accepts either the current "reward_range" key or the
+    older "salute_reward" name (entries written back when this override only
+    ever applied to safe animals, before the same field also became the
+    shoot-reward override for a non-safe animal)."""
+    if not animal_conf:
+        return None
+    if "reward_range" in animal_conf:
+        return animal_conf["reward_range"]
+    if "salute_reward" in animal_conf:
+        return animal_conf["salute_reward"]
+    return None
+
+
 @register("hunt")
 async def spawn(cog, channel: discord.TextChannel, game_conf: dict, dry_run: bool = False) -> None:
     guild = channel.guild
@@ -48,7 +64,12 @@ async def spawn(cog, channel: discord.TextChannel, game_conf: dict, dry_run: boo
             return
         animal_key = random.choice(list(animals.keys()))
         animal = animals[animal_key]
-        is_safe = animal_key in game_conf["safe_animals"]
+        animal_conf = game_conf["safe_animals"].get(animal_key)
+        # An entry with no explicit "safe" key predates that field (written
+        # by the huntsafe commands, or by a config saved before this was
+        # generalized to cover non-safe animals too) -- presence alone used
+        # to mean safe, so default True keeps that old behavior unchanged.
+        is_safe = bool(animal_conf and animal_conf.get("safe", True))
         mode = game_conf.get("trigger_mode", "both")
         accepts_word = mode in ("both", "word")
         accepts_reaction = mode in ("both", "reaction")
@@ -129,7 +150,7 @@ async def spawn(cog, channel: discord.TextChannel, game_conf: dict, dry_run: boo
 
         if is_safe and not saluted:
             # Shot a safe animal -- penalty as % of the shooter's current balance.
-            penalty_pct = game_conf["safe_animals"][animal_key]["penalty_pct"]
+            penalty_pct = animal_conf.get("penalty_pct", 0)
             balance = await bank.get_balance(member)
             raw_penalty = max(1, round(balance * (penalty_pct / 100))) if balance > 0 else 0
             penalty = await pacing.settle_penalty(member, raw_penalty, dry_run=dry_run)
@@ -142,12 +163,10 @@ async def spawn(cog, channel: discord.TextChannel, game_conf: dict, dry_run: boo
             return
 
         if is_safe and saluted:
-            # .get() with a zero-range fallback, not direct indexing -- a
-            # guild whose safe_animals entry was set before salute_reward
-            # existed (via the old `.mgh game hunt settings` JSON patch, or
-            # backfilled by _seed_scenarios before this field was added to
-            # config_schema.py) won't have this key yet, and shouldn't KeyError.
-            min_r, max_r = game_conf["safe_animals"][animal_key].get("salute_reward", [0, 0])
+            # A safe animal with no reward range configured yet (hand-edited
+            # JSON, or a safe flag set without ever touching the reward)
+            # pays nothing for saluting rather than KeyError-ing.
+            min_r, max_r = _animal_reward_range(animal_conf) or [0, 0]
             base = random.randint(min_r, max_r) if max_r > 0 else 0
             actual = await pacing.settle_reward(cog.config, member, base, dry_run=dry_run)
             if not dry_run:
@@ -159,7 +178,10 @@ async def spawn(cog, channel: discord.TextChannel, game_conf: dict, dry_run: boo
                 pass
             return
 
-        min_r, max_r = game_conf["reward_range"]
+        # Not safe -- normal shoot reward, using this animal's own override
+        # if one's been set (via the Edit GUI or `.mgh huntsafe`), or the
+        # game-wide reward_range for any animal that's never been touched.
+        min_r, max_r = _animal_reward_range(animal_conf) or game_conf["reward_range"]
         base = random.randint(min_r, max_r) if max_r > 0 else 0
         actual = await pacing.settle_reward(cog.config, member, base, dry_run=dry_run)
         if not dry_run:

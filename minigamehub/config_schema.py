@@ -61,10 +61,15 @@ DEFAULT_GUILD = {
                 "dodo": {"emoji": "\U0001F9A4", "text": "**_Squak!_**"},
             },
             "safe_animals": {
-                # key -> percent of the shooter's balance taken as a penalty
-                # for shooting it, and the reward range paid out for saluting
-                # it instead.
-                "eagle": {"penalty_pct": 8.0, "salute_reward": [50, 200]},
+                # key -> per-animal economy override. "safe": True means
+                # shooting it costs penalty_pct of the shooter's balance and
+                # reward_range is what saluting it pays instead; "safe":
+                # False means it's a normal shoot target but reward_range
+                # overrides the game-wide reward_range just for this animal
+                # (penalty_pct is stored either way but only ever applied
+                # while "safe" is True). An animal key with no entry here at
+                # all just uses the game-wide reward_range, unaffected.
+                "eagle": {"safe": True, "penalty_pct": 8.0, "reward_range": [50, 200]},
             },
         },
         "lootdrop": {

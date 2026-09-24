@@ -881,13 +881,19 @@ class MinigameHub(commands.Cog):
         """Show every safe animal with its shoot penalty and salute reward."""
         async with self.config.guild(ctx.guild).games() as games:
             safe_animals = games["hunt"]["safe_animals"]
-        if not safe_animals:
+        # Only entries actually marked safe -- an animal can also have an entry
+        # here purely for a non-safe shoot-reward override (set via the
+        # `.minigamehub huntanimals` GUI's Edit modal), which isn't "safe" in
+        # the sense this command is about. Absent "safe" key defaults True for
+        # backward compatibility with entries predating that flag.
+        safe_only = {k: c for k, c in safe_animals.items() if c.get("safe", True)}
+        if not safe_only:
             await ctx.send("No safe animals configured -- every animal in the pool can be shot freely.")
             return
         lines = []
-        for key, conf in safe_animals.items():
+        for key, conf in safe_only.items():
             pct = conf.get("penalty_pct", 0)
-            lo, hi = conf.get("salute_reward", [0, 0])
+            lo, hi = conf.get("reward_range") or conf.get("salute_reward", [0, 0])
             lines.append(f"{key:<12} penalty {pct:g}% of balance | salute reward {_fmt_range(lo, hi)}")
         await ctx.send(box("\n".join(lines), lang="text"))
 
@@ -915,8 +921,9 @@ class MinigameHub(commands.Cog):
                 )
                 return
             games["hunt"]["safe_animals"][animal_key] = {
+                "safe": True,
                 "penalty_pct": penalty_pct,
-                "salute_reward": [reward_min, reward_max],
+                "reward_range": [reward_min, reward_max],
             }
         await ctx.send(
             f"`{animal_key}` is now safe: shooting it costs {penalty_pct:g}% of balance, "
@@ -928,7 +935,8 @@ class MinigameHub(commands.Cog):
         """Unmark an animal as safe -- it goes back to a normal reward-only shoot."""
         animal_key = animal_key.lower()
         async with self.config.guild(ctx.guild).games() as games:
-            if animal_key not in games["hunt"]["safe_animals"]:
+            conf = games["hunt"]["safe_animals"].get(animal_key)
+            if not conf or not conf.get("safe", True):
                 await ctx.send(f"`{animal_key}` isn't currently marked safe.")
                 return
             del games["hunt"]["safe_animals"][animal_key]
@@ -942,10 +950,11 @@ class MinigameHub(commands.Cog):
             await ctx.send("penalty_pct must be between 0 and 100.")
             return
         async with self.config.guild(ctx.guild).games() as games:
-            if animal_key not in games["hunt"]["safe_animals"]:
+            conf = games["hunt"]["safe_animals"].get(animal_key)
+            if not conf or not conf.get("safe", True):
                 await ctx.send(f"`{animal_key}` isn't marked safe yet -- use `.minigamehub huntsafe add` first.")
                 return
-            games["hunt"]["safe_animals"][animal_key]["penalty_pct"] = penalty_pct
+            conf["penalty_pct"] = penalty_pct
         await ctx.send(f"`{animal_key}` shoot penalty set to {penalty_pct:g}% of balance.")
 
     @mgh_huntsafe.command(name="reward")
@@ -956,10 +965,12 @@ class MinigameHub(commands.Cog):
             await ctx.send("reward_min must be >= 0 and reward_max >= reward_min.")
             return
         async with self.config.guild(ctx.guild).games() as games:
-            if animal_key not in games["hunt"]["safe_animals"]:
+            conf = games["hunt"]["safe_animals"].get(animal_key)
+            if not conf or not conf.get("safe", True):
                 await ctx.send(f"`{animal_key}` isn't marked safe yet -- use `.minigamehub huntsafe add` first.")
                 return
-            games["hunt"]["safe_animals"][animal_key]["salute_reward"] = [reward_min, reward_max]
+            conf.pop("salute_reward", None)
+            conf["reward_range"] = [reward_min, reward_max]
         await ctx.send(f"`{animal_key}` salute reward set to {_fmt_range(reward_min, reward_max)}.")
 
     # -- migration from the four old cogs -------------------------------- #

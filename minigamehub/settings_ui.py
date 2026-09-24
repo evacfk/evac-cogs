@@ -288,34 +288,80 @@ class ConfigView(discord.ui.View):
 # --------------------------------------------------------------------- #
 # Hunt animal pool GUI (`.minigamehub huntanimals`)
 # --------------------------------------------------------------------- #
-# A select to pick which animal you're working with, plus Add/Edit/Remove
-# buttons -- Add and Edit open a modal (key+emoji+text / emoji+text), Remove
-# acts immediately on whatever's selected, same no-extra-confirmation
-# convention as `.minigamehub huntsafe remove` and `scenario remove`.
+# A select to pick which animal you're working with, plus Add/Edit/Remove --
+# Add and Edit open a modal, Remove acts immediately on whatever's selected,
+# same no-extra-confirmation convention as `.minigamehub huntsafe remove`
+# and `scenario remove`.
 #
-# Safe-status (penalty %, salute reward range) is deliberately its own
-# button/modal rather than folded into Add/Edit -- most animals are never
-# "safe" at all, and Discord modals cap out at 5 text inputs, so cramming
-# key+emoji+text+penalty+reward into one form would both hit that limit and
-# show penalty/reward fields on animals that will never use them. The
+# Edit covers everything about an animal in one modal: emoji, spawn text,
+# whether it's safe, its shoot penalty, and its reward range -- where that
+# last field means two different things depending on the safe flag (salute
+# reward if safe, shoot reward override if not) rather than being two
+# separate fields, since Discord modals cap out at 5 text inputs and
+# key+emoji+text+safe+penalty+reward_min+reward_max would be 7. The
 # `.minigamehub huntsafe` text commands still work identically underneath --
-# this is just a second front end onto the same `safe_animals` Config data.
+# this is just a second front end onto the same `safe_animals` Config data
+# (which, despite the name, now holds an entry for any animal with an
+# economy override, safe or not).
 
 _ANIMAL_KEY_RE = re.compile(r"^[a-z0-9_]{1,32}$")
 _YES_WORDS = {"y", "yes", "true", "1", "safe"}
+_RANGE_SPLIT_RE = re.compile(r"[-,\s]+")
 
 
 def _animal_label(key: str, conf: dict) -> str:
     return f"{conf.get('emoji', '')} {key}".strip()[:100]
 
 
+def _animal_reward_range(animal_conf: Optional[dict]):
+    """Mirrors games/hunt.py's `_animal_reward_range` -- kept as a separate
+    copy rather than a shared import since this module has no other
+    dependency on the games package, and the two are simple enough that
+    duplicating beats coupling the settings UI to game-logic internals."""
+    if not animal_conf:
+        return None
+    if "reward_range" in animal_conf:
+        return animal_conf["reward_range"]
+    if "salute_reward" in animal_conf:
+        return animal_conf["salute_reward"]
+    return None
+
+
+def _parse_range(raw: str):
+    """Parse a combined "50-200" / "50, 200" / "50 200" range field into
+    (lo, hi) ints. Raises ValueError with a human-readable message on
+    anything else -- including a bare negative number, which `-` would
+    otherwise split on; rewards are never negative here so that's fine to
+    reject rather than special-case."""
+    parts = [p for p in _RANGE_SPLIT_RE.split(raw.strip()) if p]
+    if len(parts) != 2:
+        raise ValueError("must be two numbers, e.g. 50-200")
+    lo, hi = int(parts[0]), int(parts[1])
+    if lo < 0 or hi < lo:
+        raise ValueError("minimum must be >= 0 and maximum >= minimum")
+    return lo, hi
+
+
 def _safe_suffix(key: str, safe_animals: dict) -> str:
     conf = safe_animals.get(key)
     if not conf:
         return ""
-    pct = conf.get("penalty_pct", 0)
-    lo, hi = conf.get("salute_reward", [0, 0])
-    return f"  \U0001F6E1️ safe -- shoot penalty {pct:g}% of balance, salute reward {lo:,}-{hi:,}"
+    is_safe = conf.get("safe", True)
+    lo, hi = _animal_reward_range(conf) or (0, 0)
+    if is_safe:
+        pct = conf.get("penalty_pct", 0)
+        return f"  \U0001F6E1️ safe -- shoot penalty {pct:g}% of balance, salute reward {lo:,}-{hi:,}"
+    return f"  \U0001F3AF shoot reward {lo:,}-{hi:,} (overrides the game default)"
+
+
+def _select_description(key: str, conf: dict, safe_animals: dict) -> str:
+    econ = safe_animals.get(key)
+    if not econ:
+        return conf.get("text") or ""
+    lo, hi = _animal_reward_range(econ) or (0, 0)
+    if econ.get("safe", True):
+        return f"safe -- {econ.get('penalty_pct', 0):g}% penalty / {lo}-{hi} salute reward"
+    return f"shoot reward {lo}-{hi} (overrides default)"
 
 
 class _AnimalSelect(discord.ui.Select):
@@ -333,11 +379,7 @@ class _AnimalSelect(discord.ui.Select):
         options = [
             discord.SelectOption(
                 label=_animal_label(key, conf) or key,
-                description=(
-                    f"safe -- {parent_view.safe_animals[key].get('penalty_pct', 0):g}% penalty / "
-                    f"{'-'.join(str(v) for v in parent_view.safe_animals[key].get('salute_reward', [0, 0]))} reward"
-                    if key in parent_view.safe_animals else (conf.get("text") or "")
-                )[:100] or None,
+                description=_select_description(key, conf, parent_view.safe_animals)[:100] or None,
                 value=key,
                 default=(key == parent_view.selected_key),
             )
@@ -381,7 +423,8 @@ class _AnimalEditButton(discord.ui.Button):
             self.parent_view.selected_key = None
             await self.parent_view.refresh(interaction)
             return
-        await interaction.response.send_modal(_AnimalEditModal(self.parent_view, key, current))
+        current_econ = games["hunt"]["safe_animals"].get(key)
+        await interaction.response.send_modal(_AnimalEditModal(self.parent_view, key, current, current_econ))
 
 
 class _AnimalRemoveButton(discord.ui.Button):
@@ -404,25 +447,6 @@ class _AnimalRemoveButton(discord.ui.Button):
             self.parent_view.safe_animals = games["hunt"]["safe_animals"]
         self.parent_view.selected_key = None
         await self.parent_view.refresh(interaction)
-
-
-class _AnimalSafeButton(discord.ui.Button):
-    def __init__(self, parent_view: "HuntAnimalsView"):
-        super().__init__(
-            label="Safe Settings", style=discord.ButtonStyle.secondary, emoji="\U0001F6E1️",
-            row=2, disabled=parent_view.selected_key is None,
-        )
-        self.parent_view = parent_view
-
-    async def callback(self, interaction: discord.Interaction):
-        key = self.parent_view.selected_key
-        games = await self.parent_view.config.guild(self.parent_view.guild).games()
-        if key not in games["hunt"]["animals"]:
-            self.parent_view.selected_key = None
-            await self.parent_view.refresh(interaction)
-            return
-        current_safe = games["hunt"]["safe_animals"].get(key)
-        await interaction.response.send_modal(_AnimalSafeModal(self.parent_view, key, current_safe))
 
 
 class _AnimalAddModal(discord.ui.Modal):
@@ -472,76 +496,61 @@ class _AnimalAddModal(discord.ui.Modal):
 
 
 class _AnimalEditModal(discord.ui.Modal):
-    def __init__(self, parent_view: "HuntAnimalsView", key: str, current: dict):
+    """Everything about one animal in a single form: emoji, spawn text,
+    whether it's safe, its shoot penalty (only applied while safe), and its
+    reward range -- salute reward if safe, shoot reward override if not.
+    `econ` is the animal's current `safe_animals` entry, or None if it's
+    never had one (plain reward-range-from-the-game-default animal)."""
+
+    def __init__(self, parent_view: "HuntAnimalsView", key: str, current: dict, econ: Optional[dict]):
         super().__init__(title=f"Edit: {key}"[:45])
         self.parent_view = parent_view
         self.key = key
+        is_safe = econ.get("safe", True) if econ else False
+        pct = econ.get("penalty_pct", 8) if econ else 8
+        lo, hi = _animal_reward_range(econ) or (50, 200)
         self.emoji_input = discord.ui.TextInput(label="Emoji", default=current.get("emoji", ""), max_length=100)
         self.text_input = discord.ui.TextInput(label="Spawn text", default=current.get("text", ""), max_length=200)
+        self.safe_input = discord.ui.TextInput(label="Safe? (yes/no)", default="yes" if is_safe else "no", max_length=5)
+        self.penalty_input = discord.ui.TextInput(
+            label="Shoot penalty % (only used if safe)", default=f"{pct:g}", max_length=10,
+        )
+        self.reward_input = discord.ui.TextInput(
+            label="Reward range -- salute if safe, shoot if not", default=f"{lo}-{hi}", max_length=20,
+        )
         self.add_item(self.emoji_input)
         self.add_item(self.text_input)
+        self.add_item(self.safe_input)
+        self.add_item(self.penalty_input)
+        self.add_item(self.reward_input)
 
     async def on_submit(self, interaction: discord.Interaction):
+        is_safe = self.safe_input.value.strip().lower() in _YES_WORDS
+        try:
+            pct = float(self.penalty_input.value)
+            reward_min, reward_max = _parse_range(self.reward_input.value)
+        except ValueError as e:
+            await interaction.response.send_message(f"Invalid value: {e}", ephemeral=True)
+            return
+        if pct < 0 or pct > 100:
+            await interaction.response.send_message("Shoot penalty must be between 0 and 100.", ephemeral=True)
+            return
+
         async with self.parent_view.config.guild(self.parent_view.guild).games() as games:
             animals = games["hunt"]["animals"]
             if self.key not in animals:
                 await interaction.response.send_message("That animal was removed by someone else in the meantime.", ephemeral=True)
                 return
             animals[self.key] = {"emoji": self.emoji_input.value.strip(), "text": self.text_input.value.strip()}
+            # penalty_pct is stored even when not safe, so flipping Safe back
+            # to yes later remembers whatever penalty was last entered rather
+            # than resetting to a default.
+            games["hunt"]["safe_animals"][self.key] = {
+                "safe": is_safe,
+                "penalty_pct": pct,
+                "reward_range": [reward_min, reward_max],
+            }
             self.parent_view.animals = animals
-        self.parent_view._rebuild_items()
-        embed = self.parent_view.build_embed()
-        await interaction.response.edit_message(embed=embed, view=self.parent_view)
-
-
-class _AnimalSafeModal(discord.ui.Modal):
-    def __init__(self, parent_view: "HuntAnimalsView", key: str, current: Optional[dict]):
-        super().__init__(title=f"Safe settings: {key}"[:45])
-        self.parent_view = parent_view
-        self.key = key
-        pct = current.get("penalty_pct", 8) if current else 8
-        lo, hi = current.get("salute_reward", [50, 200]) if current else [50, 200]
-        self.safe_input = discord.ui.TextInput(
-            label="Safe? (yes/no)", default="yes" if current else "no", max_length=5,
-        )
-        self.penalty_input = discord.ui.TextInput(
-            label="Shoot penalty (% of shooter's balance)", default=f"{pct:g}", max_length=10,
-        )
-        self.reward_min_input = discord.ui.TextInput(label="Salute reward -- minimum", default=str(lo), max_length=10)
-        self.reward_max_input = discord.ui.TextInput(label="Salute reward -- maximum", default=str(hi), max_length=10)
-        self.add_item(self.safe_input)
-        self.add_item(self.penalty_input)
-        self.add_item(self.reward_min_input)
-        self.add_item(self.reward_max_input)
-
-    async def on_submit(self, interaction: discord.Interaction):
-        make_safe = self.safe_input.value.strip().lower() in _YES_WORDS
-        if make_safe:
-            try:
-                pct = float(self.penalty_input.value)
-                reward_min = int(self.reward_min_input.value)
-                reward_max = int(self.reward_max_input.value)
-            except ValueError:
-                await interaction.response.send_message("Penalty and reward fields must be numbers.", ephemeral=True)
-                return
-            if pct < 0 or pct > 100:
-                await interaction.response.send_message("Penalty must be between 0 and 100.", ephemeral=True)
-                return
-            if reward_min < 0 or reward_max < reward_min:
-                await interaction.response.send_message("Reward minimum must be >= 0 and maximum >= minimum.", ephemeral=True)
-                return
-
-        async with self.parent_view.config.guild(self.parent_view.guild).games() as games:
-            if self.key not in games["hunt"]["animals"]:
-                await interaction.response.send_message("That animal was removed by someone else in the meantime.", ephemeral=True)
-                return
-            if make_safe:
-                games["hunt"]["safe_animals"][self.key] = {
-                    "penalty_pct": pct,
-                    "salute_reward": [reward_min, reward_max],
-                }
-            else:
-                games["hunt"]["safe_animals"].pop(self.key, None)
             self.parent_view.safe_animals = games["hunt"]["safe_animals"]
         self.parent_view._rebuild_items()
         embed = self.parent_view.build_embed()
@@ -549,9 +558,9 @@ class _AnimalSafeModal(discord.ui.Modal):
 
 
 class HuntAnimalsView(discord.ui.View):
-    """`.minigamehub huntanimals` -- add/edit/remove hunt's animal pool
-    (key, emoji, spawn text) and each animal's safe status (shoot penalty,
-    salute reward) without touching JSON or remembering command syntax."""
+    """`.minigamehub huntanimals` -- add/edit/remove hunt's animal pool and
+    each animal's economy (safe status, shoot penalty, reward range) in one
+    place, without touching JSON or remembering command syntax."""
 
     def __init__(self, config, guild: discord.Guild, animals: dict, safe_animals: dict):
         super().__init__(timeout=300)
@@ -568,7 +577,6 @@ class HuntAnimalsView(discord.ui.View):
         self.add_item(_AnimalAddButton(self))
         self.add_item(_AnimalEditButton(self))
         self.add_item(_AnimalRemoveButton(self))
-        self.add_item(_AnimalSafeButton(self))
 
     def build_embed(self) -> discord.Embed:
         if not self.animals:
@@ -587,7 +595,7 @@ class HuntAnimalsView(discord.ui.View):
             if len(desc) > 4000:
                 desc = desc[:4000] + "\n...(list truncated -- see `.minigamehub game hunt settings` for the full pool)"
         embed = discord.Embed(title="\U0001F985 Hunt animal pool", description=desc, color=discord.Color.blurple())
-        embed.set_footer(text="Select an animal, then Safe Settings to set its shoot penalty and salute reward.")
+        embed.set_footer(text="Select an animal, then Edit to set safe status, shoot penalty, and reward range.")
         return embed
 
     async def refresh(self, interaction: discord.Interaction):
