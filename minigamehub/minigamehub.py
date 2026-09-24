@@ -48,13 +48,30 @@ def _fmt_range(lo, hi) -> str:
     return f"{lo:,}-{hi:,}"
 
 
-def _stagger(games: dict, now: float, sep: float, reroll=()) -> None:
+def _stagger(games: dict, now: float, sep: float, reroll=(), mult: float = 1.0) -> None:
     """Give every enabled game its own future slot, at least `sep` apart.
 
-    - Games in `reroll` get a fresh random time from their own min/max window.
-    - Any other enabled game that is overdue (e.g. piled up while chat was
-      quiet or another game was running) gets a fresh short random time
-      instead of firing back-to-back.
+    - Games in `reroll`, and any other enabled game that's currently overdue
+      (e.g. piled up while chat was quiet, or while another game was
+      running), all get a fresh random time from their own normal min/max
+      window -- the exact same roll a game gets on any ordinary day. Bug fix
+      (evac report, 2026-09-24): this used to give overdue-but-not-picked
+      games a much shorter "catch-up" window (`sep` to their own
+      min_frequency, often just 2-10 minutes) instead of their real window,
+      which crammed a whole backlog of overdue games into the first few
+      minutes after a quiet channel woke back up -- exactly the "games fire
+      back to back, especially during quiet hours" symptom. Using the same
+      full-window reroll for both cases means a backlog drains back into the
+      game's normal cadence instead of bursting, and -- since this reads
+      min_frequency/max_frequency generically off each game's own config --
+      any new game type added later gets this for free, no special-casing.
+    - `mult` scales that window for adaptive pacing (see
+      MinigameHub._pacing_multiplier): 1.0 leaves it alone, >1 spaces games
+      out further (quieter channel), <1 would tighten it (not currently
+      used -- busy is defined as the un-scaled baseline, not a speed-up).
+      Only applied to games with their own "adaptive_pacing" flag on
+      (defaults True if the field's missing, so a new game type opts in
+      automatically; boss opts out -- see config_schema.py).
     - Then timers are walked in order and any two closer than `sep` are
       nudged apart, so no two games land on top of each other.
     Mutates `games` in place.
@@ -62,11 +79,10 @@ def _stagger(games: dict, now: float, sep: float, reroll=()) -> None:
     for k, g in games.items():
         if not g.get("enabled"):
             continue
-        lo, hi = g["min_frequency"], g["max_frequency"]
-        if k in reroll:
-            g["next_spawn"] = now + random.uniform(lo, hi)
-        elif g.get("next_spawn", 0) <= now:
-            g["next_spawn"] = now + random.uniform(sep, max(sep, lo))
+        if k in reroll or g.get("next_spawn", 0) <= now:
+            lo, hi = g["min_frequency"], g["max_frequency"]
+            game_mult = mult if g.get("adaptive_pacing", True) else 1.0
+            g["next_spawn"] = now + random.uniform(lo * game_mult, hi * game_mult)
     order = sorted((k for k, g in games.items() if g.get("enabled")), key=lambda k: games[k]["next_spawn"])
     prev = None
     for k in order:
@@ -142,6 +158,10 @@ class MinigameHub(commands.Cog):
         self.active_game: dict = {}       # guild_id -> game key currently running
         self.trackers: dict = {}          # guild_id -> ActivityTracker
         self._seeded_guilds: set = set()  # guild_ids seeded this process, avoids re-checking every tick
+        # For adaptive pacing's startup grace period (_pacing_multiplier) --
+        # process-wide, not per-guild, since a reload/restart resets every
+        # guild's live concurrency reading at the same moment.
+        self._process_started_at: float = time.time()
 
         self.scheduler_loop.start()
 
@@ -187,6 +207,62 @@ class MinigameHub(commands.Cog):
             tracker = ActivityTracker(self.config, guild)
             self.trackers[guild.id] = tracker
         return tracker
+
+    async def _pacing_multiplier(self, guild: discord.Guild) -> float:
+        """Adaptive spawn pacing (evac request, 2026-09-24): how much to
+        stretch out adaptive-pacing games' frequency windows right now.
+        1.0 = full "busy" speed (games' min/max_frequency used as-is, tuned
+        for roughly a spawn every 5-10 min combined). Scales linearly up to
+        `quiet_multiplier` (tuned for roughly every 15-30 min combined) as
+        the live "distinct talkers in the last 5 min" reading drops from
+        `busy_threshold` down to `quiet_threshold`.
+
+        For `startup_grace_seconds` after this process started, the live
+        reading is skipped and a fixed blended value is used instead --
+        ActivityTracker.current_concurrency() is in-memory only and reads as
+        artificially dead-quiet for the first few minutes after every
+        restart/reload, and this cog reloads on every code deploy, so
+        without this a fresh deploy would look "quiet" and under-spawn for a
+        while even if chat is actually busy at that moment.
+        """
+        conf = await self.config.guild(guild).adaptive_pacing()
+        if not conf.get("enabled", True):
+            return 1.0
+        quiet_mult = conf["quiet_multiplier"]
+        if time.time() - self._process_started_at < conf["startup_grace_seconds"]:
+            return (1.0 + quiet_mult) / 2
+        concurrency = self._get_tracker(guild).current_concurrency()
+        busy, quiet = conf["busy_threshold"], conf["quiet_threshold"]
+        if concurrency >= busy:
+            return 1.0
+        if concurrency <= quiet:
+            return quiet_mult
+        frac = (busy - concurrency) / (busy - quiet)
+        return 1.0 + frac * (quiet_mult - 1.0)
+
+    async def _log_spawn(self, guild: discord.Guild, key: str, mult: float) -> None:
+        """Record one real (non-test) spawn into spawn_pacing_tracking, same
+        hour-of-day bucket shape as ActivityTracker's chat-activity buckets,
+        so `.mgh diagnostics` can report the cadence adaptive pacing is
+        actually producing -- not just chat volume -- for reviewing whether
+        it's landing in the target ranges. Spawns happen at most every few
+        minutes, so unlike on_message this writes straight to Config every
+        time rather than batching."""
+        now = time.time()
+        hour = str(datetime.now(RESET_TIMEZONE).hour)
+        async with self.config.guild(guild).spawn_pacing_tracking() as tracking:
+            if not tracking.get("sampling_since"):
+                tracking["sampling_since"] = now
+            last = tracking.get("last_spawn_at", 0)
+            gap = now - last if last else 0
+            tracking["last_spawn_at"] = now
+            buckets = tracking.setdefault("hourly_buckets", {})
+            b = buckets.setdefault(hour, {"spawn_count": 0, "multiplier_sum": 0.0, "gap_sum": 0.0, "gap_n": 0})
+            b["spawn_count"] += 1
+            b["multiplier_sum"] += mult
+            if gap > 0:
+                b["gap_sum"] += gap
+                b["gap_n"] += 1
 
     @commands.Cog.listener()
     async def on_guild_join(self, guild: discord.Guild):
@@ -264,14 +340,19 @@ class MinigameHub(commands.Cog):
         # the game handler sets active_game itself.
         self.active_game[guild.id] = key
         await self.config.guild(guild).last_game.set(key)
+        # Log the real spawn (not `.mgh test` ones) for `.mgh diagnostics` to
+        # report actual observed cadence against the adaptive-pacing target,
+        # not just chat volume -- see spawn_pacing_tracking in config_schema.py.
+        await self._log_spawn(guild, key, await self._pacing_multiplier(guild))
         self.bot.loop.create_task(self._run_game(guild, channel, key, game_conf))
 
     async def _shuffle(self, guild: discord.Guild) -> list:
         """Re-roll every enabled game's timer from its own window, spaced apart."""
         sep = await self.config.guild(guild).min_separation()
+        mult = await self._pacing_multiplier(guild)
         now = time.time()
         async with self.config.guild(guild).games() as games:
-            _stagger(games, now, sep, reroll=set(games))
+            _stagger(games, now, sep, reroll=set(games), mult=mult)
             lines = _schedule_lines(games, now)
         return lines
 
@@ -286,8 +367,9 @@ class MinigameHub(commands.Cog):
             self.active_game[guild.id] = key
             try:
                 sep = await self.config.guild(guild).min_separation()
+                mult = await self._pacing_multiplier(guild)
                 async with self.config.guild(guild).games() as games:
-                    _stagger(games, time.time(), sep, reroll={key})
+                    _stagger(games, time.time(), sep, reroll={key}, mult=mult)
             finally:
                 self.active_game.pop(guild.id, None)
 
@@ -421,7 +503,8 @@ class MinigameHub(commands.Cog):
             g = guild_conf["games"][key]
             status = "on" if g["enabled"] else "off"
             freq = f"{_fmt_secs(g['min_frequency'])}-{_fmt_secs(g['max_frequency'])}"
-            lines.append(f"{key:<12} [{status:>3}]  every {freq}")
+            adaptive = " (adaptive)" if g.get("adaptive_pacing", True) else ""
+            lines.append(f"{key:<12} [{status:>3}]  every {freq}{adaptive}")
         await ctx.send(box("\n".join(lines), lang="text"))
 
     @mgh_game.command(name="toggle")
@@ -432,11 +515,12 @@ class MinigameHub(commands.Cog):
             await ctx.send(f"Unknown game key. Choose from: {humanize_list(GAME_KEYS)}")
             return
         sep = await self.config.guild(ctx.guild).min_separation()
+        mult = await self._pacing_multiplier(ctx.guild)
         async with self.config.guild(ctx.guild).games() as games:
             games[game_key]["enabled"] = not games[game_key]["enabled"]
             state = "enabled" if games[game_key]["enabled"] else "disabled"
             if games[game_key]["enabled"]:
-                _stagger(games, time.time(), sep, reroll={game_key})
+                _stagger(games, time.time(), sep, reroll={game_key}, mult=mult)
         await ctx.send(f"`{game_key}` is now **{state}**.")
 
     @mgh_game.command(name="frequency")
@@ -453,11 +537,12 @@ class MinigameHub(commands.Cog):
             await ctx.send("min_minutes must be positive and max_minutes >= min_minutes.")
             return
         sep = await self.config.guild(ctx.guild).min_separation()
+        mult = await self._pacing_multiplier(ctx.guild)
         async with self.config.guild(ctx.guild).games() as games:
             games[game_key]["min_frequency"] = min_seconds
             games[game_key]["max_frequency"] = max_seconds
             # Re-roll this game against its new window so an old timer doesn't linger.
-            _stagger(games, time.time(), sep, reroll={game_key})
+            _stagger(games, time.time(), sep, reroll={game_key}, mult=mult)
         await ctx.send(f"`{game_key}` frequency set to {min_minutes:g}-{max_minutes:g} min ({_fmt_secs(min_seconds)}-{_fmt_secs(max_seconds)}).")
 
     @mgh_game.command(name="reward")
@@ -569,6 +654,77 @@ class MinigameHub(commands.Cog):
         async with self.config.guild(ctx.guild).payout_pacing() as pc:
             pc["taper_floor_pct"] = pct
         await ctx.send(f"Taper floor set to {pct}%.")
+
+    # -- adaptive spawn pacing -------------------------------------------- #
+    # Not to be confused with `pacing` above (per-user daily reward cap) or
+    # `spacing` (the flat minimum gap between any two games' scheduled
+    # times) -- this is "how much to slow spawns down as chat gets quieter."
+
+    @minigamehub.group(name="adaptive")
+    async def mgh_adaptive(self, ctx: commands.Context):
+        """Adaptive spawn pacing -- games spawn closer to their normal rate
+        when chat's busy, and stretch out automatically as it gets quiet."""
+
+    @mgh_adaptive.command(name="show")
+    async def mgh_adaptive_show(self, ctx: commands.Context):
+        """Show adaptive pacing's settings and what it's doing right now."""
+        conf = await self.config.guild(ctx.guild).adaptive_pacing()
+        mult = await self._pacing_multiplier(ctx.guild)
+        concurrency = self._get_tracker(ctx.guild).current_concurrency()
+        in_grace = (time.time() - self._process_started_at) < conf["startup_grace_seconds"]
+        lines = [
+            f"enabled:            {conf['enabled']}",
+            f"busy_threshold:     {conf['busy_threshold']} talkers (last 5 min) -> full speed",
+            f"quiet_threshold:    {conf['quiet_threshold']} talkers (last 5 min) -> slowest",
+            f"quiet_multiplier:   {conf['quiet_multiplier']:g}x slower than each game's normal min/max_frequency, once fully quiet",
+            f"startup_grace:      {conf['startup_grace_seconds']}s after every reload/restart before trusting live data",
+            "",
+            f"current talkers (last 5 min): {concurrency}",
+            f"in startup grace period:      {in_grace}",
+            f"current pacing multiplier:    {mult:.2f}x" + (" (fixed startup default)" if in_grace else ""),
+        ]
+        await ctx.send(box("\n".join(lines), lang="text"))
+
+    @mgh_adaptive.command(name="toggle")
+    async def mgh_adaptive_toggle(self, ctx: commands.Context):
+        """Turn adaptive pacing on or off. Off = every adaptive game always
+        uses its min/max_frequency as-is, same as a non-adaptive game."""
+        async with self.config.guild(ctx.guild).adaptive_pacing() as conf:
+            conf["enabled"] = not conf["enabled"]
+            state = "enabled" if conf["enabled"] else "disabled"
+        await ctx.send(f"Adaptive pacing is now **{state}**.")
+
+    @mgh_adaptive.command(name="thresholds")
+    async def mgh_adaptive_thresholds(self, ctx: commands.Context, busy: int, quiet: int):
+        """Set the busy/quiet talker-count thresholds (busy must be > quiet)."""
+        if busy <= quiet or quiet < 0:
+            await ctx.send("busy must be greater than quiet, and quiet can't be negative.")
+            return
+        async with self.config.guild(ctx.guild).adaptive_pacing() as conf:
+            conf["busy_threshold"] = busy
+            conf["quiet_threshold"] = quiet
+        await ctx.send(f"Busy threshold set to {busy} talkers, quiet threshold set to {quiet} talkers.")
+
+    @mgh_adaptive.command(name="quietmultiplier")
+    async def mgh_adaptive_quietmultiplier(self, ctx: commands.Context, multiplier: float):
+        """How much slower (e.g. 3 = 3x) adaptive games get once fully quiet."""
+        if multiplier < 1:
+            await ctx.send("Must be at least 1 (1 = no slowdown at all).")
+            return
+        async with self.config.guild(ctx.guild).adaptive_pacing() as conf:
+            conf["quiet_multiplier"] = multiplier
+        await ctx.send(f"Quiet multiplier set to {multiplier:g}x.")
+
+    @mgh_adaptive.command(name="startupgrace")
+    async def mgh_adaptive_startupgrace(self, ctx: commands.Context, minutes: float):
+        """How long after a reload/restart to use a fixed blended pace before
+        trusting live activity data (see `.mgh adaptive show`)."""
+        if minutes < 0:
+            await ctx.send("Can't be negative.")
+            return
+        async with self.config.guild(ctx.guild).adaptive_pacing() as conf:
+            conf["startup_grace_seconds"] = round(minutes * 60)
+        await ctx.send(f"Startup grace period set to {minutes:g} min.")
 
     # -- stats / leaderboard -------------------------------------------- #
 
@@ -923,11 +1079,21 @@ class MinigameHub(commands.Cog):
                     "for the current pool, or add it there first."
                 )
                 return
-            games["hunt"]["safe_animals"][animal_key] = {
+            # Preserve an existing safe_word override (set via `.mgh huntsafe
+            # word` or the Edit GUI) rather than dropping it -- `add` doubles
+            # as "retune an already-safe animal's penalty/reward", and a full
+            # dict replace here would silently discard its custom word every
+            # time someone just wants to adjust the numbers, unlike the Edit
+            # GUI which keeps it by default.
+            existing_word = games["hunt"]["safe_animals"].get(animal_key, {}).get("safe_word")
+            entry = {
                 "safe": True,
                 "penalty_pct": penalty_pct,
                 "reward_range": [reward_min, reward_max],
             }
+            if existing_word:
+                entry["safe_word"] = existing_word
+            games["hunt"]["safe_animals"][animal_key] = entry
         await ctx.send(
             f"`{animal_key}` is now safe: shooting it costs {penalty_pct:g}% of balance, "
             f"saluting it pays {_fmt_range(reward_min, reward_max)}."
@@ -1008,7 +1174,7 @@ class MinigameHub(commands.Cog):
 
     # -- diagnostics -------------------------------------------------------#
 
-    @minigamehub.command(name="diagnostics")
+    @minigamehub.group(name="diagnostics", invoke_without_command=True)
     async def mgh_diagnostics(self, ctx: commands.Context):
         """Analyze recent activity in the spawn channel and suggest pacing."""
         guild_conf = await self.config.guild(ctx.guild).all()
@@ -1048,6 +1214,34 @@ class MinigameHub(commands.Cog):
 
         currency = await bank.get_currency_name(ctx.guild)
         current_caps = guild_conf["payout_pacing"]
+        adaptive_conf = guild_conf["adaptive_pacing"]
+
+        # Observed spawn cadence (evac request, 2026-09-24: "this needs to be
+        # continuous improvement") -- what actually fired, not just chat
+        # volume, so this can be re-run in a few days to check adaptive
+        # pacing is really landing in its 5-10 min busy / 15-30 min quiet
+        # targets rather than just trusting the math.
+        spawn_tracking = guild_conf["spawn_pacing_tracking"]
+        spawn_buckets = spawn_tracking.get("hourly_buckets", {})
+        spawn_rows = []
+        total_spawns = 0
+        for hour in range(24):
+            b = spawn_buckets.get(str(hour))
+            if not b or not b["spawn_count"]:
+                spawn_rows.append((hour, 0, 0.0, 0.0))
+                continue
+            avg_gap = (b["gap_sum"] / b["gap_n"]) if b.get("gap_n") else 0.0
+            avg_mult = b["multiplier_sum"] / b["spawn_count"]
+            spawn_rows.append((hour, b["spawn_count"], avg_gap, avg_mult))
+            total_spawns += b["spawn_count"]
+        spawn_since = spawn_tracking.get("sampling_since")
+        spawn_since_txt = (
+            datetime.fromtimestamp(spawn_since, RESET_TIMEZONE).strftime("%Y-%m-%d") if spawn_since else "no data yet"
+        )
+        spawn_lines = [
+            f"{h:02d}:00  spawns={c:<4} avg_gap={_fmt_secs(g) if g else '--':<8} avg_pace_mult={m:.2f}x" if c else f"{h:02d}:00  (no spawns logged)"
+            for h, c, g, m in spawn_rows
+        ]
 
         suggestion = {
             "activity_window": 300 if busy_hours >= 4 else 600,
@@ -1077,14 +1271,51 @@ class MinigameHub(commands.Cog):
             value=box("\n".join(lines[12:]), lang="text"),
             inline=False,
         )
+        embed.add_field(
+            name=f"Observed spawn cadence -- sampling since {spawn_since_txt} ({total_spawns} spawns logged)",
+            value=box("\n".join(spawn_lines[:12]), lang="text"),
+            inline=False,
+        )
+        embed.add_field(
+            name="Observed spawn cadence (cont'd)",
+            value=box("\n".join(spawn_lines[12:]), lang="text"),
+            inline=False,
+        )
         embed.add_field(name="Suggestion", value=suggestion["note"], inline=False)
+        embed.set_footer(text="avg_pace_mult near 1.0x = treated as busy; near quiet_multiplier = treated as quiet. `.mgh diagnostics reset` starts a fresh sample.")
 
         payload = {
             "hourly_buckets": {str(h): {"message_count": c, "avg_concurrency": ac, "max_gap_seconds": mg} for h, c, ac, mg in rows},
             "sampling_since": since_txt,
+            "spawn_cadence": {
+                "sampling_since": spawn_since_txt,
+                "hourly_buckets": {str(h): {"spawn_count": c, "avg_gap_seconds": g, "avg_pacing_multiplier": m} for h, c, g, m in spawn_rows},
+            },
             "current_config": guild_conf["games"],
             "current_pacing": current_caps,
+            "current_adaptive_pacing": adaptive_conf,
             "suggestion": suggestion,
         }
         buf = io.BytesIO(json.dumps(payload, indent=2, ensure_ascii=False).encode("utf-8"))
         await ctx.send(embed=embed, file=discord.File(buf, filename="minigamehub_diagnostics.json"))
+
+    @mgh_diagnostics.command(name="reset")
+    async def mgh_diagnostics_reset(self, ctx: commands.Context):
+        """Clear both chat-activity and spawn-cadence sampling data to start
+        a fresh window -- use this after a tuning change so old data doesn't
+        blend into the next review."""
+        now = time.time()
+        async with self.config.guild(ctx.guild).activity_tracking() as tracking:
+            tracking["hourly_buckets"] = {}
+            # Set to *now*, not 0/falsy -- a falsy sampling_since is what
+            # triggers ActivityTracker.seed_from_history's one-time 48-hour
+            # backfill on the next tick, which would immediately repopulate
+            # this with the same old data instead of actually starting fresh.
+            tracking["sampling_since"] = now
+        async with self.config.guild(ctx.guild).spawn_pacing_tracking() as tracking:
+            tracking["hourly_buckets"] = {}
+            tracking["sampling_since"] = now
+            # last_spawn_at deliberately untouched -- it's not sample data,
+            # it's the timestamp used to compute the *next* spawn's gap, and
+            # zeroing it would just discard that one data point.
+        await ctx.send("Diagnostics sampling reset -- both chat-activity and spawn-cadence data cleared, starting fresh from now.")

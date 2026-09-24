@@ -70,6 +70,27 @@ class ActivityTracker:
         # Flushing on every message would be one Config write per message on
         # an active channel -- batch it instead.
 
+    def current_concurrency(self) -> int:
+        """Live "how busy is it right now" reading -- distinct authors seen
+        in the last CONCURRENCY_WINDOW_SECONDS (5 min), same definition as
+        the avg_concurrency stat in diagnostics. Used by the scheduler's
+        adaptive pacing (minigamehub.py:_pacing_multiplier) to speed up or
+        slow down spawn frequency to match how busy the channel actually is.
+
+        In-memory only, like `last_message_at` -- resets to 0 on every
+        process restart/cog reload until live messages repopulate it (see
+        the startup-grace handling in _pacing_multiplier, which is why this
+        doesn't try to backfill from `seed_from_history` the way the gate's
+        `last_message_at` does: a stale post-restart concurrency reading
+        would be actively misleading, whereas a stale "was recently active"
+        boolean degrades safely to just re-opening on the next real message).
+        """
+        now = time.time()
+        cutoff = now - CONCURRENCY_WINDOW_SECONDS
+        while self._recent_authors and self._recent_authors[0][0] < cutoff:
+            self._recent_authors.popleft()
+        return len({a for _, a in self._recent_authors})
+
     async def maybe_flush(self, force: bool = False) -> None:
         if not self._dirty_buckets:
             return

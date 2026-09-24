@@ -19,9 +19,14 @@ DEFAULT_GUILD = {
     "games": {
         "pet": {
             "enabled": True,
-            "min_frequency": 1800,
-            "max_frequency": 5400,
+            # Busy-tier baseline (evac tuning, 2026-09-24): the number used
+            # as-is when the channel's busy, and stretched by
+            # adaptive_pacing's quiet_multiplier as it gets quieter -- see
+            # "adaptive_pacing" below and MinigameHub._pacing_multiplier.
+            "min_frequency": 1500,
+            "max_frequency": 4500,
             "next_spawn": 0,
+            "adaptive_pacing": True,  # scale with how busy the channel is (see top-level "adaptive_pacing")
             "reward_range": [100, 500],
             "spawn_message": "Hi! Can someone pet me?",
             "pet_reaction": "\U0001F44B",  # 👋
@@ -30,9 +35,10 @@ DEFAULT_GUILD = {
         },
         "mathdrop": {
             "enabled": True,
-            "min_frequency": 900,
-            "max_frequency": 2700,
+            "min_frequency": 1500,
+            "max_frequency": 4500,
             "next_spawn": 0,
+            "adaptive_pacing": True,
             "reward_range": [50, 550],
             "operators": ["+", "-", "*", "/"],
             "response_timeout": 10,
@@ -40,9 +46,10 @@ DEFAULT_GUILD = {
         },
         "hunt": {
             "enabled": True,
-            "min_frequency": 900,
-            "max_frequency": 3600,
+            "min_frequency": 1500,
+            "max_frequency": 4500,
             "next_spawn": 0,
+            "adaptive_pacing": True,
             "reward_range": [50, 400],
             "response_timeout": 20,
             "trigger_mode": "both",  # "both" | "word" | "reaction"
@@ -77,9 +84,10 @@ DEFAULT_GUILD = {
         },
         "lootdrop": {
             "enabled": True,
-            "min_frequency": 300,
-            "max_frequency": 1800,
+            "min_frequency": 750,
+            "max_frequency": 3750,
             "next_spawn": 0,
+            "adaptive_pacing": True,
             "reward_range": [100, 1000],
             "bad_outcome_chance": 30,
             "streak_bonus": 10,
@@ -94,9 +102,10 @@ DEFAULT_GUILD = {
         },
         "reacttowin": {
             "enabled": True,
-            "min_frequency": 1200,
-            "max_frequency": 3600,
+            "min_frequency": 750,
+            "max_frequency": 2250,
             "next_spawn": 0,
+            "adaptive_pacing": True,
             "reward_range": [100, 400],
             "spawn_message": "\U0001F3C3 First to click wins!",
             "response_timeout": 20,
@@ -107,6 +116,10 @@ DEFAULT_GUILD = {
             "min_frequency": 3600,
             "max_frequency": 10800,
             "next_spawn": 0,
+            # Not adaptive-pacing-scaled -- boss is a longer-form "event"
+            # (multi-minute HP-bar fight), not a quick filler minigame, so it
+            # stays on its own fixed cadence regardless of how busy chat is.
+            "adaptive_pacing": False,
             "fight_duration": 300,
             "hp_update_interval": 3,
             "attack_cooldown": 1.5,
@@ -128,10 +141,50 @@ DEFAULT_GUILD = {
         "reset_timezone": "America/Los_Angeles",
     },
 
+    # Adaptive spawn pacing (evac request, 2026-09-24) -- separate from
+    # payout_pacing above (that's the per-user daily reward cap; this is how
+    # often games spawn at all). Scales every game's min/max_frequency (that
+    # has "adaptive_pacing": True in its own config -- see "games" above) up
+    # as chat gets quieter, so spawns thin out during dead stretches instead
+    # of firing at the same rate as a busy afternoon. See
+    # MinigameHub._pacing_multiplier for the exact math.
+    "adaptive_pacing": {
+        "enabled": True,
+        # "How busy" is read as distinct people who've talked in the spawn
+        # channel in the last 5 minutes (activity.py's concurrency window --
+        # the same number diagnostics reports as avg_concurrency).
+        "busy_threshold": 5,   # >= this many talkers = fully busy (games' min/max_frequency used as-is)
+        "quiet_threshold": 3,  # <= this many = fully quiet (frequencies stretched by quiet_multiplier)
+        "quiet_multiplier": 3.0,
+        # After every process restart/cog reload, the live "how busy" reading
+        # is blank for a while (see ActivityTracker.current_concurrency) --
+        # for this many seconds after startup, pacing uses a fixed
+        # in-between value instead of trusting that blank reading as "dead
+        # quiet". minigamehub reloads on every code deploy, so this matters
+        # more here than it would for a cog that's rarely restarted.
+        "startup_grace_seconds": 600,
+    },
+
     "activity_tracking": {
         # hour-of-day (str "0".."23", America/Los_Angeles) -> stats dict
         "hourly_buckets": {},
         "sampling_since": 0,
+    },
+
+    # Observed spawn cadence (evac request, 2026-09-24: "this needs to be
+    # continuous improvement") -- same hour-of-day bucket shape as
+    # activity_tracking above, but for what actually spawned rather than
+    # chat activity, so `.mgh diagnostics` can show whether adaptive pacing
+    # is actually landing in the 5-10 min busy / 15-30 min quiet target
+    # ranges, not just chat volume. Logged once per real scheduled spawn (see
+    # MinigameHub._log_spawn) -- .mgh test spawns don't count. Starts empty
+    # after this deploy since it's brand new; `.mgh diagnostics reset` clears
+    # both this and activity_tracking to start a fresh sampling window after
+    # a future tuning change.
+    "spawn_pacing_tracking": {
+        "hourly_buckets": {},
+        "sampling_since": 0,
+        "last_spawn_at": 0,  # epoch seconds of the most recent logged spawn (any game), for computing the next gap
     },
 
     "last_game": None,
