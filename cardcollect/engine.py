@@ -1,5 +1,5 @@
 """Pure game logic for cardcollect: rarity rolls, tier bucketing, drop-chance
-rolls, emoji picking, and claim-fairness resolution. No discord/redbot
+rolls, drop building (with per-card CAPTCHA codes), and claim outcomes. No discord/redbot
 imports -- fully unit-testable with plain pytest, same split as
 blackjacktable's engine.py.
 
@@ -11,9 +11,10 @@ import random
 import time
 import uuid
 from datetime import datetime
-from typing import Iterable, List, Optional, Sequence, Tuple
+from typing import List, Optional, Sequence, Tuple
 from zoneinfo import ZoneInfo
 
+from . import captcha
 from .constants import TIERS
 from .models import ActiveDrop, Card, SellToken
 
@@ -69,40 +70,17 @@ def should_drop(drop_chance: float, rng: Optional[random.Random] = None) -> bool
     return rng.random() < drop_chance
 
 
-def pick_drop_emojis(emoji_pool: Sequence[str], count: int, rng: Optional[random.Random] = None) -> List[str]:
-    """Pick `count` distinct emoji for the real cards in one drop."""
-    rng = _rng(rng)
-    if count > len(emoji_pool):
-        raise ValueError("count exceeds the size of the emoji pool")
-    return rng.sample(list(emoji_pool), count)
-
-
-def pick_decoy_emojis(
-    emoji_pool: Sequence[str], exclude: Iterable[str], count: int, rng: Optional[random.Random] = None
-) -> List[str]:
-    """Pick `count` decoy emoji, guaranteed distinct from `exclude` (the real
-    ones already chosen for this drop) and from each other."""
-    rng = _rng(rng)
-    exclude_set = set(exclude)
-    available = [e for e in emoji_pool if e not in exclude_set]
-    count = min(count, len(available))
-    return rng.sample(available, count)
-
-
 def build_drop(
     pool: Sequence[Card],
     weights: dict,
     drop_size: int,
-    emoji_pool: Sequence[str],
-    decoys_enabled: bool,
-    decoy_count: int,
     guild_id: int,
     channel_id: int,
     rng: Optional[random.Random] = None,
     is_test: bool = False,
 ) -> Optional[ActiveDrop]:
     """Roll a full drop: `drop_size` cards, each an independent weighted-tier
-    roll, each assigned a distinct claim emoji. Returns None if the pool
+    roll, each assigned its own CAPTCHA claim code (see captcha.py). Returns None if the pool
     can't fill a full drop (e.g. a tier the rolls landed on has zero cards
     and no fallback tier has cards either -- caller should just skip this
     tick rather than post a broken drop)."""
@@ -124,12 +102,11 @@ def build_drop(
                 return None
         cards.append(card)
 
-    emojis = pick_drop_emojis(emoji_pool, len(cards), rng)
-    decoys = pick_decoy_emojis(emoji_pool, emojis, decoy_count, rng) if decoys_enabled else []
+    codes = captcha.generate_codes(len(cards), rng)
 
     drop_cards = [
-        {"card_id": card.card_id, "emoji": emoji, "position": i}
-        for i, (card, emoji) in enumerate(zip(cards, emojis))
+        {"card_id": card.card_id, "code": code, "position": i}
+        for i, (card, code) in enumerate(zip(cards, codes))
     ]
 
     return ActiveDrop(
@@ -137,31 +114,8 @@ def build_drop(
         guild_id=guild_id,
         channel_id=channel_id,
         cards=drop_cards,
-        decoy_emojis=decoys,
         is_test=is_test,
     )
-
-
-def reaction_add_order(drop: ActiveDrop, rng: Optional[random.Random] = None) -> List[str]:
-    """The order in which the bot should add reactions to the drop message --
-    real emoji and decoys shuffled together so position in the reaction bar
-    never leaks which ones are real."""
-    rng = _rng(rng)
-    all_emoji = [c["emoji"] for c in drop.cards] + list(drop.decoy_emojis)
-    rng.shuffle(all_emoji)
-    return all_emoji
-
-
-def resolve_claim(reactor_ids: Sequence[int], rng: Optional[random.Random] = None) -> Optional[int]:
-    """Given every user id that reacted with a given real emoji within the
-    collection window, pick the winner. Random among the collected reactors,
-    not "whichever event arrived first" -- see design doc's claim-fairness
-    decision. Returns None if nobody reacted (shouldn't normally be called
-    in that case, but safe either way)."""
-    rng = _rng(rng)
-    if not reactor_ids:
-        return None
-    return rng.choice(list(reactor_ids))
 
 
 def make_sell_token(card_id: int, rarity: str) -> SellToken:

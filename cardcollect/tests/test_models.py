@@ -65,19 +65,46 @@ def test_member_state_from_dict_migrates_legacy_single_favorite():
     assert restored2.showcase_card_ids == [8]
 
 
-def test_active_drop_emoji_lookup():
-    drop = ActiveDrop(
+def _drop(**kwargs):
+    return ActiveDrop(
         message_id=None,
         guild_id=1,
         channel_id=2,
         cards=[
-            {"card_id": 10, "emoji": "🍉", "position": 0},
-            {"card_id": 11, "emoji": "⭐", "position": 1},
+            {"card_id": 10, "code": "K3+9T", "position": 0},
+            {"card_id": 11, "code": "M7#4E", "position": 1},
         ],
-        decoy_emojis=["🔥", "💧"],
+        **kwargs,
     )
-    assert drop.is_real_emoji("🍉") is True
-    assert drop.is_real_emoji("🔥") is False
-    assert drop.emoji_for("⭐")["card_id"] == 11
-    assert drop.emoji_for("👽") is None
+
+
+def test_active_drop_code_lookup():
+    drop = _drop()
+    assert drop.entry_for_code("K3+9T")["card_id"] == 10
+    assert drop.entry_for_code("M7#4E")["card_id"] == 11
+    assert drop.entry_for_code("ZZZZZ") is None
+    assert drop.entry_for_code("k3+9t") is None  # callers normalize; the drop stores canonical form
     assert drop.is_test is False
+
+
+def test_active_drop_expiry():
+    assert _drop().is_expired(10**12) is False  # no deadline -> never expires
+    drop = _drop(expires_at=100.0)
+    assert drop.is_expired(99.9) is False
+    assert drop.is_expired(100.0) is True
+
+
+def test_active_drop_lockout_after_the_wrong_guess_cap():
+    drop = _drop(max_wrong_guesses=2)
+    assert drop.is_locked_out(5) is False
+    drop.wrong_guesses[5] = 1
+    assert drop.is_locked_out(5) is False
+    drop.wrong_guesses[5] = 2
+    assert drop.is_locked_out(5) is True
+    assert drop.is_locked_out(6) is False  # per member
+
+
+def test_active_drop_zero_cap_means_never_locked_out():
+    drop = _drop(max_wrong_guesses=0)
+    drop.wrong_guesses[5] = 999
+    assert drop.is_locked_out(5) is False

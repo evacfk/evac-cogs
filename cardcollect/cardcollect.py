@@ -1,14 +1,24 @@
-"""Main cog: message listener (chance-per-message drop trigger), reaction-based
-claim resolution, and all `.card` commands.
+"""Main cog: message listener (chance-per-message drop trigger), the claim
+flow, and all `.card` commands.
 
-Game logic lives in engine.py (pure, unit-tested standalone); this file is
-the Discord-facing wiring around it -- Config I/O, the message/reaction
-listeners, image compositing calls into imagegen.py, and command handlers.
+Game logic lives in engine.py / captcha.py (pure, unit-tested standalone);
+this file is the Discord-facing wiring around it -- Config I/O, the message
+listener, image compositing calls into imagegen.py, and command handlers. The
+button/pop-up UI itself lives in views.py.
+
+Claiming: every card in a drop has its own short CAPTCHA code burned into the
+art, and the drop message carries a Claim button. Pressing it opens a pop-up
+where the member types a code; the first correct submission claims that card
+-- see submit_code. Nothing is typed into chat, so it never mixes with the
+channel's conversation. (This replaced an emoji-reaction mechanic whose
+reactions sometimes never registered and occasionally got rate-limited.)
 """
 
 import asyncio
+import functools
 import io
 import json
+import logging
 import time
 from collections import Counter
 from datetime import datetime
@@ -21,27 +31,61 @@ import discord
 from redbot.core import Config, bank, commands
 from redbot.core.data_manager import cog_data_path
 
-from . import embeds, engine, imagegen, import_characters, storage
+from . import captcha, embeds, engine, imagegen, import_characters, storage, views
 from .constants import (
     ACTIVITY_TIMEZONE,
     DEFAULT_CLAIM_COOLDOWN_SECONDS,
     DEFAULT_CLAIM_QUOTA,
-    DEFAULT_CLAIM_WINDOW_SECONDS,
-    DEFAULT_DECOY_COUNT,
-    DEFAULT_DECOYS_ENABLED,
     DEFAULT_DROP_CHANCE,
     DEFAULT_DROP_COOLDOWN_SECONDS,
+    DEFAULT_DROP_EXPIRY_SECONDS,
     DEFAULT_DROP_SIZE,
     DEFAULT_DROP_WEIGHTS,
+    DEFAULT_MAX_WRONG_GUESSES,
     DEFAULT_SELL_PRICES,
     DEFAULT_TIER_CUTOFFS,
     DEFAULT_WRONG_GUESS_PENALTY_SECONDS,
-    EMOJI_POOL,
     MAX_COPIES_KEPT,
     MAX_SHOWCASE_SLOTS,
     TIERS,
 )
 from .models import ActiveDrop, Card, MemberState
+
+log = logging.getLogger("red.evac-cogs.cardcollect")
+
+MSG_OVER = "This drop is over — it was fully claimed or has expired."
+MSG_ALREADY = "You've already claimed a card from this drop — one per person."
+MSG_LOCKED = "You're locked out of this drop (too many wrong codes)."
+MSG_TAKEN = "Too slow — that card has already been claimed. Try another card's code."
+MSG_MALFORMED = (
+    "That doesn't look like a code — they're 5 characters: letters, numbers and one symbol "
+    "(like `K3+9T`). Check the card and try again; this didn't cost you a guess."
+)
+MSG_ERROR = "Something went wrong saving that claim — the card is still open, so try again."
+
+
+def _secs(seconds: float) -> int:
+    return max(1, int(seconds + 0.999))
+
+
+def _cooldown_text(left: float) -> str:
+    return f"⏳ You're on claim cooldown for another {_secs(left)}s."
+
+
+def _penalty_text(left: float) -> str:
+    return f"\U0001f6ab You're locked out from guessing for another {_secs(left)}s."
+
+
+def _lockout_text(penalty_seconds: float, is_test: bool) -> str:
+    if is_test:
+        return "❌ You're out of chances and locked out of this drop. (Test mode, so no real penalty this time.)"
+    if penalty_seconds > 0:
+        return (
+            f"❌ You're out of chances and locked out from guessing for {int(penalty_seconds)}s. "
+            "Now watch everyone else collect the cards in front of you, cuck! \U0001f921"
+        )
+    return "❌ You're out of chances and locked out of this drop."
+
 
 DEFAULT_GUILD = {
     "channel_id": None,
@@ -52,11 +96,10 @@ DEFAULT_GUILD = {
     "drop_size": DEFAULT_DROP_SIZE,
     "drop_weights": dict(DEFAULT_DROP_WEIGHTS),
     "tier_cutoffs": dict(DEFAULT_TIER_CUTOFFS),
-    "decoys_enabled": DEFAULT_DECOYS_ENABLED,
-    "decoy_count": DEFAULT_DECOY_COUNT,
-    "claim_window_seconds": DEFAULT_CLAIM_WINDOW_SECONDS,
     "claim_cooldown_seconds": DEFAULT_CLAIM_COOLDOWN_SECONDS,
+    "max_wrong_guesses": DEFAULT_MAX_WRONG_GUESSES,
     "wrong_guess_penalty_seconds": DEFAULT_WRONG_GUESS_PENALTY_SECONDS,
+    "drop_expiry_seconds": DEFAULT_DROP_EXPIRY_SECONDS,
     "claim_quota": DEFAULT_CLAIM_QUOTA,
     "sell_prices": dict(DEFAULT_SELL_PRICES),
     "test_mode": False,
@@ -86,38 +129,23 @@ class CardCollect(commands.Cog):
         # in-memory only -- losing these on restart just expires whatever
         # was mid-flight, never touches persisted collections/tokens
         self.active_drops: Dict[int, ActiveDrop] = {}  # message_id -> ActiveDrop
-        self.pending_windows: Dict[Tuple[int, str], bool] = {}  # (message_id, emoji) -> scheduled
         self.last_drop_time: Dict[int, float] = {}  # guild_id -> monotonic time
         self.claim_cooldown_until: Dict[int, float] = {}  # user_id -> monotonic time
-        # set by a wrong (decoy) reaction guess -- see on_raw_reaction_add.
-        # Excludes a user from *winning* any drop while active, checked
-        # alongside claim_cooldown_until in _resolve_claim_window.
+        # set when a member burns all their wrong guesses on a drop -- see
+        # _record_wrong_guess. Excludes a user from *winning* any drop while
+        # active, checked alongside claim_cooldown_until in _claim.
         self.wrong_guess_penalty_until: Dict[int, float] = {}  # user_id -> monotonic time
-        # A fresh multi-card drop is often claimed almost all at once -- each
-        # real card triggers its own _resolve_claim_window task, and every
-        # one of those used to independently call channel.fetch_message()
-        # for the exact same message. That's redundant enough (2-3+ near-
-        # simultaneous GETs to the same message) to occasionally trip
-        # Discord's per-route rate limit; discord.py handles a 429 by
-        # sleeping and retrying rather than raising, so nothing was ever
-        # lost -- but a claim embed could sit unposted for several seconds
-        # until its window's fetch finally went through (live bug report:
-        # a 3-card drop where the third claim only appeared "if delayed").
-        # See _get_drop_message: concurrent resolutions for the same message
-        # share one fetch instead of each firing their own. The cache is
-        # invalidated (never time-boxed) the instant a new reaction lands on
-        # a still-open real card -- see on_raw_reaction_add -- because
-        # Reaction.users() bounds its own pagination by Reaction.count,
-        # which is a snapshot captured when the *parent Message* was
-        # fetched, not live. A reused-but-stale Message could therefore
-        # silently under-count a card's reactors (missing a legitimate
-        # second/third reactor who joined after that snapshot), not just
-        # serve slightly-old data -- a time-based-only cache would have that
-        # gap for any claim_window_seconds shorter than the cache's TTL, so
-        # correctness here must not depend on that value at all.
-        self._message_cache: Dict[int, discord.Message] = {}  # message_id -> message
-        self._message_fetch_locks: Dict[int, asyncio.Lock] = {}  # message_id -> lock
-        self._drop_locks: Dict[int, asyncio.Lock] = {}  # guild_id -> lock
+        self._drop_locks: Dict[int, asyncio.Lock] = {}  # guild_id -> lock (drop cooldown)
+        # One lock per guild around the whole claim transaction (eligibility
+        # checks -> Config write -> marking the card claimed). Near-
+        # simultaneous correct codes are common (that's the whole game), and
+        # the eligibility checks and the write span real awaits, so without
+        # this two submissions for the same card -- or two from the same
+        # member for different cards -- could both pass their checks before
+        # either was recorded. asyncio.Lock is FIFO, so the submission the
+        # listener saw first is also the one that wins.
+        self._claim_locks: Dict[int, asyncio.Lock] = {}  # guild_id -> lock
+        self._persistent_view: Optional[views.ClaimView] = None
         # AniList's public API rate-limits aggressively; without this, two
         # `.card importpool` runs fired close together each start their own
         # up-to-200-page loop and multiply the request rate against the same
@@ -129,12 +157,21 @@ class CardCollect(commands.Cog):
         self._session: Optional[aiohttp.ClientSession] = None
 
     async def cog_load(self):
+        # One shared, persistent Claim button handler: a click on a drop that
+        # predates a restart still lands here, and submit_code/
+        # claim_button_refusal answer "this drop is over" instead of Discord
+        # showing "This interaction failed".
+        self._persistent_view = views.ClaimView(self)
+        self.bot.add_view(self._persistent_view)
+
         # a hung AniList request or a slow image host would otherwise leave
         # .card importpool waiting forever -- give every request on this
         # session a ceiling
         self._session = aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=30))
 
     async def cog_unload(self):
+        if self._persistent_view is not None:
+            self._persistent_view.stop()
         if self._session is not None:
             await self._session.close()
 
@@ -208,51 +245,24 @@ class CardCollect(commands.Cog):
             self._drop_locks[guild_id] = lock
         return lock
 
-    async def _get_drop_message(self, channel: discord.abc.Messageable, message_id: int) -> discord.Message:
-        """Fetch a drop's message, reusing an already-fetched copy instead
-        of hitting the API again -- see the comment on self._message_cache
-        in __init__. There's no time limit on reuse: correctness instead
-        relies on _invalidate_message_cache being called (from
-        on_raw_reaction_add) the instant any new reaction lands on a
-        still-open real card, so a cached message is never read after a
-        reaction it doesn't yet reflect. Concurrent callers for the same
-        message_id coalesce behind a lock instead of each firing their own
-        fetch_message()."""
-        cached = self._message_cache.get(message_id)
-        if cached is not None:
-            return cached
-
-        lock = self._message_fetch_locks.setdefault(message_id, asyncio.Lock())
-        async with lock:
-            # re-check after acquiring the lock -- a concurrent resolution
-            # may have already fetched it while this one was waiting
-            cached = self._message_cache.get(message_id)
-            if cached is not None:
-                return cached
-            message = await channel.fetch_message(message_id)
-            self._message_cache[message_id] = message
-            return message
-
-    def _invalidate_message_cache(self, message_id: int):
-        """Drop any cached Message for this drop. Called from
-        on_raw_reaction_add for every reaction to a still-open real card
-        (not just the first, triggering one) -- Reaction.users() bounds its
-        own pagination by Reaction.count, a snapshot captured when the
-        *parent Message* was fetched, not a live value. Reusing a Message
-        fetched before a card's second or third reactor joined would
-        silently exclude that reactor from the claim's fairness pool
-        (locked decision #8) rather than just serve slightly-old data, so
-        the cache must never outlive a reaction it doesn't yet reflect."""
-        self._message_cache.pop(message_id, None)
+    def _get_claim_lock(self, guild_id: int) -> asyncio.Lock:
+        lock = self._claim_locks.get(guild_id)
+        if lock is None:
+            lock = asyncio.Lock()
+            self._claim_locks[guild_id] = lock
+        return lock
 
     def _forget_drop(self, message_id: int):
-        """Clean up every in-memory structure keyed by a drop's message_id
-        once it's fully resolved -- without this, self._message_cache and
-        self._message_fetch_locks would grow by one entry per drop ever
-        posted, forever."""
+        """Drop a fully resolved (or expired) drop's in-memory state --
+        without this, self.active_drops would grow by one entry per drop
+        ever posted, forever."""
         self.active_drops.pop(message_id, None)
-        self._message_cache.pop(message_id, None)
-        self._message_fetch_locks.pop(message_id, None)
+
+    def _prune_expired_drops(self):
+        now = time.monotonic()
+        for message_id, drop in list(self.active_drops.items()):
+            if drop.is_expired(now):
+                self._forget_drop(message_id)
 
     # ------------------------------------------------------------------
     # drop trigger
@@ -332,16 +342,16 @@ class CardCollect(commands.Cog):
 
         weights = await conf.drop_weights()
         drop_size = await conf.drop_size()
-        decoys_enabled = await conf.decoys_enabled()
-        decoy_count = await conf.decoy_count()
+        max_wrong_guesses = await conf.max_wrong_guesses()
+        wrong_guess_penalty = await conf.wrong_guess_penalty_seconds()
+        expiry = await conf.drop_expiry_seconds()
+
+        self._prune_expired_drops()
 
         drop = engine.build_drop(
             pool_cards,
             weights,
             drop_size,
-            EMOJI_POOL,
-            decoys_enabled,
-            decoy_count,
             guild.id,
             channel.id,
             is_test=is_test,
@@ -350,268 +360,221 @@ class CardCollect(commands.Cog):
             return "Couldn't roll a drop from the current pool (no cards available in any rarity tier)."
 
         entries = []
+        kept_cards = []
         for card_entry in drop.cards:
             card = await self._card_by_id(guild, card_entry["card_id"])
             image_bytes = self._read_card_image(guild, card_entry["card_id"])
             if card is None or image_bytes is None:
                 continue
-            entries.append((card, image_bytes, card_entry["emoji"]))
+            entries.append((card, image_bytes, card_entry["code"]))
+            kept_cards.append(card_entry)
         if not entries:
             return (
                 "Rolled cards but couldn't find their art on disk -- the pool may be "
                 "out of sync with the image files. Check `.card settings` and the data folder."
             )
+        # a card whose art couldn't be rendered has no visible code, so it can
+        # never be claimed -- leaving it in drop.cards would keep the drop
+        # from ever counting as fully claimed
+        drop.cards = kept_cards
 
-        composite = imagegen.render_drop(entries, is_test=is_test)
-        content = "\U0001f9ea **Test drop** — claims here won't award anything." if is_test else None
-        sent = await channel.send(content=content, file=discord.File(composite, filename="drop.png"))
+        # Pillow work off the event loop: a 3-card composite is tens of ms of
+        # CPU, which is long enough to delay gateway heartbeats if done inline
+        composite = await asyncio.get_running_loop().run_in_executor(
+            None, functools.partial(imagegen.render_drop, entries, is_test=is_test)
+        )
+        if is_test:
+            content = "\U0001f9ea **Test drop** — claims here won't award anything. Press **Claim a card** and enter a code to try it."
+        else:
+            content = "\U0001f524 **Press Claim a card and enter the code shown on a card!** First correct code wins — one card per person."
+        sent = await channel.send(
+            content=content, file=discord.File(composite, filename="drop.png"), view=views.ClaimView(self)
+        )
 
+        # registered synchronously right after the send returns, before any
+        # further await, so a press of the button the instant the drop appears
+        # can never arrive before the drop is known
         drop.message_id = sent.id
+        drop.max_wrong_guesses = max_wrong_guesses
+        drop.wrong_guess_penalty_seconds = wrong_guess_penalty
+        drop.expires_at = time.monotonic() + expiry if expiry > 0 else None
         self.active_drops[sent.id] = drop
-
-        order = engine.reaction_add_order(drop)
-        for emoji in order:
-            try:
-                await sent.add_reaction(emoji)
-            except discord.HTTPException:
-                continue
-
         return None
 
     # ------------------------------------------------------------------
-    # claim resolution
+    # claim flow (Claim button -> code pop-up -> submit_code)
     # ------------------------------------------------------------------
 
-    async def _dm_decoy_result(self, payload: discord.RawReactionActionEvent, penalty_seconds: float, is_test: bool):
-        """Best-effort DM to whoever just burned their shot on a decoy.
-        There's no interaction token on a raw reaction event, so a true
-        ephemeral reply (Discord's own "only you can see this") isn't
-        possible here -- a DM is the closest thing that's actually private
-        to just them. Silently does nothing if the member can't be
-        resolved or has DMs closed; this is flavor text, not something
-        that should ever surface an error or fall back to the channel."""
-        channel = self.bot.get_channel(payload.channel_id)
-        guild = getattr(channel, "guild", None)
-        member = guild.get_member(payload.user_id) if guild else None
-        if member is None:
-            return
-
-        if is_test:
-            text = "❌ Wrong guess — that was a decoy, not a real card. (Test mode, so no real penalty this time.)"
-        elif penalty_seconds > 0:
-            text = (
-                "❌ Wrong guess — that was a decoy, not a real card. You're locked out of "
-                f"winning any drop for {int(penalty_seconds)}s. Now watch everyone else collect "
-                "the cards. Cuck! \U0001f921"
-            )
-        else:
-            text = "❌ Wrong guess — that was a decoy, not a real card."
-
-        try:
-            await member.send(text)
-        except (discord.Forbidden, discord.HTTPException):
-            pass
-
-    @commands.Cog.listener()
-    async def on_raw_reaction_add(self, payload: discord.RawReactionActionEvent):
-        if payload.guild_id is None or payload.user_id == self.bot.user.id:
-            return
-
-        drop = self.active_drops.get(payload.message_id)
-        if drop is None:
-            return
-
-        # One reaction is each member's "shot" at this drop -- once it's
-        # used (on a decoy, or on a still-open real card), every further
-        # reaction of theirs on this message is inert. This is what makes
-        # "click every emoji until something hits" no longer work: you have
-        # to actually look at the card art and pick once.
-        if payload.user_id in drop.reacted_users:
-            return
-
-        emoji = str(payload.emoji)
-
-        if not drop.is_real_emoji(emoji):
-            # a genuine wrong guess -- spends the shot and, on a real drop,
-            # costs a temporary lockout from *winning* any drop. Test drops
-            # still enforce the one-shot gate (so `.card testdrop` previews
-            # the real interaction accurately), but never set the penalty
-            # itself -- same test-mode exemption claim_cooldown_until and
-            # the daily quota already get in _resolve_claim_window, so
-            # testing decoys can't lock an admin out of winning real drops.
-            drop.reacted_users.add(payload.user_id)
-            penalty = 0
-            if not drop.is_test:
-                conf = self.config.guild_from_id(payload.guild_id)
-                penalty = await conf.wrong_guess_penalty_seconds()
-                if penalty > 0:
-                    self.wrong_guess_penalty_until[payload.user_id] = time.monotonic() + penalty
-            await self._dm_decoy_result(payload, penalty, drop.is_test)
-            return
-
-        card_entry = drop.emoji_for(emoji)
-        if card_entry["position"] in drop.claimed_positions:
-            # the drop image gives no visual sign a card is already gone,
-            # so landing on one isn't the member's fault -- don't burn
-            # their shot for it, let them try again
-            return
-
-        drop.reacted_users.add(payload.user_id)
-        # invalidate unconditionally, not just for the first/triggering
-        # reactor on this card -- a second or third reactor joining an
-        # already-pending window must also force the eventual resolution
-        # to re-fetch, or their reaction could be missed (see
-        # _invalidate_message_cache)
-        self._invalidate_message_cache(payload.message_id)
-
-        key = (payload.message_id, emoji)
-        if key in self.pending_windows:
-            return
-        self.pending_windows[key] = True
-
-        conf = self.config.guild_from_id(payload.guild_id)
-        window = await conf.claim_window_seconds()
-        asyncio.create_task(self._resolve_claim_window(payload.channel_id, payload.message_id, emoji, window))
-
-    async def _resolve_claim_window(self, channel_id: int, message_id: int, emoji: str, window: float):
-        await asyncio.sleep(window)
-        self.pending_windows.pop((message_id, emoji), None)
-
+    def claim_button_refusal(self, member: discord.abc.User, message_id: int) -> Optional[str]:
+        """Why this member can't open the code pop-up for this drop right now
+        (a private message for them), or None if they can. Purely a courtesy
+        so they aren't asked to type a code that can't work -- every one of
+        these is re-checked, authoritatively, inside submit_code/_claim."""
+        self._prune_expired_drops()
         drop = self.active_drops.get(message_id)
         if drop is None:
-            return
-        card_entry = drop.emoji_for(emoji)
-        if card_entry is None or card_entry["position"] in drop.claimed_positions:
-            return
+            return MSG_OVER
+        if member.id in drop.claimed_by:
+            return MSG_ALREADY
+        if drop.is_locked_out(member.id):
+            return MSG_LOCKED
+        if not drop.is_test:
+            now = time.monotonic()
+            cooldown_left = self.claim_cooldown_until.get(member.id, 0.0) - now
+            if cooldown_left > 0:
+                return _cooldown_text(cooldown_left)
+            penalty_left = self.wrong_guess_penalty_until.get(member.id, 0.0) - now
+            if penalty_left > 0:
+                return _penalty_text(penalty_left)
+        return None
 
-        # Mark this position claimed *before* any further awaits, not after.
-        # pending_windows only guards against a second window being
-        # scheduled while this one is still sleeping -- it was just popped
-        # above, so a reaction arriving during the fetch_message/users()
-        # calls below could otherwise pass the pending_windows check again
-        # and race a second _resolve_claim_window for the same card. Setting
-        # claimed_positions here, synchronously, closes that window: any
-        # concurrent/later call sees the position already claimed and bails
-        # at the guard above instead of double-awarding the card.
-        drop.claimed_positions.add(card_entry["position"])
+    def _record_wrong_guess(self, member: discord.abc.User, drop: ActiveDrop) -> str:
+        """Charge a wrong (but code-shaped) guess and build the private
+        reply. Fully synchronous. Reaching the cap locks the member out of
+        this drop and, on a real drop, from winning any drop for a while."""
+        if drop.max_wrong_guesses <= 0:
+            return "❌ Wrong code."
+        count = drop.wrong_guesses.get(member.id, 0) + 1
+        drop.wrong_guesses[member.id] = count
+        left = drop.max_wrong_guesses - count
+        if left > 0:
+            return f"❌ Wrong code. {left} guess{'es' if left != 1 else ''} left on this drop."
 
-        channel = self.bot.get_channel(channel_id)
-        if channel is None:
-            try:
-                channel = await self.bot.fetch_channel(channel_id)
-            except discord.HTTPException:
-                if len(drop.claimed_positions) >= len(drop.cards):
-                    self._forget_drop(message_id)
-                return
+        penalty = 0.0
+        if not drop.is_test:
+            # test drops still enforce the guess cap (so `.card testdrop`
+            # previews the real interaction accurately) but never set the
+            # penalty itself -- same test-mode exemption the claim cooldown
+            # and daily quota get in _claim, so testing can't lock an admin
+            # out of winning real drops
+            penalty = drop.wrong_guess_penalty_seconds
+            if penalty > 0:
+                self.wrong_guess_penalty_until[member.id] = time.monotonic() + penalty
+        return _lockout_text(penalty, drop.is_test)
+
+    async def submit_code(
+        self, member: discord.abc.User, channel: discord.abc.Messageable, drop_message_id: int, raw_code: str
+    ) -> str:
+        """Handle one code submitted from the pop-up. Returns the private
+        (ephemeral) reply for the member; a successful claim also posts the
+        public result embed.
+
+        Everything before _claim is synchronous on purpose -- see
+        CodeModal.handle_submit: who wins a near-tie is decided by who
+        reaches the claim lock first, so nothing may await ahead of it."""
+        self._prune_expired_drops()
+        drop = self.active_drops.get(drop_message_id)
+        if drop is None:
+            return MSG_OVER
+        if member.id in drop.claimed_by:
+            return MSG_ALREADY
+        if drop.is_locked_out(member.id):
+            return MSG_LOCKED
+
+        code = captcha.normalize(raw_code)
+        entry = drop.entry_for_code(code)
+        if entry is None:
+            if not captcha.looks_like_code(code):
+                # almost certainly a typo, not a guess -- hint, don't charge
+                return MSG_MALFORMED
+            return self._record_wrong_guess(member, drop)
+        if entry["position"] in drop.claimed_positions:
+            return MSG_TAKEN  # right code, but someone was faster -- not the member's fault
+        return await self._claim(member, channel, drop, entry)
+
+    async def _claim(
+        self, member: discord.abc.User, channel: discord.abc.Messageable, drop: ActiveDrop, entry: dict
+    ) -> str:
         guild = channel.guild
+        position = entry["position"]
 
-        try:
-            message = await self._get_drop_message(channel, message_id)
-        except discord.HTTPException:
-            if len(drop.claimed_positions) >= len(drop.cards):
-                self._forget_drop(message_id)
-            return
+        async with self._get_claim_lock(guild.id):
+            # Re-check everything now that we hold the lock: a claim queued
+            # ahead of this one may have taken the card, used up this
+            # member's one card, or the drop may have expired meanwhile.
+            if self.active_drops.get(drop.message_id) is not drop or drop.is_expired(time.monotonic()):
+                return MSG_OVER
+            if member.id in drop.claimed_by:
+                return MSG_ALREADY
+            if drop.is_locked_out(member.id):
+                return MSG_LOCKED
+            if position in drop.claimed_positions:
+                return MSG_TAKEN
 
-        reaction = discord.utils.find(lambda r: str(r.emoji) == emoji, message.reactions)
-        if reaction is None:
-            if len(drop.claimed_positions) >= len(drop.cards):
-                self._forget_drop(message_id)
-            return
+            now = time.monotonic()
+            if not drop.is_test:
+                cooldown_left = self.claim_cooldown_until.get(member.id, 0.0) - now
+                if cooldown_left > 0:
+                    return _cooldown_text(cooldown_left)
+                penalty_left = self.wrong_guess_penalty_until.get(member.id, 0.0) - now
+                if penalty_left > 0:
+                    return _penalty_text(penalty_left)
 
-        now = time.monotonic()
-        today = engine.today_str(ACTIVITY_TIMEZONE)
-        claim_quota = 0 if drop.is_test else await self.config.guild(guild).claim_quota()
-        reactor_ids = []
-        async for user in reaction.users():
-            if user.bot:
-                continue
-            if user.id in drop.claimed_by:
-                # already won a different card from this same drop -- one
-                # card per person per drop, even though the other cards are
-                # still independently claimable by everyone else
-                continue
-            if self.claim_cooldown_until.get(user.id, 0.0) > now:
-                continue
-            if self.wrong_guess_penalty_until.get(user.id, 0.0) > now:
-                continue
-            if claim_quota > 0:
-                # a plain reactor.users() User, not a guild Member -- no
-                # Member fetch needed just to read their quota state, so use
-                # member_from_ids directly instead of resolving a full member
-                member_conf = self.config.member_from_ids(guild.id, user.id)
-                daily_claims = await member_conf.daily_claims()
-                daily_claims_date = await member_conf.daily_claims_date()
-                if not engine.has_quota_remaining(daily_claims, daily_claims_date, claim_quota, today):
-                    continue
-            reactor_ids.append(user.id)
-
-        if not reactor_ids:
-            if len(drop.claimed_positions) >= len(drop.cards):
-                self._forget_drop(message_id)
-            return
-
-        winner_id = engine.resolve_claim(reactor_ids)
-        member = guild.get_member(winner_id)
-        if member is None:
-            try:
-                member = await guild.fetch_member(winner_id)
-            except discord.HTTPException:
-                if len(drop.claimed_positions) >= len(drop.cards):
-                    self._forget_drop(message_id)
-                return
-
-        card = await self._card_by_id(guild, card_entry["card_id"])
-        if card is None:
-            if len(drop.claimed_positions) >= len(drop.cards):
-                self._forget_drop(message_id)
-            return
-
-        # one card per person per drop: mark the winner before the reward
-        # branches below so they can't also win any of this drop's other,
-        # still-independently-claimable cards. Recorded for test drops too,
-        # so a test accurately previews the real one-per-drop behavior.
-        drop.claimed_by.add(member.id)
-
-        conf = self.config.guild(guild)
-        sell_prices = await conf.sell_prices()
-
-        if drop.is_test:
+            conf = self.config.guild(guild)
+            today = engine.today_str(ACTIVITY_TIMEZONE)
+            claim_quota = 0 if drop.is_test else await conf.claim_quota()
             state = await self._member_state(member)
-            outcome = engine.claim_outcome(state.collection, card.card_id, MAX_COPIES_KEPT)
-            price = engine.sell_price(card.rarity, sell_prices) if outcome == "sell_token" else None
-            embed = embeds.claim_result_embed(card, member, outcome, price=price, is_test=True)
-        else:
-            state = await self._member_state(member)
+            if claim_quota > 0 and not engine.has_quota_remaining(
+                state.daily_claims, state.daily_claims_date, claim_quota, today
+            ):
+                return f"You've used all {claim_quota} of today's claims. It resets at midnight Pacific."
+
+            card = await self._card_by_id(guild, entry["card_id"])
+            if card is None:
+                return MSG_ERROR
+
+            sell_prices = await conf.sell_prices()
             # up to MAX_COPIES_KEPT copies (1 original + 1 tradeable spare)
             # stay as real collection entries; anything beyond that converts
             # straight to a sell token instead of piling up more duplicates
             outcome = engine.claim_outcome(state.collection, card.card_id, MAX_COPIES_KEPT)
-            price = None
-            if outcome == "sell_token":
-                token = engine.make_sell_token(card.card_id, card.rarity)
-                state.sell_tokens.append(token)
-                price = engine.sell_price(card.rarity, sell_prices)
-            else:
-                state.collection.append(card.card_id)
-            if claim_quota > 0:
-                # every real claim counts against the quota, sell-token
-                # conversions included, same as the genre convention this
-                # mirrors (Mudae/Karuta) -- it's rate-limiting claim
-                # *attempts* against the pool, not just new pickups
-                state.daily_claims, state.daily_claims_date = engine.record_claim(
-                    state.daily_claims, state.daily_claims_date, today
-                )
-            await self._save_member_state(member, state)
+            price = engine.sell_price(card.rarity, sell_prices) if outcome == "sell_token" else None
 
-            claim_cooldown = await conf.claim_cooldown_seconds()
-            self.claim_cooldown_until[member.id] = time.monotonic() + claim_cooldown
+            claim_cooldown = 0
+            if not drop.is_test:
+                if outcome == "sell_token":
+                    state.sell_tokens.append(engine.make_sell_token(card.card_id, card.rarity))
+                else:
+                    state.collection.append(card.card_id)
+                if claim_quota > 0:
+                    # every real claim counts against the quota, sell-token
+                    # conversions included, same as the genre convention this
+                    # mirrors (Mudae/Karuta) -- it's rate-limiting claim
+                    # *attempts* against the pool, not just new pickups
+                    state.daily_claims, state.daily_claims_date = engine.record_claim(
+                        state.daily_claims, state.daily_claims_date, today
+                    )
+                claim_cooldown = await conf.claim_cooldown_seconds()
+                try:
+                    await self._save_member_state(member, state)
+                except Exception:
+                    # Nothing has been marked yet, so the card is still open
+                    # for this member to retry or anyone else to take -- a
+                    # failed write must never silently eat a card.
+                    log.exception("cardcollect: failed to save claim for member %s", member.id)
+                    return MSG_ERROR
 
-            embed = embeds.claim_result_embed(card, member, outcome, price=price, is_test=False)
+            # committed -- mark it, in-memory, with no await since the checks
+            # above other than the write itself (and the lock still held)
+            drop.claimed_positions.add(position)
+            drop.claimed_by.add(member.id)
+            if not drop.is_test:
+                self.claim_cooldown_until[member.id] = time.monotonic() + claim_cooldown
+            if len(drop.claimed_positions) >= len(drop.cards):
+                self._forget_drop(drop.message_id)
 
-        await channel.send(embed=embed)
+            embed = embeds.claim_result_embed(card, member, outcome, price=price, is_test=drop.is_test)
 
-        if len(drop.claimed_positions) >= len(drop.cards):
-            self._forget_drop(message_id)
+        # outside the lock: the public announcement must not hold up the next claim
+        try:
+            await channel.send(embed=embed)
+        except discord.HTTPException:
+            log.exception("cardcollect: failed to post claim result embed")
+
+        reply = f"✅ You claimed **{card.name}**!"
+        if drop.is_test:
+            reply += " (Test drop — nothing was awarded.)"
+        return reply
 
     # ------------------------------------------------------------------
     # commands
@@ -894,11 +857,6 @@ class CardCollect(commands.Cog):
     async def card_set(self, ctx: commands.Context):
         await ctx.send_help()
 
-    @card_set.command(name="decoys")
-    async def card_set_decoys(self, ctx: commands.Context, enabled: bool):
-        await self.config.guild(ctx.guild).decoys_enabled.set(enabled)
-        await ctx.send(f"Decoy reactions {'enabled' if enabled else 'disabled'}.")
-
     @card_set.command(name="claimquota")
     async def card_set_claimquota(self, ctx: commands.Context, quota: int):
         """Max real claims per member per day (resets at midnight Pacific). 0 = unlimited."""
@@ -908,18 +866,28 @@ class CardCollect(commands.Cog):
         await self.config.guild(ctx.guild).claim_quota.set(quota)
         await ctx.send(f"Daily claim quota set to {quota if quota > 0 else 'unlimited'}.")
 
-    @card_set.command(name="decoycount")
-    async def card_set_decoycount(self, ctx: commands.Context, count: int):
-        """How many decoy reactions get added alongside the real ones per drop."""
+    @card_set.command(name="wrongguesses")
+    async def card_set_wrongguesses(self, ctx: commands.Context, count: int):
+        """How many wrong (but code-shaped) guesses a member gets per drop before
+        they're locked out of it. 0 = unlimited. Takes effect on the next drop."""
         if count < 0:
-            await ctx.send("Decoy count can't be negative.")
+            await ctx.send("Can't be negative -- use 0 for unlimited guesses.")
             return
-        await self.config.guild(ctx.guild).decoy_count.set(count)
-        await ctx.send(f"Decoy count set to {count}.")
+        await self.config.guild(ctx.guild).max_wrong_guesses.set(count)
+        await ctx.send(f"Wrong guesses per drop set to {count if count > 0 else 'unlimited'}.")
+
+    @card_set.command(name="dropexpiry")
+    async def card_set_dropexpiry(self, ctx: commands.Context, seconds: int):
+        """How long an unclaimed drop keeps accepting codes (at least 30s)."""
+        if seconds < 30:
+            await ctx.send("Drops need to stay claimable for at least 30 seconds.")
+            return
+        await self.config.guild(ctx.guild).drop_expiry_seconds.set(seconds)
+        await ctx.send(f"Drops now expire after {seconds} second(s) unclaimed. Takes effect on the next drop.")
 
     @card_set.command(name="wrongguesspenalty")
     async def card_set_wrongguesspenalty(self, ctx: commands.Context, seconds: int):
-        """How long a wrong (decoy) reaction guess locks a member out of *winning* any drop. 0 = no penalty."""
+        """How long using up all their wrong guesses locks a member out of *winning* any drop. 0 = no penalty."""
         if seconds < 0:
             await ctx.send("Penalty can't be negative -- use 0 to disable it.")
             return

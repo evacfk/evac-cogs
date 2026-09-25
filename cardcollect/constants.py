@@ -33,17 +33,23 @@ DEFAULT_DROP_SIZE = 3
 DEFAULT_DROP_CHANCE = 0.02  # 2% per qualifying message, retune via .card diagnostics
 DEFAULT_DROP_COOLDOWN_SECONDS = 900  # 15 minutes
 
-DEFAULT_CLAIM_WINDOW_SECONDS = 1.0
 DEFAULT_CLAIM_COOLDOWN_SECONDS = 300  # 5 minutes
 
-DEFAULT_DECOYS_ENABLED = True
-DEFAULT_DECOY_COUNT = 10  # extra decoy reactions added alongside the 3 real ones
-
-# One reaction per drop per member: the first reaction they add is their only
-# "shot" (see cardcollect.on_raw_reaction_add). A wrong (decoy) guess spends
-# that shot and additionally locks them out of *winning* any drop for this
-# long, to make spam-reacting a real cost instead of a free extra guess.
+# Claiming is done by pressing the drop's Claim button and typing the CAPTCHA
+# code shown on a card into the pop-up (see captcha.py / views.py /
+# cardcollect.submit_code). Each member gets a small, fixed number of *wrong
+# but code-shaped* guesses per drop; using them all locks them out of that
+# drop and, on a real (non-test) drop, out of *winning* any drop for
+# DEFAULT_WRONG_GUESS_PENALTY_SECONDS -- a real cost to spamming guesses.
+# Submissions that aren't even code-shaped (a typo) get a hint and cost
+# nothing. 0 = unlimited guesses, no lockout.
+DEFAULT_MAX_WRONG_GUESSES = 2
 DEFAULT_WRONG_GUESS_PENALTY_SECONDS = 120  # 2 minutes
+
+# An unclaimed drop stops accepting codes after this long (and its state is
+# dropped from memory) -- without it, a drop nobody finished would stay
+# claimable, and keep growing in-memory state, forever.
+DEFAULT_DROP_EXPIRY_SECONDS = 600  # 10 minutes
 
 DEFAULT_CLAIM_QUOTA = 10  # max real claims per member per day; 0 = unlimited
 MAX_SHOWCASE_SLOTS = 3  # how many cards a member can pin in their gallery header
@@ -54,18 +60,14 @@ MAX_SHOWCASE_SLOTS = 3  # how many cards a member can pin in their gallery heade
 # hoard an unlimited stack of the same character.
 MAX_COPIES_KEPT = 2
 
-# A reasonably large, visually distinct pool of standard emoji used as claim
-# reactions. Kept deliberately varied (food/animals/objects/symbols) so decoys
-# and real emoji don't cluster into one obvious visual category. Renderable
-# via the bundled Twemoji PNG set (see imagegen.py) and addable as a Discord
-# message reaction (all are standard Unicode, no custom-emoji dependency).
-EMOJI_POOL = [
-    "🍉", "🍇", "🍊", "🍋", "🍓", "🍒", "🍑", "🍍", "🥝", "🍌",
-    "🐶", "🐱", "🦊", "🐼", "🐨", "🐯", "🦁", "🐸", "🐙", "🦉",
-    "⭐", "🌙", "☀️", "❄️", "🔥", "💧", "🌈", "⚡", "🍀", "🌸",
-    "⚽", "🎸", "🎲", "🎯", "🎨", "🧩", "🔑", "💎", "🎁", "🪄",
-    "🚀", "⛵", "🚲", "🛸", "🧸", "🍩", "🧁", "🍪", "🍦", "🍰",
-]
+# CAPTCHA code alphabet -- see captcha.py for the reasoning behind every
+# exclusion. Confusable glyphs left out on purpose: 0 O Q D / 1 I L / 5 S /
+# 2 Z / 8 B / U V / G 6.
+CODE_LENGTH = 5
+CODE_LETTERS = "ACEFHJKMNPRTWXY"
+CODE_DIGITS = "3479"
+CODE_SYMBOLS = "@#$%&?+"
+MIN_CODE_DISTANCE = 2  # min edits between any two codes within one drop
 
 # hour-of-day activity tracking, mirrors minigamehub's diagnostics shape
 ACTIVITY_TIMEZONE = "America/Los_Angeles"

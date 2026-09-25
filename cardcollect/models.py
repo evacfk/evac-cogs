@@ -132,18 +132,30 @@ class ActiveDrop:
     message_id: Optional[int]  # set once the drop message is actually sent
     guild_id: int
     channel_id: int
-    cards: list  # list[dict]: {"card_id": int, "emoji": str, "position": int}
-    decoy_emojis: list  # list[str]
+    cards: list  # list[dict]: {"card_id": int, "code": str, "position": int}
     claimed_positions: set = field(default_factory=set)  # positions already resolved
     claimed_by: set = field(default_factory=set)  # user ids who already won a card from this drop
     is_test: bool = False  # test-mode drop: claims resolve fully but nothing is awarded
-    reacted_users: set = field(default_factory=set)  # user ids who've used their one shot on this drop
+    # user id -> number of wrong (but code-shaped) guesses made on this drop
+    wrong_guesses: dict = field(default_factory=dict)
+    # Snapshotted from guild config when the drop is posted, so the claim
+    # hot path (on_message) needs no Config awaits before it reaches the
+    # claim lock -- an await there would let near-simultaneous submissions
+    # reorder themselves before the lock could serialize them fairly.
+    max_wrong_guesses: int = 0  # 0 = unlimited
+    wrong_guess_penalty_seconds: float = 0.0
+    expires_at: Optional[float] = None  # time.monotonic() deadline; None = never
 
-    def emoji_for(self, emoji: str) -> Optional[dict]:
+    def entry_for_code(self, code: str) -> Optional[dict]:
+        """The card entry whose code is `code` (already normalized), or None."""
         for c in self.cards:
-            if c["emoji"] == emoji:
+            if c["code"] == code:
                 return c
         return None
 
-    def is_real_emoji(self, emoji: str) -> bool:
-        return self.emoji_for(emoji) is not None
+    def is_expired(self, now: float) -> bool:
+        return self.expires_at is not None and now >= self.expires_at
+
+    def is_locked_out(self, user_id: int) -> bool:
+        """True once `user_id` has used up their wrong guesses on this drop."""
+        return self.max_wrong_guesses > 0 and self.wrong_guesses.get(user_id, 0) >= self.max_wrong_guesses

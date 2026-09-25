@@ -120,14 +120,14 @@ def settings_embed(guild_config: dict, guild_name: str) -> discord.Embed:
     embed.add_field(name="Drop channel", value=f"<#{channel_id}>" if channel_id else "Not set", inline=True)
     embed.add_field(name="Drop chance", value=f"{guild_config.get('drop_chance', 0) * 100:.2f}% / message", inline=True)
     embed.add_field(name="Drop cooldown", value=f"{guild_config.get('drop_cooldown_seconds', 0)}s", inline=True)
-    embed.add_field(name="Claim window", value=f"{guild_config.get('claim_window_seconds', 0)}s", inline=True)
     embed.add_field(name="Claim cooldown", value=f"{guild_config.get('claim_cooldown_seconds', 0)}s", inline=True)
+    max_wrong = guild_config.get("max_wrong_guesses", 0)
+    embed.add_field(name="Wrong guesses / drop", value=str(max_wrong) if max_wrong > 0 else "Unlimited", inline=True)
     penalty = guild_config.get("wrong_guess_penalty_seconds", 0)
-    embed.add_field(name="Wrong guess penalty", value=f"{penalty}s" if penalty > 0 else "Disabled", inline=True)
+    embed.add_field(name="Lockout penalty", value=f"{penalty}s" if penalty > 0 else "Disabled", inline=True)
     quota = guild_config.get("claim_quota", 0)
     embed.add_field(name="Daily claim quota", value=str(quota) if quota > 0 else "Unlimited", inline=True)
-    embed.add_field(name="Decoys enabled", value=str(guild_config.get("decoys_enabled", True)), inline=True)
-    embed.add_field(name="Decoy count", value=str(guild_config.get("decoy_count", 0)), inline=True)
+    embed.add_field(name="Drop expiry", value=f"{guild_config.get('drop_expiry_seconds', 0)}s", inline=True)
 
     weights = guild_config.get("drop_weights", {})
     weight_lines = [f"{_rarity_line(t)}: {weights.get(t, 0)}" for t in TIERS]

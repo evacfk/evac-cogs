@@ -1,15 +1,11 @@
-"""Pillow-based image compositing for cardcollect: burns the claim emoji into
-each card, builds the multi-card drop composite, and builds the collection
-gallery (favorite-first, larger tile).
+"""Pillow-based image compositing for cardcollect: draws each card's CAPTCHA
+claim code onto its art, builds the multi-card drop composite, and builds the
+collection gallery (favorite-first, larger tile).
 
-Emoji are drawn from a locally bundled 64x64 PNG set (assets/emoji_cache/,
-sourced once at build time from the emoji-datasource-twitter npm package --
-see that directory's NOTICE.md) rather than fetched from any CDN at
-drop-time. Fonts are the bundled DejaVu Sans / DejaVu Sans Bold
-(assets/fonts/) rather than relying on fonts being installed on the actual
-bot host. Both follow the same "download/bundle once, never depend on a live
-third-party host at runtime" rule the project settled on for AniList art
-(see storage.py).
+Fonts are the bundled DejaVu Sans / DejaVu Sans Bold (assets/fonts/) rather
+than relying on fonts being installed on the actual bot host -- the same
+"bundle once, never depend on a live third-party host at runtime" rule the
+project settled on for AniList art (see storage.py).
 
 No discord/redbot imports -- this module only knows about bytes in, bytes
 (PNG) out, so it's usable standalone and unit-testable with plain pytest
@@ -18,6 +14,7 @@ in this project).
 """
 
 import io
+import random
 from pathlib import Path
 from typing import Optional, Sequence, Tuple
 
@@ -33,7 +30,6 @@ from .models import Card
 
 ASSETS_DIR = Path(__file__).parent / "assets"
 FONTS_DIR = ASSETS_DIR / "fonts"
-EMOJI_CACHE_DIR = ASSETS_DIR / "emoji_cache"
 
 FONT_BOLD_PATH = FONTS_DIR / "DejaVuSans-Bold.ttf"
 FONT_REGULAR_PATH = FONTS_DIR / "DejaVuSans.ttf"
@@ -50,7 +46,11 @@ PLATE_BG = (0, 0, 0, 175)
 TEXT_WHITE = (240, 240, 240)
 BORDER_WIDTH = 8
 CORNER_RADIUS = 18
-EMOJI_BADGE_SIZE = 56
+CODE_FONT_SIZE = 46
+CODE_CELL_WIDTH = 44  # fixed per-character cell: DejaVu Sans isn't monospace, so cells do that job
+CODE_PILL_PAD_X = 18
+CODE_PILL_HEIGHT = CODE_FONT_SIZE + 26  # headroom for per-character vertical jitter
+CODE_MAX_ROTATION = 10  # degrees, either direction
 NAME_PLATE_HEIGHT = 64
 DROP_PADDING = 24
 TEST_BANNER_HEIGHT = 40
@@ -68,23 +68,59 @@ def _font(size: int, bold: bool = False) -> ImageFont.FreeTypeFont:
     return _font_cache[key]
 
 
-def _codepoints(emoji: str) -> str:
-    return "-".join(f"{ord(c):x}" for c in emoji)
+def _draw_code_badge(canvas: Image.Image, code: str, rng: Optional[random.Random] = None) -> None:
+    """Burn `code` into the bottom of `canvas` (just above the name plate) as
+    a dark pill of individually jittered/rotated characters.
 
+    Each character sits in its own fixed-width cell with a small random
+    rotation and vertical offset, plus a few faint noise strokes behind the
+    text. That is deliberately *light* distortion -- readable at a glance on a
+    phone -- not a serious anti-OCR measure: it stops casual copy/paste-free
+    automation from being trivial, not a determined vision model. `rng` is
+    injectable so tests can render deterministically."""
+    rng = rng if rng is not None else random
+    font = _font(CODE_FONT_SIZE, bold=True)
+    n = len(code)
+    pill_w = CODE_CELL_WIDTH * n + CODE_PILL_PAD_X * 2
+    pill_h = CODE_PILL_HEIGHT
 
-def get_emoji_image(emoji: str, size: int) -> Optional[Image.Image]:
-    """Load a bundled emoji PNG and resize it, or None if this emoji isn't
-    in the bundled cache (shouldn't happen for anything drawn from
-    constants.EMOJI_POOL -- see emoji_cache/NOTICE.md)."""
-    path = EMOJI_CACHE_DIR / f"{_codepoints(emoji)}.png"
-    if not path.exists():
-        # strip a trailing variation selector and retry once
-        stripped = emoji.replace("️", "")
-        path = EMOJI_CACHE_DIR / f"{_codepoints(stripped)}.png"
-    if not path.exists():
-        return None
-    img = Image.open(path).convert("RGBA")
-    return img.resize((size, size), Image.LANCZOS)
+    pill = Image.new("RGBA", (pill_w, pill_h), (0, 0, 0, 0))
+    pd = ImageDraw.Draw(pill)
+    pd.rounded_rectangle([(0, 0), (pill_w - 1, pill_h - 1)], radius=16, fill=(0, 0, 0, 215), outline=(255, 255, 255, 70), width=2)
+
+    noise = Image.new("RGBA", (pill_w, pill_h), (0, 0, 0, 0))
+    nd = ImageDraw.Draw(noise)
+    for _ in range(3):
+        nd.line(
+            [(rng.randint(0, pill_w), rng.randint(0, pill_h)), (rng.randint(0, pill_w), rng.randint(0, pill_h))],
+            fill=(255, 255, 255, 40),
+            width=1,
+        )
+    for _ in range(24):
+        x, y = rng.randint(4, pill_w - 5), rng.randint(4, pill_h - 5)
+        nd.point((x, y), fill=(255, 255, 255, 70))
+    pill.alpha_composite(noise)
+
+    text_layer = Image.new("RGBA", (pill_w, pill_h), (0, 0, 0, 0))
+    layer_w = CODE_CELL_WIDTH + 16
+    for i, ch in enumerate(code):
+        glyph = Image.new("RGBA", (layer_w, pill_h), (0, 0, 0, 0))
+        gd = ImageDraw.Draw(glyph)
+        bbox = gd.textbbox((0, 0), ch, font=font)
+        gw, gh = bbox[2] - bbox[0], bbox[3] - bbox[1]
+        gd.text(((layer_w - gw) / 2 - bbox[0], (pill_h - gh) / 2 - bbox[1] - 3), ch, font=font, fill=TEXT_WHITE)
+        glyph = glyph.rotate(rng.uniform(-CODE_MAX_ROTATION, CODE_MAX_ROTATION), resample=Image.BICUBIC)
+        # dx keeps x >= 0 (CODE_PILL_PAD_X - 8 - 2 = 8) and dy >= 0, since
+        # alpha_composite rejects a negative destination
+        x = CODE_PILL_PAD_X - 8 + i * CODE_CELL_WIDTH + rng.randint(-2, 2)
+        y = rng.randint(0, 6)
+        text_layer.alpha_composite(glyph, (x, y))
+    pill.alpha_composite(text_layer)
+
+    w, h = canvas.size
+    bx = max(4, (w - pill_w) // 2)
+    by = h - NAME_PLATE_HEIGHT - pill_h - 14
+    canvas.alpha_composite(pill, (bx, by))
 
 
 def _load_card_art(image_bytes: bytes, size: Tuple[int, int]) -> Image.Image:
@@ -115,13 +151,13 @@ def _rounded_mask(size: Tuple[int, int], radius: int) -> Image.Image:
 def render_card(
     card: Card,
     image_bytes: bytes,
-    emoji: Optional[str] = None,
+    code: Optional[str] = None,
     size: Tuple[int, int] = CARD_IMAGE_SIZE,
     quantity: int = 1,
     show_id: bool = False,
 ) -> Image.Image:
     """Build one card tile: art, rarity-colored border, name plate, and
-    (if given) the claim emoji burned into the bottom-right corner. `emoji`
+    (if given) the CAPTCHA claim `code` burned in above the name plate. `code`
     is omitted for gallery tiles, which don't need a claim badge.
 
     `quantity` > 1 draws a small "×N" badge in the top-left corner -- used by
@@ -136,7 +172,7 @@ def render_card(
     by the name-plate width, e.g. "Isuzu Sento..." for "Isuzu Sento(mi)ya",
     and the gallery previously showed neither the full name nor the ID, so
     there was nothing usable to type). Drop tiles never pass this -- the
-    claim emoji is the only thing that should identify a card there."""
+    claim code is the only thing that should identify a card there."""
     w, h = size
     color = RARITY_COLORS.get(card.rarity, RARITY_COLORS["common"])
 
@@ -167,18 +203,8 @@ def render_card(
     plate_draw.text((14, 32), card.rarity.upper(), font=rarity_font, fill=color)
     canvas.alpha_composite(plate, (0, h - NAME_PLATE_HEIGHT))
 
-    if emoji:
-        badge = get_emoji_image(emoji, EMOJI_BADGE_SIZE)
-        if badge is not None:
-            bx = w - EMOJI_BADGE_SIZE - 14
-            by = h - NAME_PLATE_HEIGHT - EMOJI_BADGE_SIZE - 10
-            # small circular backing so the emoji reads clearly against any art
-            backing = Image.new("RGBA", (EMOJI_BADGE_SIZE + 10, EMOJI_BADGE_SIZE + 10), (0, 0, 0, 0))
-            ImageDraw.Draw(backing).ellipse(
-                [(0, 0), (EMOJI_BADGE_SIZE + 10, EMOJI_BADGE_SIZE + 10)], fill=(0, 0, 0, 190)
-            )
-            canvas.alpha_composite(backing, (bx - 5, by - 5))
-            canvas.alpha_composite(badge, (bx, by))
+    if code:
+        _draw_code_badge(canvas, code)
 
     if quantity > 1:
         qty_font = _font(16, bold=True)
@@ -216,9 +242,9 @@ def render_drop(
     is_test: bool = False,
 ) -> io.BytesIO:
     """Build the composite image posted for a drop: each (card, image_bytes,
-    emoji) side by side. A test drop gets a visible red banner so it's never
+    code) side by side. A test drop gets a visible red banner so it's never
     mistaken for a real one."""
-    tiles = [render_card(card, image_bytes, emoji=emoji) for card, image_bytes, emoji in entries]
+    tiles = [render_card(card, image_bytes, code=code) for card, image_bytes, code in entries]
     if not tiles:
         raise ValueError("render_drop needs at least one card")
 

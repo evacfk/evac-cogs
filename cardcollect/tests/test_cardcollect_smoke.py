@@ -5,13 +5,14 @@ running bot can still ship a plain import error, so it needs at least an
 import-level test even without the real dependency installed.
 
 Beyond the bare import, this also drives a full drop -> claim cycle through
-the actual cog code (message listener -> _post_drop -> reaction handling ->
-_resolve_claim_window) against lightweight fake discord objects, since
-that's the newest and most bug-prone part of this cog.
+the actual cog code (message listener -> _post_drop -> code matching ->
+_claim) against lightweight fake discord objects, since that's the newest
+and most bug-prone part of this cog.
 """
 
 import asyncio
 import io
+import random
 import time
 
 import discord
@@ -69,76 +70,18 @@ class FakeGuild:
         return self.channels.get(channel_id)
 
 
-class FakeReaction:
-    def __init__(self, emoji):
-        self.emoji = emoji
-        self._reactor_objs = []
-
-    async def users(self):
-        # a real suspension point (asyncio.sleep(0)), not just an `async
-        # def` with no internal await -- without this, awaiting a coroutine
-        # that never itself suspends runs to completion without ever
-        # ceding control back to the event loop, so two "concurrent" tasks
-        # started via asyncio.gather would never actually interleave and a
-        # race condition in the code under test could never be observed
-        await asyncio.sleep(0)
-        for u in self._reactor_objs:
-            yield u
-
-
 class FakeMessage:
-    def __init__(self, id_, channel, content=None, embed=None, file=None):
+    def __init__(self, id_, channel, content=None, embed=None, file=None, view=None):
         self.id = id_
         self.channel = channel
         self.content = content
         self.embeds = [embed] if embed else []
         self.files = [file] if file else []
+        self.view = view
         self.reactions = []
 
     async def add_reaction(self, emoji):
-        self.reactions.append(FakeReaction(emoji))
-
-
-class FakeReactionSnapshot:
-    """Stand-in for a real discord.Reaction as it comes back from a
-    *fetched* Message. Mirrors discord.py's actual behavior (confirmed by
-    reading its source): Reaction.count is captured once, when the parent
-    Message is constructed, and Reaction.users() bounds its own pagination
-    loop by that frozen count -- even though each individual page of
-    results is still a live API call. So a snapshot's users() here still
-    reads from the *live* underlying reactor list (new reactors really do
-    show up in later pages, for a page that still gets fetched), but it
-    never consumes more than `count` results, however many more reactors
-    have joined since. Without this, the test fakes have no way to
-    reproduce the actual bug a stale cached Message can cause: silently
-    dropping a legitimate later reactor from a claim's fairness pool."""
-
-    def __init__(self, live_reaction: "FakeReaction"):
-        self.emoji = live_reaction.emoji
-        self._live = live_reaction
-        self.count = len(live_reaction._reactor_objs)
-
-    async def users(self):
-        await asyncio.sleep(0)  # real suspension point, see FakeReaction.users
-        for u in self._live._reactor_objs[: self.count]:
-            yield u
-
-
-class FakeMessageSnapshot:
-    """A frozen-at-fetch-time view of a FakeMessage -- what
-    FakeChannel.fetch_message actually hands back, so that caching (or
-    reusing) a fetched message in the code under test can't accidentally
-    see live mutations made to the real FakeMessage/FakeReaction objects
-    after the fetch happened, the same way a real discord.Message from
-    fetch_message() wouldn't."""
-
-    def __init__(self, live_message: "FakeMessage"):
-        self.id = live_message.id
-        self.channel = live_message.channel
-        self.content = live_message.content
-        self.embeds = live_message.embeds
-        self.files = live_message.files
-        self.reactions = [FakeReactionSnapshot(r) for r in live_message.reactions]
+        self.reactions.append(emoji)
 
 
 class FakeChannel:
@@ -148,52 +91,34 @@ class FakeChannel:
         self._messages = {}
         self._next_id = 1
         self.sent = []
-        self.fetch_message_calls = 0
         guild.channels[id_] = self
 
     @property
     def mention(self):
         return f"<#{self.id}>"
 
-    async def send(self, content=None, embed=None, file=None):
-        msg = FakeMessage(self._next_id, self, content=content, embed=embed, file=file)
+    async def send(self, content=None, embed=None, file=None, view=None):
+        msg = FakeMessage(self._next_id, self, content=content, embed=embed, file=file, view=view)
         self._messages[msg.id] = msg
         self._next_id += 1
         self.sent.append(msg)
         return msg
-
-    async def fetch_message(self, message_id):
-        self.fetch_message_calls += 1
-        await asyncio.sleep(0)  # real suspension point, see FakeReaction.users
-        # a real fetch_message() snapshots reaction counts at this instant
-        # (see FakeMessageSnapshot) -- returning the live FakeMessage
-        # itself would let the code under test see reactions added *after*
-        # this call, which a real cached discord.Message never could
-        return FakeMessageSnapshot(self._messages[message_id])
 
 
 class FakeBot:
     def __init__(self):
         self.user = FakeUser(999999999)
         self._channels = {}
+        self.added_views = []
+
+    def add_view(self, view):
+        self.added_views.append(view)
 
     def register_channel(self, channel):
         self._channels[channel.id] = channel
 
     def get_channel(self, channel_id):
         return self._channels.get(channel_id)
-
-
-class FakeRawReactionPayload:
-    """Duck-typed stand-in for discord.RawReactionActionEvent -- only the
-    attributes on_raw_reaction_add actually reads."""
-
-    def __init__(self, guild_id, user_id, message_id, channel_id, emoji):
-        self.guild_id = guild_id
-        self.user_id = user_id
-        self.message_id = message_id
-        self.channel_id = channel_id
-        self.emoji = emoji
 
 
 class FakeAttachment:
@@ -275,247 +200,6 @@ async def test_addcard_then_empty_collection_view(cog):
     # this member owns nothing yet
     await cog.card.callback(cog, ctx)
     assert "haven't claimed" in ctx.sent[-1].content
-
-
-@pytest.mark.asyncio
-async def test_full_drop_and_claim_cycle_real_mode(cog):
-    guild = FakeGuild(3)
-    admin = FakeMember(30, guild)
-    winner = FakeMember(31, guild)
-    other_reactor = FakeMember(32, guild)
-    guild.members = {30: admin, 31: winner, 32: other_reactor}
-
-    channel = FakeChannel(300, guild)
-    cog.bot.register_channel(channel)
-    ctx = FakeCtx(admin, guild, channel, attachments=[FakeAttachment(fake_art_bytes((10, 200, 10)))])
-
-    await cog.card.commands["addcard"].callback(cog, ctx, "legendary", name_and_series="Lux | Some Anime")
-
-    # force an immediate real (non-test) drop, bypassing the chance/cooldown gate
-    await cog._post_drop(channel, guild, is_test=False)
-    assert channel.sent, "drop should have posted a message"
-
-    drop_message = channel.sent[-1]
-    drop = cog.active_drops[drop_message.id]
-    assert len(drop.cards) >= 1
-    real_emoji = drop.cards[0]["emoji"]
-    card_id = drop.cards[0]["card_id"]
-
-    reaction = next(r for r in drop_message.reactions if r.emoji == real_emoji)
-    reaction._reactor_objs = [winner, other_reactor]
-
-    await cog._resolve_claim_window(channel.id, drop_message.id, real_emoji, window=0)
-
-    # resolution picks randomly among everyone who reacted within the
-    # window (that's the whole point of the claim-fairness mechanic), so
-    # either eligible reactor could have won -- check exactly one did
-    winner_state = await cog._member_state(winner)
-    other_state = await cog._member_state(other_reactor)
-    winners = [s for s in (winner_state, other_state) if card_id in s.collection]
-    assert len(winners) == 1
-
-    result_embed = channel.sent[-1].embeds[0]
-    assert result_embed.title == "New card claimed!"
-
-
-@pytest.mark.asyncio
-async def test_test_mode_drop_awards_nothing(cog):
-    guild = FakeGuild(4)
-    admin = FakeMember(40, guild)
-    winner = FakeMember(41, guild)
-    guild.members = {40: admin, 41: winner}
-
-    channel = FakeChannel(400, guild)
-    cog.bot.register_channel(channel)
-    ctx = FakeCtx(admin, guild, channel, attachments=[FakeAttachment(fake_art_bytes((10, 10, 200)))])
-
-    await cog.card.commands["addcard"].callback(cog, ctx, "common", name_and_series="Nova | Some Anime")
-
-    await cog._post_drop(channel, guild, is_test=True)
-    drop_message = channel.sent[-1]
-    drop = cog.active_drops[drop_message.id]
-    assert drop.is_test is True
-
-    real_emoji = drop.cards[0]["emoji"]
-    reaction = next(r for r in drop_message.reactions if r.emoji == real_emoji)
-    reaction._reactor_objs = [winner]
-
-    await cog._resolve_claim_window(channel.id, drop_message.id, real_emoji, window=0)
-
-    state = await cog._member_state(winner)
-    assert state.collection == []  # test mode: nothing awarded
-
-    result_embed = channel.sent[-1].embeds[0]
-    assert "Test" in result_embed.title
-
-
-@pytest.mark.asyncio
-async def test_first_duplicate_claim_becomes_a_tradeable_spare(cog):
-    """Locked decision: MAX_COPIES_KEPT=2 -- a member's *first* duplicate of
-    a card becomes a real second collection entry (a tradeable spare, not a
-    sell token), so `.card give` has something to actually hand off."""
-    guild = FakeGuild(5)
-    admin = FakeMember(50, guild)
-    winner = FakeMember(51, guild)
-    guild.members = {50: admin, 51: winner}
-
-    channel = FakeChannel(500, guild)
-    cog.bot.register_channel(channel)
-    ctx = FakeCtx(admin, guild, channel, attachments=[FakeAttachment(fake_art_bytes((200, 200, 10)))])
-    await cog.card.commands["addcard"].callback(cog, ctx, "epic", name_and_series="Rin | Some Anime")
-
-    pool = await cog.config.guild(guild).pool()
-    card_id = int(next(iter(pool)))
-
-    # give the winner the card already, directly, then have them "claim" it again
-    from cardcollect.models import MemberState
-
-    state = MemberState(collection=[card_id])
-    await cog._save_member_state(winner, state)
-
-    await cog._post_drop(channel, guild, is_test=False)
-    drop_message = channel.sent[-1]
-    drop = cog.active_drops[drop_message.id]
-    # force the drop's only card to be the one the winner already owns, so
-    # this test deterministically exercises the dupe path regardless of the
-    # random tier/card roll
-    drop.cards[0]["card_id"] = card_id
-    real_emoji = drop.cards[0]["emoji"]
-    reaction = next(r for r in drop_message.reactions if r.emoji == real_emoji)
-    reaction._reactor_objs = [winner]
-
-    await cog._resolve_claim_window(channel.id, drop_message.id, real_emoji, window=0)
-
-    final_state = await cog._member_state(winner)
-    assert final_state.collection == [card_id, card_id]  # a real second copy, not a sell token
-    assert final_state.sell_tokens == []
-
-    result_embed = channel.sent[-1].embeds[0]
-    assert "Duplicate" in result_embed.title
-    assert "spare" in result_embed.title.lower()
-
-
-@pytest.mark.asyncio
-async def test_claim_at_the_duplicate_cap_becomes_a_sell_token(cog):
-    """A 3rd claim of the same card (already at MAX_COPIES_KEPT=2) converts
-    straight to a sell token instead of piling up more duplicates."""
-    guild = FakeGuild(24)
-    admin = FakeMember(240, guild)
-    winner = FakeMember(241, guild)
-    guild.members = {240: admin, 241: winner}
-
-    channel = FakeChannel(2400, guild)
-    cog.bot.register_channel(channel)
-    ctx = FakeCtx(admin, guild, channel, attachments=[FakeAttachment(fake_art_bytes((200, 10, 200)))])
-    await cog.card.commands["addcard"].callback(cog, ctx, "epic", name_and_series="Cap | Some Anime")
-
-    pool = await cog.config.guild(guild).pool()
-    card_id = int(next(iter(pool)))
-
-    from cardcollect.models import MemberState
-
-    # winner is already at the cap (2 copies)
-    state = MemberState(collection=[card_id, card_id])
-    await cog._save_member_state(winner, state)
-
-    await cog._post_drop(channel, guild, is_test=False)
-    drop_message = channel.sent[-1]
-    drop = cog.active_drops[drop_message.id]
-    drop.cards[0]["card_id"] = card_id
-    real_emoji = drop.cards[0]["emoji"]
-    reaction = next(r for r in drop_message.reactions if r.emoji == real_emoji)
-    reaction._reactor_objs = [winner]
-
-    await cog._resolve_claim_window(channel.id, drop_message.id, real_emoji, window=0)
-
-    final_state = await cog._member_state(winner)
-    assert final_state.collection == [card_id, card_id]  # unchanged, no 3rd copy
-    assert len(final_state.sell_tokens) == 1
-    assert final_state.sell_tokens[0].card_id == card_id
-
-    result_embed = channel.sent[-1].embeds[0]
-    assert "sell token" in result_embed.title.lower()
-
-
-@pytest.mark.asyncio
-async def test_claim_at_the_cap_still_counts_against_daily_quota(cog):
-    """A sell-token (at-cap) claim still burns quota, same as Mudae/Karuta
-    rate-limit claim *attempts* against the pool, not just new pickups (see
-    the comment above the daily_claims increment in
-    _resolve_claim_window) -- otherwise a maxed-out member could keep
-    re-rolling a card they already have two of forever without it ever
-    counting against them."""
-    guild = FakeGuild(22)
-    admin = FakeMember(220, guild)
-    winner = FakeMember(221, guild)
-    guild.members = {220: admin, 221: winner}
-
-    channel = FakeChannel(2200, guild)
-    cog.bot.register_channel(channel)
-    ctx = FakeCtx(admin, guild, channel, attachments=[FakeAttachment(fake_art_bytes((5, 5, 5)))])
-    await cog.card.commands["addcard"].callback(cog, ctx, "epic", name_and_series="Dupe | Some Anime")
-    await cog.config.guild(guild).claim_quota.set(5)
-
-    pool = await cog.config.guild(guild).pool()
-    card_id = int(next(iter(pool)))
-
-    from cardcollect.models import MemberState
-
-    # already at the duplicate cap (2 copies)
-    await cog._save_member_state(winner, MemberState(collection=[card_id, card_id]))
-
-    await cog._post_drop(channel, guild, is_test=False)
-    drop_message = channel.sent[-1]
-    drop = cog.active_drops[drop_message.id]
-    drop.cards[0]["card_id"] = card_id
-    real_emoji = drop.cards[0]["emoji"]
-    reaction = next(r for r in drop_message.reactions if r.emoji == real_emoji)
-    reaction._reactor_objs = [winner]
-
-    await cog._resolve_claim_window(channel.id, drop_message.id, real_emoji, window=0)
-
-    final_state = await cog._member_state(winner)
-    assert len(final_state.sell_tokens) == 1  # at-cap path, not a new pickup or a 3rd copy
-    assert final_state.daily_claims == 1, "an at-cap claim must still burn quota"
-
-
-@pytest.mark.asyncio
-async def test_first_duplicate_claim_also_counts_against_daily_quota(cog):
-    """Same as the at-cap case above, but for the *first* duplicate (kept as
-    a tradeable spare rather than converted to a sell token) -- that must
-    burn quota too, not just sell-token conversions."""
-    guild = FakeGuild(25)
-    admin = FakeMember(250, guild)
-    winner = FakeMember(251, guild)
-    guild.members = {250: admin, 251: winner}
-
-    channel = FakeChannel(2500, guild)
-    cog.bot.register_channel(channel)
-    ctx = FakeCtx(admin, guild, channel, attachments=[FakeAttachment(fake_art_bytes((5, 6, 7)))])
-    await cog.card.commands["addcard"].callback(cog, ctx, "epic", name_and_series="Spare | Some Anime")
-    await cog.config.guild(guild).claim_quota.set(5)
-
-    pool = await cog.config.guild(guild).pool()
-    card_id = int(next(iter(pool)))
-
-    from cardcollect.models import MemberState
-
-    await cog._save_member_state(winner, MemberState(collection=[card_id]))
-
-    await cog._post_drop(channel, guild, is_test=False)
-    drop_message = channel.sent[-1]
-    drop = cog.active_drops[drop_message.id]
-    drop.cards[0]["card_id"] = card_id
-    real_emoji = drop.cards[0]["emoji"]
-    reaction = next(r for r in drop_message.reactions if r.emoji == real_emoji)
-    reaction._reactor_objs = [winner]
-
-    await cog._resolve_claim_window(channel.id, drop_message.id, real_emoji, window=0)
-
-    final_state = await cog._member_state(winner)
-    assert final_state.collection == [card_id, card_id]
-    assert final_state.sell_tokens == []
-    assert final_state.daily_claims == 1, "a spare-duplicate claim must still burn quota"
 
 
 @pytest.mark.asyncio
@@ -898,53 +582,6 @@ async def test_resetpool_requires_confirmation_then_retires_everything(cog):
 
 
 @pytest.mark.asyncio
-async def test_daily_claim_quota_excludes_a_reactor_who_already_hit_it(cog, monkeypatch):
-    """A member at their daily quota must be excluded from the reactor pool
-    entirely, the same way claimed_by/claim_cooldown exclude people -- not
-    merely prevented from being picked as winner (that would still let them
-    win by being the only eligible reactor)."""
-    monkeypatch.setattr(cc_module.engine, "resolve_claim", lambda reactor_ids, rng=None: reactor_ids[0])
-
-    guild = FakeGuild(15)
-    admin = FakeMember(150, guild)
-    maxed_out = FakeMember(151, guild)
-    fresh = FakeMember(152, guild)
-    guild.members = {150: admin, 151: maxed_out, 152: fresh}
-
-    channel = FakeChannel(1500, guild)
-    cog.bot.register_channel(channel)
-    ctx = FakeCtx(admin, guild, channel, attachments=[FakeAttachment(fake_art_bytes((7, 7, 7)))])
-    await cog.card.commands["addcard"].callback(cog, ctx, "common", name_and_series="Q | S")
-
-    await cog.config.guild(guild).claim_quota.set(1)
-    await cog.config.guild(guild).claim_cooldown_seconds.set(0)
-    # maxed_out already used today's one claim
-    from cardcollect import engine as engine_mod
-
-    today = engine_mod.today_str("America/Los_Angeles")
-    member_conf = cog.config.member_from_ids(guild.id, maxed_out.id)
-    await member_conf.daily_claims.set(1)
-    await member_conf.daily_claims_date.set(today)
-
-    await cog._post_drop(channel, guild, is_test=False)
-    drop_message = channel.sent[-1]
-    real_emoji = cog.active_drops[drop_message.id].cards[0]["emoji"]
-    reaction = next(r for r in drop_message.reactions if r.emoji == real_emoji)
-    # maxed_out reacts first (would deterministically win under the pinned
-    # resolve_claim if not excluded); fresh reacts too
-    reaction._reactor_objs = [maxed_out, fresh]
-
-    await cog._resolve_claim_window(channel.id, drop_message.id, real_emoji, window=0)
-
-    maxed_state = await cog._member_state(maxed_out)
-    fresh_state = await cog._member_state(fresh)
-    assert maxed_state.collection == [], "a member at their daily quota must not win a card"
-    assert len(fresh_state.collection) == 1
-    assert fresh_state.daily_claims == 1
-    assert fresh_state.daily_claims_date == today
-
-
-@pytest.mark.asyncio
 async def test_claim_quota_zero_means_unlimited_and_quota_command_reports_it(cog):
     guild = FakeGuild(16)
     admin = FakeMember(160, guild)
@@ -1177,122 +814,6 @@ async def test_importpool_skips_characters_already_in_the_pool(cog):
 
 
 @pytest.mark.asyncio
-async def test_concurrent_resolution_calls_never_double_award(cog):
-    """Regression test: _resolve_claim_window used to mark
-    drop.claimed_positions only after its fetch_message/reaction.users()
-    awaits, leaving a window where a reaction arriving mid-resolution could
-    race a second, concurrent resolution of the same card. It's now marked
-    synchronously before the first await, so a second call for the same
-    (message, emoji) must see the position already claimed and no-op."""
-    guild = FakeGuild(7)
-    admin = FakeMember(70, guild)
-    # two DISTINCT reactors, deliberately -- using the same reactor twice
-    # would let the unrelated claim-cooldown mechanism incidentally mask
-    # this race (the second resolution's reactor list would come back empty
-    # once the first sets that user's cooldown, hiding the actual bug this
-    # test is for)
-    reactor1 = FakeMember(71, guild)
-    reactor2 = FakeMember(72, guild)
-    guild.members = {70: admin, 71: reactor1, 72: reactor2}
-
-    channel = FakeChannel(700, guild)
-    cog.bot.register_channel(channel)
-    ctx = FakeCtx(admin, guild, channel, attachments=[FakeAttachment(fake_art_bytes((10, 100, 220)))])
-    await cog.card.commands["addcard"].callback(cog, ctx, "common", name_and_series="Yui | Some Anime")
-
-    await cog._post_drop(channel, guild, is_test=False)
-    drop_message = channel.sent[-1]
-    real_emoji = cog.active_drops[drop_message.id].cards[0]["emoji"]
-    reaction = next(r for r in drop_message.reactions if r.emoji == real_emoji)
-    reaction._reactor_objs = [reactor1, reactor2]
-
-    messages_before = len(channel.sent)
-
-    # simulate two reaction events for the same card racing each other, as
-    # if a second reaction had arrived while the first resolution was still
-    # awaiting fetch_message/reaction.users()
-    await asyncio.gather(
-        cog._resolve_claim_window(channel.id, drop_message.id, real_emoji, window=0),
-        cog._resolve_claim_window(channel.id, drop_message.id, real_emoji, window=0),
-    )
-
-    state1 = await cog._member_state(reactor1)
-    state2 = await cog._member_state(reactor2)
-    total_copies = len(state1.collection) + len(state2.collection)
-    assert total_copies == 1, f"card must be awarded exactly once total, got {total_copies}"
-    # a redundant resolution must not mint a spurious sell token for
-    # whichever reactor it would have (incorrectly) picked, either
-    assert state1.sell_tokens == [] and state2.sell_tokens == []
-
-    new_messages = channel.sent[messages_before:]
-    assert len(new_messages) == 1, f"expected exactly one claim result message, got {len(new_messages)}"
-
-
-@pytest.mark.asyncio
-async def test_one_card_per_person_per_drop(cog, monkeypatch):
-    """User-requested rule: a drop still has multiple independently-claimable
-    cards (that part is unchanged), but a single person may only ever redeem
-    one of them. Set up a 2-card drop where the same user reacts to both
-    cards, but a second person also reacts to the second card -- the greedy
-    reactor must win exactly one card total, and the other reactor must
-    still be able to win the second card despite not being first/fastest.
-
-    resolve_claim is normally a random pick among eligible reactors, which
-    would make this test flaky (a pass could just mean the RNG happened to
-    pick "other"). Pin it to "first eligible reactor" so the assertions
-    below are actually discriminating: if the one-card-per-drop filtering
-    disappeared, greedy (who reacted first, at index 0) would deterministically
-    win card B too, not just possibly."""
-    monkeypatch.setattr(cc_module.engine, "resolve_claim", lambda reactor_ids, rng=None: reactor_ids[0])
-
-    guild = FakeGuild(10)
-    # (see below) claim_cooldown_seconds is set to 0 for this guild so the
-    # unrelated per-user claim-cooldown mechanism can't incidentally exclude
-    # greedy from card B's reactor list itself and mask a missing
-    # claimed_by check -- same pitfall as the double-award race test above
-    admin = FakeMember(100, guild)
-    greedy = FakeMember(101, guild)
-    other = FakeMember(102, guild)
-    guild.members = {100: admin, 101: greedy, 102: other}
-
-    channel = FakeChannel(1000, guild)
-    cog.bot.register_channel(channel)
-    ctx = FakeCtx(admin, guild, channel, attachments=[FakeAttachment(fake_art_bytes((5, 5, 5)))])
-    await cog.card.commands["addcard"].callback(cog, ctx, "common", name_and_series="Mio | Some Anime")
-    ctx2 = FakeCtx(admin, guild, channel, attachments=[FakeAttachment(fake_art_bytes((250, 5, 5)))])
-    await cog.card.commands["addcard"].callback(cog, ctx2, "common", name_and_series="Sora | Some Anime")
-
-    await cog.config.guild(guild).drop_size.set(2)
-    await cog.config.guild(guild).decoys_enabled.set(False)
-    await cog.config.guild(guild).claim_cooldown_seconds.set(0)
-
-    await cog._post_drop(channel, guild, is_test=False)
-    drop_message = channel.sent[-1]
-    drop = cog.active_drops[drop_message.id]
-    assert len(drop.cards) == 2
-
-    emoji_a = drop.cards[0]["emoji"]
-    emoji_b = drop.cards[1]["emoji"]
-    reaction_a = next(r for r in drop_message.reactions if r.emoji == emoji_a)
-    reaction_b = next(r for r in drop_message.reactions if r.emoji == emoji_b)
-    # greedy reacts to both, trying to claim all the cards; other only
-    # reacts to the second one
-    reaction_a._reactor_objs = [greedy]
-    reaction_b._reactor_objs = [greedy, other]
-
-    await cog._resolve_claim_window(channel.id, drop_message.id, emoji_a, window=0)
-    await cog._resolve_claim_window(channel.id, drop_message.id, emoji_b, window=0)
-
-    greedy_state = await cog._member_state(greedy)
-    other_state = await cog._member_state(other)
-    assert len(greedy_state.collection) == 1, f"one person should win exactly one card, got {len(greedy_state.collection)}"
-    # excluded from card B entirely -- the OTHER reactor wins it instead of
-    # the card going unclaimed
-    assert len(other_state.collection) == 1, "the second card should still go to someone, not be forfeited"
-    assert drop.claimed_positions == {0, 1}
-
-
-@pytest.mark.asyncio
 async def test_testdrop_reports_empty_pool_instead_of_silently_doing_nothing(cog):
     """Live bug report: an admin ran .card setchannel then .card testdrop
     before adding any characters, and testdrop silently did nothing -- no
@@ -1403,475 +924,740 @@ async def test_concurrent_messages_never_chain_two_drops_past_the_cooldown(cog):
 
 
 # ---------------------------------------------------------------------------
-# one-shot-per-drop claim mechanic (option 2): a member's first reaction on
-# a drop is their only "shot" -- exercised through on_raw_reaction_add
-# itself, not just _resolve_claim_window, since the gating lives there.
+# CAPTCHA claim mechanic: the drop carries a Claim button; pressing it opens a
+# pop-up where the member types a card's code. These drive the real
+# claim_button_refusal / submit_code / _claim code and the views.py wiring.
 # ---------------------------------------------------------------------------
 
+from cardcollect import captcha, views  # noqa: E402  (grouped with the tests that use them)
+from cardcollect.models import MemberState  # noqa: E402
 
-async def _drain_new_tasks(before_tasks):
-    """asyncio.create_task inside on_raw_reaction_add fires and forgets a
-    _resolve_claim_window task; awaiting it directly (rather than sleeping
-    and hoping) keeps these tests deterministic and avoids leaking a
-    pending task past the end of the test."""
-    after = asyncio.all_tasks() - before_tasks - {asyncio.current_task()}
-    if after:
-        await asyncio.gather(*after)
+
+class FakeHTTPResponse:
+    def __init__(self, status=403, reason="Forbidden"):
+        self.status = status
+        self.reason = reason
+
+
+class FakeInteractionResponse:
+    def __init__(self, defer_delay=0):
+        self.defer_delay = defer_delay  # event-loop turns the acknowledgement takes
+        self.deferred = None  # the ephemeral flag once deferred
+        self.messages = []
+        self.modal = None
+
+    async def defer(self, ephemeral=False):
+        for _ in range(self.defer_delay):
+            await asyncio.sleep(0)
+        self.deferred = ephemeral
+
+    async def send_message(self, content=None, ephemeral=False):
+        self.messages.append((content, ephemeral))
+
+    async def send_modal(self, modal):
+        self.modal = modal
+
+
+class FakeFollowup:
+    def __init__(self):
+        self.messages = []
+
+    async def send(self, content=None, ephemeral=False):
+        self.messages.append((content, ephemeral))
+
+
+class FakeInteraction:
+    def __init__(self, user, channel, message=None, defer_delay=0):
+        self.user = user
+        self.channel = channel
+        self.guild = channel.guild
+        self.message = message
+        self.response = FakeInteractionResponse(defer_delay)
+        self.followup = FakeFollowup()
+
+
+async def submit(cog, channel, member, drop, code):
+    """One code submission from the pop-up; returns the private reply."""
+    return await cog.submit_code(member, channel, drop.message_id, code)
+
+
+def code_of(drop, index=0):
+    return drop.cards[index]["code"]
+
+
+def wrong_code_for(drop):
+    """A code-shaped string that is NOT one of this drop's codes."""
+    while True:
+        candidate = captcha.generate_code()
+        if all(candidate != c["code"] for c in drop.cards):
+            return candidate
+
+
+async def ready_drop(cog, gid, n_members=2, n_cards=1, is_test=False, **guild_conf):
+    """A guild with `n_cards` pool cards, a drop already posted, and a claim
+    cooldown of 0 (so the unrelated cooldown can't mask what a test is about).
+    Returns (guild, admin, members, channel, drop, drop_message)."""
+    guild = FakeGuild(gid)
+    admin = FakeMember(gid * 10, guild)
+    members = [FakeMember(gid * 10 + 1 + i, guild) for i in range(n_members)]
+    guild.members = {m.id: m for m in [admin, *members]}
+    channel = FakeChannel(gid * 100, guild)
+    cog.bot.register_channel(channel)
+    for i in range(n_cards):
+        ctx = FakeCtx(admin, guild, channel, attachments=[FakeAttachment(fake_art_bytes((10 + i * 40, 50, 90)))])
+        await cog.card.commands["addcard"].callback(cog, ctx, "common", name_and_series=f"Card{i} | Anime")
+    conf = cog.config.guild(guild)
+    await conf.drop_size.set(n_cards)
+    await conf.claim_cooldown_seconds.set(0)
+    for key, value in guild_conf.items():
+        await getattr(conf, key).set(value)
+    random.seed(gid)  # the rolled cards/codes are random; pin them so a test can never flake on a lucky code
+    assert await cog._post_drop(channel, guild, is_test=is_test) is None
+    drop_message = channel.sent[-1]
+    return guild, admin, members, channel, cog.active_drops[drop_message.id], drop_message
 
 
 @pytest.mark.asyncio
-async def test_on_raw_reaction_add_one_shot_per_drop(cog):
-    guild = FakeGuild(200)
-    admin = FakeMember(2000, guild)
-    reactor = FakeMember(2001, guild)
-    guild.members = {2000: admin, 2001: reactor}
-
-    channel = FakeChannel(20000, guild)
-    cog.bot.register_channel(channel)
-    ctx = FakeCtx(admin, guild, channel, attachments=[FakeAttachment(fake_art_bytes((1, 2, 3)))])
-    await cog.card.commands["addcard"].callback(cog, ctx, "common", name_and_series="A | Anime")
-    ctx2 = FakeCtx(admin, guild, channel, attachments=[FakeAttachment(fake_art_bytes((4, 5, 6)))])
-    await cog.card.commands["addcard"].callback(cog, ctx2, "common", name_and_series="B | Anime")
-
-    await cog.config.guild(guild).drop_size.set(2)
-    await cog.config.guild(guild).decoys_enabled.set(False)
-    await cog.config.guild(guild).claim_window_seconds.set(0)
-
-    await cog._post_drop(channel, guild, is_test=False)
-    drop_message = channel.sent[-1]
-    drop = cog.active_drops[drop_message.id]
-    assert len(drop.cards) == 2
-    emoji_a = drop.cards[0]["emoji"]
-    emoji_b = drop.cards[1]["emoji"]
-
-    reaction_a = next(r for r in drop_message.reactions if r.emoji == emoji_a)
-    reaction_b = next(r for r in drop_message.reactions if r.emoji == emoji_b)
-    reaction_a._reactor_objs = [reactor]
-    reaction_b._reactor_objs = [reactor]
-
-    before_tasks = asyncio.all_tasks()
-    await cog.on_raw_reaction_add(
-        FakeRawReactionPayload(guild.id, reactor.id, drop_message.id, channel.id, emoji_a)
-    )
-    # second reaction, on a different but still-open real card -- must be
-    # ignored entirely: the first reaction already used this member's one
-    # shot at this drop
-    await cog.on_raw_reaction_add(
-        FakeRawReactionPayload(guild.id, reactor.id, drop_message.id, channel.id, emoji_b)
-    )
-    await _drain_new_tasks(before_tasks)
-
-    reactor_state = await cog._member_state(reactor)
-    assert reactor_state.collection == [drop.cards[0]["card_id"]], (
-        "member should only win the card from their first reaction -- a "
-        "second reaction on another open card must not spend a fresh shot"
-    )
-    assert reactor.id in drop.reacted_users
+async def test_drop_message_carries_the_claim_button_and_no_reactions(cog):
+    guild, admin, members, channel, drop, drop_message = await ready_drop(cog, 2)
+    assert drop_message.files
+    assert isinstance(drop_message.view, views.ClaimView)
+    assert "claim" in drop_message.content.lower()
+    assert drop_message.reactions == [], "nothing is reaction-seeded any more"
 
 
 @pytest.mark.asyncio
-async def test_on_raw_reaction_add_decoy_guess_spends_shot_and_sets_penalty(cog):
-    guild = FakeGuild(201)
-    admin = FakeMember(2010, guild)
-    reactor = FakeMember(2011, guild)
-    guild.members = {2010: admin, 2011: reactor}
-
-    channel = FakeChannel(20100, guild)
-    cog.bot.register_channel(channel)
-    ctx = FakeCtx(admin, guild, channel, attachments=[FakeAttachment(fake_art_bytes((7, 8, 9)))])
-    await cog.card.commands["addcard"].callback(cog, ctx, "common", name_and_series="C | Anime")
-
-    await cog.config.guild(guild).decoys_enabled.set(True)
-    await cog.config.guild(guild).decoy_count.set(5)
-    await cog.config.guild(guild).wrong_guess_penalty_seconds.set(120)
-    await cog.config.guild(guild).claim_window_seconds.set(0)
-
-    await cog._post_drop(channel, guild, is_test=False)
-    drop_message = channel.sent[-1]
-    drop = cog.active_drops[drop_message.id]
-    assert drop.decoy_emojis, "need at least one decoy to exercise this path"
-    decoy_emoji = drop.decoy_emojis[0]
-
-    before = time.monotonic()
-    await cog.on_raw_reaction_add(
-        FakeRawReactionPayload(guild.id, reactor.id, drop_message.id, channel.id, decoy_emoji)
-    )
-
-    assert reactor.id in drop.reacted_users
-    assert cog.wrong_guess_penalty_until.get(reactor.id, 0.0) > before
-
-    # their shot is now spent -- a reaction on a real, still-open card does
-    # nothing either
-    real_emoji = drop.cards[0]["emoji"]
-    reaction = next(r for r in drop_message.reactions if r.emoji == real_emoji)
-    reaction._reactor_objs = [reactor]
-    before_tasks = asyncio.all_tasks()
-    await cog.on_raw_reaction_add(
-        FakeRawReactionPayload(guild.id, reactor.id, drop_message.id, channel.id, real_emoji)
-    )
-    await _drain_new_tasks(before_tasks)
-
-    reactor_state = await cog._member_state(reactor)
-    assert reactor_state.collection == [], "the decoy guess should have used up their only shot"
-
-
-@pytest.mark.asyncio
-async def test_on_raw_reaction_add_ignores_already_claimed_card_without_spending_shot(cog):
-    guild = FakeGuild(202)
-    admin = FakeMember(2020, guild)
-    reactor = FakeMember(2021, guild)
-    guild.members = {2020: admin, 2021: reactor}
-
-    channel = FakeChannel(20200, guild)
-    cog.bot.register_channel(channel)
-    ctx = FakeCtx(admin, guild, channel, attachments=[FakeAttachment(fake_art_bytes((11, 22, 33)))])
-    await cog.card.commands["addcard"].callback(cog, ctx, "common", name_and_series="D | Anime")
-    ctx2 = FakeCtx(admin, guild, channel, attachments=[FakeAttachment(fake_art_bytes((44, 55, 66)))])
-    await cog.card.commands["addcard"].callback(cog, ctx2, "common", name_and_series="E | Anime")
-
-    await cog.config.guild(guild).drop_size.set(2)
-    await cog.config.guild(guild).decoys_enabled.set(False)
-    await cog.config.guild(guild).claim_window_seconds.set(0)
-
-    await cog._post_drop(channel, guild, is_test=False)
-    drop_message = channel.sent[-1]
-    drop = cog.active_drops[drop_message.id]
-    emoji_a = drop.cards[0]["emoji"]
-    emoji_b = drop.cards[1]["emoji"]
-
-    # simulate card A having already been claimed by someone else, via a
-    # reaction that landed a split second earlier
-    drop.claimed_positions.add(drop.cards[0]["position"])
-
-    await cog.on_raw_reaction_add(
-        FakeRawReactionPayload(guild.id, reactor.id, drop_message.id, channel.id, emoji_a)
-    )
-    assert reactor.id not in drop.reacted_users, (
-        "landing on an already-claimed card isn't the member's fault -- it must not burn their shot"
-    )
-
-    # their shot is still available -- a reaction on the still-open card
-    # works normally
-    reaction_b = next(r for r in drop_message.reactions if r.emoji == emoji_b)
-    reaction_b._reactor_objs = [reactor]
-    before_tasks = asyncio.all_tasks()
-    await cog.on_raw_reaction_add(
-        FakeRawReactionPayload(guild.id, reactor.id, drop_message.id, channel.id, emoji_b)
-    )
-    await _drain_new_tasks(before_tasks)
-
-    reactor_state = await cog._member_state(reactor)
-    assert reactor_state.collection == [drop.cards[1]["card_id"]]
-
-
-@pytest.mark.asyncio
-async def test_wrong_guess_penalty_excludes_reactor_from_winning(cog):
-    guild = FakeGuild(203)
-    admin = FakeMember(2030, guild)
-    penalized = FakeMember(2031, guild)
-    other = FakeMember(2032, guild)
-    guild.members = {2030: admin, 2031: penalized, 2032: other}
-
-    channel = FakeChannel(20300, guild)
-    cog.bot.register_channel(channel)
-    ctx = FakeCtx(admin, guild, channel, attachments=[FakeAttachment(fake_art_bytes((77, 88, 99)))])
-    await cog.card.commands["addcard"].callback(cog, ctx, "common", name_and_series="F | Anime")
-
-    await cog.config.guild(guild).claim_cooldown_seconds.set(0)
-    cog.wrong_guess_penalty_until[penalized.id] = time.monotonic() + 120
-
-    await cog._post_drop(channel, guild, is_test=False)
-    drop_message = channel.sent[-1]
-    drop = cog.active_drops[drop_message.id]
-    real_emoji = drop.cards[0]["emoji"]
+async def test_full_drop_and_claim_cycle_real_mode(cog):
+    guild, admin, (winner, late), channel, drop, drop_message = await ready_drop(cog, 3)
     card_id = drop.cards[0]["card_id"]
 
-    reaction = next(r for r in drop_message.reactions if r.emoji == real_emoji)
-    reaction._reactor_objs = [penalized, other]
+    reply = await submit(cog, channel, winner, drop, code_of(drop))
+    late_reply = await submit(cog, channel, late, drop, code_of(drop))  # too late, same card
 
-    await cog._resolve_claim_window(channel.id, drop_message.id, real_emoji, window=0)
-
-    penalized_state = await cog._member_state(penalized)
-    other_state = await cog._member_state(other)
-    assert card_id not in penalized_state.collection, "a member under the wrong-guess penalty must not win"
-    assert card_id in other_state.collection, "the card should still go to the other eligible reactor"
-
-
-@pytest.mark.asyncio
-async def test_card_set_decoycount_and_wrongguesspenalty_commands(cog):
-    guild = FakeGuild(204)
-    admin = FakeMember(2040, guild)
-    channel = FakeChannel(20400, guild)
-    ctx = FakeCtx(admin, guild, channel)
-
-    await cog.card.commands["set"].commands["decoycount"].callback(cog, ctx, 12)
-    assert await cog.config.guild(guild).decoy_count() == 12
-    assert "12" in ctx.sent[-1].content
-
-    ctx2 = FakeCtx(admin, guild, channel)
-    await cog.card.commands["set"].commands["decoycount"].callback(cog, ctx2, -1)
-    assert "negative" in ctx2.sent[-1].content.lower()
-    assert await cog.config.guild(guild).decoy_count() == 12  # unchanged
-
-    ctx3 = FakeCtx(admin, guild, channel)
-    await cog.card.commands["set"].commands["wrongguesspenalty"].callback(cog, ctx3, 90)
-    assert await cog.config.guild(guild).wrong_guess_penalty_seconds() == 90
-    assert "90" in ctx3.sent[-1].content
-
-    ctx4 = FakeCtx(admin, guild, channel)
-    await cog.card.commands["set"].commands["wrongguesspenalty"].callback(cog, ctx4, -5)
-    assert "negative" in ctx4.sent[-1].content.lower()
-    assert await cog.config.guild(guild).wrong_guess_penalty_seconds() == 90  # unchanged
-
-
-@pytest.mark.asyncio
-async def test_decoy_guess_on_a_test_drop_does_not_set_a_real_penalty(cog):
-    """An admin previewing the decoy/one-shot mechanic with `.card testdrop`
-    must not walk away with a real wrong_guess_penalty_until entry -- that
-    would lock them out of winning *actual* drops afterward, the same
-    test-mode exemption claim_cooldown_until and the daily quota already
-    get in _resolve_claim_window. The one-shot gate itself (reacted_users)
-    still applies in test mode, so the preview is otherwise accurate."""
-    guild = FakeGuild(205)
-    admin = FakeMember(2050, guild)
-    channel = FakeChannel(20500, guild)
-    cog.bot.register_channel(channel)
-    ctx = FakeCtx(admin, guild, channel, attachments=[FakeAttachment(fake_art_bytes((3, 6, 9)))])
-    await cog.card.commands["addcard"].callback(cog, ctx, "common", name_and_series="G | Anime")
-
-    await cog.config.guild(guild).decoys_enabled.set(True)
-    await cog.config.guild(guild).decoy_count.set(5)
-    await cog.config.guild(guild).wrong_guess_penalty_seconds.set(120)
-
-    await cog._post_drop(channel, guild, is_test=True)
-    drop_message = channel.sent[-1]
-    drop = cog.active_drops[drop_message.id]
-    assert drop.is_test is True
-    assert drop.decoy_emojis, "need at least one decoy to exercise this path"
-    decoy_emoji = drop.decoy_emojis[0]
-
-    await cog.on_raw_reaction_add(
-        FakeRawReactionPayload(guild.id, admin.id, drop_message.id, channel.id, decoy_emoji)
-    )
-
-    # the one-shot gate still fired (this is a real part of the preview)...
-    assert admin.id in drop.reacted_users
-    # ...but no real penalty should have been recorded against them
-    assert admin.id not in cog.wrong_guess_penalty_until
-
-
-@pytest.mark.asyncio
-async def test_decoy_guess_dms_the_reactor_with_the_penalty_duration(cog):
-    """There's no interaction token on a raw reaction event, so a true
-    Discord ephemeral reply isn't possible here -- a DM is the closest
-    thing that's actually private to just the person who guessed wrong.
-    It should mention how long they're locked out for."""
-    guild = FakeGuild(206)
-    admin = FakeMember(2060, guild)
-    reactor = FakeMember(2061, guild)
-    guild.members = {2060: admin, 2061: reactor}
-
-    channel = FakeChannel(20600, guild)
-    cog.bot.register_channel(channel)
-    ctx = FakeCtx(admin, guild, channel, attachments=[FakeAttachment(fake_art_bytes((12, 34, 56)))])
-    await cog.card.commands["addcard"].callback(cog, ctx, "common", name_and_series="H | Anime")
-
-    await cog.config.guild(guild).decoys_enabled.set(True)
-    await cog.config.guild(guild).decoy_count.set(5)
-    await cog.config.guild(guild).wrong_guess_penalty_seconds.set(90)
-
-    await cog._post_drop(channel, guild, is_test=False)
-    drop_message = channel.sent[-1]
-    drop = cog.active_drops[drop_message.id]
-    assert drop.decoy_emojis, "need at least one decoy to exercise this path"
-    decoy_emoji = drop.decoy_emojis[0]
-
-    await cog.on_raw_reaction_add(
-        FakeRawReactionPayload(guild.id, reactor.id, drop_message.id, channel.id, decoy_emoji)
-    )
-
-    assert len(reactor.dms) == 1, "a wrong guess should DM the reactor exactly once"
-    assert "90" in reactor.dms[0]
-    assert admin.dms == [], "only the person who guessed wrong should get a DM"
-
-
-@pytest.mark.asyncio
-async def test_decoy_guess_dm_failure_is_swallowed(cog):
-    """A member with DMs closed is a routine, expected case (Forbidden), not
-    something that should crash reaction handling or otherwise surface to
-    the channel."""
-    guild = FakeGuild(207)
-    admin = FakeMember(2070, guild)
-    reactor = FakeMember(2071, guild)
-    guild.members = {2070: admin, 2071: reactor}
-
-    class FakeHTTPResponse:
-        status = 403
-        reason = "Forbidden"
-
-    async def closed_dms(*args, **kwargs):
-        raise discord.Forbidden(response=FakeHTTPResponse(), message="Cannot send messages to this user")
-
-    reactor.send = closed_dms
-
-    channel = FakeChannel(20700, guild)
-    cog.bot.register_channel(channel)
-    ctx = FakeCtx(admin, guild, channel, attachments=[FakeAttachment(fake_art_bytes((65, 43, 21)))])
-    await cog.card.commands["addcard"].callback(cog, ctx, "common", name_and_series="I | Anime")
-
-    await cog.config.guild(guild).decoys_enabled.set(True)
-    await cog.config.guild(guild).decoy_count.set(5)
-    await cog.config.guild(guild).wrong_guess_penalty_seconds.set(60)
-
-    await cog._post_drop(channel, guild, is_test=False)
-    drop_message = channel.sent[-1]
-    drop = cog.active_drops[drop_message.id]
-    decoy_emoji = drop.decoy_emojis[0]
-
-    # must not raise -- a closed-DM Forbidden is expected, not exceptional
-    await cog.on_raw_reaction_add(
-        FakeRawReactionPayload(guild.id, reactor.id, drop_message.id, channel.id, decoy_emoji)
-    )
-
-    # the actual penalty must still have been applied even though the DM failed
-    assert reactor.id in cog.wrong_guess_penalty_until
-
-
-@pytest.mark.asyncio
-async def test_concurrent_resolutions_for_the_same_drop_reuse_one_message_fetch(cog):
-    """Live bug report: a fresh 3-card drop where all 3 cards get claimed
-    within the same second or two used to fire an independent
-    channel.fetch_message() per card, all hitting the exact same message --
-    redundant enough (2-3+ near-simultaneous GETs to the same message) to
-    occasionally trip Discord's per-route rate limit. discord.py handles a
-    429 by sleeping and retrying rather than raising, so nothing was ever
-    lost -- but a claim embed could sit unposted for several seconds until
-    its window's fetch finally went through, which is exactly what was
-    reported (third card only showed up "if delayed"). Concurrent
-    resolutions for the same message should now share one fetch."""
-    guild = FakeGuild(210)
-    admin = FakeMember(2100, guild)
-    reactor_a = FakeMember(2101, guild)
-    reactor_b = FakeMember(2102, guild)
-    reactor_c = FakeMember(2103, guild)
-    guild.members = {2100: admin, 2101: reactor_a, 2102: reactor_b, 2103: reactor_c}
-
-    channel = FakeChannel(21000, guild)
-    cog.bot.register_channel(channel)
-    for i, color in enumerate([(1, 2, 3), (4, 5, 6), (7, 8, 9)]):
-        ctx = FakeCtx(admin, guild, channel, attachments=[FakeAttachment(fake_art_bytes(color))])
-        await cog.card.commands["addcard"].callback(cog, ctx, "common", name_and_series=f"Card{i} | Anime")
-
-    await cog.config.guild(guild).drop_size.set(3)
-    await cog.config.guild(guild).decoys_enabled.set(False)
-    await cog.config.guild(guild).claim_cooldown_seconds.set(0)
-
-    await cog._post_drop(channel, guild, is_test=False)
-    drop_message = channel.sent[-1]
-    drop = cog.active_drops[drop_message.id]
-    assert len(drop.cards) == 3
-
-    reactors = [reactor_a, reactor_b, reactor_c]
-    for card_entry, reactor in zip(drop.cards, reactors):
-        reaction = next(r for r in drop_message.reactions if r.emoji == card_entry["emoji"])
-        reaction._reactor_objs = [reactor]
-
-    fetch_calls_before = channel.fetch_message_calls
-    # all three cards claimed at once, as if reacted to within the same
-    # second -- resolve them concurrently, same as real near-simultaneous
-    # claim windows would
-    await asyncio.gather(*(
-        cog._resolve_claim_window(channel.id, drop_message.id, card_entry["emoji"], window=0)
-        for card_entry in drop.cards
-    ))
-
-    assert channel.fetch_message_calls - fetch_calls_before == 1, (
-        "concurrent resolutions for the same message should share one fetch, not one each -- "
-        f"got {channel.fetch_message_calls - fetch_calls_before}"
-    )
-
-    # and correctness wasn't sacrificed for the dedup -- all three still resolved correctly
-    for card_entry, reactor in zip(drop.cards, reactors):
-        state = await cog._member_state(reactor)
-        assert card_entry["card_id"] in state.collection
-
-    # the drop is fully resolved -- its message-fetch cache/lock entries
-    # must be cleaned up too, not just active_drops itself
+    assert "claimed" in reply.lower() and "Card0" in reply
+    assert (await cog._member_state(winner)).collection == [card_id]
+    assert (await cog._member_state(late)).collection == []
+    assert late_reply == late_reply and "over" in late_reply.lower()  # single-card drop is already released
+    result_embed = channel.sent[-1].embeds[0]
+    assert result_embed.title == "New card claimed!"
     assert drop_message.id not in cog.active_drops
-    assert drop_message.id not in cog._message_cache
-    assert drop_message.id not in cog._message_fetch_locks
 
 
 @pytest.mark.asyncio
-async def test_second_reactor_on_an_already_pending_card_is_not_lost_to_a_stale_cache(cog):
-    """Regression test for a subtler correctness risk in the fetch_message
-    caching fix above: discord.py's Reaction.users() bounds its own
-    pagination by Reaction.count, a snapshot captured when the *parent*
-    Message was fetched -- not a live value. If card B's cached Message
-    predates a second reactor joining B's still-open window, reusing that
-    cache would silently exclude them from the claim's fairness pool
-    (locked decision #8), not just serve slightly-stale data. The cache
-    must be invalidated on every reaction to a still-open card, not just
-    the first/triggering one."""
-    guild = FakeGuild(211)
-    admin = FakeMember(2110, guild)
-    reactor1 = FakeMember(2111, guild)  # claims card A, warming the cache
-    reactor2 = FakeMember(2112, guild)  # card B's first reactor
-    reactor3 = FakeMember(2113, guild)  # card B's SECOND reactor -- joins after the cache is warm
-    guild.members = {2110: admin, 2111: reactor1, 2112: reactor2, 2113: reactor3}
-
-    channel = FakeChannel(21100, guild)
+async def test_ambient_drop_then_claim_end_to_end(cog):
+    guild = FakeGuild(4)
+    admin = FakeMember(40, guild)
+    member = FakeMember(41, guild)
+    guild.members = {40: admin, 41: member}
+    channel = FakeChannel(400, guild)
     cog.bot.register_channel(channel)
-    for i, color in enumerate([(11, 22, 33), (44, 55, 66)]):
-        ctx = FakeCtx(admin, guild, channel, attachments=[FakeAttachment(fake_art_bytes(color))])
-        await cog.card.commands["addcard"].callback(cog, ctx, "common", name_and_series=f"Stale{i} | Anime")
+    ctx = FakeCtx(admin, guild, channel, attachments=[FakeAttachment(fake_art_bytes())])
+    await cog.card.commands["addcard"].callback(cog, ctx, "common", name_and_series="Ann | Anime")
+    await cog.card.commands["setchannel"].callback(cog, ctx, channel)
+    await cog.config.guild(guild).drop_chance.set(1.0)
+    await cog.config.guild(guild).drop_size.set(1)
 
-    await cog.config.guild(guild).drop_size.set(2)
-    await cog.config.guild(guild).decoys_enabled.set(False)
-    await cog.config.guild(guild).claim_cooldown_seconds.set(0)
-    # deliberately huge -- on_raw_reaction_add's own auto-scheduled
-    # resolution must never fire during this test; resolution timing is
-    # driven by hand below so the race is reproduced deterministically
-    await cog.config.guild(guild).claim_window_seconds.set(100)
+    class ChatMessage:  # ordinary chat is what triggers the drop
+        author = member
+        content = "hello everyone"
 
-    await cog._post_drop(channel, guild, is_test=False)
-    drop_message = channel.sent[-1]
-    drop = cog.active_drops[drop_message.id]
-    card_a, card_b = drop.cards[0], drop.cards[1]
-    reaction_a = next(r for r in drop_message.reactions if r.emoji == card_a["emoji"])
-    reaction_b = next(r for r in drop_message.reactions if r.emoji == card_b["emoji"])
+    ChatMessage.channel = channel
+    ChatMessage.guild = guild
+    await cog.on_message(ChatMessage())
+    assert len(cog.active_drops) == 1
+    drop = next(iter(cog.active_drops.values()))
 
-    # step 1: card A resolves first, on its own -- this is what warms the
-    # message cache (a fetch happens because nothing's cached yet)
-    reaction_a._reactor_objs = [reactor1]
-    await cog._resolve_claim_window(channel.id, drop_message.id, card_a["emoji"], window=0)
-    assert drop_message.id in cog._message_cache, "card A's resolution should have warmed the cache"
+    interaction = FakeInteraction(member, channel, message=channel.sent[-1])
+    view = channel.sent[-1].view
+    await view.claim.callback(interaction)  # press the button
+    assert isinstance(interaction.response.modal, views.CodeModal)
+    await interaction.response.modal.handle_submit(interaction, code_of(drop))  # submit the pop-up
 
-    # step 2: card B's first reactor arrives -- at this point B's Reaction
-    # object has no real users yet in the warm cache (nobody had reacted to
-    # it when card A's fetch happened)
-    reaction_b._reactor_objs = [reactor2]
-    await cog.on_raw_reaction_add(
-        FakeRawReactionPayload(guild.id, reactor2.id, drop_message.id, channel.id, card_b["emoji"])
+    assert (await cog._member_state(member)).collection == [drop.cards[0]["card_id"]]
+    assert interaction.response.deferred is True, "replies to a submission are private (ephemeral)"
+    text, ephemeral = interaction.followup.messages[-1]
+    assert ephemeral is True and "claimed" in text.lower()
+
+
+@pytest.mark.asyncio
+async def test_test_mode_drop_awards_nothing(cog):
+    guild, admin, (winner,), channel, drop, _ = await ready_drop(cog, 5, n_members=1, is_test=True)
+    assert drop.is_test is True
+
+    reply = await submit(cog, channel, winner, drop, code_of(drop))
+
+    assert (await cog._member_state(winner)).collection == []  # test mode: nothing awarded
+    assert "Test" in channel.sent[-1].embeds[0].title
+    assert "test" in reply.lower()
+
+
+@pytest.mark.asyncio
+async def test_first_duplicate_claim_becomes_a_tradeable_spare(cog):
+    """MAX_COPIES_KEPT=2 -- a member's *first* duplicate of a card becomes a
+    real second collection entry (a tradeable spare, not a sell token), so
+    `.card give` has something to actually hand off."""
+    guild, admin, (winner,), channel, drop, _ = await ready_drop(cog, 6, n_members=1)
+    card_id = drop.cards[0]["card_id"]
+    await cog._save_member_state(winner, MemberState(collection=[card_id]))
+
+    await submit(cog, channel, winner, drop, code_of(drop))
+
+    final_state = await cog._member_state(winner)
+    assert final_state.collection == [card_id, card_id]  # a real second copy, not a sell token
+    assert final_state.sell_tokens == []
+    result_embed = channel.sent[-1].embeds[0]
+    assert "Duplicate" in result_embed.title
+    assert "spare" in result_embed.title.lower()
+
+
+@pytest.mark.asyncio
+async def test_claim_at_the_duplicate_cap_becomes_a_sell_token(cog):
+    """A 3rd claim of the same card (already at MAX_COPIES_KEPT=2) converts
+    straight to a sell token instead of piling up more duplicates."""
+    guild, admin, (winner,), channel, drop, _ = await ready_drop(cog, 24, n_members=1)
+    card_id = drop.cards[0]["card_id"]
+    await cog._save_member_state(winner, MemberState(collection=[card_id, card_id]))
+
+    await submit(cog, channel, winner, drop, code_of(drop))
+
+    final_state = await cog._member_state(winner)
+    assert final_state.collection == [card_id, card_id]  # unchanged, no 3rd copy
+    assert len(final_state.sell_tokens) == 1
+    assert final_state.sell_tokens[0].card_id == card_id
+    assert "sell token" in channel.sent[-1].embeds[0].title.lower()
+
+
+@pytest.mark.asyncio
+async def test_claim_at_the_cap_still_counts_against_daily_quota(cog):
+    """A sell-token (at-cap) claim still burns quota -- otherwise a
+    maxed-out member could keep re-claiming a card they already have two of
+    forever without it ever counting against them."""
+    guild, admin, (winner,), channel, drop, _ = await ready_drop(cog, 22, n_members=1, claim_quota=5)
+    card_id = drop.cards[0]["card_id"]
+    await cog._save_member_state(winner, MemberState(collection=[card_id, card_id]))
+
+    await submit(cog, channel, winner, drop, code_of(drop))
+
+    final_state = await cog._member_state(winner)
+    assert len(final_state.sell_tokens) == 1  # at-cap path, not a new pickup or a 3rd copy
+    assert final_state.daily_claims == 1, "an at-cap claim must still burn quota"
+
+
+@pytest.mark.asyncio
+async def test_first_duplicate_claim_also_counts_against_daily_quota(cog):
+    guild, admin, (winner,), channel, drop, _ = await ready_drop(cog, 25, n_members=1, claim_quota=5)
+    card_id = drop.cards[0]["card_id"]
+    await cog._save_member_state(winner, MemberState(collection=[card_id]))
+
+    await submit(cog, channel, winner, drop, code_of(drop))
+
+    final_state = await cog._member_state(winner)
+    assert final_state.collection == [card_id, card_id]
+    assert final_state.sell_tokens == []
+    assert final_state.daily_claims == 1, "a spare-duplicate claim must still burn quota"
+
+
+@pytest.mark.asyncio
+async def test_daily_claim_quota_excludes_a_member_who_already_hit_it(cog):
+    """A member at their daily quota can't win -- and their correct code must
+    leave the card open (not burn it) for the next member."""
+    guild, admin, (maxed_out, fresh), channel, drop, _ = await ready_drop(cog, 15, n_members=2, claim_quota=1)
+    from cardcollect import engine as engine_mod
+
+    today = engine_mod.today_str("America/Los_Angeles")
+    member_conf = cog.config.member_from_ids(guild.id, maxed_out.id)
+    await member_conf.daily_claims.set(1)
+    await member_conf.daily_claims_date.set(today)
+
+    blocked = await submit(cog, channel, maxed_out, drop, code_of(drop))
+    assert (await cog._member_state(maxed_out)).collection == [], "a member at their daily quota must not win"
+    assert "today's claims" in blocked
+    assert drop.claimed_positions == set(), "the card must still be open"
+
+    await submit(cog, channel, fresh, drop, code_of(drop))
+    fresh_state = await cog._member_state(fresh)
+    assert len(fresh_state.collection) == 1
+    assert fresh_state.daily_claims == 1
+    assert fresh_state.daily_claims_date == today
+
+
+@pytest.mark.asyncio
+async def test_concurrent_correct_codes_never_double_award(cog):
+    """Two members submit the SAME card's code in the same instant. The claim
+    lock plus the re-check under it must award the card exactly once. (A
+    2-card drop, so the drop is still active when the second submission gets
+    the lock -- otherwise 'drop forgotten' would mask a missing per-card
+    check.)"""
+    guild, admin, (u1, u2), channel, drop, _ = await ready_drop(cog, 7, n_members=2, n_cards=2)
+    before = len(channel.sent)
+
+    r1, r2 = await asyncio.gather(
+        submit(cog, channel, u1, drop, code_of(drop, 0)),
+        submit(cog, channel, u2, drop, code_of(drop, 0)),
     )
 
-    # step 3: a SECOND reactor joins card B's still-open window -- this is
-    # the reactor a stale cache would silently drop, since Reaction.count
-    # in the cached snapshot wouldn't have counted them
-    reaction_b._reactor_objs = [reactor2, reactor3]
-    await cog.on_raw_reaction_add(
-        FakeRawReactionPayload(guild.id, reactor3.id, drop_message.id, channel.id, card_b["emoji"])
+    s1, s2 = await cog._member_state(u1), await cog._member_state(u2)
+    assert len(s1.collection) + len(s2.collection) == 1, "the card must be awarded exactly once"
+    assert s1.sell_tokens == [] and s2.sell_tokens == []
+    assert len(channel.sent[before:]) == 1, "exactly one claim result message"
+    assert "claimed" in r1.lower() and "too slow" in r2.lower()
+    assert s1.collection != [], "the submission that reached the lock first wins"
+
+
+@pytest.mark.asyncio
+async def test_one_card_per_person_per_drop(cog):
+    """A drop has several independently claimable cards, but one person can
+    only ever take one of them; the second card must stay available."""
+    guild, admin, (greedy, other), channel, drop, drop_message = await ready_drop(cog, 10, n_members=2, n_cards=2)
+
+    await submit(cog, channel, greedy, drop, code_of(drop, 0))
+    second = await submit(cog, channel, greedy, drop, code_of(drop, 1))
+    assert len((await cog._member_state(greedy)).collection) == 1
+    assert "already claimed a card" in second
+    assert drop.claimed_positions == {0}
+
+    await submit(cog, channel, other, drop, code_of(drop, 1))
+    assert len((await cog._member_state(other)).collection) == 1, "the second card should still go to someone"
+    assert drop.claimed_positions == {0, 1}
+    assert drop_message.id not in cog.active_drops
+
+
+@pytest.mark.asyncio
+async def test_one_card_per_person_holds_when_both_codes_arrive_at_once(cog):
+    """Same rule, but the greedy member submits both codes concurrently, so
+    neither pre-lock early exit can catch it -- only the re-check under the
+    claim lock can."""
+    guild, admin, (greedy,), channel, drop, _ = await ready_drop(cog, 12, n_members=1, n_cards=2)
+
+    await asyncio.gather(
+        submit(cog, channel, greedy, drop, code_of(drop, 0)),
+        submit(cog, channel, greedy, drop, code_of(drop, 1)),
     )
 
-    # now resolve card B for real, and confirm BOTH reactors were actually
-    # eligible -- not just the first one a stale cache would have known about
-    await cog._resolve_claim_window(channel.id, drop_message.id, card_b["emoji"], window=0)
+    assert len((await cog._member_state(greedy)).collection) == 1
+    assert len(drop.claimed_positions) == 1
 
-    state2 = await cog._member_state(reactor2)
-    state3 = await cog._member_state(reactor3)
-    winners = [s for s in (state2, state3) if card_b["card_id"] in s.collection]
-    assert len(winners) == 1, (
-        "card B should go to exactly one of its two real reactors -- if the cache is stale "
-        "(never invalidated on new reactions to an already-pending card), the resolution reads "
-        "a snapshot frozen before either of them had reacted, and card B goes unclaimed instead"
+
+@pytest.mark.asyncio
+async def test_code_matches_case_insensitively_and_ignores_surrounding_whitespace(cog):
+    guild, admin, (member,), channel, drop, _ = await ready_drop(cog, 13, n_members=1)
+    await submit(cog, channel, member, drop, f"  {code_of(drop).lower()}  ")
+    assert (await cog._member_state(member)).collection == [drop.cards[0]["card_id"]]
+
+
+@pytest.mark.asyncio
+async def test_a_typo_that_isnt_even_code_shaped_gets_a_hint_and_costs_nothing(cog):
+    guild, admin, (member,), channel, drop, _ = await ready_drop(cog, 14, n_members=1, max_wrong_guesses=1)
+    real = code_of(drop)
+    for typo in ["", "   ", "hello", real[:-1], real[0] + " " + real[1:], real + "X", "12345"]:
+        reply = await submit(cog, channel, member, drop, typo)
+        assert "doesn't look like a code" in reply, f"{typo!r} should have been answered with a hint"
+    assert drop.wrong_guesses == {}
+    assert not drop.is_locked_out(member.id)
+    await submit(cog, channel, member, drop, real)  # still has their whole guess budget, and it works
+    assert (await cog._member_state(member)).collection == [drop.cards[0]["card_id"]]
+
+
+@pytest.mark.asyncio
+async def test_wrong_code_shaped_guesses_count_down_then_lock_a_member_out(cog):
+    guild, admin, (guesser, other), channel, drop, _ = await ready_drop(
+        cog, 200, n_members=2, max_wrong_guesses=3, wrong_guess_penalty_seconds=120
     )
+    wrong = wrong_code_for(drop)
+    before = time.monotonic()
+
+    assert "2 guesses left" in await submit(cog, channel, guesser, drop, wrong)
+    assert "1 guess left" in await submit(cog, channel, guesser, drop, wrong)
+    assert guesser.id not in cog.wrong_guess_penalty_until
+    last = await submit(cog, channel, guesser, drop, wrong)
+    assert last == (
+        "❌ You're out of chances and locked out from guessing for 120s. "
+        "Now watch everyone else collect the cards in front of you, cuck! \U0001f921"
+    )
+    assert drop.wrong_guesses[guesser.id] == 3
+    assert cog.wrong_guess_penalty_until[guesser.id] > before
+
+    # locked out: even the correct code does nothing now
+    assert "locked out" in await submit(cog, channel, guesser, drop, code_of(drop))
+    assert (await cog._member_state(guesser)).collection == []
+
+    # ...but everyone else is unaffected
+    await submit(cog, channel, other, drop, code_of(drop))
+    assert (await cog._member_state(other)).collection == [drop.cards[0]["card_id"]]
+
+
+@pytest.mark.asyncio
+async def test_unlimited_wrong_guesses_when_the_cap_is_zero(cog):
+    guild, admin, (member,), channel, drop, _ = await ready_drop(cog, 203, n_members=1, max_wrong_guesses=0)
+    wrong = wrong_code_for(drop)
+    for _ in range(10):
+        assert "Wrong code" in await submit(cog, channel, member, drop, wrong)
+    assert not drop.is_locked_out(member.id)
+    await submit(cog, channel, member, drop, code_of(drop))
+    assert (await cog._member_state(member)).collection == [drop.cards[0]["card_id"]]
+
+
+@pytest.mark.asyncio
+async def test_correct_code_for_an_already_claimed_card_is_free(cog):
+    guild, admin, (first, second), channel, drop, _ = await ready_drop(
+        cog, 204, n_members=2, n_cards=2, max_wrong_guesses=1
+    )
+    await submit(cog, channel, first, drop, code_of(drop, 0))
+
+    late = await submit(cog, channel, second, drop, code_of(drop, 0))  # right code, card already gone
+    assert "too slow" in late.lower()
+    assert drop.wrong_guesses == {}, "landing on an already-claimed card is not the member's fault"
+
+    await submit(cog, channel, second, drop, code_of(drop, 1))
+    assert len((await cog._member_state(second)).collection) == 1
+
+
+@pytest.mark.asyncio
+async def test_wrong_guess_penalty_excludes_a_member_from_winning(cog):
+    guild, admin, (penalized, other), channel, drop, _ = await ready_drop(cog, 217, n_members=2)
+    cog.wrong_guess_penalty_until[penalized.id] = time.monotonic() + 120
+
+    reply = await submit(cog, channel, penalized, drop, code_of(drop))
+    assert (await cog._member_state(penalized)).collection == [], "a member under the penalty must not win"
+    assert "locked out from guessing" in reply
+    assert drop.claimed_positions == set()
+
+    await submit(cog, channel, other, drop, code_of(drop))
+    assert (await cog._member_state(other)).collection == [drop.cards[0]["card_id"]]
+
+
+@pytest.mark.asyncio
+async def test_claim_cooldown_blocks_a_second_win_then_lets_it_through(cog):
+    guild, admin, (member,), channel, drop, _ = await ready_drop(
+        cog, 205, n_members=1, n_cards=2, claim_cooldown_seconds=300
+    )
+    await submit(cog, channel, member, drop, code_of(drop, 0))
+    assert cog.claim_cooldown_until[member.id] > time.monotonic()
+    # (one-card-per-drop would also stop this, so post a fresh drop to isolate the cooldown)
+    assert await cog._post_drop(channel, guild, is_test=False) is None
+    second_drop = cog.active_drops[channel.sent[-1].id]
+
+    reply = await submit(cog, channel, member, second_drop, code_of(second_drop, 0))
+    assert "cooldown" in reply.lower()
+    assert len((await cog._member_state(member)).collection) == 1
+
+    cog.claim_cooldown_until[member.id] = 0.0
+    await submit(cog, channel, member, second_drop, code_of(second_drop, 0))
+    assert len((await cog._member_state(member)).collection) == 2
+
+
+@pytest.mark.asyncio
+async def test_lockout_on_a_test_drop_does_not_set_a_real_penalty(cog):
+    """`.card testdrop` previews the guess cap, but must never leave an admin
+    with a real penalty that blocks them from winning actual drops."""
+    guild, admin, (member,), channel, drop, _ = await ready_drop(
+        cog, 206, n_members=1, is_test=True, max_wrong_guesses=1, wrong_guess_penalty_seconds=120
+    )
+    reply = await submit(cog, channel, member, drop, wrong_code_for(drop))
+
+    assert drop.is_locked_out(member.id)
+    assert member.id not in cog.wrong_guess_penalty_until
+    assert "test" in reply.lower()
+
+
+@pytest.mark.asyncio
+async def test_failed_save_leaves_the_card_open_and_unannounced(cog, monkeypatch):
+    guild, admin, (member,), channel, drop, drop_message = await ready_drop(cog, 209, n_members=1, n_cards=2)
+    real_save = cog._save_member_state
+    calls = []
+
+    async def flaky_save(m, state):
+        calls.append(1)
+        if len(calls) == 1:
+            raise RuntimeError("config backend down")
+        return await real_save(m, state)
+
+    monkeypatch.setattr(cog, "_save_member_state", flaky_save)
+
+    first = await submit(cog, channel, member, drop, code_of(drop, 0))  # must not raise
+    assert "still open" in first
+    assert channel.sent[-1] is drop_message, "no result embed may be posted for a claim that wasn't saved"
+    assert drop.claimed_positions == set() and drop.claimed_by == set()
+    assert member.id not in cog.claim_cooldown_until
+    assert (await cog._member_state(member)).collection == []
+
+    await submit(cog, channel, member, drop, code_of(drop, 0))  # the card was never lost -- retry works
+    assert len((await cog._member_state(member)).collection) == 1
+
+
+@pytest.mark.asyncio
+async def test_a_failed_result_announcement_does_not_undo_the_claim(cog, monkeypatch):
+    guild, admin, (member,), channel, drop, _ = await ready_drop(cog, 218, n_members=1, n_cards=2)
+
+    async def broken_send(*args, **kwargs):
+        raise discord.HTTPException(FakeHTTPResponse(500, "Server Error"), "boom")
+
+    monkeypatch.setattr(channel, "send", broken_send)
+    reply = await submit(cog, channel, member, drop, code_of(drop, 0))  # must not raise
+
+    assert "claimed" in reply.lower()
+    assert (await cog._member_state(member)).collection == [drop.cards[0]["card_id"]]
+
+
+@pytest.mark.asyncio
+async def test_expired_drop_stops_accepting_codes_and_is_forgotten(cog):
+    guild, admin, (member,), channel, drop, drop_message = await ready_drop(cog, 210, n_members=1, drop_expiry_seconds=60)
+    assert drop.expires_at is not None and drop.expires_at > time.monotonic()
+
+    drop.expires_at = time.monotonic() - 1
+    reply = await submit(cog, channel, member, drop, code_of(drop))
+
+    assert "over" in reply.lower()
+    assert (await cog._member_state(member)).collection == []
+    assert drop_message.id not in cog.active_drops
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("how", ["expires", "forgotten"])
+async def test_a_claim_queued_behind_the_lock_rechecks_the_drop_when_it_gets_it(cog, how):
+    """The drop can expire (or be released) while a claim is waiting its turn
+    for the claim lock. Whatever was true when the code was submitted is not
+    good enough -- the checks must run again once the lock is held."""
+    guild, admin, (member,), channel, drop, drop_message = await ready_drop(cog, 215, n_members=1)
+    lock = cog._get_claim_lock(guild.id)
+    await lock.acquire()
+    task = asyncio.ensure_future(submit(cog, channel, member, drop, code_of(drop)))
+    await asyncio.sleep(0)  # let it run up to the lock and wait there
+    assert not task.done()
+
+    if how == "expires":
+        drop.expires_at = time.monotonic() - 1
+    else:
+        cog._forget_drop(drop_message.id)
+    lock.release()
+    reply = await task
+
+    assert "over" in reply.lower()
+    assert (await cog._member_state(member)).collection == []
+
+
+@pytest.mark.asyncio
+async def test_a_locked_out_member_queued_behind_the_lock_still_cannot_win(cog):
+    """Locked out *while* their correct code waits for the lock (a wrong
+    guess landing in between) -- the lockout must be honored at the lock."""
+    guild, admin, (member,), channel, drop, _ = await ready_drop(cog, 216, n_members=1, max_wrong_guesses=1)
+    lock = cog._get_claim_lock(guild.id)
+    await lock.acquire()
+    task = asyncio.ensure_future(submit(cog, channel, member, drop, code_of(drop)))
+    await asyncio.sleep(0)
+    assert not task.done()
+
+    drop.wrong_guesses[member.id] = 1  # used up their guesses in the meantime
+    lock.release()
+    reply = await task
+
+    assert "locked out" in reply
+    assert (await cog._member_state(member)).collection == []
+
+
+@pytest.mark.asyncio
+async def test_card_with_missing_art_is_dropped_from_the_claimable_set(cog, monkeypatch):
+    """A card whose art can't be read has no visible code, so it must not
+    linger in drop.cards -- it could never be claimed, and the drop would
+    never count as fully claimed."""
+    import random as random_mod
+
+    guild = FakeGuild(213)
+    admin = FakeMember(2130, guild)
+    guild.members = {2130: admin}
+    channel = FakeChannel(21300, guild)
+    cog.bot.register_channel(channel)
+    for i in range(2):
+        ctx = FakeCtx(admin, guild, channel, attachments=[FakeAttachment(fake_art_bytes((i * 60, 40, 40)))])
+        await cog.card.commands["addcard"].callback(cog, ctx, "common", name_and_series=f"M{i} | Anime")
+    pool = await cog.config.guild(guild).pool()
+    missing_id = sorted(int(k) for k in pool)[0]
+    storage.card_image_path(cog.data_path, guild.id, missing_id).unlink()
+    await cog.config.guild(guild).drop_size.set(6)
+
+    rolled = {}
+    real_build = cc_module.engine.build_drop
+
+    def seeded_build(*args, **kwargs):
+        drop = real_build(*args, rng=random_mod.Random(5), **kwargs)
+        rolled["ids"] = {c["card_id"] for c in drop.cards}
+        return drop
+
+    monkeypatch.setattr(cc_module.engine, "build_drop", seeded_build)
+    assert await cog._post_drop(channel, guild, is_test=False) is None
+
+    assert missing_id in rolled["ids"], "test setup: the seeded roll must include the card with missing art"
+    drop = cog.active_drops[channel.sent[-1].id]
+    assert drop.cards and all(c["card_id"] != missing_id for c in drop.cards)
+
+
+# -- the button and the pop-up ------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_pressing_claim_opens_the_code_popup(cog):
+    guild, admin, (member,), channel, drop, drop_message = await ready_drop(cog, 219, n_members=1)
+    interaction = FakeInteraction(member, channel, message=drop_message)
+
+    await drop_message.view.claim.callback(interaction)
+
+    modal = interaction.response.modal
+    assert isinstance(modal, views.CodeModal)
+    assert modal.drop_message_id == drop_message.id
+    assert interaction.response.messages == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("why", ["over", "already", "locked", "cooldown", "penalty"])
+async def test_pressing_claim_when_it_cannot_work_explains_privately_instead_of_opening_the_popup(cog, why):
+    guild, admin, (member, other), channel, drop, drop_message = await ready_drop(
+        cog, 220, n_members=2, n_cards=2, max_wrong_guesses=1
+    )
+    if why == "over":
+        cog._forget_drop(drop_message.id)
+    elif why == "already":
+        await submit(cog, channel, member, drop, code_of(drop, 0))
+    elif why == "locked":
+        drop.wrong_guesses[member.id] = 1
+    elif why == "cooldown":
+        cog.claim_cooldown_until[member.id] = time.monotonic() + 100
+    elif why == "penalty":
+        cog.wrong_guess_penalty_until[member.id] = time.monotonic() + 100
+    interaction = FakeInteraction(member, channel, message=drop_message)
+
+    await drop_message.view.claim.callback(interaction)
+
+    assert interaction.response.modal is None
+    (text, ephemeral), = interaction.response.messages
+    assert ephemeral is True and text
+
+
+@pytest.mark.asyncio
+async def test_a_button_press_after_a_restart_gets_a_friendly_reply(cog):
+    """After a restart the in-memory drop is gone, but the persistent button
+    still fires -- it must answer 'over', not raise or open a dead pop-up."""
+    guild, admin, (member,), channel, drop, drop_message = await ready_drop(cog, 221, n_members=1)
+    cog.active_drops.clear()  # what a restart does
+    interaction = FakeInteraction(member, channel, message=drop_message)
+
+    await views.ClaimView(cog).claim.callback(interaction)
+
+    assert interaction.response.modal is None
+    assert "over" in interaction.response.messages[0][0].lower()
+
+
+@pytest.mark.asyncio
+async def test_cog_load_registers_one_persistent_claim_view(cog):
+    await cog.cog_load()
+    try:
+        assert len(cog.bot.added_views) == 1
+        view = cog.bot.added_views[0]
+        assert isinstance(view, views.ClaimView)
+        assert view.timeout is None, "persistent views must never time out"
+        assert view.claim.custom_id == views.CLAIM_BUTTON_ID
+    finally:
+        await cog.cog_unload()
+
+
+@pytest.mark.asyncio
+async def test_popup_submission_defers_privately_then_replies_privately(cog):
+    guild, admin, (member,), channel, drop, drop_message = await ready_drop(cog, 222, n_members=1)
+    interaction = FakeInteraction(member, channel, message=drop_message)
+    modal = views.CodeModal(cog, drop_message.id)
+
+    await modal.handle_submit(interaction, wrong_code_for(drop))
+
+    assert interaction.response.deferred is True
+    (text, ephemeral), = interaction.followup.messages
+    assert ephemeral is True and "Wrong code" in text
+
+
+@pytest.mark.asyncio
+async def test_a_slow_acknowledgement_cannot_lose_a_race_the_member_won(cog):
+    """Both members submit the same code, first one first -- but the first
+    member's acknowledgement is much slower than the second's. The claim must
+    be decided by submission order, not by whose acknowledgement finished
+    first, so the first submitter still wins."""
+    guild, admin, (first, second), channel, drop, drop_message = await ready_drop(cog, 223, n_members=2, n_cards=2)
+    slow = FakeInteraction(first, channel, message=drop_message, defer_delay=25)
+    fast = FakeInteraction(second, channel, message=drop_message, defer_delay=0)
+    modal_a = views.CodeModal(cog, drop_message.id)
+    modal_b = views.CodeModal(cog, drop_message.id)
+
+    await asyncio.gather(
+        modal_a.handle_submit(slow, code_of(drop, 0)),
+        modal_b.handle_submit(fast, code_of(drop, 0)),
+    )
+
+    assert (await cog._member_state(first)).collection == [drop.cards[0]["card_id"]]
+    assert (await cog._member_state(second)).collection == []
+    assert "claimed" in slow.followup.messages[0][0].lower()
+    assert "too slow" in fast.followup.messages[0][0].lower()
+
+
+@pytest.mark.asyncio
+async def test_popup_survives_a_crash_in_claim_handling(cog, monkeypatch):
+    guild, admin, (member,), channel, drop, drop_message = await ready_drop(cog, 224, n_members=1)
+
+    async def boom(*args, **kwargs):
+        raise RuntimeError("unexpected")
+
+    monkeypatch.setattr(cog, "submit_code", boom)
+    interaction = FakeInteraction(member, channel, message=drop_message)
+
+    await views.CodeModal(cog, drop_message.id).handle_submit(interaction, "K3+9T")  # must not raise
+
+    (text, ephemeral), = interaction.followup.messages
+    assert ephemeral is True and "try again" in text.lower()
+
+
+@pytest.mark.asyncio
+async def test_settings_commands_for_the_captcha_mechanic(cog):
+    guild = FakeGuild(214)
+    admin = FakeMember(2140, guild)
+    channel = FakeChannel(21400, guild)
+    set_cmds = cog.card.commands["set"].commands
+
+    for removed in ("decoys", "decoycount"):
+        assert removed not in set_cmds, f"`.card set {removed}` belonged to the emoji mechanic and should be gone"
+
+    ctx = FakeCtx(admin, guild, channel)
+    await set_cmds["wrongguesses"].callback(cog, ctx, 5)
+    assert await cog.config.guild(guild).max_wrong_guesses() == 5
+    await set_cmds["wrongguesses"].callback(cog, ctx, -1)
+    assert "negative" in ctx.sent[-1].content.lower()
+    assert await cog.config.guild(guild).max_wrong_guesses() == 5
+    await set_cmds["wrongguesses"].callback(cog, ctx, 0)
+    assert "unlimited" in ctx.sent[-1].content.lower()
+
+    await set_cmds["dropexpiry"].callback(cog, ctx, 120)
+    assert await cog.config.guild(guild).drop_expiry_seconds() == 120
+    await set_cmds["dropexpiry"].callback(cog, ctx, 5)
+    assert "30" in ctx.sent[-1].content
+    assert await cog.config.guild(guild).drop_expiry_seconds() == 120
+
+    await set_cmds["wrongguesspenalty"].callback(cog, ctx, 90)
+    assert await cog.config.guild(guild).wrong_guess_penalty_seconds() == 90
+    await set_cmds["wrongguesspenalty"].callback(cog, ctx, -5)
+    assert "negative" in ctx.sent[-1].content.lower()
+    assert await cog.config.guild(guild).wrong_guess_penalty_seconds() == 90
+
+    await cog.card.commands["settings"].callback(cog, ctx)
+    field_names = [f.name for f in ctx.sent[-1].embeds[0].fields]
+    assert "Wrong guesses / drop" in field_names and "Drop expiry" in field_names
+    assert not any("decoy" in n.lower() or "claim window" in n.lower() for n in field_names)
+
+
+@pytest.mark.asyncio
+async def test_defaults_give_one_retry_then_lock_the_member_out(cog):
+    """Out of the box: a first wrong code says 'one guess left', and the
+    second wrong code triggers the lockout message."""
+    guild, admin, (member,), channel, drop, _ = await ready_drop(cog, 225, n_members=1)
+    assert drop.max_wrong_guesses == 2
+    wrong = wrong_code_for(drop)
+
+    assert "1 guess left" in await submit(cog, channel, member, drop, wrong)
+    assert not drop.is_locked_out(member.id)
+    assert "locked out" in await submit(cog, channel, member, drop, wrong)
+    assert drop.is_locked_out(member.id)
+    assert member.dms == [], "nothing is DM'd any more -- replies are ephemeral"

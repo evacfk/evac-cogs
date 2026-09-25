@@ -3,7 +3,8 @@ import random
 import pytest
 
 from cardcollect import engine
-from cardcollect.constants import DEFAULT_DROP_WEIGHTS, DEFAULT_SELL_PRICES, DEFAULT_TIER_CUTOFFS, EMOJI_POOL
+from cardcollect import captcha
+from cardcollect.constants import DEFAULT_DROP_WEIGHTS, DEFAULT_SELL_PRICES, DEFAULT_TIER_CUTOFFS
 from cardcollect.models import Card
 
 
@@ -57,52 +58,32 @@ def test_should_drop_bounds():
     assert engine.should_drop(1.0, rng) is True
 
 
-def test_pick_drop_emojis_distinct():
-    rng = random.Random(3)
-    emojis = engine.pick_drop_emojis(EMOJI_POOL, 3, rng)
-    assert len(emojis) == 3
-    assert len(set(emojis)) == 3
-
-
-def test_pick_drop_emojis_too_many_raises():
-    with pytest.raises(ValueError):
-        engine.pick_drop_emojis(["a", "b"], 3)
-
-
-def test_pick_decoy_emojis_excludes_real():
-    rng = random.Random(5)
-    real = ["🍉", "🍇", "🍊"]
-    decoys = engine.pick_decoy_emojis(EMOJI_POOL, real, 5, rng)
-    assert set(decoys).isdisjoint(real)
-    assert len(decoys) == len(set(decoys))
-
-
-def test_build_drop_produces_distinct_emoji_per_card():
+def test_build_drop_gives_every_card_its_own_valid_code():
     pool = make_pool()
     rng = random.Random(11)
-    drop = engine.build_drop(
-        pool, DEFAULT_DROP_WEIGHTS, 3, EMOJI_POOL, True, 5, guild_id=1, channel_id=2, rng=rng
-    )
+    drop = engine.build_drop(pool, DEFAULT_DROP_WEIGHTS, 3, guild_id=1, channel_id=2, rng=rng)
     assert drop is not None
     assert len(drop.cards) == 3
-    emojis = [c["emoji"] for c in drop.cards]
-    assert len(set(emojis)) == 3
-    assert set(emojis).isdisjoint(drop.decoy_emojis)
+    codes = [c["code"] for c in drop.cards]
+    assert all(captcha.looks_like_code(code) for code in codes)
+    assert len(set(codes)) == 3
+    assert [c["position"] for c in drop.cards] == [0, 1, 2]
+    for i, a in enumerate(codes):
+        for b in codes[i + 1 :]:
+            assert captcha.edit_distance(a, b) >= 2
     assert drop.is_test is False
 
 
 def test_build_drop_is_test_flag_threaded_through():
     pool = make_pool()
     drop = engine.build_drop(
-        pool, DEFAULT_DROP_WEIGHTS, 2, EMOJI_POOL, False, 0, guild_id=1, channel_id=2,
-        rng=random.Random(1), is_test=True,
+        pool, DEFAULT_DROP_WEIGHTS, 2, guild_id=1, channel_id=2, rng=random.Random(1), is_test=True
     )
     assert drop.is_test is True
-    assert drop.decoy_emojis == []
 
 
 def test_build_drop_empty_pool_returns_none():
-    drop = engine.build_drop([], DEFAULT_DROP_WEIGHTS, 3, EMOJI_POOL, True, 5, 1, 2, rng=random.Random(1))
+    drop = engine.build_drop([], DEFAULT_DROP_WEIGHTS, 3, 1, 2, rng=random.Random(1))
     assert drop is None
 
 
@@ -110,28 +91,9 @@ def test_build_drop_falls_back_when_rolled_tier_is_empty():
     # only commons in the pool -- every roll into rare/epic/legendary must
     # fall back rather than fail the whole drop
     pool = [Card(1, "Only Common", "Series", "common", "1.png")]
-    drop = engine.build_drop(pool, DEFAULT_DROP_WEIGHTS, 3, EMOJI_POOL, True, 5, 1, 2, rng=random.Random(2))
+    drop = engine.build_drop(pool, DEFAULT_DROP_WEIGHTS, 3, 1, 2, rng=random.Random(2))
     assert drop is not None
     assert all(c["card_id"] == 1 for c in drop.cards)
-
-
-def test_reaction_add_order_contains_all_and_is_a_permutation():
-    pool = make_pool()
-    drop = engine.build_drop(pool, DEFAULT_DROP_WEIGHTS, 3, EMOJI_POOL, True, 5, 1, 2, rng=random.Random(9))
-    order = engine.reaction_add_order(drop, random.Random(9))
-    expected = {c["emoji"] for c in drop.cards} | set(drop.decoy_emojis)
-    assert set(order) == expected
-    assert len(order) == len(expected)
-
-
-def test_resolve_claim_picks_among_reactors():
-    rng = random.Random(4)
-    winner = engine.resolve_claim([10, 20, 30], rng)
-    assert winner in (10, 20, 30)
-
-
-def test_resolve_claim_empty_returns_none():
-    assert engine.resolve_claim([]) is None
 
 
 def test_make_sell_token_and_price():

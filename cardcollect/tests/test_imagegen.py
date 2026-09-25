@@ -14,29 +14,17 @@ def fake_art(color=(120, 40, 40), size=(400, 560)):
     return buf.getvalue()
 
 
-def test_get_emoji_image_known_emoji_from_bundled_pool():
-    from cardcollect.constants import EMOJI_POOL
-
-    img = imagegen.get_emoji_image(EMOJI_POOL[0], 32)
-    assert img is not None
-    assert img.size == (32, 32)
-
-
-def test_get_emoji_image_unknown_emoji_returns_none():
-    assert imagegen.get_emoji_image("\U0001fabf", 32) is None  # not in the bundled pool
-
-
 def test_render_card_returns_correct_size_and_mode():
     card = Card(1, "Alice", "Some Anime", "legendary", "1.png")
-    tile = imagegen.render_card(card, fake_art(), emoji="⭐")
+    tile = imagegen.render_card(card, fake_art(), code="K3+9T")
     assert tile.size == (400, 560)
     assert tile.mode == "RGBA"
 
 
 def test_render_drop_produces_valid_png_with_all_cards():
     cards = [
-        (Card(1, "A", "S", "common", "1.png"), fake_art((200, 50, 50)), "🍉"),
-        (Card(2, "B", "S", "rare", "2.png"), fake_art((50, 50, 200)), "⭐"),
+        (Card(1, "A", "S", "common", "1.png"), fake_art((200, 50, 50)), "K3+9T"),
+        (Card(2, "B", "S", "rare", "2.png"), fake_art((50, 50, 200)), "M7#4E"),
     ]
     buf = imagegen.render_drop(cards, is_test=False)
     img = Image.open(buf)
@@ -44,7 +32,7 @@ def test_render_drop_produces_valid_png_with_all_cards():
 
 
 def test_render_drop_test_mode_is_taller_for_the_banner():
-    cards = [(Card(1, "A", "S", "common", "1.png"), fake_art(), "🍉")]
+    cards = [(Card(1, "A", "S", "common", "1.png"), fake_art(), "K3+9T")]
     normal = Image.open(imagegen.render_drop(cards, is_test=False))
     test_marked = Image.open(imagegen.render_drop(cards, is_test=True))
     assert test_marked.height > normal.height
@@ -146,7 +134,7 @@ def test_render_card_show_id_draws_a_badge():
 
 
 def test_render_card_show_id_defaults_to_off_for_drop_tiles():
-    # drop tiles must never reveal the card_id -- only the claim emoji
+    # drop tiles must never reveal the card_id -- only the claim code
     # should identify a card there. render_card's default (no show_id
     # passed) is what render_drop relies on, so pin that default explicitly
     # rather than trusting render_drop's own tests to catch a regression.
@@ -215,3 +203,54 @@ def test_render_gallery_tiles_show_the_card_id(monkeypatch):
     # (cards 1 and 2) = 3 total; every single one must pass show_id=True
     assert len(calls) == 3
     assert all(calls), "render_gallery must request show_id=True on every tile it builds"
+
+
+def _code_region(tile):
+    """The band above the name plate where the code pill is drawn."""
+    w, h = tile.size
+    top = h - imagegen.NAME_PLATE_HEIGHT - imagegen.CODE_PILL_HEIGHT - 14
+    return tile.crop((0, top, w, top + imagegen.CODE_PILL_HEIGHT)).tobytes()
+
+
+def test_render_card_with_a_code_draws_the_pill_above_the_name_plate():
+    card = Card(1, "A", "S", "common", "1.png")
+    art = fake_art((10, 10, 10))
+    plain = imagegen.render_card(card, art)
+    coded = imagegen.render_card(card, art, code="K3+9T")
+    assert _code_region(plain) != _code_region(coded)
+    # ...and only there: the top of the card is untouched
+    assert plain.crop((0, 0, 400, 200)).tobytes() == coded.crop((0, 0, 400, 200)).tobytes()
+
+
+def test_render_card_code_defaults_to_off():
+    card = Card(1, "A", "S", "common", "1.png")
+    art = fake_art((10, 10, 10))
+    assert imagegen.render_card(card, art).tobytes() == imagegen.render_card(card, art, code=None).tobytes()
+
+
+def test_different_codes_render_differently():
+    card = Card(1, "A", "S", "common", "1.png")
+    art = fake_art((10, 10, 10))
+    a = imagegen.render_card(card, art, code="K3+9T")
+    b = imagegen.render_card(card, art, code="M7#4E")
+    assert _code_region(a) != _code_region(b)
+
+
+def test_draw_code_badge_is_deterministic_for_a_seeded_rng_and_varies_across_seeds():
+    import random
+
+    base = Image.new("RGBA", (400, 560), (30, 30, 34, 255))
+
+    def render(seed):
+        canvas = base.copy()
+        imagegen._draw_code_badge(canvas, "K3+9T", random.Random(seed))
+        return canvas.tobytes()
+
+    assert render(1) == render(1)
+    assert render(1) != render(2), "per-character jitter/noise should differ between renders"
+
+
+def test_code_pill_fits_inside_a_drop_tile():
+    w, _ = imagegen.CARD_IMAGE_SIZE
+    pill_w = imagegen.CODE_CELL_WIDTH * 5 + imagegen.CODE_PILL_PAD_X * 2
+    assert pill_w <= w - 8
