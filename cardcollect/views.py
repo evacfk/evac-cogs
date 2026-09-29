@@ -14,6 +14,9 @@ import logging
 
 import discord
 
+from . import imagegen
+from .constants import GALLERY_VIEW_TIMEOUT_SECONDS
+
 log = logging.getLogger("red.evac-cogs.cardcollect")
 
 CLAIM_BUTTON_ID = "cardcollect:claim"
@@ -80,3 +83,83 @@ class ClaimView(discord.ui.View):
             await interaction.response.send_message(refusal, ephemeral=True)
             return
         await interaction.response.send_modal(CodeModal(self.cog, message_id))
+
+
+class GalleryView(discord.ui.View):
+    """Prev/Next paging for `.card`'s collection gallery. Unlike ClaimView
+    this is NOT persistent -- it's a read-only viewer over a snapshot of one
+    member's collection taken when `.card` was run, so there's no state to
+    lose if it goes stale after a restart or times out; it just stops
+    responding, same as any other timed-out view.
+
+    `pages` is a list of (Card, image_bytes) lists, already chunked by the
+    caller (constants.GALLERY_PAGE_SIZE per page). Only page 0 ever shows
+    the showcase header row, matching the pre-pagination gallery where the
+    showcase sat above the one big grid."""
+
+    def __init__(self, invoker_id: int, pages, showcase_card_ids, quantities, whose: str):
+        super().__init__(timeout=GALLERY_VIEW_TIMEOUT_SECONDS)
+        self.invoker_id = invoker_id
+        self.pages = pages
+        self.showcase_card_ids = showcase_card_ids
+        self.quantities = quantities
+        self.whose = whose
+        self.page = 0
+        self.message = None  # set by the caller right after sending
+        self._sync_buttons()
+
+    def _sync_buttons(self):
+        self.previous.disabled = self.page == 0
+        self.next.disabled = self.page >= len(self.pages) - 1
+
+    def render_current(self):
+        showcase = self.showcase_card_ids if self.page == 0 else ()
+        gallery = imagegen.render_gallery(self.pages[self.page], showcase_card_ids=showcase, quantities=self.quantities)
+        label = f"{self.whose} collection: (page {self.page + 1}/{len(self.pages)})"
+        return gallery, label
+
+    async def _refresh(self, interaction: discord.Interaction):
+        self._sync_buttons()
+        gallery, label = self.render_current()
+        await interaction.response.edit_message(
+            content=label, attachments=[discord.File(gallery, filename="collection.png")], view=self
+        )
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        # belt-and-braces: discord.py's own dispatch calls this before a
+        # button callback, but the check is repeated inside each callback
+        # too (see _reject_if_not_invoker) so the same guard holds even when
+        # a callback is invoked directly, bypassing View's dispatch (as the
+        # test suite does to simulate a click).
+        return await self._reject_if_not_invoker(interaction)
+
+    async def _reject_if_not_invoker(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.invoker_id:
+            await interaction.response.send_message(
+                "Only the person who ran `.card` can page through this.", ephemeral=True
+            )
+            return False
+        return True
+
+    @discord.ui.button(label="◀ Prev", style=discord.ButtonStyle.secondary)
+    async def previous(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not await self._reject_if_not_invoker(interaction):
+            return
+        self.page = max(0, self.page - 1)
+        await self._refresh(interaction)
+
+    @discord.ui.button(label="Next ▶", style=discord.ButtonStyle.secondary)
+    async def next(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not await self._reject_if_not_invoker(interaction):
+            return
+        self.page = min(len(self.pages) - 1, self.page + 1)
+        await self._refresh(interaction)
+
+    async def on_timeout(self):
+        for item in self.children:
+            item.disabled = True
+        if self.message is not None:
+            try:
+                await self.message.edit(view=self)
+            except discord.HTTPException:
+                log.warning("cardcollect: couldn't disable a timed-out gallery view", exc_info=True)

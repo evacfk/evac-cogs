@@ -45,6 +45,7 @@ from .constants import (
     DEFAULT_SELL_PRICES,
     DEFAULT_TIER_CUTOFFS,
     DEFAULT_WRONG_GUESS_PENALTY_SECONDS,
+    GALLERY_PAGE_SIZE,
     MAX_COPIES_KEPT,
     MAX_SHOWCASE_SLOTS,
     TIERS,
@@ -482,6 +483,14 @@ class CardCollect(commands.Cog):
             return MSG_TAKEN  # right code, but someone was faster -- not the member's fault
         return await self._claim(member, channel, drop, entry)
 
+    async def _post_to_channel(self, channel: discord.abc.Messageable, **kwargs):
+        """Best-effort public post: a failed announcement must never undo or
+        crash a claim that has already been saved."""
+        try:
+            await channel.send(**kwargs)
+        except discord.HTTPException:
+            log.exception("cardcollect: failed to post to the drop channel")
+
     async def _claim(
         self, member: discord.abc.User, channel: discord.abc.Messageable, drop: ActiveDrop, entry: dict
     ) -> str:
@@ -560,16 +569,31 @@ class CardCollect(commands.Cog):
             drop.claimed_by.add(member.id)
             if not drop.is_test:
                 self.claim_cooldown_until[member.id] = time.monotonic() + claim_cooldown
-            if len(drop.claimed_positions) >= len(drop.cards):
+            all_claimed = len(drop.claimed_positions) >= len(drop.cards)
+            if all_claimed:
                 self._forget_drop(drop.message_id)
 
             embed = embeds.claim_result_embed(card, member, outcome, price=price, is_test=drop.is_test)
+            # Started inside the lock so announcements go out in claim order,
+            # but awaited outside it: posting must not hold up the next claim.
+            announcement = asyncio.ensure_future(self._post_to_channel(channel, embed=embed))
+            drop.announcements.append(announcement)
 
-        # outside the lock: the public announcement must not hold up the next claim
-        try:
-            await channel.send(embed=embed)
-        except discord.HTTPException:
-            log.exception("cardcollect: failed to post claim result embed")
+        await announcement
+        if all_claimed:
+            # Wait for every claim's embed -- not just this one's -- so this
+            # can never land ahead of an earlier claim's announcement that
+            # was still in flight. Exactly one claim sees all_claimed (the
+            # lock serializes them), so it's posted exactly once.
+            await asyncio.gather(*drop.announcements)
+            await self._post_to_channel(
+                channel,
+                content=(
+                    "\U0001f9ea Test drop finished — all of its cards were claimed."
+                    if drop.is_test
+                    else "\U0001f389 All cards from this drop have been claimed!"
+                ),
+            )
 
         reply = f"✅ You claimed **{card.name}**!"
         if drop.is_test:
@@ -610,11 +634,23 @@ class CardCollect(commands.Cog):
             await ctx.send("Those cards exist but their art is missing -- ask an admin to check the pool.")
             return
 
-        gallery = imagegen.render_gallery(
-            entries, showcase_card_ids=state.showcase_card_ids, quantities=quantities
-        )
-        content = None if target.id == ctx.author.id else f"{target.display_name}'s collection:"
-        await ctx.send(content=content, file=discord.File(gallery, filename="collection.png"))
+        pages = [entries[i : i + GALLERY_PAGE_SIZE] for i in range(0, len(entries), GALLERY_PAGE_SIZE)]
+
+        if len(pages) == 1:
+            # common case: whole collection fits on one page -- no point
+            # showing paging buttons that would both be permanently disabled
+            gallery = imagegen.render_gallery(
+                pages[0], showcase_card_ids=state.showcase_card_ids, quantities=quantities
+            )
+            content = None if target.id == ctx.author.id else f"{target.display_name}'s collection:"
+            await ctx.send(content=content, file=discord.File(gallery, filename="collection.png"))
+            return
+
+        whose = "Your" if target.id == ctx.author.id else f"{target.display_name}'s"
+        view = views.GalleryView(ctx.author.id, pages, state.showcase_card_ids, quantities, whose)
+        gallery, content = view.render_current()
+        msg = await ctx.send(content=content, file=discord.File(gallery, filename="collection.png"), view=view)
+        view.message = msg
 
     @card.group(name="showcase", invoke_without_command=True)
     @commands.guild_only()

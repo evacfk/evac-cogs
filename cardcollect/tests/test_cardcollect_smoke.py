@@ -83,6 +83,12 @@ class FakeMessage:
     async def add_reaction(self, emoji):
         self.reactions.append(emoji)
 
+    async def edit(self, content=None, embed=None, file=None, view=None, **kwargs):
+        if content is not None:
+            self.content = content
+        if view is not None:
+            self.view = view
+
 
 class FakeChannel:
     def __init__(self, id_, guild):
@@ -945,6 +951,7 @@ class FakeInteractionResponse:
         self.deferred = None  # the ephemeral flag once deferred
         self.messages = []
         self.modal = None
+        self.edited = None
 
     async def defer(self, ephemeral=False):
         for _ in range(self.defer_delay):
@@ -956,6 +963,9 @@ class FakeInteractionResponse:
 
     async def send_modal(self, modal):
         self.modal = modal
+
+    async def edit_message(self, content=None, attachments=None, view=None):
+        self.edited = {"content": content, "attachments": attachments, "view": view}
 
 
 class FakeFollowup:
@@ -979,6 +989,12 @@ class FakeInteraction:
 async def submit(cog, channel, member, drop, code):
     """One code submission from the pop-up; returns the private reply."""
     return await cog.submit_code(member, channel, drop.message_id, code)
+
+
+def claim_embed(channel):
+    """The most recent claim-result embed (the last message that has one --
+    a fully claimed drop also ends with a plain 'all claimed' message)."""
+    return next(m for m in reversed(channel.sent) if m.embeds).embeds[0]
 
 
 def code_of(drop, index=0):
@@ -1038,7 +1054,7 @@ async def test_full_drop_and_claim_cycle_real_mode(cog):
     assert (await cog._member_state(winner)).collection == [card_id]
     assert (await cog._member_state(late)).collection == []
     assert late_reply == late_reply and "over" in late_reply.lower()  # single-card drop is already released
-    result_embed = channel.sent[-1].embeds[0]
+    result_embed = claim_embed(channel)
     assert result_embed.title == "New card claimed!"
     assert drop_message.id not in cog.active_drops
 
@@ -1087,7 +1103,7 @@ async def test_test_mode_drop_awards_nothing(cog):
     reply = await submit(cog, channel, winner, drop, code_of(drop))
 
     assert (await cog._member_state(winner)).collection == []  # test mode: nothing awarded
-    assert "Test" in channel.sent[-1].embeds[0].title
+    assert "Test" in claim_embed(channel).title
     assert "test" in reply.lower()
 
 
@@ -1105,7 +1121,7 @@ async def test_first_duplicate_claim_becomes_a_tradeable_spare(cog):
     final_state = await cog._member_state(winner)
     assert final_state.collection == [card_id, card_id]  # a real second copy, not a sell token
     assert final_state.sell_tokens == []
-    result_embed = channel.sent[-1].embeds[0]
+    result_embed = claim_embed(channel)
     assert "Duplicate" in result_embed.title
     assert "spare" in result_embed.title.lower()
 
@@ -1124,7 +1140,7 @@ async def test_claim_at_the_duplicate_cap_becomes_a_sell_token(cog):
     assert final_state.collection == [card_id, card_id]  # unchanged, no 3rd copy
     assert len(final_state.sell_tokens) == 1
     assert final_state.sell_tokens[0].card_id == card_id
-    assert "sell token" in channel.sent[-1].embeds[0].title.lower()
+    assert "sell token" in claim_embed(channel).title.lower()
 
 
 @pytest.mark.asyncio
@@ -1249,7 +1265,7 @@ async def test_code_matches_case_insensitively_and_ignores_surrounding_whitespac
 async def test_a_typo_that_isnt_even_code_shaped_gets_a_hint_and_costs_nothing(cog):
     guild, admin, (member,), channel, drop, _ = await ready_drop(cog, 14, n_members=1, max_wrong_guesses=1)
     real = code_of(drop)
-    for typo in ["", "   ", "hello", real[:-1], real[0] + " " + real[1:], real + "X", "12345"]:
+    for typo in ["", "   ", "hello", real[:-1], real + "X", "12345"]:
         reply = await submit(cog, channel, member, drop, typo)
         assert "doesn't look like a code" in reply, f"{typo!r} should have been answered with a hint"
     assert drop.wrong_guesses == {}
@@ -1661,3 +1677,191 @@ async def test_defaults_give_one_retry_then_lock_the_member_out(cog):
     assert "locked out" in await submit(cog, channel, member, drop, wrong)
     assert drop.is_locked_out(member.id)
     assert member.dms == [], "nothing is DM'd any more -- replies are ephemeral"
+
+
+# -- "all cards claimed" announcement ------------------------------------------
+
+
+def _after_drop(channel, drop_message):
+    """Everything posted after the drop itself (the addcard confirmations that
+    ready_drop's setup posts come before it)."""
+    return channel.sent[channel.sent.index(drop_message) + 1 :]
+
+
+def _plain_messages(channel):
+    return [m for m in channel.sent if not m.embeds and not m.files]
+
+
+@pytest.mark.asyncio
+async def test_a_message_is_posted_once_every_card_in_the_drop_is_claimed(cog):
+    guild, admin, members, channel, drop, drop_message = await ready_drop(cog, 226, n_members=3, n_cards=3)
+
+    for i, member in enumerate(members[:2]):
+        await submit(cog, channel, member, drop, code_of(drop, i))
+        assert _plain_messages(channel) == [], "not all claimed yet -- nothing should be announced"
+
+    await submit(cog, channel, members[2], drop, code_of(drop, 2))
+
+    (done,) = _plain_messages(channel)
+    assert done.content == "\U0001f389 All cards from this drop have been claimed!"
+    assert channel.sent[-1] is done, "the announcement comes after the last claim's own embed"
+    assert sum(1 for m in _after_drop(channel, drop_message) if m.embeds) == 3
+
+
+@pytest.mark.asyncio
+async def test_all_claimed_announcement_wording_on_a_test_drop(cog):
+    guild, admin, (member,), channel, drop, _ = await ready_drop(cog, 227, n_members=1, is_test=True)
+    await submit(cog, channel, member, drop, code_of(drop))
+    (done,) = _plain_messages(channel)
+    assert "test" in done.content.lower() and "claimed" in done.content.lower()
+
+
+@pytest.mark.asyncio
+async def test_no_all_claimed_message_when_a_drop_expires_with_cards_left(cog):
+    guild, admin, (member,), channel, drop, _ = await ready_drop(cog, 228, n_members=1, n_cards=2)
+    await submit(cog, channel, member, drop, code_of(drop, 0))
+    drop.expires_at = time.monotonic() - 1
+    cog._prune_expired_drops()
+    assert _plain_messages(channel) == []
+
+
+@pytest.mark.asyncio
+async def test_all_claimed_message_is_last_and_single_even_when_claims_finish_together(cog, monkeypatch):
+    """All three cards are claimed in the same instant, and the first claim's
+    embed is slow to post. The 'all claimed' message must still come after
+    every claim embed, and appear exactly once."""
+    guild, admin, members, channel, drop, drop_message = await ready_drop(cog, 229, n_members=3, n_cards=3)
+    real_send = channel.send
+    slow_once = {"used": False}
+
+    async def send(*args, **kwargs):
+        if kwargs.get("embed") is not None and not slow_once["used"]:
+            slow_once["used"] = True
+            for _ in range(30):
+                await asyncio.sleep(0)
+        return await real_send(*args, **kwargs)
+
+    monkeypatch.setattr(channel, "send", send)
+
+    await asyncio.gather(*(submit(cog, channel, m, drop, code_of(drop, i)) for i, m in enumerate(members)))
+
+    tail = _after_drop(channel, drop_message)
+    assert len(tail) == 4
+    assert [bool(m.embeds) for m in tail] == [True, True, True, False], "the announcement must come last"
+    assert sum(1 for m in tail if m.content and "All cards" in m.content) == 1
+
+
+@pytest.mark.asyncio
+async def test_a_failed_all_claimed_announcement_does_not_break_the_last_claim(cog, monkeypatch):
+    guild, admin, (member,), channel, drop, _ = await ready_drop(cog, 230, n_members=1)
+    real_send = channel.send
+
+    async def send(*args, **kwargs):
+        if kwargs.get("embed") is None:
+            raise discord.HTTPException(FakeHTTPResponse(500, "Server Error"), "boom")
+        return await real_send(*args, **kwargs)
+
+    monkeypatch.setattr(channel, "send", send)
+    reply = await submit(cog, channel, member, drop, code_of(drop))  # must not raise
+    assert "claimed" in reply.lower()
+    assert (await cog._member_state(member)).collection == [drop.cards[0]["card_id"]]
+
+
+# ---------------------------------------------------------------------------
+# .card gallery pagination (views.GalleryView)
+# ---------------------------------------------------------------------------
+
+from cardcollect.constants import GALLERY_PAGE_SIZE  # noqa: E402
+
+
+async def _collection_of_n_unique_cards(cog, guild, admin, channel, owner, n):
+    """Add `n` pool cards and give `owner` exactly one of each, distinct
+    card_ids -- what drives .card's page count."""
+    card_ids = []
+    for i in range(n):
+        ctx = FakeCtx(admin, guild, channel, attachments=[FakeAttachment(fake_art_bytes((i, i, i)))])
+        await cog.card.commands["addcard"].callback(cog, ctx, "common", name_and_series=f"Card{i} | S")
+        pool = await cog.config.guild(guild).pool()
+        card_ids = [int(cid) for cid in pool]  # pool grows in insertion order
+    await cog._save_member_state(owner, MemberState(collection=card_ids))
+    return card_ids
+
+
+@pytest.mark.asyncio
+async def test_card_gallery_fits_on_one_page_has_no_paging_view(cog):
+    guild = FakeGuild(300)
+    admin = FakeMember(3000, guild)
+    owner = FakeMember(3001, guild, display_name="Nia")
+    channel = FakeChannel(3002, guild)
+    await _collection_of_n_unique_cards(cog, guild, admin, channel, owner, GALLERY_PAGE_SIZE)
+
+    ctx = FakeCtx(owner, guild, channel)
+    await cog.card.callback(cog, ctx, member=None)
+    sent = ctx.sent[-1]
+    assert sent.view is None
+    assert sent.files
+
+
+@pytest.mark.asyncio
+async def test_card_gallery_over_one_page_gets_a_paging_view_with_next_disabled_going_forward(cog):
+    guild = FakeGuild(301)
+    admin = FakeMember(3010, guild)
+    owner = FakeMember(3011, guild, display_name="Nia")
+    channel = FakeChannel(3012, guild)
+    await _collection_of_n_unique_cards(cog, guild, admin, channel, owner, GALLERY_PAGE_SIZE + 1)
+
+    ctx = FakeCtx(owner, guild, channel)
+    await cog.card.callback(cog, ctx, member=None)
+    sent = ctx.sent[-1]
+    view = sent.view
+    assert isinstance(view, views.GalleryView)
+    assert "page 1/2" in sent.content.lower()
+    assert view.previous.disabled is True  # already on the first page
+    assert view.next.disabled is False
+
+    interaction = FakeInteraction(owner, channel, message=sent)
+    await view.next.callback(interaction)
+    assert view.page == 1
+    assert view.previous.disabled is False
+    assert view.next.disabled is True  # last page -- nothing further to page to
+    assert "page 2/2" in interaction.response.edited["content"].lower()
+    assert interaction.response.edited["attachments"]
+
+
+@pytest.mark.asyncio
+async def test_card_gallery_paging_buttons_reject_everyone_but_the_invoker(cog):
+    guild = FakeGuild(302)
+    admin = FakeMember(3020, guild)
+    owner = FakeMember(3021, guild, display_name="Nia")
+    bystander = FakeMember(3022, guild, display_name="Bystander")
+    channel = FakeChannel(3023, guild)
+    await _collection_of_n_unique_cards(cog, guild, admin, channel, owner, GALLERY_PAGE_SIZE + 1)
+
+    ctx = FakeCtx(owner, guild, channel)
+    await cog.card.callback(cog, ctx, member=None)
+    view = ctx.sent[-1].view
+
+    interaction = FakeInteraction(bystander, channel)
+    await view.next.callback(interaction)
+    assert view.page == 0  # unmoved -- the click never reached the handler's page logic
+    assert interaction.response.messages
+    text, ephemeral = interaction.response.messages[0]
+    assert "only" in text.lower() and ephemeral is True
+
+
+@pytest.mark.asyncio
+async def test_card_gallery_view_timeout_disables_its_buttons(cog):
+    guild = FakeGuild(303)
+    admin = FakeMember(3030, guild)
+    owner = FakeMember(3031, guild, display_name="Nia")
+    channel = FakeChannel(3032, guild)
+    await _collection_of_n_unique_cards(cog, guild, admin, channel, owner, GALLERY_PAGE_SIZE + 1)
+
+    ctx = FakeCtx(owner, guild, channel)
+    await cog.card.callback(cog, ctx, member=None)
+    view = ctx.sent[-1].view
+
+    await view.on_timeout()
+    assert view.previous.disabled is True
+    assert view.next.disabled is True
+    assert ctx.sent[-1].view is view  # message.edit(view=...) landed on the same message

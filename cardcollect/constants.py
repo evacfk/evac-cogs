@@ -76,3 +76,6 @@ CARD_IMAGE_SIZE = (400, 560)  # portrait card aspect, consistent tile size for d
 GALLERY_TILE_SIZE = (140, 196)
 GALLERY_FAVORITE_TILE_SIZE = (240, 336)
 GALLERY_COLUMNS = 4
+GALLERY_ROWS_PER_PAGE = 3  # keeps a page's image small enough to read on mobile
+GALLERY_PAGE_SIZE = GALLERY_COLUMNS * GALLERY_ROWS_PER_PAGE
+GALLERY_VIEW_TIMEOUT_SECONDS = 180  # a stale pager after this just stops responding
