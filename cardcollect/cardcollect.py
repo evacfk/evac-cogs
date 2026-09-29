@@ -647,7 +647,7 @@ class CardCollect(commands.Cog):
             return
 
         whose = "Your" if target.id == ctx.author.id else f"{target.display_name}'s"
-        view = views.GalleryView(ctx.author.id, pages, state.showcase_card_ids, quantities, whose)
+        view = views.GalleryView(ctx.author.id, pages, entries, state.showcase_card_ids, quantities, whose)
         gallery, content = view.render_current()
         msg = await ctx.send(content=content, file=discord.File(gallery, filename="collection.png"), view=view)
         view.message = msg

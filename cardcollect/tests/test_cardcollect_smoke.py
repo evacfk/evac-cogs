@@ -1771,6 +1771,7 @@ async def test_a_failed_all_claimed_announcement_does_not_break_the_last_claim(c
 # .card gallery pagination (views.GalleryView)
 # ---------------------------------------------------------------------------
 
+from cardcollect import imagegen  # noqa: E402
 from cardcollect.constants import GALLERY_PAGE_SIZE  # noqa: E402
 
 
@@ -1865,3 +1866,42 @@ async def test_card_gallery_view_timeout_disables_its_buttons(cog):
     assert view.previous.disabled is True
     assert view.next.disabled is True
     assert ctx.sent[-1].view is view  # message.edit(view=...) landed on the same message
+
+
+@pytest.mark.asyncio
+async def test_card_gallery_showcase_survives_pagination_even_off_page_one(cog, monkeypatch):
+    # regression: render_gallery's showcase header used to be built only
+    # from whatever page's cards were passed in as `entries` -- once the
+    # grid was paginated, a showcased card sitting on page 2+ silently
+    # vanished from the header row instead of showing up there.
+    guild = FakeGuild(304)
+    admin = FakeMember(3040, guild)
+    owner = FakeMember(3041, guild, display_name="Nia")
+    channel = FakeChannel(3042, guild)
+    card_ids = await _collection_of_n_unique_cards(cog, guild, admin, channel, owner, GALLERY_PAGE_SIZE + 1)
+    last_card_id = card_ids[-1]  # guaranteed to land on page 2, not page 1
+
+    state = await cog._member_state(owner)
+    state.showcase_card_ids = [last_card_id]
+    await cog._save_member_state(owner, state)
+
+    calls = []
+    real_render_gallery = imagegen.render_gallery
+
+    def spy(entries, showcase_card_ids=(), columns=None, quantities=None, showcase_pool=None):
+        calls.append((showcase_card_ids, showcase_pool))
+        kwargs = {"quantities": quantities, "showcase_pool": showcase_pool}
+        if columns is not None:
+            kwargs["columns"] = columns
+        return real_render_gallery(entries, showcase_card_ids=showcase_card_ids, **kwargs)
+
+    monkeypatch.setattr(imagegen, "render_gallery", spy)
+
+    ctx = FakeCtx(owner, guild, channel)
+    await cog.card.callback(cog, ctx, member=None)
+
+    showcase_ids, showcase_pool = calls[0]
+    assert showcase_ids == [last_card_id]
+    # the fix: the showcase lookup pool must include every owned card, not
+    # just whatever made it onto page 1's grid
+    assert last_card_id in {card.card_id for card, _ in showcase_pool}

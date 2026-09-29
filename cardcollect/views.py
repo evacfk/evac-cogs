@@ -95,12 +95,17 @@ class GalleryView(discord.ui.View):
     `pages` is a list of (Card, image_bytes) lists, already chunked by the
     caller (constants.GALLERY_PAGE_SIZE per page). Only page 0 ever shows
     the showcase header row, matching the pre-pagination gallery where the
-    showcase sat above the one big grid."""
+    showcase sat above the one big grid. The header is looked up against
+    `all_entries` (the member's *whole* collection, unpaginated) rather than
+    just the current page, since a showcased card can land on any page --
+    see render_gallery's showcase_pool docstring for why that distinction
+    matters."""
 
-    def __init__(self, invoker_id: int, pages, showcase_card_ids, quantities, whose: str):
+    def __init__(self, invoker_id: int, pages, all_entries, showcase_card_ids, quantities, whose: str):
         super().__init__(timeout=GALLERY_VIEW_TIMEOUT_SECONDS)
         self.invoker_id = invoker_id
         self.pages = pages
+        self.all_entries = all_entries
         self.showcase_card_ids = showcase_card_ids
         self.quantities = quantities
         self.whose = whose
@@ -114,7 +119,12 @@ class GalleryView(discord.ui.View):
 
     def render_current(self):
         showcase = self.showcase_card_ids if self.page == 0 else ()
-        gallery = imagegen.render_gallery(self.pages[self.page], showcase_card_ids=showcase, quantities=self.quantities)
+        gallery = imagegen.render_gallery(
+            self.pages[self.page],
+            showcase_card_ids=showcase,
+            quantities=self.quantities,
+            showcase_pool=self.all_entries,
+        )
         label = f"{self.whose} collection: (page {self.page + 1}/{len(self.pages)})"
         return gallery, label
 

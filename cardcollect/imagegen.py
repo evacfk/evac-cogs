@@ -281,6 +281,7 @@ def render_gallery(
     showcase_card_ids: Sequence[int] = (),
     columns: int = GALLERY_COLUMNS,
     quantities: Optional[dict] = None,
+    showcase_pool: Optional[Sequence[Tuple[Card, bytes]]] = None,
 ) -> io.BytesIO:
     """Build a member's collection gallery. Showcase cards (up to a few, in
     showcase order) render larger in a header row; the full grid below still
@@ -293,12 +294,20 @@ def render_gallery(
     constants.MAX_COPIES_KEPT) still gets one tile, not two identical ones.
     `quantities`, if given, maps card_id -> how many copies the member
     holds; any id with a count > 1 gets a small "xN" badge on its tile
-    instead of a duplicate tile."""
+    instead of a duplicate tile.
+
+    `showcase_pool` is where showcased cards are looked up for the header
+    row; it defaults to `entries`. Callers paginating the grid (one page's
+    worth of `entries` per image) must pass the member's *full* collection
+    here -- otherwise a showcased card that isn't on the current page would
+    silently vanish from the header instead of just not appearing in that
+    page's grid."""
     if not entries:
         raise ValueError("render_gallery needs at least one card")
 
     quantities = quantities or {}
-    by_id = {card.card_id: (card, image_bytes) for card, image_bytes in entries}
+    showcase_pool = entries if showcase_pool is None else showcase_pool
+    by_id = {card.card_id: (card, image_bytes) for card, image_bytes in showcase_pool}
     showcase_entries = [by_id[cid] for cid in showcase_card_ids if cid in by_id]
 
     tile_w, tile_h = GALLERY_TILE_SIZE
