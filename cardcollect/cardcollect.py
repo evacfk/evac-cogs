@@ -968,6 +968,26 @@ class CardCollect(commands.Cog):
         card = await self._card_by_id(ctx.guild, card_id)
         await ctx.send(embed=embeds.card_added_embed(card))
 
+    @card.command(name="setimage")
+    @commands.guild_only()
+    @commands.admin_or_permissions(manage_guild=True)
+    async def card_setimage(self, ctx: commands.Context, card_id: int):
+        """Swap out a pool character's art without touching anything else
+        about the card (name, series, rarity, ID, and everyone's owned
+        copies all stay exactly as they were). Attach the replacement image
+        to this message. Use `.card viewpool` to look up a card's ID."""
+        card = await self._card_by_id(ctx.guild, card_id)
+        if card is None:
+            await ctx.send(f"No card with ID {card_id}. Check `.card viewpool` for the right ID.")
+            return
+        if not ctx.message.attachments:
+            await ctx.send("Attach the replacement image to this message.")
+            return
+
+        image_bytes = await ctx.message.attachments[0].read()
+        storage.save_card_image(self.data_path, ctx.guild.id, card_id, image_bytes)
+        await ctx.send(embed=embeds.card_image_updated_embed(card))
+
     @card.command(name="removecard")
     @commands.guild_only()
     @commands.admin_or_permissions(manage_guild=True)

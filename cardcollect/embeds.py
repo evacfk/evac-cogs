@@ -189,6 +189,16 @@ def card_added_embed(card: Card) -> discord.Embed:
     return embed
 
 
+def card_image_updated_embed(card: Card) -> discord.Embed:
+    embed = discord.Embed(title="Card art updated", color=EMBED_COLOR)
+    embed.description = (
+        f"**{card.name}** (ID {card.card_id}) now uses the new art. "
+        "Anyone who already owns a copy sees the new image too -- the ID is what's stored, not the picture."
+    )
+    embed.add_field(name="Rarity", value=_rarity_line(card.rarity), inline=True)
+    return embed
+
+
 def card_removed_embed(card_id: int, name: str) -> discord.Embed:
     embed = discord.Embed(title="Character removed from pool", color=EMBED_COLOR)
     embed.description = f"**{name}** (ID {card_id}) will no longer drop. Members who already own it keep their copy."

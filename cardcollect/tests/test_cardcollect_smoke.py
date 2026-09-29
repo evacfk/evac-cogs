@@ -1905,3 +1905,57 @@ async def test_card_gallery_showcase_survives_pagination_even_off_page_one(cog, 
     # the fix: the showcase lookup pool must include every owned card, not
     # just whatever made it onto page 1's grid
     assert last_card_id in {card.card_id for card, _ in showcase_pool}
+
+
+@pytest.mark.asyncio
+async def test_setimage_swaps_the_art_but_keeps_everything_else(cog):
+    guild = FakeGuild(305)
+    admin = FakeMember(3050, guild)
+    channel = FakeChannel(3051, guild)
+    ctx = FakeCtx(admin, guild, channel, attachments=[FakeAttachment(fake_art_bytes((1, 1, 1)))])
+    await cog.card.commands["addcard"].callback(cog, ctx, "rare", name_and_series="Alice | Some Anime")
+    pool = await cog.config.guild(guild).pool()
+    card_id = int(next(iter(pool)))
+    original_bytes = storage.read_card_image(cog.data_path, guild.id, card_id)
+
+    new_ctx = FakeCtx(admin, guild, channel, attachments=[FakeAttachment(fake_art_bytes((9, 9, 9)))])
+    await cog.card.commands["setimage"].callback(cog, new_ctx, card_id)
+
+    embed = new_ctx.sent[-1].embeds[0]
+    assert embed.title == "Card art updated"
+    assert "Alice" in embed.description
+
+    updated_bytes = storage.read_card_image(cog.data_path, guild.id, card_id)
+    assert updated_bytes != original_bytes
+
+    # nothing else about the card changed
+    card = await cog._card_by_id(guild, card_id)
+    assert card.name == "Alice"
+    assert card.series == "Some Anime"
+    assert card.rarity == "rare"
+    assert card.card_id == card_id
+
+
+@pytest.mark.asyncio
+async def test_setimage_rejects_an_unknown_card_id(cog):
+    guild = FakeGuild(306)
+    admin = FakeMember(3060, guild)
+    channel = FakeChannel(3061, guild)
+    ctx = FakeCtx(admin, guild, channel, attachments=[FakeAttachment(fake_art_bytes())])
+    await cog.card.commands["setimage"].callback(cog, ctx, 9999)
+    assert "no card with id" in ctx.sent[-1].content.lower()
+
+
+@pytest.mark.asyncio
+async def test_setimage_requires_an_attachment(cog):
+    guild = FakeGuild(307)
+    admin = FakeMember(3070, guild)
+    channel = FakeChannel(3071, guild)
+    add_ctx = FakeCtx(admin, guild, channel, attachments=[FakeAttachment(fake_art_bytes())])
+    await cog.card.commands["addcard"].callback(cog, add_ctx, "common", name_and_series="Bob | S")
+    pool = await cog.config.guild(guild).pool()
+    card_id = int(next(iter(pool)))
+
+    no_attachment_ctx = FakeCtx(admin, guild, channel)  # no attachments
+    await cog.card.commands["setimage"].callback(cog, no_attachment_ctx, card_id)
+    assert "attach the replacement image" in no_attachment_ctx.sent[-1].content.lower()
