@@ -27,6 +27,8 @@ DEFAULT_GUILD = {
     "streak_bonus_pct": 10,        # extra % per bump in a row (same bumper, uninterrupted) after the first
     "streak_max": 5,               # max number of bonus steps (5 x 10% = +50%)
     "warning_enabled": True,       # "~1 minute" heads-up before the NOW ping
+    "mode": "free",                # "free" (2h cooldown) or "pro" (DISBOARD Pro: 30 min while <12 bumps/24h)
+    "recent_bumps": [],            # timestamps of bumps we saw in the last 24h (Pro allowance tracking)
     "next_bump_at": 0.0,           # unix ts the server can be bumped again
     "warned": True,
     "reminded": True,              # True = nothing pending
@@ -92,6 +94,7 @@ class BumpReward(commands.Cog):
     async def _send(self, guild: discord.Guild, channel_id: int, **kwargs):
         channel = guild.get_channel(channel_id)
         if channel is None:
+            log.warning("bumpreward: channel %s not found in guild %s; message not sent", channel_id, guild.id)
             return None
         try:
             return await channel.send(**kwargs)
@@ -225,11 +228,10 @@ class BumpReward(commands.Cog):
             return
 
         guild = message.guild
-        g = await self.config.guild(guild).all()
-        if not g["enabled"] or not g["channel_id"] or message.channel.id != g["channel_id"]:
-            return
-
         async with self._locks[guild.id]:
+            g = await self.config.guild(guild).all()   # read under the lock so it can't be stale
+            if not g["enabled"] or not g["channel_id"] or message.channel.id != g["channel_id"]:
+                return
             if success:
                 if not self._remember(message.id):
                     return
@@ -250,8 +252,11 @@ class BumpReward(commands.Cog):
         today = engine.day_key(now)
 
         # Always (re)start the reminder, even if we can't identify or pay the bumper.
-        await self._schedule_reminder(guild, engine.BUMP_COOLDOWN_SECONDS)
         conf = self.config.guild(guild)
+        recent = engine.prune_recent(await conf.recent_bumps(), now) + [now]
+        await conf.recent_bumps.set(recent)
+        cooldown = engine.cooldown_seconds(g["mode"], len(recent))
+        await self._schedule_reminder(guild, cooldown)
         await conf.last_bump_at.set(now)
         await self._roll_day(guild, today)
 
@@ -283,26 +288,26 @@ class BumpReward(commands.Cog):
         await conf.monthly.set(engine.add_bump(await conf.monthly(), engine.month_key(now), member.id))
 
         currency = await bank.get_currency_name(guild)
-        paid = True
+        failure = None
         try:
             await bank.deposit_credits(member, amount)
         except errors.BalanceTooHigh:
-            paid = False
+            failure = "Couldn't pay out — their balance is at the maximum."
             log.warning("bumpreward: %s is at the max balance, reward skipped", member.id)
         except Exception:
-            paid = False
+            failure = "Couldn't pay out — something went wrong (it's been logged)."
             log.exception("bumpreward: deposit failed for %s", member.id)
 
         lines = [f"🎉 {member.mention} bumped the server!"]
-        if paid:
-            lines.append(f"**+{amount:,} {currency}**")
-        else:
-            lines.append("Couldn't pay out — their balance is at the maximum.")
+        lines.append(failure or f"**+{amount:,} {currency}**")
         extras = []
         if run > 1:
             extras.append(f"🔥 {run} bumps in a row" + (f" · +{pct}% bonus" if pct else ""))
         extras.append(f"Bump #{total:,}")
         lines.append(" · ".join(extras))
+        lines.append(f"⏰ Next bump reminder <t:{int(now + cooldown)}:R>")
+        if g["mode"] == "pro":
+            lines.append(f"⚡ {len(recent)}/{engine.PRO_FAST_BUMP_LIMIT} bumps in the last 24h")
         embed = discord.Embed(description="\n".join(lines), color=discord.Color.green())
         await self._send(guild, g["channel_id"], embed=embed, allowed_mentions=discord.AllowedMentions.none())
 
@@ -345,7 +350,8 @@ class BumpReward(commands.Cog):
     async def br_status(self, ctx: commands.Context):
         """Last detected bump and the reminder timer (use this to check Disboard detection still works)."""
         g = await self.config.guild(ctx.guild).all()
-        last = f"<t:{int(g['last_bump_at'])}:R> by <@{g['last_bumper']}>" if g["last_bump_at"] else "none detected yet"
+        who = f"<@{g['last_bumper']}>" if g["last_bumper"] else "an unidentified member"
+        last = f"<t:{int(g['last_bump_at'])}:R> by {who}" if g["last_bump_at"] else "none detected yet"
         if g["reminded"] or not g["next_bump_at"]:
             nxt = "nothing pending"
         else:
@@ -353,6 +359,8 @@ class BumpReward(commands.Cog):
         embed = discord.Embed(title="Bump status", color=discord.Color.blurple())
         embed.add_field(name="Last bump", value=last, inline=False)
         embed.add_field(name="Next reminder", value=nxt, inline=False)
+        recent = engine.prune_recent(g["recent_bumps"], time.time())
+        embed.add_field(name="Bumps in last 24h", value=f"{len(recent)} (seen by this cog; web bumps aren't visible)", inline=False)
         await ctx.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
 
     @bumpreward.command(name="settings")
@@ -368,6 +376,7 @@ class BumpReward(commands.Cog):
         embed.add_field(name="Streak bonus", value=f"+{g['streak_bonus_pct']}% per bump in a row, up to {g['streak_max']} steps "
                                                    f"(max +{g['streak_bonus_pct'] * g['streak_max']}%)")
         embed.add_field(name="1-min warning", value=str(g["warning_enabled"]))
+        embed.add_field(name="Mode", value=self._mode_text(g["mode"]))
         await ctx.send(embed=embed)
 
     @bumpreward.command(name="enabled")
@@ -420,6 +429,27 @@ class BumpReward(commands.Cog):
         """Toggle the 'available in about 1 minute' heads-up."""
         await self.config.guild(ctx.guild).warning_enabled.set(value)
         await ctx.send(f"1-minute warning is now **{'on' if value else 'off'}**.")
+
+    @staticmethod
+    def _mode_text(mode: str) -> str:
+        slow = engine.format_duration(engine.BUMP_COOLDOWN_SECONDS)
+        if mode == "pro":
+            fast = engine.format_duration(engine.PRO_FAST_COOLDOWN_SECONDS)
+            return f"Pro — {fast} between bumps while under {engine.PRO_FAST_BUMP_LIMIT} bumps in 24h, otherwise {slow}"
+        return f"Free — {slow} between bumps"
+
+    @bumpreward.command(name="mode")
+    @commands.mod_or_permissions(manage_guild=True)
+    async def br_mode(self, ctx: commands.Context, mode: str = None):
+        """Show or set the server mode: `mode`, `mode free` or `mode pro` (DISBOARD Pro)."""
+        conf = self.config.guild(ctx.guild)
+        if mode is None:
+            return await ctx.send(f"Mode: {self._mode_text(await conf.mode())}.")
+        m = mode.lower()
+        if m not in ("free", "pro"):
+            return await ctx.send("Use `mode`, `mode free` or `mode pro`.")
+        await conf.mode.set(m)
+        await ctx.send(f"Mode set to **{self._mode_text(m)}**. Applies from the next bump.")
 
     @bumpreward.command(name="nexttimer")
     @commands.mod_or_permissions(manage_guild=True)

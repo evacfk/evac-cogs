@@ -302,3 +302,110 @@ async def test_empty_day_rollover_posts_nothing(env):
     await env.conf.daily.set({"date": "2000-01-01", "counts": {}})
     await env.cog._tick_guild(env.guild)
     assert env.guild.channel.sent == []
+
+
+async def test_reward_message_shows_next_reminder_time(env):
+    await env.cog._handle(make_msg(env.guild, mid=500))
+    desc = env.guild.channel.sent[0]["embed"].description
+    g = await env.conf.all()
+    assert f"⏰ Next bump reminder <t:{int(g['next_bump_at'])}:R>" in desc
+
+
+async def test_free_mode_is_two_hours_and_still_records_bumps(env):
+    await env.cog._handle(make_msg(env.guild, mid=510))
+    g = await env.conf.all()
+    assert abs(g["next_bump_at"] - (time.time() + 7200)) < 5
+    assert len(g["recent_bumps"]) == 1
+    assert "⚡" not in env.guild.channel.sent[0]["embed"].description
+
+
+async def test_pro_mode_fast_cooldown_while_under_the_limit(env):
+    await env.conf.mode.set("pro")
+    await env.cog._handle(make_msg(env.guild, mid=520))
+    g = await env.conf.all()
+    assert abs(g["next_bump_at"] - (time.time() + 1800)) < 5
+    desc = env.guild.channel.sent[0]["embed"].description
+    assert "⚡ 1/12 bumps in the last 24h" in desc
+    assert f"<t:{int(g['next_bump_at'])}:R>" in desc
+
+
+async def test_pro_mode_twelfth_bump_falls_back_to_two_hours(env):
+    await env.conf.mode.set("pro")
+    now = time.time()
+    await env.conf.recent_bumps.set([now - 600 * i for i in range(1, 12)])   # 11 bumps already today
+    await env.cog._handle(make_msg(env.guild, mid=530))                      # this is #12
+    g = await env.conf.all()
+    assert len(g["recent_bumps"]) == 12
+    assert abs(g["next_bump_at"] - (time.time() + 7200)) < 5
+    assert "⚡ 12/12" in env.guild.channel.sent[0]["embed"].description
+
+
+async def test_pro_mode_eleventh_bump_is_still_fast(env):
+    await env.conf.mode.set("pro")
+    now = time.time()
+    await env.conf.recent_bumps.set([now - 600 * i for i in range(1, 11)])   # 10 already
+    await env.cog._handle(make_msg(env.guild, mid=540))                      # this is #11
+    assert abs((await env.conf.all())["next_bump_at"] - (time.time() + 1800)) < 5
+
+
+async def test_pro_mode_old_bumps_age_out_of_the_window(env):
+    await env.conf.mode.set("pro")
+    now = time.time()
+    await env.conf.recent_bumps.set([now - 86400 - 60 * i for i in range(1, 20)])   # all older than 24h
+    await env.cog._handle(make_msg(env.guild, mid=550))
+    g = await env.conf.all()
+    assert len(g["recent_bumps"]) == 1
+    assert abs(g["next_bump_at"] - (time.time() + 1800)) < 5
+
+
+async def test_switching_to_pro_uses_bumps_recorded_while_free(env):
+    for i in range(11):
+        await env.cog._handle(make_msg(env.guild, mid=560 + i, uid=42 + (i % 2)))   # 11 bumps in free mode
+    await env.conf.mode.set("pro")
+    await env.cog._handle(make_msg(env.guild, mid=600))                              # #12 -> slow
+    assert abs((await env.conf.all())["next_bump_at"] - (time.time() + 7200)) < 5
+
+
+async def test_mode_command(env):
+    ctx = make_ctx(env)
+    await env.cog.br_mode(ctx)
+    assert "Free" in ctx.sent[-1][0][0] and "2h" in ctx.sent[-1][0][0]
+    await env.cog.br_mode(ctx, "pro")
+    assert (await env.conf.all())["mode"] == "pro"
+    assert "Pro" in ctx.sent[-1][0][0] and "30m" in ctx.sent[-1][0][0] and "12" in ctx.sent[-1][0][0]
+    await env.cog.br_mode(ctx)
+    assert "Pro" in ctx.sent[-1][0][0]
+    await env.cog.br_mode(ctx, "FREE")
+    assert (await env.conf.all())["mode"] == "free"
+    await env.cog.br_mode(ctx, "gold")
+    assert "Use `mode" in ctx.sent[-1][0][0]
+    assert (await env.conf.all())["mode"] == "free"
+
+
+async def test_handler_uses_settings_as_of_when_it_gets_the_lock_not_before(env):
+    """A settings change made while a handler is queued behind the lock must be honoured."""
+    import asyncio
+    await env.cog._locks[env.guild.id].acquire()
+    task = asyncio.create_task(env.cog._handle(make_msg(env.guild, mid=700)))
+    await asyncio.sleep(0.05)                      # handler is now waiting for the lock
+    await env.conf.enabled.set(False)              # mod turns the cog off in the meantime
+    env.cog._locks[env.guild.id].release()
+    await task
+    assert env.bank.deposits == []
+    assert env.guild.channel.sent == []
+
+
+async def test_status_does_not_show_a_fake_user_when_bumper_unknown(env):
+    await env.cog._handle(make_msg(env.guild, mid=710, uid=None))     # bump seen, bumper unidentified
+    ctx = make_ctx(env)
+    await env.cog.br_status(ctx)
+    text = ctx.sent[-1][1]["embed"].fields[0].value
+    assert "<@0>" not in text and "unidentified" in text
+
+
+async def test_generic_payout_failure_is_not_reported_as_max_balance(env):
+    env.bank.raise_on_deposit = RuntimeError("bank exploded")
+    await env.cog._handle(make_msg(env.guild, mid=720))
+    desc = env.guild.channel.sent[0]["embed"].description
+    assert "maximum" not in desc and "+100" not in desc and "couldn't pay" in desc.lower()
+    assert "bumped the server" in desc

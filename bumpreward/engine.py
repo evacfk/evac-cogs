@@ -9,7 +9,12 @@ from zoneinfo import ZoneInfo
 TZ = ZoneInfo("America/Los_Angeles")
 
 DISBOARD_ID = 302050872383242240
-BUMP_COOLDOWN_SECONDS = 7200
+BUMP_COOLDOWN_SECONDS = 7200        # free-server cooldown (2 hours)
+# DISBOARD Pro: the wait drops from 2h to 30 min while the server has had fewer than
+# 12 bumps in the last 24h (every bump counts, whoever makes it; Discord + web share it).
+PRO_FAST_COOLDOWN_SECONDS = 30 * 60
+PRO_FAST_BUMP_LIMIT = 12
+PRO_WINDOW_SECONDS = 24 * 3600
 
 _SUCCESS_RE = re.compile(r"bump\s+done", re.I)
 _COOLDOWN_RE = re.compile(r"wait\s+another\s+(\d+)\s+(minute|minutes|hour|hours)", re.I)
@@ -103,14 +108,31 @@ def final_reward(base: int, bonus_pct: int) -> int:
 def format_duration(seconds: float) -> str:
     seconds = int(max(seconds, 0))
     h, rem = divmod(seconds, 3600)
-    m, s = divmod(rem, 60)
+    m, sec = divmod(rem, 60)
     if h:
-        return f"{h}h {m}m"
+        return f"{h}h" + (f" {m}m" if m else "")
     if m:
-        return f"{m}m {s}s"
-    return f"{s}s"
+        return f"{m}m" + (f" {sec}s" if sec else "")
+    return f"{sec}s"
 
 
 def rank_counts(counts: dict[str, int], limit: int = 10) -> list[tuple[str, int]]:
     """Highest count first; ties broken by id so ordering is stable."""
     return sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))[:limit]
+
+
+def prune_recent(bumps: list | None, now: float) -> list[float]:
+    """Keep only bump timestamps from the last 24h."""
+    return [t for t in (bumps or []) if 0 <= now - t < PRO_WINDOW_SECONDS]
+
+
+def cooldown_seconds(mode: str, bumps_last_24h: int) -> int:
+    """Seconds until the next bump, given the mode and how many bumps (including the one
+    just made) the server has had in the last 24h.
+
+    Free: always 2h. Pro: 30 min while the server has had fewer than 12 bumps in 24h,
+    otherwise back to 2h.
+    """
+    if mode == "pro" and bumps_last_24h < PRO_FAST_BUMP_LIMIT:
+        return PRO_FAST_COOLDOWN_SECONDS
+    return BUMP_COOLDOWN_SECONDS

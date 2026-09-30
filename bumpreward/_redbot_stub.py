@@ -28,7 +28,8 @@ except ImportError:
             return copy.deepcopy(self._store)
 
         def __getattr__(self, name):
-            if name.startswith("_"):
+            if name.startswith("_") or name not in self._store:
+                # real Red with force_registration=True raises for unregistered keys
                 raise AttributeError(name)
             return _Value(self._store, name)
 

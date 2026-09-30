@@ -99,3 +99,26 @@ def test_format_duration():
     assert engine.format_duration(45) == "45s"
     assert engine.format_duration(125) == "2m 5s"
     assert engine.format_duration(7260) == "2h 1m"
+    assert engine.format_duration(1800) == "30m"
+    assert engine.format_duration(7200) == "2h"
+    assert engine.format_duration(5400) == "1h 30m"
+
+
+def test_cooldown_seconds_free_is_always_two_hours():
+    assert engine.cooldown_seconds("free", 0) == 7200
+    assert engine.cooldown_seconds("free", 1) == 7200
+    assert engine.cooldown_seconds("free", 50) == 7200
+
+
+def test_cooldown_seconds_pro_is_30_min_under_12_bumps():
+    assert engine.cooldown_seconds("pro", 1) == 1800
+    assert engine.cooldown_seconds("pro", 11) == 1800      # fewer than 12 -> fast
+    assert engine.cooldown_seconds("pro", 12) == 7200      # the 12th bump uses up the allowance
+    assert engine.cooldown_seconds("pro", 30) == 7200
+
+
+def test_prune_recent_keeps_only_last_24h():
+    now = 1_000_000.0
+    bumps = [now - 86400 - 1, now - 86400 + 1, now - 100, now + 5000]   # too old, just inside, recent, future (ignored)
+    assert engine.prune_recent(bumps, now) == [now - 86400 + 1, now - 100]
+    assert engine.prune_recent(None, now) == []
