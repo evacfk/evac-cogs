@@ -1,0 +1,12 @@
+{
+  "author": ["evacfk"],
+  "name": "bumpreward",
+  "short": "Currency rewards, streaks, auto reminders and a daily board for Disboard bumps.",
+  "description": "Watches the bump channel for Disboard's successful /bump reply, pays the bumper a random reward from Red's bank with a daily-streak bonus, posts a public reward message, automatically reminds the Bumper role when the next bump is ready, and posts a daily top-bumpers board at LA midnight.",
+  "install_msg": "Loaded bumpreward. Run `.bumpreward channel #bump-us`, then `.bumpreward enabled true`.",
+  "min_bot_version": "3.5.0",
+  "requirements": [],
+  "tags": ["economy", "disboard", "bump"],
+  "end_user_data_statement": "Stores per-member bump counts, streak and last bump date.",
+  "type": "COG"
+}
