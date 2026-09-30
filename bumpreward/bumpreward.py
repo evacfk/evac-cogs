@@ -67,12 +67,27 @@ class BumpReward(commands.Cog):
 
     # ------------------------------------------------------------------ helpers
 
-    @staticmethod
-    def _message_text(message: discord.Message) -> str:
+    @classmethod
+    def _component_text(cls, comp, out: list, depth: int = 0):
+        """Collect text from Components V2 messages (containers / sections / text displays)."""
+        if depth > 8:
+            return
+        content = getattr(comp, "content", None)
+        if isinstance(content, str) and content:
+            out.append(content)
+        for attr in ("children", "components"):
+            for child in getattr(comp, attr, None) or []:
+                cls._component_text(child, out, depth + 1)
+
+    @classmethod
+    def _message_text(cls, message: discord.Message) -> str:
         parts = [message.content or ""]
         for e in message.embeds:
             parts.append(e.title or "")
             parts.append(e.description or "")
+        # Disboard's newer replies use Components V2 (no embed): the text lives in the components.
+        for comp in getattr(message, "components", None) or []:
+            cls._component_text(comp, parts)
         return "\n".join(p for p in parts if p)
 
     @staticmethod
@@ -507,6 +522,36 @@ class BumpReward(commands.Cog):
             return await ctx.send("Use `mode`, `mode free` or `mode pro`.")
         await conf.mode.set(m)
         await ctx.send(f"Mode set to **{self._mode_text(m)}**. Applies from the next bump.")
+
+    @bumpreward.command(name="debug")
+    @commands.mod_or_permissions(manage_guild=True)
+    async def br_debug(self, ctx: commands.Context):
+        """Show how the cog reads the last Disboard messages in this channel (for troubleshooting missed bumps)."""
+        rows = []
+        async for m in ctx.channel.history(limit=40):
+            if m.author.id != engine.DISBOARD_ID:
+                continue
+            text = self._message_text(m)
+            cd = engine.parse_cooldown_seconds(text)
+            verdict = "SUCCESS" if engine.is_success_text(text) else (f"cooldown {cd}s" if cd is not None else "ignored")
+            flags = getattr(getattr(m, "flags", None), "value", 0)
+            rows.append(f"`{m.id}` bumper={self._bumper_id(m)} embeds={len(m.embeds)} "
+                        f"components={len(getattr(m, 'components', None) or [])} flags={flags} -> **{verdict}**\n> {text[:70]!r}")
+            if len(rows) >= 6:
+                break
+        await ctx.send("\n".join(rows) or "No recent Disboard messages found in this channel.")
+
+    @bumpreward.command(name="replay")
+    @commands.mod_or_permissions(manage_guild=True)
+    async def br_replay(self, ctx: commands.Context, message_id: int):
+        """Process a Disboard 'Bump done' message the cog missed (pays the bumper). Use a message ID from `debug`."""
+        try:
+            msg = await ctx.channel.fetch_message(message_id)
+        except discord.HTTPException:
+            return await ctx.send("Couldn't find that message in this channel.")
+        if msg.author.id != engine.DISBOARD_ID or not engine.is_success_text(self._message_text(msg)):
+            return await ctx.send("That isn't a Disboard 'Bump done' message.")
+        await self._handle(msg)
 
     @bumpreward.command(name="seed")
     @commands.mod_or_permissions(manage_guild=True)

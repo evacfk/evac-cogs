@@ -22,6 +22,16 @@ class FakeChannel:
     async def send(self, **kwargs):
         self.sent.append(kwargs)
 
+    async def fetch_message(self, mid):
+        for m in getattr(self, "stored", []):
+            if m.id == mid:
+                return m
+        raise discord.HTTPException(SimpleNamespace(status=404, reason="nf"), "not found")
+
+    async def history(self, limit=40):
+        for m in reversed(getattr(self, "stored", [])):
+            yield m
+
 
 class FakeGuild:
     def __init__(self):
@@ -41,12 +51,16 @@ def make_member(uid):
     return SimpleNamespace(id=uid, mention=f"<@{uid}>", display_name=f"user{uid}")
 
 
-def make_msg(guild, *, mid, text="Bump done! :thumbsup:", uid=42, channel=None, author=engine.DISBOARD_ID, legacy=False):
-    embeds = [discord.Embed(description=text)] if text else []
+def make_msg(guild, *, mid, text="Bump done! :thumbsup:", uid=42, channel=None, author=engine.DISBOARD_ID, legacy=False, v2=False):
+    embeds = [discord.Embed(description=text)] if text and not v2 else []
     ns = SimpleNamespace(
         id=mid, guild=guild, author=SimpleNamespace(id=author), content="", embeds=embeds,
         channel=channel or guild.channel,
     )
+    if v2:   # Components V2: Container -> [TextDisplay, Separator, Section -> [TextDisplay]]
+        td = lambda c: SimpleNamespace(content=c)  # noqa: E731
+        ns.components = [SimpleNamespace(children=[td(text.split("\n")[0]), SimpleNamespace(),
+                                                   SimpleNamespace(children=[td("\n".join(text.split("\n")[1:]) or "x")])])]
     user = SimpleNamespace(id=uid) if uid else None
     if legacy:
         ns.interaction = SimpleNamespace(user=user)
@@ -208,7 +222,7 @@ def make_ctx(env):
     async def send(*a, **k):
         sent.append((a, k))
 
-    return SimpleNamespace(guild=env.guild, send=send, sent=sent)
+    return SimpleNamespace(guild=env.guild, send=send, sent=sent, channel=env.guild.channel)
 
 
 async def test_top_all_week_month(env):
@@ -500,3 +514,35 @@ async def test_reminders_off_pays_but_never_reminds(env):
     await env.cog.br_reminders(ctx, True)
     await env.cog._handle(make_msg(env.guild, mid=801))
     assert (await env.conf.all())["reminded"] is False
+
+
+async def test_debug_and_replay_recover_a_missed_bump(env):
+    missed = make_msg(env.guild, mid=555, text="Bump done! \U0001f44d\nReminder set for later")
+    other = make_msg(env.guild, mid=556, text="hello", author=7)
+    env.guild.channel.stored = [missed, other]
+    ctx = make_ctx(env)
+    await env.cog.br_debug(ctx)
+    out = ctx.sent[-1][0][0]
+    assert "555" in out and "SUCCESS" in out and "556" not in out
+    await env.cog.br_replay(ctx, 999)
+    assert "Couldn't find" in ctx.sent[-1][0][0]
+    await env.cog.br_replay(ctx, 556)
+    assert "isn't a Disboard" in ctx.sent[-1][0][0]
+    await env.cog.br_replay(ctx, 555)
+    assert env.bank.deposits == [(42, 100)]
+    await env.cog.br_replay(ctx, 555)                      # replay twice never double-pays
+    assert env.bank.deposits == [(42, 100)]
+
+
+V2_TEXT = "Bump done! \U0001f44d\nCheck it out on DISBOARD.\nReminder set for Wednesday, September 30, 2026 5:19 PM (in 2 hours)."
+
+
+async def test_components_v2_bump_message_is_detected_and_paid(env):
+    await env.cog._handle(make_msg(env.guild, mid=321, text=V2_TEXT, v2=True))
+    assert env.bank.deposits == [(42, 100)]
+    assert (await env.conf.all())["last_bumper"] == 42
+
+
+async def test_components_v2_non_bump_text_is_ignored(env):
+    await env.cog._handle(make_msg(env.guild, mid=322, text="Something else\nentirely", v2=True))
+    assert env.bank.deposits == []
