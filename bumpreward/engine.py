@@ -15,6 +15,8 @@ BUMP_COOLDOWN_SECONDS = 7200        # free-server cooldown (2 hours)
 PRO_FAST_COOLDOWN_SECONDS = 30 * 60
 PRO_FAST_BUMP_LIMIT = 12
 PRO_WINDOW_SECONDS = 24 * 3600
+MAX_LATENCY_COMP_SECONDS = 5.0      # Disboard replies after a short "thinking..." delay; never compensate more than this
+MAX_LEAD_SECONDS = 120
 
 _SUCCESS_RE = re.compile(r"bump\s+done", re.I)
 _COOLDOWN_RE = re.compile(r"wait\s+another\s+(\d+)\s+(minute|minutes|hour|hours)", re.I)
@@ -136,3 +138,13 @@ def cooldown_seconds(mode: str, bumps_last_24h: int) -> int:
     if mode == "pro" and bumps_last_24h < PRO_FAST_BUMP_LIMIT:
         return PRO_FAST_COOLDOWN_SECONDS
     return BUMP_COOLDOWN_SECONDS
+
+
+def bump_latency(now: float, created_ts: float | None, cap: float = MAX_LATENCY_COMP_SECONDS) -> float:
+    """Seconds between Discord creating Disboard's reply and us handling it, clamped to [0, cap].
+
+    The cooldown really started when Disboard processed the bump, slightly before we saw it.
+    """
+    if created_ts is None:
+        return 0.0
+    return min(max(now - created_ts, 0.0), cap)

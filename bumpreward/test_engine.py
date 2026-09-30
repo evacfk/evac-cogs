@@ -122,3 +122,10 @@ def test_prune_recent_keeps_only_last_24h():
     bumps = [now - 86400 - 1, now - 86400 + 1, now - 100, now + 5000]   # too old, just inside, recent, future (ignored)
     assert engine.prune_recent(bumps, now) == [now - 86400 + 1, now - 100]
     assert engine.prune_recent(None, now) == []
+
+
+def test_bump_latency_clamped():
+    assert engine.bump_latency(100.0, None) == 0.0
+    assert engine.bump_latency(100.0, 98.0) == 2.0
+    assert engine.bump_latency(100.0, 101.0) == 0.0      # clock skew: never negative
+    assert engine.bump_latency(100.0, 0.0) == engine.MAX_LATENCY_COMP_SECONDS

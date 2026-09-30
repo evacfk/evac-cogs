@@ -485,3 +485,18 @@ async def test_seed_makes_next_bump_use_slow_cooldown(env):
     assert abs((await env.conf.all())["next_bump_at"] - (time.time() + 7200)) < 5
     await env.cog.br_seed(ctx, 99)
     assert "between 0 and 50" in ctx.sent[-1][0][0]
+
+
+async def test_reminders_off_pays_but_never_reminds(env):
+    ctx = make_ctx(env)
+    await env.cog.br_reminders(ctx, False)
+    await env.cog._handle(make_msg(env.guild, mid=800))
+    g = await env.conf.all()
+    assert env.bank.deposits == [(42, 100)]
+    assert g["reminded"] is True and env.guild.id not in env.cog._timers
+    assert "reminder" not in env.guild.channel.sent[0]["embed"].description
+    await env.cog._tick_guild(env.guild)
+    assert len(env.guild.channel.sent) == 1                # just the reward message
+    await env.cog.br_reminders(ctx, True)
+    await env.cog._handle(make_msg(env.guild, mid=801))
+    assert (await env.conf.all())["reminded"] is False

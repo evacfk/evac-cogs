@@ -25,6 +25,7 @@ DEFAULT_GUILD = {
     "max_reward": 250,
     "streak_bonus_pct": 10,        # extra % per bump in a row (same bumper, uninterrupted) after the first
     "streak_max": 5,               # max number of bonus steps (5 x 10% = +50%)
+    "reminders_enabled": True,     # False = no reminders at all (e.g. rely on Disboard's own /reminder); rewards still work
     "reminder_lead_seconds": 10,   # the single reminder goes out this many seconds before the server is bumpable (0 = exactly when ready)
     "mode": "free",                # "free" (2h cooldown) or "pro" (DISBOARD Pro: 30 min while <12 bumps/24h)
     "recent_bumps": [],            # timestamps of bumps we saw in the last 24h (Pro allowance tracking)
@@ -107,6 +108,9 @@ class BumpReward(commands.Cog):
     async def _schedule_reminder(self, guild: discord.Guild, seconds: float, latency: float = 0.0):
         """Start a fresh reminder cycle. Caller holds the guild lock."""
         conf = self.config.guild(guild)
+        if not await conf.reminders_enabled():
+            await conf.reminded.set(True)   # nothing pending
+            return
         await conf.next_bump_at.set(time.time() + seconds - latency)
         await conf.reminded.set(False)
         self._arm(guild)
@@ -336,8 +340,9 @@ class BumpReward(commands.Cog):
             extras.append(f"🔥 {run} bumps in a row" + (f" · +{pct}% bonus" if pct else ""))
         extras.append(f"Bump #{total:,}")
         lines.append(" · ".join(extras))
-        lines.append(f"⏰ Next bump reminder <t:{int(now + cooldown - latency)}:R>")
-        if g["mode"] == "pro":
+        if g["reminders_enabled"]:
+            lines.append(f"⏰ Next bump reminder <t:{int(now + cooldown - latency)}:R>")
+        if g["mode"] == "pro" and g["reminders_enabled"]:
             lines.append(f"⚡ {len(recent)}/{engine.PRO_FAST_BUMP_LIMIT} bumps in the last 24h")
         embed = discord.Embed(description="\n".join(lines), color=discord.Color.green())
         await self._send(guild, g["channel_id"], embed=embed, allowed_mentions=discord.AllowedMentions.none())
@@ -406,6 +411,7 @@ class BumpReward(commands.Cog):
         embed.add_field(name="Reward", value=f"{g['min_reward']:,}–{g['max_reward']:,}")
         embed.add_field(name="Streak bonus", value=f"+{g['streak_bonus_pct']}% per bump in a row, up to {g['streak_max']} steps "
                                                    f"(max +{g['streak_bonus_pct'] * g['streak_max']}%)")
+        embed.add_field(name="Reminders", value="on" if g["reminders_enabled"] else "off (using Disboard's own reminder)")
         embed.add_field(name="Heads-up", value=f"{g['reminder_lead_seconds']}s before ready" if g["reminder_lead_seconds"] else "exactly when ready")
         embed.add_field(name="Mode", value=self._mode_text(g["mode"]))
         await ctx.send(embed=embed)
@@ -453,6 +459,20 @@ class BumpReward(commands.Cog):
         await self.config.guild(ctx.guild).streak_bonus_pct.set(percent_per_bump)
         await self.config.guild(ctx.guild).streak_max.set(max_steps)
         await ctx.send(f"Bonus: +{percent_per_bump}% per bump in a row, capped at +{percent_per_bump * max_steps}%.")
+
+    @bumpreward.command(name="reminders")
+    @commands.mod_or_permissions(manage_guild=True)
+    async def br_reminders(self, ctx: commands.Context, value: bool):
+        """Turn this cog's bump reminders on/off. Off = rewards only; use Disboard's own `/reminder` instead."""
+        async with self._locks[ctx.guild.id]:
+            conf = self.config.guild(ctx.guild)
+            await conf.reminders_enabled.set(value)
+            if not value:
+                await conf.reminded.set(True)
+                task = self._timers.pop(ctx.guild.id, None)
+                if task is not None:
+                    task.cancel()
+        await ctx.send(f"Reminders are now **{'on' if value else 'off'}**. Rewards and boards are unaffected.")
 
     @bumpreward.command(name="lead")
     @commands.mod_or_permissions(manage_guild=True)
