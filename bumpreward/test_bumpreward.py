@@ -1,5 +1,7 @@
 """Handler-level tests with real discord.py objects (Embed/AllowedMentions) and fake guild/channel/message."""
+import asyncio
 import time
+from datetime import datetime, timezone
 from types import SimpleNamespace
 
 import discord
@@ -70,14 +72,16 @@ async def env(monkeypatch):
     await conf.role_id.set(ROLE_ID)
     await conf.min_reward.set(100)
     await conf.max_reward.set(100)  # deterministic
-    return SimpleNamespace(cog=cog, guild=guild, conf=conf, bank=bank, monkeypatch=monkeypatch)
+    yield SimpleNamespace(cog=cog, guild=guild, conf=conf, bank=bank, monkeypatch=monkeypatch)
+    for t in cog._timers.values():
+        t.cancel()
 
 
 async def test_successful_bump_pays_posts_and_schedules(env):
     await env.cog._handle(make_msg(env.guild, mid=1))
     assert env.bank.deposits == [(42, 100)]
     g = await env.conf.all()
-    assert g["reminded"] is False and g["warned"] is False
+    assert g["reminded"] is False
     assert abs(g["next_bump_at"] - (time.time() + 7200)) < 5
     assert g["last_bumper"] == 42
     assert g["daily"]["counts"] == {"42": 1}
@@ -243,44 +247,106 @@ async def test_top_rejects_unknown_period_and_stats_command_is_gone(env):
     assert not hasattr(br.BumpReward, "br_stats")
 
 
-async def test_reminders_warning_then_now_with_role_ping(env):
+async def _pending(env, due_in, lead=10):
     now = time.time()
-    await env.conf.next_bump_at.set(now + 30)
-    await env.conf.warned.set(False)
+    await env.conf.next_bump_at.set(now + due_in)
     await env.conf.reminded.set(False)
-    await env.cog._run_reminders(env.guild, now)           # 30s before due -> warning
-    await env.cog._run_reminders(env.guild, now)           # no duplicate
-    assert len(env.guild.channel.sent) == 1
-    assert f"<@&{ROLE_ID}>" in env.guild.channel.sent[0]["content"] and "1 minute" in env.guild.channel.sent[0]["content"]
-    await env.cog._run_reminders(env.guild, now + 31)      # due -> NOW
-    await env.cog._run_reminders(env.guild, now + 60)      # no duplicate
-    assert len(env.guild.channel.sent) == 2
-    assert "Time to bump" in env.guild.channel.sent[1]["content"]
+    await env.conf.reminder_lead_seconds.set(lead)
+    return now
+
+
+async def test_single_heads_up_at_lead_with_role_ping_and_nothing_after(env):
+    now = await _pending(env, 100)
+    await env.cog._run_reminders(env.guild, now + 50)      # 50s left: too early
+    assert env.guild.channel.sent == []
+    await env.cog._run_reminders(env.guild, now + 90)      # 10s left -> the one message
+    await env.cog._run_reminders(env.guild, now + 95)      # no repeat
+    await env.cog._run_reminders(env.guild, now + 101)     # no "NOW" message either
+    sent = env.guild.channel.sent
+    assert len(sent) == 1
+    assert f"<@&{ROLE_ID}>" in sent[0]["content"] and "10 seconds" in sent[0]["content"]
     assert (await env.conf.all())["reminded"] is True
 
 
-async def test_warning_can_be_disabled_and_not_early(env):
-    now = time.time()
-    await env.conf.next_bump_at.set(now + 500)
-    await env.conf.warned.set(False)
-    await env.conf.reminded.set(False)
-    await env.cog._run_reminders(env.guild, now)           # too early: nothing
+async def test_no_minute_warning_anymore(env):
+    now = await _pending(env, 500)
+    await env.cog._run_reminders(env.guild, now + 440)     # where the old 1-min warning would fire
     assert env.guild.channel.sent == []
-    await env.conf.warning_enabled.set(False)
-    await env.cog._run_reminders(env.guild, now + 470)     # in warning window but disabled
-    assert env.guild.channel.sent == []
-    await env.cog._run_reminders(env.guild, now + 501)
-    assert len(env.guild.channel.sent) == 1
 
 
-async def test_overdue_reminder_after_downtime_fires_once(env):
-    now = time.time()
-    await env.conf.next_bump_at.set(now - 3600)
-    await env.conf.warned.set(False)
-    await env.conf.reminded.set(False)
+async def test_lead_zero_sends_exactly_when_ready(env):
+    now = await _pending(env, 100, lead=0)
+    await env.cog._run_reminders(env.guild, now + 99)
+    assert env.guild.channel.sent == []
+    await env.cog._run_reminders(env.guild, now + 100)
+    assert len(env.guild.channel.sent) == 1 and "can be bumped now" in env.guild.channel.sent[0]["content"]
+
+
+async def test_overdue_reminder_after_downtime_fires_once_as_now(env):
+    await _pending(env, -3600)
     await env.cog._tick_guild(env.guild)
     await env.cog._tick_guild(env.guild)
     assert len(env.guild.channel.sent) == 1
+    assert "can be bumped now" in env.guild.channel.sent[0]["content"]
+
+
+async def test_no_reminder_when_disabled(env):
+    now = await _pending(env, 5)
+    await env.conf.enabled.set(False)
+    await env.cog._run_reminders(env.guild, now + 10)
+    assert env.guild.channel.sent == []
+
+
+async def test_precise_timer_fires_at_lead_before_due(env):
+    await _pending(env, 1.6, lead=1)
+    env.cog._arm(env.guild)
+    await asyncio.sleep(0.3)
+    assert env.guild.channel.sent == []
+    await asyncio.sleep(0.6)                               # ~0.9s in; lead hit at ~0.6s
+    assert len(env.guild.channel.sent) == 1
+    assert "second" in env.guild.channel.sent[0]["content"] and "now" not in env.guild.channel.sent[0]["content"]
+    await asyncio.sleep(1.5)                               # past due: still just one
+    assert len(env.guild.channel.sent) == 1
+
+
+async def test_new_bump_cancels_old_timer(env):
+    await _pending(env, 1.2, lead=1)
+    env.cog._arm(env.guild)
+    old = env.cog._timers[env.guild.id]
+    await env.cog._handle(make_msg(env.guild, mid=77))     # new bump -> 2h cycle
+    await asyncio.sleep(0.5)
+    assert old.cancelled()
+    assert env.cog._timers[env.guild.id] is not old
+    assert [m for m in env.guild.channel.sent if "content" in m and "bumped" in m["content"]] == []
+
+
+async def test_tick_rearms_timer_after_restart(env):
+    await _pending(env, 100)
+    assert env.guild.id not in env.cog._timers
+    await env.cog._tick_guild(env.guild)
+    assert env.guild.id in env.cog._timers and not env.cog._timers[env.guild.id].done()
+
+
+async def test_latency_compensation_uses_reply_timestamp(env):
+    msg = make_msg(env.guild, mid=5)
+    msg.created_at = datetime.fromtimestamp(time.time() - 3, timezone.utc)
+    await env.cog._handle(msg)
+    g = await env.conf.all()
+    assert abs(g["next_bump_at"] - (time.time() + 7200 - 3)) < 1.5
+    msg2 = make_msg(env.guild, mid=6)
+    msg2.created_at = datetime.fromtimestamp(time.time() - 500, timezone.utc)   # absurd -> capped at 5s
+    await env.cog._handle(msg2)
+    assert abs((await env.conf.all())["next_bump_at"] - (time.time() + 7200 - 5)) < 1.5
+
+
+async def test_lead_command_validates_sets_and_rearms(env):
+    ctx = make_ctx(env)
+    await env.cog.br_lead(ctx, 30)
+    assert (await env.conf.all())["reminder_lead_seconds"] == 30
+    await env.cog.br_lead(ctx, 500)
+    assert "between 0 and" in ctx.sent[-1][0][0]
+    assert (await env.conf.all())["reminder_lead_seconds"] == 30
+    assert not hasattr(br.BumpReward, "br_warning")
 
 
 async def test_day_rollover_posts_board_then_resets(env):
@@ -409,3 +475,13 @@ async def test_generic_payout_failure_is_not_reported_as_max_balance(env):
     desc = env.guild.channel.sent[0]["embed"].description
     assert "maximum" not in desc and "+100" not in desc and "couldn't pay" in desc.lower()
     assert "bumped the server" in desc
+
+
+async def test_seed_makes_next_bump_use_slow_cooldown(env):
+    await env.conf.mode.set("pro")
+    ctx = make_ctx(env)
+    await env.cog.br_seed(ctx, 12)
+    await env.cog._handle(make_msg(env.guild, mid=900))    # 13th in window -> 2h, not 30m
+    assert abs((await env.conf.all())["next_bump_at"] - (time.time() + 7200)) < 5
+    await env.cog.br_seed(ctx, 99)
+    assert "between 0 and 50" in ctx.sent[-1][0][0]

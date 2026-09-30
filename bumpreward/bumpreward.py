@@ -15,7 +15,6 @@ from . import engine
 log = logging.getLogger("red.evac-cogs.bumpreward")
 
 DEFAULT_ROLE_ID = 461511961494945812  # Bumper role pinged on reminders
-WARNING_LEAD_SECONDS = 60
 SEEN_LIMIT = 100
 
 DEFAULT_GUILD = {
@@ -26,11 +25,10 @@ DEFAULT_GUILD = {
     "max_reward": 250,
     "streak_bonus_pct": 10,        # extra % per bump in a row (same bumper, uninterrupted) after the first
     "streak_max": 5,               # max number of bonus steps (5 x 10% = +50%)
-    "warning_enabled": True,       # "~1 minute" heads-up before the NOW ping
+    "reminder_lead_seconds": 10,   # the single reminder goes out this many seconds before the server is bumpable (0 = exactly when ready)
     "mode": "free",                # "free" (2h cooldown) or "pro" (DISBOARD Pro: 30 min while <12 bumps/24h)
     "recent_bumps": [],            # timestamps of bumps we saw in the last 24h (Pro allowance tracking)
     "next_bump_at": 0.0,           # unix ts the server can be bumped again
-    "warned": True,
     "reminded": True,              # True = nothing pending
     "last_bump_at": 0.0,
     "last_bumper": 0,              # who made the most recent bump (0 = unknown / run broken)
@@ -55,12 +53,16 @@ class BumpReward(commands.Cog):
         self.config.register_member(**DEFAULT_MEMBER)
         self._locks: dict[int, asyncio.Lock] = defaultdict(asyncio.Lock)
         self._seen: dict[int, None] = {}
+        self._timers: dict[int, asyncio.Task] = {}
 
     async def cog_load(self):
         self._loop.start()
 
     def cog_unload(self):
         self._loop.cancel()
+        for task in self._timers.values():
+            task.cancel()
+        self._timers.clear()
 
     # ------------------------------------------------------------------ helpers
 
@@ -102,11 +104,33 @@ class BumpReward(commands.Cog):
             log.exception("bumpreward: failed to post in %s", channel_id)
             return None
 
-    async def _schedule_reminder(self, guild: discord.Guild, seconds: float):
+    async def _schedule_reminder(self, guild: discord.Guild, seconds: float, latency: float = 0.0):
+        """Start a fresh reminder cycle. Caller holds the guild lock."""
         conf = self.config.guild(guild)
-        await conf.next_bump_at.set(time.time() + seconds)
-        await conf.warned.set(False)
+        await conf.next_bump_at.set(time.time() + seconds - latency)
         await conf.reminded.set(False)
+        self._arm(guild)
+
+    def _arm(self, guild: discord.Guild):
+        """(Re)start the precise per-guild timer. The 15s loop is only a fallback."""
+        old = self._timers.pop(guild.id, None)
+        if old is not None and old is not asyncio.current_task():
+            old.cancel()
+        self._timers[guild.id] = asyncio.create_task(self._reminder_timer(guild))
+
+    async def _reminder_timer(self, guild: discord.Guild):
+        try:
+            g = await self.config.guild(guild).all()
+            if g["reminded"] or not g["next_bump_at"]:
+                return
+            fire_at = g["next_bump_at"] - g["reminder_lead_seconds"]
+            await asyncio.sleep(max(fire_at - time.time(), 0))
+            async with self._locks[guild.id]:
+                await self._run_reminders(guild, time.time())
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            log.exception("bumpreward: reminder timer failed for guild %s", guild.id)
 
     # ------------------------------------------------------------------ daily board
 
@@ -171,24 +195,29 @@ class BumpReward(commands.Cog):
                 await self._roll_day(guild, today)
             if pending:
                 await self._run_reminders(guild, now)
+                timer = self._timers.get(guild.id)
+                if (timer is None or timer.done()) and not await self.config.guild(guild).reminded():
+                    self._arm(guild)   # e.g. after a restart/reload
 
     async def _run_reminders(self, guild: discord.Guild, now: float):
+        """Send the single "bumpable soon" message once `now` is within the lead time. Caller holds the guild lock."""
         conf = self.config.guild(guild)
         g = await conf.all()
-        if g["reminded"] or not g["next_bump_at"]:
+        if not g["enabled"] or not g["channel_id"] or g["reminded"] or not g["next_bump_at"]:
             return
+        due = g["next_bump_at"]
+        if now < due - g["reminder_lead_seconds"]:
+            return
+        await conf.reminded.set(True)   # first, so this can never send twice
+        remaining = round(due - now)
+        if remaining >= 1:
+            text = f"⏳ The server can be bumped in {remaining} second{'s' if remaining != 1 else ''}! Use `/bump`."
+        else:
+            text = "🔔 The server can be bumped now! Use `/bump`."
         role_id = g["role_id"]
         ping = f"<@&{role_id}> " if role_id else ""
         allowed = discord.AllowedMentions(roles=[discord.Object(id=role_id)]) if role_id else None
-        due = g["next_bump_at"]
-
-        if now >= due:
-            await conf.reminded.set(True)
-            await conf.warned.set(True)
-            await self._send(guild, g["channel_id"], content=f"{ping}🔔 Time to bump! Use `/bump`.", allowed_mentions=allowed)
-        elif g["warning_enabled"] and not g["warned"] and now >= due - WARNING_LEAD_SECONDS:
-            await conf.warned.set(True)
-            await self._send(guild, g["channel_id"], content=f"{ping}⏳ Bump is available in about 1 minute.", allowed_mentions=allowed)
+        await self._send(guild, g["channel_id"], content=f"{ping}{text}", allowed_mentions=allowed)
 
     # ------------------------------------------------------------------ Disboard detection
 
@@ -256,7 +285,9 @@ class BumpReward(commands.Cog):
         recent = engine.prune_recent(await conf.recent_bumps(), now) + [now]
         await conf.recent_bumps.set(recent)
         cooldown = engine.cooldown_seconds(g["mode"], len(recent))
-        await self._schedule_reminder(guild, cooldown)
+        created = getattr(message, "created_at", None)
+        latency = engine.bump_latency(now, created.timestamp() if created else None)
+        await self._schedule_reminder(guild, cooldown, latency)
         await conf.last_bump_at.set(now)
         await self._roll_day(guild, today)
 
@@ -305,7 +336,7 @@ class BumpReward(commands.Cog):
             extras.append(f"🔥 {run} bumps in a row" + (f" · +{pct}% bonus" if pct else ""))
         extras.append(f"Bump #{total:,}")
         lines.append(" · ".join(extras))
-        lines.append(f"⏰ Next bump reminder <t:{int(now + cooldown)}:R>")
+        lines.append(f"⏰ Next bump reminder <t:{int(now + cooldown - latency)}:R>")
         if g["mode"] == "pro":
             lines.append(f"⚡ {len(recent)}/{engine.PRO_FAST_BUMP_LIMIT} bumps in the last 24h")
         embed = discord.Embed(description="\n".join(lines), color=discord.Color.green())
@@ -375,7 +406,7 @@ class BumpReward(commands.Cog):
         embed.add_field(name="Reward", value=f"{g['min_reward']:,}–{g['max_reward']:,}")
         embed.add_field(name="Streak bonus", value=f"+{g['streak_bonus_pct']}% per bump in a row, up to {g['streak_max']} steps "
                                                    f"(max +{g['streak_bonus_pct'] * g['streak_max']}%)")
-        embed.add_field(name="1-min warning", value=str(g["warning_enabled"]))
+        embed.add_field(name="Heads-up", value=f"{g['reminder_lead_seconds']}s before ready" if g["reminder_lead_seconds"] else "exactly when ready")
         embed.add_field(name="Mode", value=self._mode_text(g["mode"]))
         await ctx.send(embed=embed)
 
@@ -423,12 +454,18 @@ class BumpReward(commands.Cog):
         await self.config.guild(ctx.guild).streak_max.set(max_steps)
         await ctx.send(f"Bonus: +{percent_per_bump}% per bump in a row, capped at +{percent_per_bump * max_steps}%.")
 
-    @bumpreward.command(name="warning")
+    @bumpreward.command(name="lead")
     @commands.mod_or_permissions(manage_guild=True)
-    async def br_warning(self, ctx: commands.Context, value: bool):
-        """Toggle the 'available in about 1 minute' heads-up."""
-        await self.config.guild(ctx.guild).warning_enabled.set(value)
-        await ctx.send(f"1-minute warning is now **{'on' if value else 'off'}**.")
+    async def br_lead(self, ctx: commands.Context, seconds: int):
+        """Set how many seconds before the server is bumpable the single reminder is sent (0 = exactly when ready)."""
+        if not 0 <= seconds <= engine.MAX_LEAD_SECONDS:
+            return await ctx.send(f"Seconds must be between 0 and {engine.MAX_LEAD_SECONDS}.")
+        async with self._locks[ctx.guild.id]:
+            await self.config.guild(ctx.guild).reminder_lead_seconds.set(seconds)
+            if not await self.config.guild(ctx.guild).reminded():
+                self._arm(ctx.guild)
+        await ctx.send(f"Reminder will be sent **{seconds}s** before the server can be bumped." if seconds
+                       else "Reminder will be sent exactly when the server can be bumped.")
 
     @staticmethod
     def _mode_text(mode: str) -> str:
@@ -451,11 +488,26 @@ class BumpReward(commands.Cog):
         await conf.mode.set(m)
         await ctx.send(f"Mode set to **{self._mode_text(m)}**. Applies from the next bump.")
 
+    @bumpreward.command(name="seed")
+    @commands.mod_or_permissions(manage_guild=True)
+    async def br_seed(self, ctx: commands.Context, count: int):
+        """Tell the cog how many bumps the server has had in the last 24h (web + pre-install bumps it can't see).
+
+        Counted as happening now, so the cog stays on the slow cooldown until they age out (conservative).
+        """
+        if not 0 <= count <= 50:
+            return await ctx.send("Count must be between 0 and 50.")
+        async with self._locks[ctx.guild.id]:
+            await self.config.guild(ctx.guild).recent_bumps.set([time.time()] * count)
+        await ctx.send(f"Recording **{count}** bump{'s' if count != 1 else ''} in the last 24h. "
+                       f"Pro's fast window reopens once they age out or the count drops below {engine.PRO_FAST_BUMP_LIMIT}.")
+
     @bumpreward.command(name="nexttimer")
     @commands.mod_or_permissions(manage_guild=True)
     async def br_nexttimer(self, ctx: commands.Context, minutes: int):
         """Hand over a running timer: remind in N minutes (use when switching off the YAGPDB reminder)."""
         if not 0 <= minutes <= 120:
             return await ctx.send("Minutes must be between 0 and 120.")
-        await self._schedule_reminder(ctx.guild, minutes * 60)
+        async with self._locks[ctx.guild.id]:
+            await self._schedule_reminder(ctx.guild, minutes * 60)
         await ctx.send(f"Reminder set for {minutes} minute{'s' if minutes != 1 else ''} from now.")
