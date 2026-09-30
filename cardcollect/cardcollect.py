@@ -921,6 +921,24 @@ class CardCollect(commands.Cog):
         await self.config.guild(ctx.guild).drop_expiry_seconds.set(seconds)
         await ctx.send(f"Drops now expire after {seconds} second(s) unclaimed. Takes effect on the next drop.")
 
+    @card_set.command(name="dropchance")
+    async def card_set_dropchance(self, ctx: commands.Context, percent: float):
+        """Chance (in percent) that a qualifying message triggers a drop, e.g. 1.5 = 1.5%."""
+        if not 0 < percent <= 100:
+            await ctx.send("Drop chance must be greater than 0 and at most 100 (percent).")
+            return
+        await self.config.guild(ctx.guild).drop_chance.set(percent / 100)
+        await ctx.send(f"Drop chance set to {percent:g}% per qualifying message.")
+
+    @card_set.command(name="dropcooldown")
+    async def card_set_dropcooldown(self, ctx: commands.Context, seconds: int):
+        """Minimum seconds between drops. 0 = no cooldown."""
+        if seconds < 0:
+            await ctx.send("Cooldown can't be negative -- use 0 for no cooldown.")
+            return
+        await self.config.guild(ctx.guild).drop_cooldown_seconds.set(seconds)
+        await ctx.send(f"Drop cooldown set to {seconds} second(s).")
+
     @card_set.command(name="wrongguesspenalty")
     async def card_set_wrongguesspenalty(self, ctx: commands.Context, seconds: int):
         """How long using up all their wrong guesses locks a member out of *winning* any drop. 0 = no penalty."""
