@@ -78,11 +78,35 @@ DEFAULT_GAMES = {
     },
 }
 
+# Flagship entries that older installs don't have in their stored "games"
+# registry (Config only applies DEFAULT_GAMES when nothing is stored yet).
+# _seed_flagship_games adds any of these that are missing on cog load, so a
+# new flagship button works right after `.cog update` without anyone having
+# to run `.gamblehub addgame` by hand. Each key maps to an emoji/label/mode
+# plus an ordered list of candidate commands — the first one that actually
+# resolves on the live bot wins (e.g. `$` is only a real command if it isn't
+# just an Alias-cog alias, which bot.get_command() can't see).
+SEEDED_FLAGSHIPS = {
+    "profile": {
+        "emoji": "\U0001F464",  # 👤
+        "label": "Profile",
+        "mode": "direct",
+        "candidates": ["profile"],
+    },
+    "balance": {
+        "emoji": "\U0001F4B0",  # 💰
+        "label": "Balance",
+        "mode": "direct",
+        "candidates": ["$", "bank balance"],
+    },
+}
+
 # Flagship keys get a dedicated, always-visible button on row 0 instead of
 # being buried in the "More games…" dropdown. Order here also drives the
-# button order (see HubView) — wonderjack, heist, payday, then "Open a
-# Table" right before "Active Tables".
-FLAGSHIP_KEYS = ("wonderjack", "heist", "payday", "gamble")
+# button order (see HubView) — profile, balance, payday, "Open a Table",
+# then "Active Tables". Everything else (Wonderjack, Heist, ...) lives in
+# the "More games…" dropdown.
+FLAGSHIP_KEYS = ("profile", "balance", "payday", "gamble")
 
 SHARED_THREAD_NAMES = {
     "wonderjack": "blackjack-table",
@@ -101,24 +125,24 @@ class HubView(discord.ui.View):
         self.cog = cog
 
     @discord.ui.button(
-        label="Wonderjack",
-        emoji="\U0001F0CF",
+        label="Profile",
+        emoji="\U0001F464",
         style=discord.ButtonStyle.blurple,
-        custom_id="gamblehub:flagship:wonderjack",
+        custom_id="gamblehub:flagship:profile",
         row=0,
     )
-    async def wonderjack_button(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await self.cog.handle_hub_click(interaction, "wonderjack")
+    async def profile_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.cog.handle_hub_click(interaction, "profile")
 
     @discord.ui.button(
-        label="Heist",
-        emoji="\U0001F3E6",
+        label="Balance",
+        emoji="\U0001F4B0",
         style=discord.ButtonStyle.blurple,
-        custom_id="gamblehub:flagship:heist",
+        custom_id="gamblehub:flagship:balance",
         row=0,
     )
-    async def heist_button(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await self.cog.handle_hub_click(interaction, "heist")
+    async def balance_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.cog.handle_hub_click(interaction, "balance")
 
     @discord.ui.button(
         label="Payday",
@@ -364,9 +388,49 @@ class GambleThreads(commands.Cog):
         # startup — Discord will route interactions on any live hub
         # message back to this same view even after a restart.
         self.bot.add_view(HubView(self))
+        self._seed_task = self.bot.loop.create_task(self._seed_flagship_games())
 
     def cog_unload(self):
         self._cleanup_task.cancel()
+        seed_task = getattr(self, "_seed_task", None)
+        if seed_task is not None:
+            seed_task.cancel()
+
+    async def _seed_flagship_games(self):
+        """Add any SEEDED_FLAGSHIPS entry missing from a guild's stored
+        game registry (never overwrites an existing one), then re-render
+        the hub message if anything changed so the new buttons/dropdown
+        appear without a manual `.gamblehub setup`. Waits for Red to be
+        fully ready first so every other cog's commands are registered
+        before the candidates are resolved."""
+        try:
+            await self.bot.wait_until_red_ready()
+            for guild in self.bot.guilds:
+                changed = False
+                async with self.config.guild(guild).games() as games:
+                    for key, spec in SEEDED_FLAGSHIPS.items():
+                        if key in games:
+                            continue
+                        resolved = None
+                        for candidate in spec["candidates"]:
+                            resolved = self.bot.get_command(candidate)
+                            if resolved is not None:
+                                break
+                        if resolved is None:
+                            continue
+                        games[key] = {
+                            "emoji": spec["emoji"],
+                            "label": spec["label"],
+                            "command": resolved.qualified_name,
+                            "mode": spec["mode"],
+                        }
+                        changed = True
+                if changed and await self.config.guild(guild).hub_message_id():
+                    await self._refresh_hub_message(guild)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            pass
 
     # ---------- background cleanup ----------
 
@@ -905,7 +969,7 @@ class GambleThreads(commands.Cog):
     async def show_active_sessions(self, interaction: discord.Interaction):
         """Lists every currently-open gambling table — shared (e.g. the
         Wonderjack blackjack table) and personal (each player's own table,
-        opened via Heist/Payday/Open a Table) alike."""
+        opened via Heist/Open a Table) alike."""
         guild = interaction.guild
         sessions = await self.config.guild(guild).shared_sessions()
         personal = await self.config.guild(guild).active_threads()
@@ -970,16 +1034,16 @@ class GambleThreads(commands.Cog):
         view.game_select.options = options[:25]
         # Flagship buttons reflect current labels/emoji even though their
         # custom_id (and therefore routing) is fixed.
-        if "wonderjack" in games:
-            view.wonderjack_button.label = games["wonderjack"]["label"]
-            view.wonderjack_button.disabled = False
+        if "profile" in games:
+            view.profile_button.label = games["profile"]["label"]
+            view.profile_button.disabled = False
         else:
-            view.wonderjack_button.disabled = True
-        if "heist" in games:
-            view.heist_button.label = games["heist"]["label"]
-            view.heist_button.disabled = False
+            view.profile_button.disabled = True
+        if "balance" in games:
+            view.balance_button.label = games["balance"]["label"]
+            view.balance_button.disabled = False
         else:
-            view.heist_button.disabled = True
+            view.balance_button.disabled = True
         if "payday" in games:
             view.payday_button.label = games["payday"]["label"]
             view.payday_button.disabled = False
