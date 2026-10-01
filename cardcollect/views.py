@@ -111,29 +111,47 @@ class GalleryView(discord.ui.View):
         self.whose = whose
         self.page = 0
         self.message = None  # set by the caller right after sending
+        self._render_lock = asyncio.Lock()
         self._sync_buttons()
 
     def _sync_buttons(self):
         self.previous.disabled = self.page == 0
         self.next.disabled = self.page >= len(self.pages) - 1
 
-    def render_current(self):
-        showcase = self.showcase_card_ids if self.page == 0 else ()
+    def render_current(self, page=None):
+        """Render one gallery page. Synchronous Pillow work -- call it through
+        render_current_async from anything running on the event loop."""
+        page = self.page if page is None else page
+        showcase = self.showcase_card_ids if page == 0 else ()
         gallery = imagegen.render_gallery(
-            self.pages[self.page],
+            self.pages[page],
             showcase_card_ids=showcase,
             quantities=self.quantities,
             showcase_pool=self.all_entries,
         )
-        label = f"{self.whose} collection: (page {self.page + 1}/{len(self.pages)})"
+        label = f"{self.whose} collection: (page {page + 1}/{len(self.pages)})"
         return gallery, label
 
-    async def _refresh(self, interaction: discord.Interaction):
-        self._sync_buttons()
-        gallery, label = self.render_current()
-        await interaction.response.edit_message(
-            content=label, attachments=[discord.File(gallery, filename="collection.png")], view=self
-        )
+    async def render_current_async(self, page=None):
+        """render_current in a worker thread, so a slow render never stalls the
+        event loop (and with it every other button and command on the bot)."""
+        return await asyncio.to_thread(self.render_current, page)
+
+    # NOTE: deliberately NOT named `_refresh`. discord.ui.View has its own sync
+    # `_refresh(components)` that discord.py calls internally; an async override
+    # of that name made discord.py create a coroutine it never awaited.
+    async def _refresh_page(self, interaction: discord.Interaction):
+        # Acknowledge first. A component interaction must be answered within
+        # 3 seconds or the member sees "This interaction failed", and the render
+        # below can take longer than that when the bot is busy.
+        await interaction.response.defer()
+        async with self._render_lock:  # the final edit always matches the final page
+            page = self.page
+            self._sync_buttons()
+            gallery, label = await self.render_current_async(page)
+            await interaction.edit_original_response(
+                content=label, attachments=[discord.File(gallery, filename="collection.png")], view=self
+            )
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
         # belt-and-braces: discord.py's own dispatch calls this before a
@@ -156,14 +174,14 @@ class GalleryView(discord.ui.View):
         if not await self._reject_if_not_invoker(interaction):
             return
         self.page = max(0, self.page - 1)
-        await self._refresh(interaction)
+        await self._refresh_page(interaction)
 
     @discord.ui.button(label="Next ▶", style=discord.ButtonStyle.secondary)
     async def next(self, interaction: discord.Interaction, button: discord.ui.Button):
         if not await self._reject_if_not_invoker(interaction):
             return
         self.page = min(len(self.pages) - 1, self.page + 1)
-        await self._refresh(interaction)
+        await self._refresh_page(interaction)
 
     async def on_timeout(self):
         for item in self.children:

@@ -984,6 +984,10 @@ class FakeInteraction:
         self.message = message
         self.response = FakeInteractionResponse(defer_delay)
         self.followup = FakeFollowup()
+        self.original_edit = None
+
+    async def edit_original_response(self, content=None, attachments=None, view=None):
+        self.original_edit = {"content": content, "attachments": attachments, "view": view}
 
 
 async def submit(cog, channel, member, drop, code):
@@ -1825,8 +1829,8 @@ async def test_card_gallery_over_one_page_gets_a_paging_view_with_next_disabled_
     assert view.page == 1
     assert view.previous.disabled is False
     assert view.next.disabled is True  # last page -- nothing further to page to
-    assert "page 2/2" in interaction.response.edited["content"].lower()
-    assert interaction.response.edited["attachments"]
+    assert "page 2/2" in interaction.original_edit["content"].lower()
+    assert interaction.original_edit["attachments"]
 
 
 @pytest.mark.asyncio
@@ -1959,3 +1963,108 @@ async def test_setimage_requires_an_attachment(cog):
     no_attachment_ctx = FakeCtx(admin, guild, channel)  # no attachments
     await cog.card.commands["setimage"].callback(cog, no_attachment_ctx, card_id)
     assert "attach the replacement image" in no_attachment_ctx.sent[-1].content.lower()
+
+
+# ---------------------------------------------------------------------------
+# Gallery responsiveness: never shadow discord.py internals, ack before the
+# render, and keep Pillow off the event loop (live "interaction failed" reports)
+# ---------------------------------------------------------------------------
+
+import threading  # noqa: E402
+
+
+def test_gallery_view_does_not_shadow_discordpys_internal_refresh():
+    """REGRESSION: GalleryView defined `async def _refresh`, overriding the sync
+    View._refresh(components) discord.py calls itself -> 'coroutine
+    GalleryView._refresh was never awaited' in the logs."""
+    assert "_refresh" not in vars(views.GalleryView)
+
+
+@pytest.mark.asyncio
+async def test_gallery_page_button_acknowledges_before_rendering(cog, monkeypatch):
+    """REGRESSION: the render used to run BEFORE the interaction was answered, so
+    a slow render blew past Discord's 3-second window ("interaction failed")."""
+    guild = FakeGuild(310)
+    admin = FakeMember(3100, guild)
+    owner = FakeMember(3101, guild, display_name="Nia")
+    channel = FakeChannel(3102, guild)
+    await _collection_of_n_unique_cards(cog, guild, admin, channel, owner, GALLERY_PAGE_SIZE + 1)
+    ctx = FakeCtx(owner, guild, channel)
+    await cog.card.callback(cog, ctx, member=None)
+    sent = ctx.sent[-1]
+    view = sent.view
+
+    interaction = FakeInteraction(owner, channel, message=sent)
+    seen = {}
+    real = imagegen.render_gallery
+
+    def spy(*a, **kw):
+        seen["acked_at_render"] = interaction.response.deferred is not None
+        seen["off_loop"] = threading.current_thread() is not threading.main_thread()
+        return real(*a, **kw)
+
+    monkeypatch.setattr(imagegen, "render_gallery", spy)
+    await view.next.callback(interaction)
+
+    assert seen["acked_at_render"] is True
+    assert seen["off_loop"] is True
+    assert interaction.response.edited is None  # edited via edit_original_response instead
+    assert "page 2/2" in interaction.original_edit["content"].lower()
+
+
+@pytest.mark.asyncio
+async def test_card_command_renders_gallery_off_the_event_loop(cog, monkeypatch):
+    guild = FakeGuild(311)
+    admin = FakeMember(3110, guild)
+    owner = FakeMember(3111, guild, display_name="Nia")
+    channel = FakeChannel(3112, guild)
+    await _collection_of_n_unique_cards(cog, guild, admin, channel, owner, 3)
+    seen = {}
+    real = imagegen.render_gallery
+
+    def spy(*a, **kw):
+        seen["off_loop"] = threading.current_thread() is not threading.main_thread()
+        return real(*a, **kw)
+
+    monkeypatch.setattr(imagegen, "render_gallery", spy)
+    ctx = FakeCtx(owner, guild, channel)
+    await cog.card.callback(cog, ctx, member=None)
+
+    assert seen["off_loop"] is True
+    assert ctx.sent[-1].files
+
+
+@pytest.mark.asyncio
+async def test_card_showcase_renders_off_the_event_loop(cog, monkeypatch):
+    guild = FakeGuild(312)
+    admin = FakeMember(3120, guild)
+    owner = FakeMember(3121, guild, display_name="Nia")
+    channel = FakeChannel(3122, guild)
+    ids = await _collection_of_n_unique_cards(cog, guild, admin, channel, owner, 2)
+    state = await cog._member_state(owner)
+    state.showcase_card_ids = [ids[0]]
+    await cog._save_member_state(owner, state)
+    seen = {}
+    real = imagegen.render_showcase
+
+    def spy(*a, **kw):
+        seen["off_loop"] = threading.current_thread() is not threading.main_thread()
+        return real(*a, **kw)
+
+    monkeypatch.setattr(imagegen, "render_showcase", spy)
+    ctx = FakeCtx(owner, guild, channel)
+    await cog.card_showcase.callback(cog, ctx, member=None)
+
+    assert seen["off_loop"] is True
+    assert ctx.sent[-1].files
+
+
+@pytest.mark.asyncio
+async def test_card_version_reports_the_running_build(cog):
+    from cardcollect.constants import COG_VERSION
+
+    guild = FakeGuild(313)
+    owner = FakeMember(3131, guild)
+    ctx = FakeCtx(owner, guild, FakeChannel(3132, guild))
+    await cog.card.commands["version"].callback(cog, ctx)
+    assert ctx.sent[-1].content == f"cardcollect v{COG_VERSION}"

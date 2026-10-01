@@ -34,6 +34,7 @@ from redbot.core.data_manager import cog_data_path
 from . import captcha, embeds, engine, imagegen, import_characters, storage, views
 from .constants import (
     ACTIVITY_TIMEZONE,
+    COG_VERSION,
     DEFAULT_CLAIM_COOLDOWN_SECONDS,
     DEFAULT_CLAIM_QUOTA,
     DEFAULT_DROP_CHANCE,
@@ -639,8 +640,11 @@ class CardCollect(commands.Cog):
         if len(pages) == 1:
             # common case: whole collection fits on one page -- no point
             # showing paging buttons that would both be permanently disabled
-            gallery = imagegen.render_gallery(
-                pages[0], showcase_card_ids=state.showcase_card_ids, quantities=quantities
+            gallery = await asyncio.to_thread(
+                imagegen.render_gallery,
+                pages[0],
+                showcase_card_ids=state.showcase_card_ids,
+                quantities=quantities,
             )
             content = None if target.id == ctx.author.id else f"{target.display_name}'s collection:"
             await ctx.send(content=content, file=discord.File(gallery, filename="collection.png"))
@@ -648,7 +652,7 @@ class CardCollect(commands.Cog):
 
         whose = "Your" if target.id == ctx.author.id else f"{target.display_name}'s"
         view = views.GalleryView(ctx.author.id, pages, entries, state.showcase_card_ids, quantities, whose)
-        gallery, content = view.render_current()
+        gallery, content = await view.render_current_async()
         msg = await ctx.send(content=content, file=discord.File(gallery, filename="collection.png"), view=view)
         view.message = msg
 
@@ -698,7 +702,9 @@ class CardCollect(commands.Cog):
             await ctx.send(caption + "\n" + "\n".join(lines))
             return
 
-        showcase_img = imagegen.render_showcase(entries, quantities=quantities)
+        showcase_img = await asyncio.to_thread(
+            imagegen.render_showcase, entries, quantities=quantities
+        )
         await ctx.send(content=caption, file=discord.File(showcase_img, filename="showcase.png"))
 
     @card_showcase.command(name="add")
@@ -766,6 +772,11 @@ class CardCollect(commands.Cog):
             await ctx.send(embed=embed, file=file)
         else:
             await ctx.send(embed=embed)
+
+    @card.command(name="version")
+    async def card_version(self, ctx: commands.Context):
+        """Show the running cardcollect version (deploy probe)."""
+        await ctx.send(f"cardcollect v{COG_VERSION}")
 
     @card.command(name="quota")
     @commands.guild_only()
