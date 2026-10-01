@@ -1,0 +1,13 @@
+{
+    "name": "IntroForm",
+    "short": "Turns the intros channel into a fill-in form.",
+    "description": "Posts a button panel in the intros channel. Members fill out a pre-set form (name, age & gender, location, games, anything else) and the bot posts a consistent embed for them. One intro per member, editable any time. Free-form messages from non-mods in the channel are removed (toggleable), and a member's intro is deleted when they leave.",
+    "end_user_data_statement": "This cog stores, per guild, the intros channel ID and each member's submitted intro answers and the ID of their posted intro message, until the member deletes their intro or leaves the server.",
+    "install_msg": "Use `[p]introform setchannel #intros` to pick the channel and post the form panel.",
+    "author": ["evacfk"],
+    "version": "1.0.0",
+    "min_bot_version": "3.5.0",
+    "hidden": false,
+    "disabled": false,
+    "type": "COG"
+}
