@@ -303,6 +303,13 @@ class _EphemeralRelay:
 
     def __init__(self, interaction: discord.Interaction, retry_view: Optional[discord.ui.View] = None):
         self._interaction = interaction
+        # discord.py internals (and cogs that build files/messages off the
+        # channel, e.g. levelup's profile card) read private attributes like
+        # channel._state. __getattr__ below delegates anything this relay
+        # doesn't define to the real channel; _state is set explicitly since
+        # it's the one known to be needed.
+        self._state = interaction._state
+        self._real_channel = interaction.channel
         # Set only for "modal" mode games (see _invoke_direct) — attached
         # to whatever this relay ends up sending, so a repeat-play command
         # like Coinflip gets a "Go Again" button on its result instead of
@@ -357,6 +364,13 @@ class _EphemeralRelay:
 
     def permissions_for(self, _member):
         return discord.Permissions.all()
+
+    def __getattr__(self, name):
+        # Only called when normal lookup fails. Guard dunder/private-self
+        # lookups to avoid recursion before __init__ has set _real_channel.
+        if name.startswith("__") or name == "_real_channel":
+            raise AttributeError(name)
+        return getattr(self._real_channel, name)
 
 
 class GambleThreads(commands.Cog):
