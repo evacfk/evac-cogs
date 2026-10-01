@@ -49,7 +49,7 @@ QUESTIONS = [
         "required": True,
         # Rendered in the embed description (4096 limit), not a field (1024 limit).
         "max_length": 2000,
-        "placeholder": "(About me, games you play, hobbies, etc.)",
+        "placeholder": "About me can be your hobbies, games you play, or anything else you'd like to share about yourself",
         "field_name": "About Me",
         "inline": False,
     },
