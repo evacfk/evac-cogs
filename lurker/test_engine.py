@@ -92,3 +92,16 @@ def test_candidates_to_csv_handles_never_seen():
     out = engine.candidates_to_csv([(1, "ann", NOW, "tracked activity"), (2, "bob", None, "join date")])
     assert "never seen" in out
     assert "ann" in out
+
+
+def test_should_record_skips_fresh_timestamps_and_refreshes_stale_ones():
+    res = engine.TOUCH_RESOLUTION
+    assert engine.should_record(None, NOW)                      # never seen -> record
+    assert not engine.should_record(NOW - 60, NOW)              # a minute ago -> skip
+    assert not engine.should_record(NOW - (res - 1), NOW)       # just inside the window -> skip
+    assert engine.should_record(NOW - res, NOW)                 # exactly at the window -> refresh
+    assert engine.should_record(NOW - 10 * DAY, NOW)            # old -> refresh
+
+
+def test_should_record_never_keeps_a_future_timestamp():
+    assert engine.should_record(NOW + 3600, NOW)                # clock went backwards

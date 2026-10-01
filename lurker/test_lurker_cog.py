@@ -280,7 +280,7 @@ def _stale(env, member):
 
 def test_module_imports_and_defines_cog(mod):
     assert hasattr(mod, "Lurker")
-    assert mod.VERSION == "2.0.0"
+    assert mod.VERSION == "2.1.0"
     for name in ("lurker_version", "lurker_backfill", "lurker_backfill_confirm",
                  "lurker_sweep_preview", "lurker_sweep_run", "lurker_report",
                  "lurker_report_send", "lurker_exempt_audit"):
@@ -494,3 +494,99 @@ async def test_digest_quiet_week_and_busy_week(env):
     assert any(n.startswith("Flagged by daily sweep (20)") for n in names)
     assert "Restored" in names and "Backfill" in names
     assert csv_text and csv_text.count("\n") == 22  # header + 21 events + trailing newline
+
+
+# ------------------------------------------------- write-reduction (v2.1.0)
+
+async def test_touch_skips_a_fresh_timestamp_and_does_not_mark_dirty(env):
+    """REGRESSION: every message used to mark the guild dirty, so the whole
+    1.5 MB Config file was rewritten on each flush. A fresh stamp needs no write."""
+    gid, uid = env.guild.id, 42
+    env.cog._loaded_guilds.add(gid)
+    env.cog._cache[gid] = {uid: NOW.timestamp() - 60}  # active a minute ago
+    env.cog._dirty.clear()
+
+    env.cog._touch(gid, uid)
+
+    assert gid not in env.cog._dirty
+    assert env.cog._cache[gid][uid] == pytest.approx(NOW.timestamp() - 60)  # unchanged
+
+
+async def test_touch_refreshes_a_stale_timestamp_and_marks_dirty(env):
+    gid, uid = env.guild.id, 42
+    env.cog._loaded_guilds.add(gid)
+    env.cog._cache[gid] = {uid: NOW.timestamp() - 2 * DAY}
+    env.cog._dirty.clear()
+
+    env.cog._touch(gid, uid)
+
+    assert gid in env.cog._dirty
+    assert env.cog._cache[gid][uid] > NOW.timestamp() - 60
+
+
+async def test_first_ever_touch_is_recorded(env):
+    env.cog._touch(env.guild.id, 7)
+    assert 7 in env.cog._cache[env.guild.id]
+    assert env.guild.id in env.cog._dirty
+
+
+def test_flush_interval_is_hourly(mod):
+    assert mod.Lurker.FLUSH_INTERVAL == 3600
+
+
+def _spy_clear(env):
+    calls = []
+    orig = env.cog.config.member
+
+    def member_spy(m):
+        group = orig(m)
+        real_clear = group.clear
+
+        def clear():
+            calls.append(m.id)
+            return real_clear()
+        group.clear = clear
+        return group
+    env.cog.config.member = member_spy
+    return calls
+
+
+async def test_member_leave_without_a_record_does_not_touch_config(env):
+    """REGRESSION: on_member_remove used to clear() for every departure, rewriting
+    the whole Config file even when the member had nothing stored."""
+    m = FakeMember(env.guild, 10, roles=[env.a])
+    calls = _spy_clear(env)
+
+    await env.cog.on_member_remove(m)
+
+    assert calls == []
+
+
+async def test_member_leave_with_a_record_clears_it(env):
+    """A flagged member who leaves must not carry stale state back on rejoin."""
+    m = FakeMember(env.guild, 10, roles=[env.a])
+    await env.cog.config.member(m).stored_roles.set([601, 602])
+    await env.cog.config.member(m).flagged.set(True)
+    calls = _spy_clear(env)
+
+    await env.cog.on_member_remove(m)
+
+    assert calls == [10]
+    assert await env.cog.config.member(m).flagged() is False
+    assert await env.cog.config.member(m).stored_roles() == []
+
+
+async def test_unflag_clears_the_record_in_one_write(env):
+    """Restoring a member must leave no default-valued entry behind, and must do it
+    with a single clear() rather than two separate sets."""
+    m = FakeMember(env.guild, 10, roles=[env.lurker])
+    await env.cog.config.member(m).stored_roles.set([601, 602])
+    await env.cog.config.member(m).flagged.set(True)
+    calls = _spy_clear(env)
+
+    restored = await env.cog._unflag_member(m, env.lurker, source="mod")
+
+    assert restored == 2
+    assert m.role_ids() == {601, 602}                    # roles back, Lurker gone
+    assert calls == [10]
+    assert env.cog.config.data[("m", env.guild.id, 10)] == {}  # no leftover entry

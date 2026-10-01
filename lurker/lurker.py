@@ -13,7 +13,7 @@ from . import engine
 
 log = logging.getLogger("red.evac-cogs.lurker")
 
-VERSION = "2.0.0"
+VERSION = "2.1.0"
 
 
 class Lurker(commands.Cog):
@@ -34,6 +34,10 @@ class Lurker(commands.Cog):
     BACKFILL_TTL = 86400  # 24h -- dry-run scan stays valid for one day, survives restarts
     UNDO_TTL = 86400
     CHECKPOINT_EVERY = 25  # persist progress every N members processed
+    # Red's JSON backend rewrites the whole settings file on every save, so flush
+    # rarely. A crash loses at most this much activity, which is harmless against
+    # a 30-day threshold; cog_unload still flushes immediately.
+    FLUSH_INTERVAL = 3600
     DEFAULT_SWEEP_MAX = 250  # circuit breaker: abort a sweep that would flag more than this
 
     def __init__(self, bot):
@@ -110,7 +114,12 @@ class Lurker(commands.Cog):
         self._loaded_guilds.add(guild_id)
 
     def _touch(self, guild_id: int, user_id: int):
-        self._cache.setdefault(guild_id, {})[user_id] = datetime.now(timezone.utc).timestamp()
+        now = datetime.now(timezone.utc).timestamp()
+        users = self._cache.setdefault(guild_id, {})
+        # skip no-op refreshes: a fresh-enough timestamp needs no write at all
+        if not engine.should_record(users.get(user_id), now):
+            return
+        users[user_id] = now
         self._dirty.add(guild_id)
 
     def _lock_for(self, guild_id: int, user_id: int) -> asyncio.Lock:
@@ -125,7 +134,7 @@ class Lurker(commands.Cog):
         await self.bot.wait_until_red_ready()
         while True:
             try:
-                await asyncio.sleep(300)  # 5 minutes
+                await asyncio.sleep(self.FLUSH_INTERVAL)
                 await self._flush_all()
             except asyncio.CancelledError:
                 return
@@ -421,8 +430,9 @@ class Lurker(commands.Cog):
             if lurker_role in member.roles:
                 await member.remove_roles(lurker_role, reason=f"Lurker: reactivated ({source})")
 
-            await self.config.member(member).stored_roles.set([])
-            await self.config.member(member).flagged.set(False)
+            # One write (and no leftover default-valued entry) instead of two.
+            # Runs only after roles were restored and Lurker removed, same order as before.
+            await self.config.member(member).clear()
             self._touch(guild.id, member.id)
             if was_flagged:
                 self._record_event(guild.id, "unflag", member, source)
@@ -502,8 +512,11 @@ class Lurker(commands.Cog):
         if member.bot:
             return
         # A stale flagged/stored_roles record must not follow someone who leaves and rejoins.
+        # Only touch Config when a record exists: every clear() rewrites the whole file.
         try:
-            await self.config.member(member).clear()
+            cfg = self.config.member(member)
+            if await cfg.flagged() or await cfg.stored_roles():
+                await cfg.clear()
         except Exception:
             log.exception(f"Failed to clear lurker state for departed {member.id}")
         if member.guild.id in self._loaded_guilds:

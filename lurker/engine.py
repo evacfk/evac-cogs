@@ -23,6 +23,23 @@ def cutoff_ts(now: float, threshold_days: int) -> float:
     return now - threshold_days * DAY
 
 
+# A member's stored timestamp is only refreshed when it is at least this old.
+# The inactivity threshold is measured in days, so hour-level precision buys
+# nothing -- but skipping the no-op refreshes keeps the activity map from being
+# marked dirty (and the whole Config file rewritten) on every single message.
+TOUCH_RESOLUTION = 6 * 3600
+
+
+def should_record(existing: Optional[float], now: float,
+                  resolution: float = TOUCH_RESOLUTION) -> bool:
+    """Whether a new activity event should overwrite the stored timestamp."""
+    if existing is None:
+        return True
+    if now < existing:  # clock stepped backwards: never keep a future timestamp
+        return True
+    return (now - existing) >= resolution
+
+
 def resolve_last_active(cached: Optional[float], joined: Optional[float]) -> float:
     """Best-known last-activity time: tracked activity, else join date, else 0."""
     if cached is not None:
