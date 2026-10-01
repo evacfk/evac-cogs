@@ -158,6 +158,14 @@ class CardCollect(commands.Cog):
 
         self._session: Optional[aiohttp.ClientSession] = None
 
+        # Activity counts are buffered here and merged into Config every
+        # ACTIVITY_FLUSH_SECONDS. Writing per message rewrote this cog's whole
+        # settings file (pool + every member) on every chat message in the
+        # drop channel. A crash loses at most one interval of diagnostics counts.
+        self._activity_pending: Dict[int, Dict[str, int]] = {}  # guild_id -> {hour: count}
+        self._activity_since: Dict[int, float] = {}  # guild_id -> first-buffered time
+        self._activity_task: Optional[asyncio.Task] = None
+
     async def cog_load(self):
         # One shared, persistent Claim button handler: a click on a drop that
         # predates a restart still lands here, and submit_code/
@@ -170,8 +178,15 @@ class CardCollect(commands.Cog):
         # .card importpool waiting forever -- give every request on this
         # session a ceiling
         self._session = aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=30))
+        self._activity_task = asyncio.create_task(self._activity_flush_loop())
 
     async def cog_unload(self):
+        if self._activity_task is not None:
+            self._activity_task.cancel()
+        try:
+            await self._flush_activity()
+        except Exception:
+            log.exception("cardcollect: final activity flush failed")
         if self._persistent_view is not None:
             self._persistent_view.stop()
         if self._session is not None:
@@ -316,15 +331,42 @@ class CardCollect(commands.Cog):
         if should_post:
             await self._post_drop(message.channel, guild, is_test=test_mode)
 
+    ACTIVITY_FLUSH_SECONDS = 600
+
     async def _track_activity(self, guild: discord.Guild):
-        conf = self.config.guild(guild)
-        tracking = await conf.activity_tracking()
-        if not tracking.get("sampling_since"):
-            tracking["sampling_since"] = time.time()
+        """Count one message in memory; _flush_activity persists it."""
         hour = str(datetime.now(ZoneInfo(ACTIVITY_TIMEZONE)).hour)
-        buckets = tracking.setdefault("hourly_buckets", {})
+        buckets = self._activity_pending.setdefault(guild.id, {})
         buckets[hour] = buckets.get(hour, 0) + 1
-        await conf.activity_tracking.set(tracking)
+        self._activity_since.setdefault(guild.id, time.time())
+
+    async def _flush_activity(self):
+        """Merge buffered counts into Config -- one write per guild."""
+        pending, since = self._activity_pending, self._activity_since
+        self._activity_pending, self._activity_since = {}, {}
+        for guild_id, counts in pending.items():
+            try:
+                async with self.config.guild_from_id(guild_id).activity_tracking() as tracking:
+                    if not tracking.get("sampling_since"):
+                        tracking["sampling_since"] = since.get(guild_id, time.time())
+                    buckets = tracking.setdefault("hourly_buckets", {})
+                    for hour, n in counts.items():
+                        buckets[hour] = buckets.get(hour, 0) + n
+            except Exception:
+                # put the counts back so the next flush retries them
+                log.exception("cardcollect: activity flush failed for guild %s", guild_id)
+                back = self._activity_pending.setdefault(guild_id, {})
+                for hour, n in counts.items():
+                    back[hour] = back.get(hour, 0) + n
+                self._activity_since.setdefault(guild_id, since.get(guild_id, time.time()))
+
+    async def _activity_flush_loop(self):
+        while True:
+            await asyncio.sleep(self.ACTIVITY_FLUSH_SECONDS)
+            try:
+                await self._flush_activity()
+            except Exception:
+                log.exception("cardcollect: activity flush loop error")
 
     async def _post_drop(
         self, channel: discord.abc.Messageable, guild: discord.Guild, is_test: bool
@@ -1230,6 +1272,7 @@ class CardCollect(commands.Cog):
     @commands.mod_or_permissions(manage_messages=True)
     async def card_diagnostics(self, ctx: commands.Context):
         """Activity-based sizing report for drop_chance/drop_cooldown_seconds."""
+        await self._flush_activity()  # include counts still buffered in memory
         tracking = await self.config.guild(ctx.guild).activity_tracking()
         buckets = tracking.get("hourly_buckets", {})
         sampling_since = tracking.get("sampling_since") or time.time()

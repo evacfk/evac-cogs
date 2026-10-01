@@ -2068,3 +2068,61 @@ async def test_card_version_reports_the_running_build(cog):
     ctx = FakeCtx(owner, guild, FakeChannel(3132, guild))
     await cog.card.commands["version"].callback(cog, ctx)
     assert ctx.sent[-1].content == f"cardcollect v{COG_VERSION}"
+
+
+# --- activity tracking is buffered, not written per message -----------------
+
+
+@pytest.mark.asyncio
+async def test_track_activity_does_not_touch_config_per_message(cog):
+    """REGRESSION: every message in the drop channel rewrote the cog's entire
+    settings file. Counting must stay in memory until a flush."""
+    guild = FakeGuild(7)
+    for _ in range(50):
+        await cog._track_activity(guild)
+    assert cog.config._guild_data.get(7, {}).get("activity_tracking") is None
+    assert sum(cog._activity_pending[7].values()) == 50
+
+
+@pytest.mark.asyncio
+async def test_flush_activity_merges_counts_into_config_once(cog):
+    guild = FakeGuild(8)
+    for _ in range(5):
+        await cog._track_activity(guild)
+    await cog._flush_activity()
+    tracking = await cog.config.guild(guild).activity_tracking()
+    assert sum(tracking["hourly_buckets"].values()) == 5
+    assert tracking["sampling_since"] > 0
+    assert cog._activity_pending == {}
+
+    for _ in range(3):
+        await cog._track_activity(guild)
+    await cog._flush_activity()
+    tracking = await cog.config.guild(guild).activity_tracking()
+    assert sum(tracking["hourly_buckets"].values()) == 8  # adds, never overwrites
+
+
+@pytest.mark.asyncio
+async def test_failed_flush_keeps_counts_for_retry(cog):
+    guild = FakeGuild(9)
+    for _ in range(4):
+        await cog._track_activity(guild)
+
+    real = cog.config.guild_from_id
+
+    def boom(_gid):
+        raise RuntimeError("disk full")
+
+    cog.config.guild_from_id = boom
+    await cog._flush_activity()
+    assert sum(cog._activity_pending[9].values()) == 4
+
+    cog.config.guild_from_id = real
+    await cog._flush_activity()
+    tracking = await cog.config.guild(guild).activity_tracking()
+    assert sum(tracking["hourly_buckets"].values()) == 4
+
+
+def test_version_is_1_2_0():
+    from cardcollect.constants import COG_VERSION
+    assert COG_VERSION == "1.2.0"
