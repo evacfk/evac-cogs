@@ -83,7 +83,11 @@ class ServerPulse(commands.Cog):
         self.bot = bot
         self.config = Config.get_conf(self, identifier=CONFIG_IDENTIFIER, force_registration=True)
         self.config.register_guild(**DEFAULT_GUILD)
+        # guilds serverpulse is allowed to track/report in. None = not decided yet
+        # (seeded on first run from the guild that contains the mod channel).
+        self.config.register_global(allowed_guild_ids=None)
         self.data_dir = cog_data_path(self)
+        self._allowed: set[int] | None = None  # None = open until seeded, never silently stop tracking
 
         self._trackers: dict[int, GuildTracker] = {}
         self._cache: dict[int, dict] = {}
@@ -118,6 +122,36 @@ class ServerPulse(commands.Cog):
     # ------------------------------------------------------------------
     # Per-guild state
     # ------------------------------------------------------------------
+
+    def _guild_allowed(self, guild_id: int) -> bool:
+        allowed = self._allowed
+        return allowed is None or guild_id in allowed
+
+    def _apply_allowed(self, allowed: set[int]) -> None:
+        """Adopt a new allowlist and drop in-memory state for guilds that fell out of it."""
+        self._allowed = allowed
+        for gid in [g for g in self._trackers if g not in allowed]:
+            self._trackers.pop(gid, None)
+            self._cache.pop(gid, None)
+            self._flushed.pop(gid, None)
+
+    async def _load_allowed_guilds(self) -> None:
+        """Load the allowlist. On the very first run, seed it with the guild(s) that
+        actually contain the configured mod channel (i.e. Wonderland), so the bot being
+        in other servers doesn't make serverpulse track them or warn about them.
+        Idempotent. If nothing can be seeded yet, stay open rather than stop tracking."""
+        stored = await self.config.allowed_guild_ids()
+        if stored is None:
+            seeded = []
+            for guild in self.bot.guilds:
+                channel_id = await self.config.guild(guild).mod_channel_id()
+                if channel_id and guild.get_channel_or_thread(channel_id) is not None:
+                    seeded.append(guild.id)
+            if not seeded:
+                return
+            await self.config.allowed_guild_ids.set(seeded)
+            stored = seeded
+        self._apply_allowed({int(g) for g in stored})
 
     def _lock(self, guild_id: int) -> asyncio.Lock:
         return self._locks.setdefault(guild_id, asyncio.Lock())
@@ -230,6 +264,8 @@ class ServerPulse(commands.Cog):
         guild = message.guild
         if guild is None or message.author.bot or message.webhook_id:
             return
+        if not self._guild_allowed(guild.id):
+            return
         st = self._cache.get(guild.id) or await self._ensure_guild(guild)
         ts = message.created_at.timestamp()
         if ts < st["live_since"]:
@@ -254,14 +290,14 @@ class ServerPulse(commands.Cog):
 
     @commands.Cog.listener()
     async def on_member_join(self, member: discord.Member):
-        if member.bot:
+        if member.bot or not self._guild_allowed(member.guild.id):
             return
         await self._ensure_guild(member.guild)
         self._trackers[member.guild.id].record_join(time.time())
 
     @commands.Cog.listener()
     async def on_member_remove(self, member: discord.Member):
-        if member.bot:
+        if member.bot or not self._guild_allowed(member.guild.id):
             return
         await self._ensure_guild(member.guild)
         self._trackers[member.guild.id].record_leave(time.time())
@@ -284,6 +320,8 @@ class ServerPulse(commands.Cog):
     async def cog_check(self, ctx: commands.Context) -> bool:
         if ctx.guild is None:
             return False
+        if not self._guild_allowed(ctx.guild.id):
+            return False  # serverpulse is switched off for this server: stay silent
         if not await self._is_mod(ctx.author):
             return False  # silent for non-mods
         st = self._cache.get(ctx.guild.id) or await self._ensure_guild(ctx.guild)
@@ -1060,6 +1098,47 @@ class ServerPulse(commands.Cog):
         st = await self._ensure_guild(ctx.guild)
         await ctx.send(", ".join(f"<#{c}>" for c in sorted(st["ignored"])) or "No ignored channels.")
 
+    @pulse.group(name="guilds", invoke_without_command=True)
+    async def pulse_guilds(self, ctx: commands.Context):
+        """Bot owner: show which servers serverpulse tracks. `.pulse guilds add|remove <server id>`."""
+        if not await self.bot.is_owner(ctx.author):
+            return
+        allowed = self._allowed
+        if allowed is None:
+            await ctx.send("Allowlist not set yet: tracking every server the bot is in.")
+            return
+        lines = []
+        for gid in sorted(allowed):
+            g = self.bot.get_guild(gid)
+            lines.append(f"`{gid}` {g.name if g else '(bot is not in this server)'}")
+        await ctx.send("serverpulse is active in:\n" + ("\n".join(lines) if lines else "no servers"))
+
+    @pulse_guilds.command(name="add")
+    async def pulse_guilds_add(self, ctx: commands.Context, guild_id: int):
+        """Bot owner: start tracking another server."""
+        if not await self.bot.is_owner(ctx.author):
+            return
+        if self.bot.get_guild(guild_id) is None:
+            await ctx.send("The bot isn't in a server with that ID.")
+            return
+        new = set(self._allowed or set()) | {guild_id}
+        await self.config.allowed_guild_ids.set(sorted(new))
+        self._apply_allowed(new)
+        await ctx.tick()
+
+    @pulse_guilds.command(name="remove")
+    async def pulse_guilds_remove(self, ctx: commands.Context, guild_id: int):
+        """Bot owner: stop tracking a server (its stored data is kept)."""
+        if not await self.bot.is_owner(ctx.author):
+            return
+        if guild_id == ctx.guild.id:
+            await ctx.send("Run this from a different allowed server, or `.pulse` stops working here.")
+            return
+        new = set(self._allowed or set()) - {guild_id}
+        await self.config.allowed_guild_ids.set(sorted(new))
+        self._apply_allowed(new)
+        await ctx.tick()
+
     @pulse.group(name="set", invoke_without_command=True)
     async def pulse_set(self, ctx: commands.Context):
         """Settings: `.pulse set modchannel|modrole|commands`. Shows current settings."""
@@ -1110,6 +1189,8 @@ class ServerPulse(commands.Cog):
         @tasks.loop(seconds=FLUSH_INTERVAL_SECONDS)
         async def _flush_loop(self):
             for guild in self.bot.guilds:
+                if not self._guild_allowed(guild.id):
+                    continue
                 try:
                     await self._ensure_guild(guild)
                     await self._flush_guild(guild.id)
@@ -1120,6 +1201,8 @@ class ServerPulse(commands.Cog):
         @tasks.loop(minutes=BOARD_INTERVAL_MINUTES)
         async def _board_loop(self):
             for guild in self.bot.guilds:
+                if not self._guild_allowed(guild.id):
+                    continue
                 try:
                     board = await self.config.guild(guild).board()
                     if board.get("channel_id"):
@@ -1130,6 +1213,8 @@ class ServerPulse(commands.Cog):
         @tasks.loop(minutes=DIGEST_CHECK_MINUTES)
         async def _digest_loop(self):
             for guild in self.bot.guilds:
+                if not self._guild_allowed(guild.id):
+                    continue
                 try:
                     await self._run_digest_check(guild)
                 except Exception:
@@ -1140,6 +1225,10 @@ class ServerPulse(commands.Cog):
         @_digest_loop.before_loop
         async def _before_loops(self):
             await self.bot.wait_until_red_ready()
+            try:
+                await self._load_allowed_guilds()
+            except Exception:
+                log.exception("serverpulse: could not load the guild allowlist; staying open")
 
     async def _housekeeping(self, guild: discord.Guild) -> None:
         """Once per local day: drop per-user counts older than the retention window."""

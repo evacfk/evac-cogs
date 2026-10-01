@@ -76,6 +76,12 @@ class _Group:
 class FakeConfig:
     def __init__(self):
         self._guilds = {}
+        self._global = {"allowed_guild_ids": None}
+
+    def __getattr__(self, name):  # global keys, like Red's Config
+        if name.startswith("_") or name not in self._global:
+            raise AttributeError(name)
+        return _Value(self._global, name)
 
     def guild(self, guild):
         return _Group(self._guilds.setdefault(guild.id, copy.deepcopy(DEFAULT_GUILD)))
@@ -115,6 +121,7 @@ def make_cog(tmp_path, bot=None):
     cog.data_dir = tmp_path
     cog._trackers, cog._cache, cog._flushed = {}, {}, {}
     cog._locks, cog._init_locks, cog._backfill_tasks, cog._cancel = {}, {}, {}, set()
+    cog._allowed = None
     return cog
 
 
@@ -670,3 +677,166 @@ async def test_forum_channels_are_read_through_their_posts_only(tmp_path, clock)
         assert storage.load_day(tmp_path, GUILD_ID, "2026-09-28")["h"]["20"]["c"] == {"900": [1, 1]}
     finally:
         GUILD = saved
+
+
+# ------------------------------------------------------------------ guild allowlist (v1.1.0)
+
+OTHER_GUILD_ID = 99
+
+
+def _guild(gid, has_mod_channel):
+    return SimpleNamespace(
+        id=gid, name=f"g{gid}", text_channels=[], voice_channels=[], stage_channels=[], forums=[],
+        get_channel_or_thread=lambda cid: object() if has_mod_channel and cid == DEFAULT_MOD_CHANNEL_ID else None,
+    )
+
+
+def _msg_in(guild):
+    m = msg()
+    m.guild = guild
+    return m
+
+
+async def test_allowlist_is_seeded_from_the_guild_containing_the_mod_channel(tmp_path, clock):
+    wonderland, other = _guild(GUILD_ID, True), _guild(OTHER_GUILD_ID, False)
+    cog = make_cog(tmp_path, SimpleNamespace(**{**vars(make_bot()), "guilds": [wonderland, other]}))
+
+    await cog._load_allowed_guilds()
+
+    assert cog._allowed == {GUILD_ID}
+    assert await cog.config.allowed_guild_ids() == [GUILD_ID]  # persisted for next boot
+
+
+async def test_unseedable_allowlist_stays_open_instead_of_silencing_tracking(tmp_path, clock):
+    cog = make_cog(tmp_path, SimpleNamespace(**{**vars(make_bot()), "guilds": [_guild(OTHER_GUILD_ID, False)]}))
+
+    await cog._load_allowed_guilds()
+
+    assert cog._allowed is None
+    assert cog._guild_allowed(OTHER_GUILD_ID) is True  # fail open
+
+
+async def test_stored_allowlist_wins_over_reseeding(tmp_path, clock):
+    cog = make_cog(tmp_path, SimpleNamespace(**{**vars(make_bot()), "guilds": [_guild(GUILD_ID, True)]}))
+    await cog.config.allowed_guild_ids.set([GUILD_ID, OTHER_GUILD_ID])
+
+    await cog._load_allowed_guilds()
+
+    assert cog._allowed == {GUILD_ID, OTHER_GUILD_ID}
+
+
+async def test_messages_in_a_non_allowed_guild_are_ignored_and_create_no_state(tmp_path, clock):
+    """REGRESSION: serverpulse tracked every server the bot is in and logged
+    'mod channel not found' digest warnings for the ones without a mod channel."""
+    cog = make_cog(tmp_path)
+    cog._apply_allowed({GUILD_ID})
+    other = _guild(OTHER_GUILD_ID, False)
+
+    await cog.on_message(_msg_in(other))
+
+    assert OTHER_GUILD_ID not in cog._trackers
+    assert OTHER_GUILD_ID not in cog._cache
+    assert OTHER_GUILD_ID not in cog.config._guilds  # not even a Config entry written
+
+
+async def test_joins_and_leaves_in_a_non_allowed_guild_are_ignored(tmp_path, clock):
+    cog = make_cog(tmp_path)
+    cog._apply_allowed({GUILD_ID})
+    member = SimpleNamespace(bot=False, guild=_guild(OTHER_GUILD_ID, False))
+
+    await cog.on_member_join(member)
+    await cog.on_member_remove(member)
+
+    assert OTHER_GUILD_ID not in cog._trackers
+
+
+async def test_commands_are_silently_refused_in_a_non_allowed_guild(tmp_path, clock):
+    cog = make_cog(tmp_path)
+    cog._apply_allowed({OTHER_GUILD_ID})  # Wonderland (GUILD_ID) is NOT allowed
+    ctx, sent = ctx_for(roles={DEFAULT_MOD_ROLE_ID})
+
+    assert await cog.cog_check(ctx) is False
+    assert sent == []  # silent, no pointer message
+
+
+async def test_loops_skip_non_allowed_guilds(tmp_path, clock):
+    other = _guild(OTHER_GUILD_ID, False)
+    bot = SimpleNamespace(**{**vars(make_bot()), "guilds": [GUILD, other]})
+    cog = make_cog(tmp_path, bot)
+    cog._apply_allowed({GUILD_ID})
+    checked = []
+
+    async def fake_check(guild, nowl=None):
+        checked.append(guild.id)
+
+    cog._run_digest_check = fake_check
+    await cog._digest_loop()
+    await cog._flush_loop()
+
+    assert checked == [GUILD_ID]
+    assert OTHER_GUILD_ID not in cog._trackers  # flush loop didn't hydrate it either
+
+
+async def test_applying_a_narrower_allowlist_drops_in_memory_state_for_removed_guilds(tmp_path, clock):
+    cog = make_cog(tmp_path)
+    await cog._ensure_guild(GUILD)
+    assert GUILD_ID in cog._trackers
+
+    cog._apply_allowed({OTHER_GUILD_ID})
+
+    assert GUILD_ID not in cog._trackers and GUILD_ID not in cog._cache
+
+
+def _fn(command):
+    """The plain coroutine behind a command (real Red: .callback, dev stub: .func)."""
+    return getattr(command, "callback", None) or command.func
+
+
+def _owner_ctx(is_owner=True, guild=GUILD):
+    sent, ticks = [], []
+
+    async def send(text=None, **kw):
+        sent.append(text)
+
+    async def tick():
+        ticks.append(1)
+
+    return SimpleNamespace(guild=guild, author=SimpleNamespace(id=1), send=send, tick=tick), sent, ticks
+
+
+async def test_owner_can_add_and_remove_allowed_guilds(tmp_path, clock):
+    other = _guild(OTHER_GUILD_ID, False)
+    bot = SimpleNamespace(**{**vars(make_bot()), "get_guild": lambda gid: other if gid == OTHER_GUILD_ID else None})
+
+    async def is_owner(user):
+        return True
+
+    bot.is_owner = is_owner
+    cog = make_cog(tmp_path, bot)
+    cog._apply_allowed({GUILD_ID})
+    ctx, sent, ticks = _owner_ctx()
+
+    await _fn(sp.ServerPulse.pulse_guilds_add)(cog, ctx, OTHER_GUILD_ID)
+    assert cog._allowed == {GUILD_ID, OTHER_GUILD_ID}
+    assert await cog.config.allowed_guild_ids() == [GUILD_ID, OTHER_GUILD_ID]
+
+    await _fn(sp.ServerPulse.pulse_guilds_remove)(cog, ctx, OTHER_GUILD_ID)
+    assert cog._allowed == {GUILD_ID}
+
+    await _fn(sp.ServerPulse.pulse_guilds_remove)(cog, ctx, GUILD_ID)  # the guild it is run from
+    assert cog._allowed == {GUILD_ID}  # refused, would lock itself out
+    assert "different allowed server" in sent[-1]
+
+    await _fn(sp.ServerPulse.pulse_guilds_add)(cog, ctx, 12345)  # bot isn't in it
+    assert cog._allowed == {GUILD_ID}
+    assert "isn't in a server" in sent[-1]
+
+
+async def test_non_owner_cannot_change_the_allowlist(tmp_path, clock):
+    cog = make_cog(tmp_path)  # make_bot().is_owner returns False
+    cog._apply_allowed({GUILD_ID})
+    ctx, sent, _ = _owner_ctx()
+
+    await _fn(sp.ServerPulse.pulse_guilds_add)(cog, ctx, OTHER_GUILD_ID)
+
+    assert cog._allowed == {GUILD_ID} and sent == []
