@@ -145,6 +145,10 @@ class ActiveDrop:
     max_wrong_guesses: int = 0  # 0 = unlimited
     wrong_guess_penalty_seconds: float = 0.0
     expires_at: Optional[float] = None  # time.monotonic() deadline; None = never
+    # In-flight "card claimed" announcement tasks, in claim order. _claim
+    # appends one per win and, on the final claim, gathers them all so the
+    # "all cards claimed" post can't land ahead of an earlier claim's embed.
+    announcements: list = field(default_factory=list)
 
     def entry_for_code(self, code: str) -> Optional[dict]:
         """The card entry whose code is `code` (already normalized), or None."""
