@@ -68,3 +68,52 @@ def test_prefill_roundtrip_strips_zwsp_and_respects_max_length():
     assert engine.prefill_value({"name": cleaned}, "name", 40) == "@everyone"
     assert engine.prefill_value({"name": "x" * 100}, "name", 40) == "x" * 40
     assert engine.prefill_value({}, "name", 40) is None
+
+
+def intros_fixture():
+    return {
+        "1": {"message_id": 10, "answers": good_answers(name="Dylan", games="Magic, Forza", location="Bay Area")},
+        "2": {"message_id": 11, "answers": good_answers(name="Magic Mike", games="Chess", location="Texas")},
+        "3": {"message_id": 12, "answers": good_answers(name="Ana", games="Valorant", location="Romania")},
+        "x": {"message_id": 13, "answers": good_answers(name="Bad key")},
+    }
+
+
+def test_search_matches_any_field_and_ranks_name_hits_first():
+    matches, total = engine.search_intros(intros_fixture(), "magic")
+    assert total == 2
+    # "Magic Mike" has it in his name, Dylan only in games
+    assert [uid for uid, _ in matches] == [2, 1]
+
+
+def test_search_requires_every_word():
+    matches, total = engine.search_intros(intros_fixture(), "magic texas")
+    assert [uid for uid, _ in matches] == [2]
+    assert total == 1
+
+
+def test_search_skips_members_who_left():
+    matches, total = engine.search_intros(intros_fixture(), "magic", is_member=lambda uid: uid != 2)
+    assert [uid for uid, _ in matches] == [1]
+    assert total == 1
+
+
+def test_search_limit_caps_results_but_reports_total():
+    intros = {str(i): {"message_id": i, "answers": good_answers(name=f"Player {i:02d}", games="Magic")} for i in range(40)}
+    matches, total = engine.search_intros(intros, "magic", limit=25)
+    assert len(matches) == 25 and total == 40
+
+
+def test_search_blank_query_and_bad_keys():
+    assert engine.search_intros(intros_fixture(), "   ") == ([], 0)
+    matches, _ = engine.search_intros(intros_fixture(), "bad key")
+    assert matches == []  # non-numeric user id keys are ignored
+
+
+def test_option_label_and_description_fit_discord_limits():
+    a = good_answers(name="N" * 40, location="L" * 60, games="g\n" * 100)
+    assert len(engine.option_label(a)) <= 100
+    desc = engine.option_description(a)
+    assert desc is not None and len(desc) <= 100 and "\n" not in desc
+    assert engine.option_description({"location": "", "games": ""}) is None
+    assert engine.option_label({"name": ""}) == "(no name)"

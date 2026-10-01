@@ -28,3 +28,7 @@ def test_intro_embed_falls_back_to_display_name():
 def test_panel_embed_mentions_removal_only_when_enforcing():
     assert "removed" in embeds.build_panel_embed(True).description
     assert "removed" not in embeds.build_panel_embed(False).description
+
+
+def test_panel_embed_mentions_find_button():
+    assert "Find an Intro" in embeds.build_panel_embed(False).description

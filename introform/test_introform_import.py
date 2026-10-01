@@ -12,11 +12,11 @@ def test_module_imports_and_defines_cog_view_and_modal():
     assert hasattr(introform, "IntroModal")
 
 
-def test_panel_view_has_both_buttons():
+def test_panel_view_has_all_buttons():
     from introform.introform import IntroPanelView
 
     view = IntroPanelView(cog=None)
-    assert {"open_button", "delete_button"}.issubset(dir(view))
+    assert {"open_button", "find_button", "delete_button"}.issubset(dir(view))
 
 
 def test_modal_builds_one_input_per_question_within_discord_limits():
@@ -37,4 +37,21 @@ def test_group_uses_invoke_without_command_and_subcommands_exist():
     from introform.introform import IntroForm
 
     for name in ("setchannel", "panel", "enforce", "settings"):
+        assert hasattr(IntroForm, name)
+
+
+def test_find_views_build_under_the_stub():
+    from introform.introform import FindView, ResultsView, SearchModal
+
+    assert {"pick_member", "keyword_button"}.issubset(dir(FindView(cog=None)))
+    assert len(SearchModal(cog=None).children) == 1
+    rows = [(1, "Dylan", "Bay Area"), (2, "Ana", None)]
+    view = ResultsView(cog=None, rows=rows)
+    assert len(view.select.options) == 2
+
+
+def test_prune_and_find_support_methods_exist():
+    from introform.introform import IntroForm
+
+    for name in ("prune", "show_intro", "handle_search"):
         assert hasattr(IntroForm, name)

@@ -7,6 +7,7 @@ BRAND_COLOR = 0xFF8FB1
 # restarts/updates or already-posted panels stop responding.
 BTN_OPEN_ID = "introform:open"
 BTN_DELETE_ID = "introform:delete"
+BTN_FIND_ID = "introform:find"
 
 # Discord modals allow at most 5 inputs, so a few topics share a field.
 # field_name=None means the answer is used as the embed title instead.
@@ -71,6 +72,9 @@ GUILD_DEFAULTS = {
     # str(user_id) -> {"message_id": int, "answers": {key: str}}
     "intros": {},
 }
+
+# Max results shown in the keyword-search dropdown (Discord caps a select at 25 options).
+SEARCH_LIMIT = 25
 
 # Seconds between "use the form" notices to the same user.
 NOTICE_COOLDOWN = 30.0

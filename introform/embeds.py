@@ -22,6 +22,7 @@ def build_panel_embed(enforce: bool) -> "discord.Embed":
     lines = [
         "Press **Create / Edit My Intro**, fill in the form, and I'll post it here for you.",
         "You get one intro. Press the button again any time to edit it.",
+        "Looking for someone? Press **Find an Intro** to look up a member or search by keyword.",
     ]
     if enforce:
         lines.append("Regular messages in this channel are removed, so use the form!")

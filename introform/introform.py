@@ -10,11 +10,13 @@ from redbot.core.bot import Red
 from . import embeds, engine
 from .constants import (
     BTN_DELETE_ID,
+    BTN_FIND_ID,
     BTN_OPEN_ID,
     GUILD_DEFAULTS,
     NOTICE_COOLDOWN,
     NOTICE_DELETE_AFTER,
     QUESTIONS,
+    SEARCH_LIMIT,
 )
 
 log = logging.getLogger("red.evaccogs.introform")
@@ -58,6 +60,74 @@ class IntroModal(discord.ui.Modal):
             pass
 
 
+class SearchModal(discord.ui.Modal):
+    """One-box keyword search over everyone's stored intro answers."""
+
+    def __init__(self, cog):
+        super().__init__(title="Search intros", timeout=300)
+        self.cog = cog
+        self.query = discord.ui.TextInput(
+            label="Name, game, or location",
+            placeholder="e.g. magic, romania, or a name",
+            required=True,
+            max_length=60,
+        )
+        self.add_item(self.query)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        await self.cog.handle_search(interaction, self.query.value)
+
+    async def on_error(self, interaction: discord.Interaction, error: Exception):
+        log.exception("IntroForm: search modal error", exc_info=error)
+        try:
+            await interaction.response.send_message("❌ Search failed. Please try again.", ephemeral=True)
+        except _DISCORD_ERRORS:
+            pass
+
+
+class FindView(discord.ui.View):
+    """Ephemeral finder: Discord's member picker (type to search all members) or a keyword search."""
+
+    def __init__(self, cog):
+        super().__init__(timeout=180)
+        self.cog = cog
+
+    @discord.ui.select(
+        cls=discord.ui.UserSelect,
+        placeholder="Start typing a member's name...",
+        min_values=1,
+        max_values=1,
+    )
+    async def pick_member(self, interaction: discord.Interaction, select):
+        await self.cog.show_intro(interaction, select.values[0].id)
+
+    @discord.ui.button(label="Search by keyword", emoji="🔎", style=discord.ButtonStyle.secondary)
+    async def keyword_button(self, interaction: discord.Interaction, button):
+        await interaction.response.send_modal(SearchModal(self.cog))
+
+
+class ResultsView(discord.ui.View):
+    """Ephemeral dropdown of keyword-search matches (at most 25: Discord's select limit)."""
+
+    def __init__(self, cog, rows):
+        super().__init__(timeout=180)
+        self.cog = cog
+        self.select = discord.ui.Select(
+            placeholder="Pick an intro to view",
+            min_values=1,
+            max_values=1,
+            options=[
+                discord.SelectOption(label=label, value=str(user_id), description=description)
+                for user_id, label, description in rows
+            ],
+        )
+        self.select.callback = self._picked
+        self.add_item(self.select)
+
+    async def _picked(self, interaction: discord.Interaction):
+        await self.cog.show_intro(interaction, int(self.select.values[0]))
+
+
 class IntroPanelView(discord.ui.View):
     """Persistent button panel. Buttons are matched by custom_id, so any old panel keeps working."""
 
@@ -72,6 +142,16 @@ class IntroPanelView(discord.ui.View):
         entry = (await self.cog.config.guild(interaction.guild).intros()).get(str(interaction.user.id))
         answers = entry["answers"] if entry else {}
         await interaction.response.send_modal(IntroModal(self.cog, answers))
+
+    @discord.ui.button(label="Find an Intro", emoji="🔎", style=discord.ButtonStyle.secondary, custom_id=BTN_FIND_ID)
+    async def find_button(self, interaction: discord.Interaction, button):
+        if interaction.guild is None:
+            return
+        await interaction.response.send_message(
+            "Pick a member to see their intro, or search by keyword.",
+            view=FindView(self.cog),
+            ephemeral=True,
+        )
 
     @discord.ui.button(label="Delete My Intro", emoji="🗑️", style=discord.ButtonStyle.secondary, custom_id=BTN_DELETE_ID)
     async def delete_button(self, interaction: discord.Interaction, button):
@@ -157,6 +237,43 @@ class IntroForm(commands.Cog):
             await self.refresh_panel(guild)
         verb = "posted" if is_new else "updated"
         await interaction.followup.send(f"✅ Your intro was {verb}: {msg.jump_url}", ephemeral=True)
+
+    async def show_intro(self, interaction: discord.Interaction, user_id: int):
+        """Reply (privately) with a member's intro and a link to the original post."""
+        guild = interaction.guild
+        entry = (await self.config.guild(guild).intros()).get(str(user_id))
+        member = guild.get_member(user_id)
+        if not entry or member is None:
+            return await interaction.response.send_message(
+                "That member hasn't posted an intro through the form.", ephemeral=True
+            )
+        channel = await self._get_channel(guild)
+        content = None
+        if channel is not None:
+            link = channel.get_partial_message(entry["message_id"]).jump_url
+            content = f"Jump to the original post: {link}"
+        embed = embeds.build_intro_embed(member, entry["answers"])
+        await interaction.response.send_message(content=content, embed=embed, ephemeral=True)
+
+    async def handle_search(self, interaction: discord.Interaction, query: str):
+        """Keyword-search stored intros and offer the matches in a dropdown."""
+        guild = interaction.guild
+        intros = await self.config.guild(guild).intros()
+        matches, total = engine.search_intros(
+            intros,
+            query,
+            is_member=lambda uid: guild.get_member(uid) is not None,
+            limit=SEARCH_LIMIT,
+        )
+        if not matches:
+            return await interaction.response.send_message(
+                "No intros matched that. Try a single word, like a game or a country.", ephemeral=True
+            )
+        rows = [(uid, engine.option_label(a), engine.option_description(a)) for uid, a in matches]
+        note = f"Found **{total}** intro(s)."
+        if total > len(rows):
+            note += f" Showing the first {len(rows)}. Add another word to narrow it down."
+        await interaction.response.send_message(note, view=ResultsView(self, rows), ephemeral=True)
 
     async def remove_intro(self, guild: discord.Guild, user_id: int) -> bool:
         """Delete a member's form-posted intro and forget it. Returns True if one existed."""
@@ -281,6 +398,29 @@ class IntroForm(commands.Cog):
         await self.config.guild(ctx.guild).enforce.set(on_off)
         await self.refresh_panel(ctx.guild)
         await ctx.send(f"✅ Free-form message removal is now **{'on' if on_off else 'off'}**.")
+
+    @introform.command(name="prune")
+    async def prune(self, ctx: commands.Context, confirm: bool = False):
+        """List intros whose author left the server. Pass `True` to delete them.
+
+        Leaving normally cleans up automatically; this catches any missed while the bot was offline.
+        """
+        if not ctx.guild.chunked:
+            return await ctx.send("❌ The member list isn't fully loaded yet. Try again in a minute.")
+        intros = await self.config.guild(ctx.guild).intros()
+        stale = [int(uid) for uid in intros if ctx.guild.get_member(int(uid)) is None]
+        if not stale:
+            return await ctx.send("✅ No intros belong to members who left.")
+        if not confirm:
+            return await ctx.send(
+                f"Found **{len(stale)}** intro(s) from members who left. "
+                "Run `introform prune True` to delete them."
+            )
+        removed = 0
+        for uid in stale:
+            if await self.remove_intro(ctx.guild, uid):
+                removed += 1
+        await ctx.send(f"✅ Deleted **{removed}** intro(s) from members who left.")
 
     @introform.command(name="settings")
     async def settings(self, ctx: commands.Context):

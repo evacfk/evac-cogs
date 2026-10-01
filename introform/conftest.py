@@ -29,6 +29,21 @@ if _discord is not None and not hasattr(_discord.ui, "Modal"):
             return cls()
 
     _discord.Message = object
+
+    class _Select:
+        def __init__(self, **kwargs):
+            self.__dict__.update(kwargs)
+            self.values = []
+
+    def _select_decorator(*args, **kwargs):
+        return lambda f: f
+
+    _discord.ui.UserSelect = _Select
+    _discord.ui.Select = _Select
+    _discord.ui.select = _select_decorator
+    _discord.SelectOption = type("SelectOption", (), {"__init__": lambda self, **kw: self.__dict__.update(kw)})
+    if not hasattr(_discord.ui.View, "add_item"):
+        _discord.ui.View.add_item = lambda self, item: self.children.append(item)
     _discord.ui.Modal = _Modal
     _discord.ui.TextInput = _TextInput
     _discord.TextStyle = types.SimpleNamespace(short="short", paragraph="paragraph")

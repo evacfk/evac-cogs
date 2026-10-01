@@ -50,3 +50,56 @@ def prefill_value(answers: dict, key: str, max_length: int):
     """Default text for a modal input when editing, or None when there is nothing."""
     value = (answers or {}).get(key, "").replace(ZWSP, "")
     return value[:max_length] or None
+
+
+def _haystack(answers: dict) -> str:
+    return " ".join(answers.get(q["key"], "") for q in QUESTIONS).lower().replace(ZWSP, "")
+
+
+def search_intros(intros: dict, query: str, is_member=None, limit: int = 25):
+    """Keyword search over stored intros.
+
+    Every whitespace-separated word in `query` must appear somewhere in the answers.
+    Ranked: exact name, name starts with first word, name contains it, anything else;
+    ties alphabetical by name. `is_member(user_id)` filters out people who left.
+    Returns (top `limit` matches as [(user_id, answers)], total match count).
+    """
+    tokens = (query or "").lower().split()
+    if not tokens:
+        return [], 0
+    full = " ".join(tokens)
+    ranked = []
+    for uid_str, entry in intros.items():
+        try:
+            uid = int(uid_str)
+        except ValueError:
+            continue
+        if is_member is not None and not is_member(uid):
+            continue
+        answers = entry.get("answers", {})
+        if not all(t in _haystack(answers) for t in tokens):
+            continue
+        name = answers.get("name", "").lower()
+        if name == full:
+            rank = 0
+        elif name.startswith(tokens[0]):
+            rank = 1
+        elif tokens[0] in name:
+            rank = 2
+        else:
+            rank = 3
+        ranked.append((rank, name, uid, answers))
+    ranked.sort(key=lambda r: (r[0], r[1], r[2]))
+    return [(uid, answers) for _, _, uid, answers in ranked[:limit]], len(ranked)
+
+
+def option_label(answers: dict) -> str:
+    """Dropdown option label (Discord max 100 chars)."""
+    return (answers.get("name") or "(no name)")[:100]
+
+
+def option_description(answers: dict):
+    """Dropdown option description: location and games on one line, or None."""
+    parts = [answers.get("location", ""), answers.get("games", "")]
+    text = " \u00b7 ".join(" ".join(p.split()) for p in parts if p).replace(ZWSP, "")
+    return text[:100] or None
