@@ -52,7 +52,7 @@ class Puzzle(commands.Cog):
     per person across every round.
     """
 
-    __version__ = "1.2.0"
+    __version__ = "1.3.0"
 
     def __init__(self, bot: Red):
         self.bot = bot
@@ -685,7 +685,7 @@ class Puzzle(commands.Cog):
         channel = guild.get_channel(channel_id) if channel_id else None
 
         image_dir = self._image_dir(guild.id, image_id)
-        full_image_path = self._ensure_full_image(image_dir, img_w, img_h, piece_rows)
+        full_image_path = await asyncio.to_thread(self._ensure_full_image, image_dir, img_w, img_h, piece_rows)
 
         if winners:
             mentions = []
@@ -1010,6 +1010,11 @@ class Puzzle(commands.Cog):
     async def puzzle(self, ctx: commands.Context):
         """Image-reveal puzzle game commands."""
 
+    @puzzle.command(name="version")
+    async def puzzle_version(self, ctx: commands.Context):
+        """Show the loaded puzzle cog version."""
+        await ctx.send(f"puzzle v{self.__version__}")
+
     @puzzle.command(name="addimage")
     @checks.admin_or_permissions(manage_guild=True)
     async def puzzle_addimage(self, ctx: commands.Context, size: Optional[str] = None):
@@ -1051,7 +1056,7 @@ class Puzzle(commands.Cog):
                 continue
 
             data = await attachment.read()
-            image_hash = hashlib.sha256(data).hexdigest()
+            image_hash = await asyncio.to_thread(lambda: hashlib.sha256(data).hexdigest())
 
             pool = await self.config.guild(ctx.guild).pool()
             dupe_id = next((eid for eid, meta in pool.items() if meta.get("image_hash") == image_hash), None)
@@ -1064,7 +1069,7 @@ class Puzzle(commands.Cog):
 
             try:
                 out_dir = self._image_dir(ctx.guild.id, image_id)
-                piece_count, img_w, img_h = self._slice_image(data, rows, out_dir)
+                piece_count, img_w, img_h = await asyncio.to_thread(self._slice_image, data, rows, out_dir)
             except Exception as e:
                 failed.append(f"{attachment.filename} ({e})")
                 continue
@@ -1271,7 +1276,7 @@ class Puzzle(commands.Cog):
             piece_count = sum(meta["piece_rows"])
             lines.append(f"#{image_id}: {piece_count} pieces ({meta['filename']}){marker}")
 
-        buf = self._build_pool_preview_image(ctx.guild.id, pool, active_id)
+        buf = await asyncio.to_thread(self._build_pool_preview_image, ctx.guild.id, pool, active_id)
         if buf is not None:
             await ctx.send("\n".join(lines), file=discord.File(buf, filename="pool.png"))
         else:
@@ -1335,7 +1340,7 @@ class Puzzle(commands.Cog):
                 if "image_hash" not in meta:
                     full_path = image_dir / "full.png"
                     if full_path.exists():
-                        meta["image_hash"] = hashlib.sha256(full_path.read_bytes()).hexdigest()
+                        meta["image_hash"] = await asyncio.to_thread(lambda: hashlib.sha256(full_path.read_bytes()).hexdigest())
                         changed = True
 
                 if changed:
@@ -1539,7 +1544,9 @@ class Puzzle(commands.Cog):
             return
 
         image_dir = self._image_dir(ctx.guild.id, active["image_id"])
-        buf = self._build_progress_image(image_dir, active["img_w"], active["img_h"], active["piece_rows"], owned)
+        buf = await asyncio.to_thread(
+            self._build_progress_image, image_dir, active["img_w"], active["img_h"], active["piece_rows"], owned
+        )
         text = f"{member.display_name}: {len(owned)}/{total} distinct pieces collected."
         if buf is not None:
             await ctx.send(text, file=discord.File(buf, filename="progress.png"))
