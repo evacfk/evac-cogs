@@ -8,11 +8,9 @@ from .constants import BRAND_COLOR
 def build_intro_embed(member, answers: dict) -> "discord.Embed":
     embed = discord.Embed(
         title=answers.get("name") or member.display_name,
-        description=f"Intro by {member.mention}",
+        description=engine.build_description(member.mention, answers),
         color=discord.Color(BRAND_COLOR),
     )
-    for name, value, inline in engine.embed_fields(answers):
-        embed.add_field(name=name, value=value, inline=inline)
     embed.set_thumbnail(url=member.display_avatar.url)
     embed.set_footer(text=f"User ID: {member.id}")
     return embed

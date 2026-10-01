@@ -9,7 +9,7 @@ BTN_OPEN_ID = "introform:open"
 BTN_DELETE_ID = "introform:delete"
 BTN_FIND_ID = "introform:find"
 
-# Discord modals allow at most 5 inputs, so a few topics share a field.
+# Discord modals allow at most 5 inputs; Age & gender share one.
 # field_name=None means the answer is used as the embed title instead.
 QUESTIONS = [
     {
@@ -43,22 +43,13 @@ QUESTIONS = [
         "inline": True,
     },
     {
-        "key": "games",
-        "label": "Games I play",
+        "key": "extra",
+        "label": "About me",
         "style": "paragraph",
         "required": True,
-        "max_length": 300,
-        "placeholder": "What are you playing these days?",
-        "field_name": "Games I Play",
-        "inline": False,
-    },
-    {
-        "key": "extra",
-        "label": "Anything else you'd like to share",
-        "style": "paragraph",
-        "required": False,
-        "max_length": 500,
-        "placeholder": "Hobbies, fun facts, what you're looking for here...",
+        # Rendered in the embed description (4096 limit), not a field (1024 limit).
+        "max_length": 2000,
+        "placeholder": "(About me, games you play, hobbies, etc.)",
         "field_name": "About Me",
         "inline": False,
     },

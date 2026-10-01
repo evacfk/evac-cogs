@@ -12,17 +12,24 @@ def fake_member():
     )
 
 
-def test_intro_embed_uses_name_as_title_and_skips_empty_fields():
-    answers = {"name": "Dylan", "age_gender": "30", "location": "", "games": "Magic", "extra": ""}
+def test_intro_embed_uses_name_as_title_and_puts_everything_in_description():
+    answers = {"name": "Dylan", "age_gender": "30", "location": "", "extra": "Magic and Forza"}
     embed = embeds.build_intro_embed(fake_member(), answers)
     assert embed.title == "Dylan"
-    assert [f.name for f in embed.fields] == ["Age & Gender", "Games I Play"]
+    assert embed.fields == []
     assert "<@123>" in embed.description
+    assert "**Age & Gender:** 30" in embed.description
+    assert "Magic and Forza" in embed.description
 
 
 def test_intro_embed_falls_back_to_display_name():
-    embed = embeds.build_intro_embed(fake_member(), {"name": "", "games": "x"})
+    embed = embeds.build_intro_embed(fake_member(), {"name": "", "extra": "x"})
     assert embed.title == "RacingKing96"
+
+
+def test_intro_embed_shows_legacy_games_answer():
+    embed = embeds.build_intro_embed(fake_member(), {"name": "Old", "games": "Chess", "extra": ""})
+    assert "Games I play: Chess" in embed.description
 
 
 def test_panel_embed_mentions_removal_only_when_enforcing():

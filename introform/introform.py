@@ -31,6 +31,7 @@ class IntroModal(discord.ui.Modal):
         super().__init__(title="Your Intro", timeout=900)
         self.cog = cog
         self.inputs = {}
+        existing_answers = engine.migrate_answers(existing_answers)  # older intros had a separate games answer
         for q in QUESTIONS:
             style = discord.TextStyle.paragraph if q["style"] == "paragraph" else discord.TextStyle.short
             item = discord.ui.TextInput(

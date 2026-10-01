@@ -27,7 +27,10 @@ def test_modal_builds_one_input_per_question_within_discord_limits():
     assert len(modal.inputs) == len(QUESTIONS)
     assert len(modal.inputs) <= 5  # Discord modal cap
     assert modal.inputs["name"].default == "Dylan"
-    assert modal.inputs["games"].default is None
+    assert modal.inputs["extra"].default is None
+    assert modal.inputs["extra"].max_length == 2000  # About Me is long-form
+    assert "games" in modal.inputs["extra"].placeholder  # parenthesized hint
+    assert "games" not in modal.inputs
     for q in QUESTIONS:
         assert len(q["label"]) <= 45  # Discord label cap
         assert len(q["placeholder"]) <= 100
@@ -55,3 +58,10 @@ def test_prune_and_find_support_methods_exist():
 
     for name in ("prune", "show_intro", "handle_search"):
         assert hasattr(IntroForm, name)
+
+
+def test_modal_prefills_about_me_from_a_legacy_games_answer():
+    from introform.introform import IntroModal
+
+    modal = IntroModal(cog=None, existing_answers={"name": "Old", "games": "Chess", "extra": "Hi"})
+    assert modal.inputs["extra"].default == "Hi\n\nGames I play: Chess"

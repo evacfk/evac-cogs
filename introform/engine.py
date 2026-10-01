@@ -37,13 +37,31 @@ def validate_answers(answers: dict) -> list:
     return problems
 
 
-def embed_fields(answers: dict) -> list:
-    """(name, value, inline) tuples for the non-empty, non-title answers, in form order."""
-    fields = []
+def migrate_answers(answers: dict) -> dict:
+    """Fold the retired "games" answer (v1.0-1.1 intros) into About Me. Safe to call repeatedly."""
+    out = dict(answers or {})
+    games = out.pop("games", "")
+    if games:
+        about = out.get("extra", "")
+        out["extra"] = (about + "\n\n" if about else "") + "Games I play: " + games
+    return out
+
+
+def build_description(mention: str, answers: dict) -> str:
+    """The intro embed body: byline, short details, then the long answers under their headings."""
+    answers = migrate_answers(answers)
+    parts = [f"Intro by {mention}"]
+    details = [
+        f"**{q['field_name']}:** {answers[q['key']]}"
+        for q in QUESTIONS
+        if q["field_name"] and q["inline"] and answers.get(q["key"])
+    ]
+    if details:
+        parts.append("\n".join(details))
     for q in QUESTIONS:
-        if q["field_name"] and answers.get(q["key"]):
-            fields.append((q["field_name"], answers[q["key"]], q["inline"]))
-    return fields
+        if q["field_name"] and not q["inline"] and answers.get(q["key"]):
+            parts.append(f"**{q['field_name']}**\n{answers[q['key']]}")
+    return "\n\n".join(parts)
 
 
 def prefill_value(answers: dict, key: str, max_length: int):
@@ -53,7 +71,7 @@ def prefill_value(answers: dict, key: str, max_length: int):
 
 
 def _haystack(answers: dict) -> str:
-    return " ".join(answers.get(q["key"], "") for q in QUESTIONS).lower().replace(ZWSP, "")
+    return " ".join(str(v) for v in answers.values()).lower().replace(ZWSP, "")
 
 
 def search_intros(intros: dict, query: str, is_member=None, limit: int = 25):
@@ -99,7 +117,8 @@ def option_label(answers: dict) -> str:
 
 
 def option_description(answers: dict):
-    """Dropdown option description: location and games on one line, or None."""
-    parts = [answers.get("location", ""), answers.get("games", "")]
+    """Dropdown option description: location and the start of About Me on one line, or None."""
+    answers = migrate_answers(answers)
+    parts = [answers.get("location", ""), answers.get("extra", "")]
     text = " \u00b7 ".join(" ".join(p.split()) for p in parts if p).replace(ZWSP, "")
     return text[:100] or None
