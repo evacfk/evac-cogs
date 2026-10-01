@@ -203,7 +203,7 @@ class TestOtherEmbeds:
         assert_fits(e)
         assert "<#3>" in e.fields[0].value
         v = embeds.version_embed(days_stored=1, coverage_start_ts=None, live_since_ts=None, pending_msgs=3, backfill_status="none")
-        assert "1.0.0" in v.description
+        assert "1.0.1" in v.description
 
     def test_backfill_embed_states(self):
         now = local_ts(2026, 9, 30)
@@ -212,3 +212,12 @@ class TestOtherEmbeds:
         assert "Now reading" in field_names(running) and "12,345" in [f.value for f in running.fields]
         err = embeds.backfill_embed({"status": "error", "days": 30, "error": "boom", "skipped": ["#secret"]}, now)
         assert "Resume" in field_names(err) and "Skipped (no access)" in field_names(err)
+
+
+class TestDayChart:
+    def test_bars_and_axis_are_the_same_width_so_labels_line_up(self):
+        chart = embeds.day_chart(list(range(24)))
+        _, bars, axis, _ = chart.split("\n")[0], *chart.split("\n")[1:4]
+        assert len(bars) == 48
+        assert len(axis) <= 48
+        assert axis.index("12p") == 24 and axis.index("9p") == 42

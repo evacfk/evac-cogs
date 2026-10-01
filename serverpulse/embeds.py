@@ -117,7 +117,21 @@ def bar(value: float, top: float, width: int = 8) -> str:
 
 
 def day_axis() -> str:
-    return "12a   3a    6a    9a    12p   3p    6p    9p"
+    """Axis for `day_chart`: every hour is 2 characters wide, labels every 3 hours."""
+    out = ""
+    for label in ("12a", "3a", "6a", "9a", "12p", "3p", "6p", "9p"):
+        out += label.ljust(6)
+    return out.rstrip()
+
+
+def day_chart(values: list[float]) -> str:
+    """24 hourly bars (2 chars each) over an aligned axis, in one monospace block.
+
+    A single fenced block keeps the bars and labels in the same font, so the
+    labels line up with the bars on desktop and mobile alike.
+    """
+    bars = "".join(c * 2 for c in sparkline(values))
+    return f"```\n{bars}\n{day_axis()}\n```"
 
 
 def _embed(title: str, description: str | None = None, color: int = COLOR_PRIMARY):
@@ -203,7 +217,7 @@ def board_embed(live: LiveView):
     e.add_field(name="Next good window (24h)", value=_upcoming_text(live.next_best), inline=True)
     e.add_field(name="Next quiet stretch (24h)", value=_upcoming_text(live.next_quiet), inline=True)
     if live.hours and any(r.n for r in live.hours):
-        e.add_field(name="A typical day", value=f"`{sparkline([r.avg_msgs for r in live.hours])}`\n`{day_axis()}`", inline=False)
+        e.add_field(name="A typical day", value=day_chart([r.avg_msgs for r in live.hours]), inline=False)
     e.add_field(name="Updated", value=f"<t:{int(live.now_ts)}:R>", inline=False)
     return _footer(e, f"based on the last {live.history_days} days")
 
@@ -225,7 +239,7 @@ def overview_embed(live: LiveView, sentence: str | None, hours: list[engine.Hour
     e.add_field(name="Next good window (24h)", value=_upcoming_text(live.next_best), inline=True)
     e.add_field(name="Next quiet stretch (24h)", value=_upcoming_text(live.next_quiet), inline=True)
     if ranked:
-        e.add_field(name="A typical day", value=f"`{sparkline([r.avg_msgs for r in hours])}`\n`{day_axis()}`", inline=False)
+        e.add_field(name="A typical day", value=day_chart([r.avg_msgs for r in hours]), inline=False)
     e.add_field(name="More", value="`.pulse day` `.pulse week` `.pulse month` · `.pulse hours` `.pulse hour 8pm` · `.pulse heatmap` · `.pulse best` · `.pulse channels` · `.pulse top` · `.pulse anomalies` · `.pulse export`", inline=False)
     return _footer(e, f"last {window_days} days")
 
@@ -314,7 +328,7 @@ def period_embed(
             inline=True,
         )
     if report.kind == "day" and any(r.n for r in report.hours):
-        e.add_field(name="Hour by hour", value=f"`{sparkline([r.avg_msgs for r in report.hours])}`\n`{day_axis()}`", inline=False)
+        e.add_field(name="Hour by hour", value=day_chart([r.avg_msgs for r in report.hours]), inline=False)
     if report.kind == "week" and report.daily:
         e.add_field(name="By day", value=clip(_daily_breakdown(report.daily)), inline=False)
     elif report.kind == "month" and report.daily:
