@@ -1,0 +1,13 @@
+{
+    "author": ["evac"],
+    "min_bot_version": "3.5.0",
+    "description": "Server activity analytics: tracks when chat is busy and when it's quiet (human messages only, counts never content). Hour-of-day averages, daily/weekly/monthly reports, a weekday x hour heatmap, a best-window finder for events, anomaly flags, per-channel ranking, member joins/leaves, a self-updating live board, weekly and monthly digests in the mod channel, a resumable history backfill, and a JSON export for analysis. Mods only, mod channel only.",
+    "hidden": false,
+    "install_msg": "Thanks for installing serverpulse! Everything lives under `.pulse` (alias `.activity`) and works for mods in the mod channel only. Tracking starts at the next full hour; run `.pulse backfill 30` to import the last 30 days so reports work right away. Defaults: mod channel and mod role are pre-set, the two bot channels are ignored, and weekly (Mon 9am) + monthly (1st, 9am) digests post to the mod channel. Try `.pulse`, `.pulse week`, `.pulse hours`, `.pulse hour 8pm`, `.pulse heatmap`, `.pulse best`, `.pulse board start`, `.pulse export`.",
+    "short": "Server activity analytics: busy/quiet hours, daily/weekly/monthly reports, heatmap, live board, digests.",
+    "tags": ["analytics", "activity", "stats", "moderation"],
+    "requirements": ["Pillow"],
+    "type": "COG",
+    "name": "serverpulse",
+    "end_user_data_statement": "This cog stores hourly message counts per channel (no message content) and, for 90 days, a per-user daily message count keyed by user ID, used for the mods-only top-chatters view. Joins and leaves are stored as daily totals only. Data lives in the bot's data folder and is not shared externally; a user's per-user counts are deleted on a Red data-deletion request."
+}
