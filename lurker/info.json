@@ -1,9 +1,9 @@
 {
     "author": ["evacfk"],
     "min_bot_version": "3.5.0",
-    "description": "Automatically hides long-inactive members behind a Lurker role, stripping their other roles and restoring them when they post in a designated reactivation channel.",
+    "description": "Automatically hides long-inactive members behind a Lurker role, stripping their other roles and restoring them when they post in a designated reactivation channel. Posts a weekly digest of flags and restores to a mod channel.",
     "hidden": false,
     "short": "Auto-hide inactive members behind a Lurker role.",
-    "end_user_data_statement": "This cog stores member IDs, role IDs, and last-message/reaction timestamps to determine inactivity. No message content is stored.",
+    "end_user_data_statement": "This cog stores member IDs, role IDs, last-activity timestamps, and display names of members flagged or restored since the last mod report. No message content is stored.",
     "tags": ["roles", "moderation", "automation"]
 }
