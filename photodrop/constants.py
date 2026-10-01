@@ -63,3 +63,5 @@ DEFAULT_GUILD = {
     "last_reminder_date": None,  # "YYYY-MM-DD" the end-of-day reminder last fired for
 }
 
+# bumped on every deploy so `.pp version` can confirm the new build is live
+COG_VERSION = "1.1.0"

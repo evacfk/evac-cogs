@@ -16,6 +16,7 @@ from that week's poll entirely, even for days they already submitted.
 """
 from __future__ import annotations
 
+import asyncio
 import calendar as calendar_module
 import logging
 from datetime import datetime, timedelta
@@ -29,6 +30,7 @@ from redbot.core.data_manager import cog_data_path
 
 from . import collage, embeds, models, storage
 from .constants import (
+    COG_VERSION,
     DEFAULT_GUILD,
     DEFAULT_MEMBER,
     DEFAULT_POLL_DURATION_HOURS,
@@ -383,6 +385,11 @@ class PhotoDrop(commands.Cog):
 
     # -- view / calendar / status --------------------------------------------
 
+    @pp.command(name="version")
+    async def pp_version(self, ctx: commands.Context):
+        """Show the running photodrop version (deploy probe)."""
+        await ctx.send(f"photodrop v{COG_VERSION}")
+
     @pp.command(name="view")
     @commands.guild_only()
     async def pp_view(self, ctx: commands.Context, user: discord.Member, date: str):
@@ -436,7 +443,7 @@ class PhotoDrop(commands.Cog):
             return
 
         out_path = self.data_dir / "collages" / "calendar" / str(user.id) / f"{year:04d}-{month:02d}.png"
-        collage.save_month_collage(collage_entries, out_path)
+        await asyncio.to_thread(collage.save_month_collage, collage_entries, out_path)
         filename = f"calendar_{user.id}_{year:04d}-{month:02d}.png"
         file = discord.File(str(out_path), filename=filename)
         embed.set_image(url=f"attachment://{filename}")
@@ -492,7 +499,7 @@ class PhotoDrop(commands.Cog):
         entries = []
         for i, (letter, path) in enumerate(zip(letters, raw_paths)):
             out_path = labeled_dir / f"{letter}.png"
-            collage.save_collage([path], letter, out_path)
+            await asyncio.to_thread(collage.save_collage, [path], letter, out_path)
             entries.append((letter, f"Photo {i + 1}", out_path))
 
         await self._post_poll(
@@ -660,7 +667,7 @@ class PhotoDrop(commands.Cog):
             return
 
         out_path = self.data_dir / "collages" / "rated" / f"{rating}.png"
-        collage.save_gallery_collage(photo_paths, out_path)
+        await asyncio.to_thread(collage.save_gallery_collage, photo_paths, out_path)
         filename = f"rated_{rating}.png"
         file = discord.File(str(out_path), filename=filename)
 
@@ -889,7 +896,7 @@ class PhotoDrop(commands.Cog):
                     continue
                 letter = POLL_LETTERS[len(entries)]
                 out_path = self.data_dir / "collages" / "weekly" / str(member.id) / today / f"{letter}.png"
-                collage.save_collage(raw_paths, letter, out_path)
+                await asyncio.to_thread(collage.save_collage, raw_paths, letter, out_path)
                 entries.append((letter, WEEKDAY_NAMES[i], out_path))
                 if len(entries) >= len(POLL_LETTERS):
                     break
