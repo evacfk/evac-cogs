@@ -22,6 +22,7 @@ Design constraints, and why:
 """
 
 import random
+import unicodedata
 from typing import List, Optional
 
 from .constants import CODE_DIGITS, CODE_LENGTH, CODE_LETTERS, CODE_SYMBOLS, MIN_CODE_DISTANCE
@@ -37,10 +38,14 @@ def _rng(rng: Optional[random.Random]) -> random.Random:
 
 
 def normalize(text: str) -> str:
-    """Canonical form of a member's submission for matching: surrounding
-    whitespace dropped, uppercased. Anything with internal whitespace is left
-    alone (and so never looks like a code)."""
-    return (text or "").strip().upper()
+    """Canonical form of a member's submission for matching. Phone keyboards
+    and pasted text can add things a member never sees, so this forgives:
+    case, any whitespace (leading, trailing or inside), invisible format
+    characters (zero-width spaces, joiners, direction marks), and
+    full-width / compatibility forms (＠ -> @, Ｋ -> K) via NFKC."""
+    text = unicodedata.normalize("NFKC", text or "")
+    text = "".join(ch for ch in text if not ch.isspace() and unicodedata.category(ch) != "Cf")
+    return text.upper()
 
 
 def looks_like_code(text: str) -> bool:

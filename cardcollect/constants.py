@@ -12,10 +12,10 @@ DEFAULT_DROP_WEIGHTS = {
 }
 
 DEFAULT_SELL_PRICES = {
-    "common": 25,
-    "rare": 100,
-    "epic": 400,
-    "legendary": 1500,
+    "common": 1000,
+    "rare": 5000,
+    "epic": 10000,
+    "legendary": 25000,
 }
 
 # Favourites-count cutoffs used at import time to bucket a character into a tier.

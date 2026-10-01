@@ -35,6 +35,13 @@ def test_normalize_uppercases_and_strips():
     assert captcha.normalize(None) == ""
 
 
+def test_normalize_forgives_phone_keyboard_artifacts():
+    assert captcha.normalize("k3 +9t") == "K3+9T"  # space inside
+    assert captcha.normalize("k3+9t ") == "K3+9T"  # non-breaking space
+    assert captcha.normalize("k​3+9t") == "K3+9T"  # zero-width space
+    assert captcha.normalize("Ｋ3＋9Ｔ") == "K3+9T"  # full-width forms
+
+
 @pytest.mark.parametrize("text", ["K3+9T", "M7#4E", "9E@AN", "A?3CE", "#K3T9", "K3T9+"])
 def test_looks_like_code_accepts_well_formed_codes(text):
     assert captcha.looks_like_code(text)
