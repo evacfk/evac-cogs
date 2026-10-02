@@ -12,6 +12,7 @@ limit during a very active fight.
 """
 import asyncio
 import logging
+import math
 import random
 import time
 
@@ -81,9 +82,15 @@ class _BossView(discord.ui.View):
         now = time.time()
         last = self.last_attack.get(interaction.user.id, 0)
         cooldown = self.game_conf["attack_cooldown"]
-        if now - last < cooldown:
+        remaining = cooldown - (now - last)
+        # Small grace window: Discord click latency/jitter means a player
+        # clicking right as the cooldown ends often lands a few hundredths
+        # of a second early. Rejecting that with "wait 0.0s" is both
+        # confusing and unfair, so anything within the grace counts as ready.
+        if remaining > 0.3:
+            # ceil (not round/truncate) so the shown wait is never "0.0s".
             await interaction.response.send_message(
-                f"Still on cooldown -- wait {cooldown - (now - last):.1f}s.", ephemeral=True
+                f"Still on cooldown -- wait {math.ceil(remaining * 10) / 10:.1f}s.", ephemeral=True
             )
             return
         self.last_attack[interaction.user.id] = now
