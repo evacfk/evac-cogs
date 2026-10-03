@@ -488,12 +488,15 @@ def test_parse_args_is_forgiving():
 # ------------------------------------------------------------------ backfill end to end
 
 class FakeChannel:
-    def __init__(self, cid, name, messages=(), threads=(), forbidden=False):
+    def __init__(self, cid, name, messages=(), threads=(), forbidden=False, gone=False):
         self.id, self.name, self.messages, self.threads, self.forbidden = cid, name, list(messages), list(threads), forbidden
+        self.gone = gone
 
     async def history(self, limit=None, after=None, before=None, oldest_first=True):
         if self.forbidden:
             raise discord.Forbidden()
+        if self.gone:
+            raise discord.NotFound.__new__(discord.NotFound)
         for m in sorted(self.messages, key=lambda m: m.created_at):
             if after <= m.created_at < before:
                 yield m
@@ -902,3 +905,29 @@ async def test_ack_replaces_the_tick_reaction_and_self_deletes(tmp_path, clock):
     await cog._ack(SimpleNamespace(send=send))
 
     assert sent and sent[0][1].get("delete_after") == 8
+
+
+async def test_backfill_survives_a_channel_or_thread_deleted_mid_run(tmp_path, clock):
+    """Regression: 404 Unknown Channel (error 10003) used to abort the whole backfill at 49/57 channels."""
+    live_thread = FakeChannel(7002, "ok-thread", [bf_msg(local_ts(2026, 9, 28, 20, 40), uid=3)])
+    dead_thread = FakeChannel(7001, "deleted-thread", gone=True)
+    general = FakeChannel(100, "general", [bf_msg(local_ts(2026, 9, 28, 20, 10), uid=1)], threads=[dead_thread, live_thread])
+    vanished = FakeChannel(200, "vanished", gone=True)
+    after = FakeChannel(400, "after", [bf_msg(local_ts(2026, 9, 28, 20, 15), uid=2)])
+    guild = make_guild()
+    guild.text_channels = [general, vanished, after]
+    global GUILD
+    saved, GUILD = GUILD, guild
+    try:
+        cog = make_cog(tmp_path)
+        await cog._ensure_guild(guild)
+        clock.t = NOW + 3 * 3600
+        await run_backfill(cog)
+
+        state = await cog.config.guild(guild).backfill()
+        assert state["status"] == "done", state
+        assert state["skipped"] == ["#vanished"]
+        assert state["messages"] == 3  # general + the healthy thread after the dead one + 'after'
+        assert state["channels_done"] == 3 and state["channels_total"] == 3
+    finally:
+        GUILD = saved

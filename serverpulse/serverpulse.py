@@ -1038,10 +1038,13 @@ class ServerPulse(commands.Cog):
                                 if guild.id in self._cancel:
                                     break
                                 await asyncio.sleep(0)
-                    except discord.Forbidden:
+                    except (discord.Forbidden, discord.NotFound):
+                        # no access, or the channel/thread was deleted mid-run (404 Unknown Channel):
+                        # skip just that source and carry on with the rest instead of failing the whole run
                         if source is parent:
                             skipped = True
-                        break
+                            break
+                        continue
                     if guild.id in self._cancel:
                         break
                 if guild.id in self._cancel:
