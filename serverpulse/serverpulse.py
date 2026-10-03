@@ -175,7 +175,7 @@ class ServerPulse(commands.Cog):
                 data["coverage_start"] = data["live_since"]
                 await gconf.coverage_start.set(data["coverage_start"])
             # a digest enabled "now" must not fire for a period that ended before we existed
-            nowl = datetime.now(TIMEZONE)
+            nowl = models.local_dt(time.time())
             for name, due in (("digest_weekly", engine.weekly_due), ("digest_monthly", engine.monthly_due)):
                 if not data[name].get("last"):
                     data[name]["last"] = due(nowl)[0]
@@ -333,6 +333,26 @@ class ServerPulse(commands.Cog):
                 await ctx.send(f"`.pulse` only works in <#{channel_id}>.", delete_after=15)
             return False
         return True
+
+    async def cog_before_invoke(self, ctx: commands.Context) -> None:
+        """Delete the mod's `.pulse ...` message the moment it is accepted, so only the reply remains.
+
+        Runs after the checks, so a refused command (wrong channel, not a mod) is left alone.
+        Needs Manage Messages; without it the command message simply stays.
+        """
+        if getattr(ctx, "interaction", None) is not None or ctx.guild is None:
+            return
+        try:
+            await ctx.message.delete()
+        except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+            pass
+
+    async def _ack(self, ctx: commands.Context) -> None:
+        """Confirmation for commands with no other output (the command message is already gone)."""
+        try:
+            await ctx.send("\N{WHITE HEAVY CHECK MARK} Done.", delete_after=8)
+        except discord.HTTPException:
+            pass
 
     # ------------------------------------------------------------------
     # Data helpers
@@ -741,7 +761,7 @@ class ServerPulse(commands.Cog):
             await self._delete_board_message(ctx.guild, old)
         await gconf.board.set({"channel_id": target.id, "message_id": None})
         await self._update_board(ctx.guild)
-        await ctx.tick()
+        await self._ack(ctx)
 
     @pulse_board.command(name="stop")
     async def pulse_board_stop(self, ctx: commands.Context):
@@ -749,13 +769,13 @@ class ServerPulse(commands.Cog):
         gconf = self.config.guild(ctx.guild)
         await self._delete_board_message(ctx.guild, await gconf.board())
         await gconf.board.set({"channel_id": None, "message_id": None})
-        await ctx.tick()
+        await self._ack(ctx)
 
     @pulse_board.command(name="refresh")
     async def pulse_board_refresh(self, ctx: commands.Context):
         """Update the board right now."""
         await self._update_board(ctx.guild)
-        await ctx.tick()
+        await self._ack(ctx)
 
     async def _delete_board_message(self, guild: discord.Guild, board: dict) -> None:
         channel = guild.get_channel_or_thread(board.get("channel_id") or 0)
@@ -806,9 +826,9 @@ class ServerPulse(commands.Cog):
         cfg = await getattr(gconf, name)()
         cfg["enabled"] = enabled
         if enabled:
-            cfg["last"] = due(datetime.now(TIMEZONE))[0]  # next digest is the *next* due one, not a stale backlog
+            cfg["last"] = due(models.local_dt(time.time()))[0]  # next digest is the *next* due one, not a stale backlog
         await getattr(gconf, name).set(cfg)
-        await ctx.tick()
+        await self._ack(ctx)
 
     @pulse_digest.command(name="weekly")
     async def pulse_digest_weekly(self, ctx: commands.Context, state: bool):
@@ -828,7 +848,7 @@ class ServerPulse(commands.Cog):
             await ctx.send("`.pulse digest now weekly` or `.pulse digest now monthly`.")
             return
         due = engine.weekly_due if kind == "weekly" else engine.monthly_due
-        _key, start, end = due(datetime.now(TIMEZONE))
+        _key, start, end = due(models.local_dt(time.time()))
         sent = await self._send_digest(ctx.guild, "week" if kind == "weekly" else "month", start, end, channel=ctx.channel)
         if not sent:
             await ctx.send("Not enough data for that period yet.")
@@ -859,7 +879,7 @@ class ServerPulse(commands.Cog):
     async def _run_digest_check(self, guild: discord.Guild, nowl: datetime | None = None) -> None:
         await self._ensure_guild(guild)
         gconf = self.config.guild(guild)
-        nowl = nowl or datetime.now(TIMEZONE)
+        nowl = nowl or models.local_dt(time.time())
         for name, kind, due in (
             ("digest_weekly", "week", engine.weekly_due),
             ("digest_monthly", "month", engine.monthly_due),
@@ -1077,7 +1097,7 @@ class ServerPulse(commands.Cog):
                 if c.id not in ignored:
                     ignored.append(c.id)
         await self._refresh_settings(ctx.guild)
-        await ctx.tick()
+        await self._ack(ctx)
 
     @pulse.command(name="unignore")
     async def pulse_unignore(self, ctx: commands.Context, *channels: discord.abc.GuildChannel):
@@ -1090,7 +1110,7 @@ class ServerPulse(commands.Cog):
                 if c.id in ignored:
                     ignored.remove(c.id)
         await self._refresh_settings(ctx.guild)
-        await ctx.tick()
+        await self._ack(ctx)
 
     @pulse.command(name="ignored")
     async def pulse_ignored(self, ctx: commands.Context):
@@ -1124,7 +1144,7 @@ class ServerPulse(commands.Cog):
         new = set(self._allowed or set()) | {guild_id}
         await self.config.allowed_guild_ids.set(sorted(new))
         self._apply_allowed(new)
-        await ctx.tick()
+        await self._ack(ctx)
 
     @pulse_guilds.command(name="remove")
     async def pulse_guilds_remove(self, ctx: commands.Context, guild_id: int):
@@ -1137,7 +1157,7 @@ class ServerPulse(commands.Cog):
         new = set(self._allowed or set()) - {guild_id}
         await self.config.allowed_guild_ids.set(sorted(new))
         self._apply_allowed(new)
-        await ctx.tick()
+        await self._ack(ctx)
 
     @pulse.group(name="set", invoke_without_command=True)
     async def pulse_set(self, ctx: commands.Context):
@@ -1149,21 +1169,21 @@ class ServerPulse(commands.Cog):
         """Where `.pulse` works and digests are posted."""
         await self.config.guild(ctx.guild).mod_channel_id.set(channel.id)
         await self._refresh_settings(ctx.guild)
-        await ctx.tick()
+        await self._ack(ctx)
 
     @pulse_set.command(name="modrole")
     async def pulse_set_modrole(self, ctx: commands.Context, role: discord.Role):
         """Role allowed to use `.pulse` (admins and Red mods always can)."""
         await self.config.guild(ctx.guild).mod_role_id.set(role.id)
         await self._refresh_settings(ctx.guild)
-        await ctx.tick()
+        await self._ack(ctx)
 
     @pulse_set.command(name="commands")
     async def pulse_set_commands(self, ctx: commands.Context, state: bool):
         """Ignore bot-command messages like `.gamble` (default on), so game nights don't read as chatty."""
         await self.config.guild(ctx.guild).exclude_commands.set(state)
         await self._refresh_settings(ctx.guild)
-        await ctx.tick()
+        await self._ack(ctx)
 
     @pulse.command(name="settings")
     async def pulse_settings(self, ctx: commands.Context):

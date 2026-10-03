@@ -203,7 +203,7 @@ class TestOtherEmbeds:
         assert_fits(e)
         assert "<#3>" in e.fields[0].value
         v = embeds.version_embed(days_stored=1, coverage_start_ts=None, live_since_ts=None, pending_msgs=3, backfill_status="none")
-        assert "1.1.0" in v.description
+        assert "1.2.0" in v.description
 
     def test_backfill_embed_states(self):
         now = local_ts(2026, 9, 30)

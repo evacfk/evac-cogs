@@ -465,7 +465,10 @@ async def test_toggling_a_digest_on_skips_the_stale_backlog(tmp_path, clock):
 
     cog = make_cog(tmp_path)
     await cog._ensure_guild(GUILD)
-    ctx = SimpleNamespace(guild=GUILD, tick=lambda: asyncio.sleep(0))
+    async def _send(*a, **k):
+        return None
+
+    ctx = SimpleNamespace(guild=GUILD, send=_send)
     await cog._toggle_digest(ctx, "digest_weekly", engine.weekly_due, True)
     cfg = await cog.config.guild(GUILD).digest_weekly()
     assert cfg["enabled"] and cfg["last"] == engine.weekly_due(datetime.now(TIMEZONE))[0]
@@ -760,6 +763,8 @@ async def test_commands_are_silently_refused_in_a_non_allowed_guild(tmp_path, cl
 
 
 async def test_loops_skip_non_allowed_guilds(tmp_path, clock):
+    if sp.tasks is None:
+        pytest.skip("discord.ext.tasks is not available in this test environment (stubbed redbot)")
     other = _guild(OTHER_GUILD_ID, False)
     bot = SimpleNamespace(**{**vars(make_bot()), "guilds": [GUILD, other]})
     cog = make_cog(tmp_path, bot)
@@ -840,3 +845,60 @@ async def test_non_owner_cannot_change_the_allowlist(tmp_path, clock):
     await _fn(sp.ServerPulse.pulse_guilds_add)(cog, ctx, OTHER_GUILD_ID)
 
     assert cog._allowed == {GUILD_ID} and sent == []
+
+
+# ------------------------------------------------------------------ command message cleanup (v1.2.0)
+
+def _ctx(deleter, interaction=None, guild=True):
+    return SimpleNamespace(
+        guild=SimpleNamespace(id=GUILD_ID) if guild else None,
+        interaction=interaction,
+        message=SimpleNamespace(delete=deleter),
+        sent=[],
+    )
+
+
+async def test_accepted_command_message_is_deleted(tmp_path, clock):
+    cog = make_cog(tmp_path)
+    deleted = []
+
+    async def deleter():
+        deleted.append(True)
+
+    await cog.cog_before_invoke(_ctx(deleter))
+
+    assert deleted == [True]
+
+
+async def test_cleanup_never_raises_when_the_bot_cannot_delete(tmp_path, clock):
+    cog = make_cog(tmp_path)
+
+    async def forbidden():
+        raise discord.Forbidden.__new__(discord.Forbidden)
+
+    await cog.cog_before_invoke(_ctx(forbidden))  # must not raise
+
+
+async def test_slash_invocations_and_dms_are_not_touched(tmp_path, clock):
+    cog = make_cog(tmp_path)
+    deleted = []
+
+    async def deleter():
+        deleted.append(True)
+
+    await cog.cog_before_invoke(_ctx(deleter, interaction=object()))
+    await cog.cog_before_invoke(_ctx(deleter, guild=False))
+
+    assert deleted == []
+
+
+async def test_ack_replaces_the_tick_reaction_and_self_deletes(tmp_path, clock):
+    cog = make_cog(tmp_path)
+    sent = []
+
+    async def send(text, **kw):
+        sent.append((text, kw))
+
+    await cog._ack(SimpleNamespace(send=send))
+
+    assert sent and sent[0][1].get("delete_after") == 8
