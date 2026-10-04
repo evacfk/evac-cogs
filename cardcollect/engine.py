@@ -252,3 +252,11 @@ def roll_daily(pool: Sequence[Card], weights: dict, bonus: bool, rng: Optional[r
         if card is not None:
             return card
     return None
+
+
+def gallery_sort_key(card: Card) -> Tuple[int, str, int]:
+    """Collection order: rarest tier first (legendary, epic, rare, common),
+    then alphabetical by name (case- and accent-insensitive), then card id so
+    two same-named cards never swap places between views."""
+    tier_rank = TIERS.index(card.rarity) if card.rarity in TIERS else -1
+    return (-tier_rank, _fold(card.name), card.card_id)

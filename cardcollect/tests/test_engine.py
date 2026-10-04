@@ -216,3 +216,18 @@ def test_roll_daily_bonus_never_gives_common_and_falls_back_when_tier_empty():
     only_common = [c for c in pool if c.rarity == "common"]
     assert engine.roll_daily(only_common, {"legendary": 1}, False, rng).rarity == "common"
     assert engine.roll_daily([], {"common": 1}, False, rng) is None
+
+
+def test_gallery_sort_key_orders_rarity_then_name_ignoring_case_and_accents():
+    cards = [
+        Card(1, "Zoe", "S", "common", "1.png"),
+        Card(2, "émi", "S", "epic", "2.png"),
+        Card(3, "Beth", "S", "legendary", "3.png"),
+        Card(4, "adam", "S", "common", "4.png"),
+        Card(5, "Eve", "S", "epic", "5.png"),
+        Card(6, "Anna", "S", "rare", "6.png"),
+        Card(8, "Twin", "S", "rare", "8.png"),
+        Card(7, "Twin", "S", "rare", "7.png"),
+    ]
+    ordered = [c.card_id for c in sorted(cards, key=engine.gallery_sort_key)]
+    assert ordered == [3, 2, 5, 6, 7, 8, 4, 1]

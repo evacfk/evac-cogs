@@ -655,7 +655,7 @@ class CardCollect(commands.Cog):
     @commands.group(name="card", aliases=["cards"], invoke_without_command=True)
     @commands.guild_only()
     async def card(self, ctx: commands.Context, member: Optional[discord.Member] = None):
-        """View your card collection, or another member's with `.card @member`."""
+        """View your card collection (legendary first, then epic, rare, common, A-Z within each), or another member's with `.card @member`."""
         target = member or ctx.author
         state = await self._member_state(target)
         if not state.collection:
@@ -681,6 +681,9 @@ class CardCollect(commands.Cog):
         if not entries:
             await ctx.send("Those cards exist but their art is missing -- ask an admin to check the pool.")
             return
+        # rarest first, then A-Z within each rarity; sorted before paging so
+        # page 1 always holds the legendaries
+        entries.sort(key=lambda e: engine.gallery_sort_key(e[0]))
 
         pages = [entries[i : i + GALLERY_PAGE_SIZE] for i in range(0, len(entries), GALLERY_PAGE_SIZE)]
 

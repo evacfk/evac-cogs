@@ -2123,9 +2123,9 @@ async def test_failed_flush_keeps_counts_for_retry(cog):
     assert sum(tracking["hourly_buckets"].values()) == 4
 
 
-def test_version_is_1_4_0():
+def test_version_is_1_4_1():
     from cardcollect.constants import COG_VERSION
-    assert COG_VERSION == "1.4.0"
+    assert COG_VERSION == "1.4.1"
 
 
 # --- search / show commands ---------------------------------------------------
@@ -2373,3 +2373,38 @@ async def test_dailyodds_command(cog):
     await cog.card_set.commands["dailyodds"].callback(cog, ctx, 70.0, 25.0, 4.0, 1.0)
     assert (await cog.config.guild(guild).daily_weights())["legendary"] == 1.0
     assert "legendary 1%" in ctx.sent[-1].content
+
+
+@pytest.mark.asyncio
+async def test_collection_gallery_is_sorted_by_rarity_then_alphabetical(cog):
+    from cardcollect.models import MemberState
+
+    guild = FakeGuild(404)
+    member = FakeMember(4041, guild)
+    guild.members = {4041: member}
+    channel = FakeChannel(40400, guild)
+    # added in scrambled order on purpose
+    for rarity, name in [
+        ("common", "Zoe"), ("legendary", "Mika"), ("rare", "bella"), ("common", "Amy"),
+        ("epic", "Yuki"), ("legendary", "Asuka"), ("rare", "Ann"), ("epic", "Rei"),
+    ]:
+        ctx = FakeCtx(member, guild, channel, attachments=[FakeAttachment(fake_art_bytes())])
+        await cog.card.commands["addcard"].callback(cog, ctx, rarity, name_and_series=f"{name} | S")
+    pool = await cog.config.guild(guild).pool()
+    await cog._save_member_state(member, MemberState(collection=[int(c) for c in pool]))
+
+    seen = {}
+    real = imagegen.render_gallery
+
+    def spy(entries, *a, **kw):
+        seen["order"] = [c.name for c, _ in entries]
+        return real(entries, *a, **kw)
+
+    imagegen.render_gallery = spy
+    try:
+        ctx = FakeCtx(member, guild, channel)
+        await cog.card.callback(cog, ctx, member=None)
+    finally:
+        imagegen.render_gallery = real
+
+    assert seen["order"] == ["Asuka", "Mika", "Rei", "Yuki", "Ann", "bella", "Amy", "Zoe"]
