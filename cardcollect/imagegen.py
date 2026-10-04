@@ -407,3 +407,13 @@ def render_showcase(
     canvas.convert("RGB").save(buf, format="PNG")
     buf.seek(0)
     return buf
+
+
+def render_single(card: Card, image_bytes: bytes, quantity: int = 1) -> io.BytesIO:
+    """One card at full size with its "#<id>" badge, for `.card show`.
+    Never carries a claim code -- that only exists on drop tiles."""
+    tile = render_card(card, image_bytes, quantity=quantity, show_id=True)
+    buf = io.BytesIO()
+    tile.convert("RGBA").save(buf, format="PNG")
+    buf.seek(0)
+    return buf

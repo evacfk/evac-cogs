@@ -9,6 +9,7 @@ can inject a seeded one instead of depending on the global random module.
 
 import random
 import time
+import unicodedata
 import uuid
 from datetime import datetime
 from typing import List, Optional, Sequence, Tuple
@@ -180,3 +181,32 @@ def record_claim(daily_claims: int, daily_claims_date: str, today: str) -> Tuple
         return 1, today
     return daily_claims + 1, today
 
+
+
+def _fold(text: str) -> str:
+    """Lowercase and strip accents so 'Rebecca' / 'rebecca' / 'Rébecca' all
+    compare equal in a search."""
+    decomposed = unicodedata.normalize("NFKD", text or "")
+    return "".join(ch for ch in decomposed if not unicodedata.combining(ch)).casefold().strip()
+
+
+def search_cards(cards: Sequence[Card], query: str) -> List[Card]:
+    """Cards whose name or series contains every word of `query`, in any
+    order and anywhere in the text ('lucy' finds 'Lucy Kushinada' and
+    'Lucy' alike; 'lucy edgerunners' narrows to that series). Case- and
+    accent-insensitive. Matches on the character's name rank ahead of
+    series-only matches; ties sort by name, then id. An empty query
+    matches nothing."""
+    tokens = _fold(query).split()
+    if not tokens:
+        return []
+    ranked = []
+    for card in cards:
+        name = _fold(card.name)
+        series = _fold(card.series)
+        haystack = f"{name} {series}"
+        if all(t in haystack for t in tokens):
+            in_name = all(t in name for t in tokens)
+            ranked.append((0 if in_name else 1, name, card.card_id, card))
+    ranked.sort(key=lambda r: r[:3])
+    return [r[3] for r in ranked]

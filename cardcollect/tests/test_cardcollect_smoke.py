@@ -2123,6 +2123,145 @@ async def test_failed_flush_keeps_counts_for_retry(cog):
     assert sum(tracking["hourly_buckets"].values()) == 4
 
 
-def test_version_is_1_2_0():
+def test_version_is_1_3_0():
     from cardcollect.constants import COG_VERSION
-    assert COG_VERSION == "1.2.0"
+    assert COG_VERSION == "1.3.0"
+
+
+# --- search / show commands ---------------------------------------------------
+
+
+async def _seed_search_pool(cog, guild, admin, channel):
+    """Add Lucy / Lucy Heartfilia / Rebecca / Lucy-less series cards; return ids by name."""
+    ids = {}
+    for rarity, entry in [
+        ("rare", "Lucy | Cyberpunk: Edgerunners"),
+        ("common", "Lucy Heartfilia | Fairy Tail"),
+        ("epic", "Rebecca | Cyberpunk: Edgerunners"),
+        ("common", "Nami | One Piece"),
+    ]:
+        ctx = FakeCtx(admin, guild, channel, attachments=[FakeAttachment(fake_art_bytes())])
+        await cog.card.commands["addcard"].callback(cog, ctx, rarity, name_and_series=entry)
+    pool = await cog.config.guild(guild).pool()
+    for cid, data in pool.items():
+        ids[data["name"]] = int(cid)
+    return ids
+
+
+@pytest.mark.asyncio
+async def test_poolsearch_finds_partial_name_and_series_matches(cog):
+    guild = FakeGuild(400)
+    admin = FakeMember(4000, guild)
+    channel = FakeChannel(40000, guild)
+    ids = await _seed_search_pool(cog, guild, admin, channel)
+
+    ctx = FakeCtx(admin, guild, channel)
+    await cog.card.commands["poolsearch"].callback(cog, ctx, query="lucy")
+    text = ctx.sent[-1].content
+    assert "2** matches" in text
+    assert str(ids["Lucy"]) in text and str(ids["Lucy Heartfilia"]) in text
+    assert "Rebecca" not in text and "Nami" not in text
+
+    # a series word finds every character in that anime
+    ctx = FakeCtx(admin, guild, channel)
+    await cog.card.commands["poolsearch"].callback(cog, ctx, query="edgerunners")
+    assert "Lucy" in ctx.sent[-1].content and "Rebecca" in ctx.sent[-1].content
+
+    # no match says so
+    ctx = FakeCtx(admin, guild, channel)
+    await cog.card.commands["poolsearch"].callback(cog, ctx, query="zzz")
+    assert "safe to add" in ctx.sent[-1].content
+
+
+def test_poolsearch_is_admin_gated():
+    """The test stub turns permission decorators into no-ops, so assert on
+    the source: poolsearch must sit directly under admin_or_permissions,
+    and show/find must NOT be admin-only."""
+    import inspect
+
+    src = inspect.getsource(cc_module.CardCollect).splitlines()
+    def decorators_of(fn_name):
+        i = next(n for n, l in enumerate(src) if f"async def {fn_name}(" in l)
+        out = []
+        j = i - 1
+        while src[j].strip().startswith("@"):
+            out.append(src[j].strip())
+            j -= 1
+        return out
+
+    assert any("admin_or_permissions" in d for d in decorators_of("card_poolsearch"))
+    assert not any("admin_or_permissions" in d for d in decorators_of("card_show"))
+    assert not any("admin_or_permissions" in d for d in decorators_of("card_find"))
+
+
+@pytest.mark.asyncio
+async def test_show_and_find_only_reveal_cards_the_member_owns(cog):
+    from cardcollect.models import MemberState
+
+    guild = FakeGuild(401)
+    admin = FakeMember(4010, guild)
+    member = FakeMember(4011, guild)
+    guild.members = {4010: admin, 4011: member}
+    channel = FakeChannel(40100, guild)
+    ids = await _seed_search_pool(cog, guild, admin, channel)
+
+    # member owns Lucy (x2) and Nami, but not Lucy Heartfilia or Rebecca
+    await cog._save_member_state(member, MemberState(collection=[ids["Lucy"], ids["Lucy"], ids["Nami"]]))
+
+    # show by ID
+    ctx = FakeCtx(member, guild, channel)
+    await cog.card.commands["show"].callback(cog, ctx, card_arg=str(ids["Lucy"]))
+    assert ctx.sent[-1].files
+    assert "Lucy" in ctx.sent[-1].content and "you hold 2" in ctx.sent[-1].content
+
+    # show by (partial) name resolves to the one owned match
+    ctx = FakeCtx(member, guild, channel)
+    await cog.card.commands["show"].callback(cog, ctx, card_arg="nam")
+    assert ctx.sent[-1].files
+
+    # a pool card they don't own is refused -- by ID and by name
+    for arg in (str(ids["Rebecca"]), "Rebecca", "Heartfilia"):
+        ctx = FakeCtx(member, guild, channel)
+        await cog.card.commands["show"].callback(cog, ctx, card_arg=arg)
+        assert not ctx.sent[-1].files
+        assert "don't own" in ctx.sent[-1].content
+
+    # find: "lucy" must NOT surface the unowned Lucy Heartfilia
+    ctx = FakeCtx(member, guild, channel)
+    await cog.card.commands["find"].callback(cog, ctx, query="lucy")
+    assert ctx.sent[-1].files
+    assert "(1)" in ctx.sent[-1].content
+    assert "Heartfilia" not in ctx.sent[-1].content
+
+    # find by series only returns owned cards from that series
+    ctx = FakeCtx(member, guild, channel)
+    await cog.card.commands["find"].callback(cog, ctx, query="edgerunners")
+    assert "Lucy" in ctx.sent[-1].content and "Rebecca" not in ctx.sent[-1].content
+
+    ctx = FakeCtx(member, guild, channel)
+    await cog.card.commands["find"].callback(cog, ctx, query="fairy tail")
+    assert "None of your cards match" in ctx.sent[-1].content
+
+
+@pytest.mark.asyncio
+async def test_show_with_several_owned_matches_asks_for_an_id(cog):
+    from cardcollect.models import MemberState
+
+    guild = FakeGuild(402)
+    admin = FakeMember(4020, guild)
+    member = FakeMember(4021, guild)
+    guild.members = {4020: admin, 4021: member}
+    channel = FakeChannel(40200, guild)
+    ids = await _seed_search_pool(cog, guild, admin, channel)
+    await cog._save_member_state(member, MemberState(collection=[ids["Lucy"], ids["Lucy Heartfilia"]]))
+
+    ctx = FakeCtx(member, guild, channel)
+    await cog.card.commands["show"].callback(cog, ctx, card_arg="luc")
+    assert not ctx.sent[-1].files
+    assert "2 of your cards match" in ctx.sent[-1].content
+    assert str(ids["Lucy"]) in ctx.sent[-1].content and str(ids["Lucy Heartfilia"]) in ctx.sent[-1].content
+
+    # an exact name still resolves directly even though "lucy" also prefixes another card
+    ctx = FakeCtx(member, guild, channel)
+    await cog.card.commands["show"].callback(cog, ctx, card_arg="Lucy")
+    assert ctx.sent[-1].files

@@ -815,6 +815,124 @@ class CardCollect(commands.Cog):
         else:
             await ctx.send(embed=embed)
 
+    async def _owned_cards(self, member: discord.Member) -> Tuple[MemberState, List[Card]]:
+        """(state, one Card per unique pool card the member owns). Cards that
+        have since vanished from the pool are skipped."""
+        state = await self._member_state(member)
+        owned_ids = set(state.collection)
+        pool_cards = await self._pool_cards(member.guild)
+        return state, [c for c in pool_cards if c.card_id in owned_ids]
+
+    @staticmethod
+    def _card_line(card: Card) -> str:
+        series = f" ({card.series})" if card.series else ""
+        return f"`{card.card_id}` {card.rarity} — {card.name.replace('`', chr(39))}{series.replace('`', chr(39))}"
+
+    @card.command(name="show")
+    @commands.guild_only()
+    async def card_show(self, ctx: commands.Context, *, card_arg: str):
+        """Show one of YOUR cards at full size, by ID or name (a partial name
+        works if it only matches one card you own). Only cards you own."""
+        state, owned = await self._owned_cards(ctx.author)
+        arg = card_arg.strip().lstrip("#")
+
+        card = None
+        if arg.isdigit():
+            card = next((c for c in owned if c.card_id == int(arg)), None)
+        if card is None:
+            matches = engine.search_cards(owned, arg)
+            exact = [c for c in matches if c.name.strip().casefold() == arg.casefold()]
+            if len(exact) == 1:
+                card = exact[0]
+            elif len(matches) == 1:
+                card = matches[0]
+            elif not matches:
+                await ctx.send("You don't own a card matching that. (`.card` shows your collection.)")
+                return
+            else:
+                shown = matches[:15]
+                lines = "\n".join(self._card_line(c) for c in shown)
+                more = f"\n…and {len(matches) - len(shown)} more." if len(matches) > len(shown) else ""
+                await ctx.send(
+                    f"{len(matches)} of your cards match — use the ID with `.card show <id>`, "
+                    f"or `.card find {arg}` to see them all:\n{lines}{more}"
+                )
+                return
+
+        image_bytes = self._read_card_image(ctx.guild, card.card_id)
+        if image_bytes is None:
+            await ctx.send(f"**{card.name}** is yours, but its art is missing — ask an admin to check the pool.")
+            return
+        quantity = state.collection.count(card.card_id)
+        rendered = await asyncio.to_thread(imagegen.render_single, card, image_bytes, quantity)
+        series = f" — {card.series}" if card.series else ""
+        spare = f" (you hold {quantity})" if quantity > 1 else ""
+        await ctx.send(
+            content=f"**{card.name}**{series} · {card.rarity} · `#{card.card_id}`{spare}",
+            file=discord.File(rendered, filename="card.png"),
+        )
+
+    @card.command(name="find", aliases=["search"])
+    @commands.guild_only()
+    async def card_find(self, ctx: commands.Context, *, query: str):
+        """Search YOUR cards by character name or anime/series (partial
+        matches work: `.card find lucy`, `.card find edgerunners`). Only
+        cards you own."""
+        state, owned = await self._owned_cards(ctx.author)
+        matches = engine.search_cards(owned, query)
+        if not matches:
+            await ctx.send(f"None of your cards match **{query.strip()}**.")
+            return
+
+        shown = matches[:GALLERY_PAGE_SIZE]
+        entries = []
+        for card in shown:
+            image_bytes = self._read_card_image(ctx.guild, card.card_id)
+            if image_bytes is not None:
+                entries.append((card, image_bytes))
+
+        caption = f"Your cards matching **{query.strip()}** ({len(matches)}):\n" + "\n".join(
+            self._card_line(c) for c in shown
+        )
+        if len(matches) > len(shown):
+            caption += f"\n…and {len(matches) - len(shown)} more — narrow the search to see them."
+        if not entries:
+            await ctx.send(caption)
+            return
+        quantities = Counter(state.collection)
+        gallery = await asyncio.to_thread(imagegen.render_gallery, entries, quantities=quantities)
+        await ctx.send(content=caption[:1990], file=discord.File(gallery, filename="matches.png"))
+
+    @card.command(name="poolsearch", aliases=["searchpool"])
+    @commands.guild_only()
+    @commands.admin_or_permissions(manage_guild=True)
+    async def card_poolsearch(self, ctx: commands.Context, *, query: str):
+        """Admin: search the whole pool by character name or series before
+        adding someone (`.card poolsearch lucy` lists every Lucy; add a word
+        like `edgerunners` to narrow). Partial, any-order, case-insensitive;
+        retired characters are included and marked."""
+        pool_cards = await self._pool_cards(ctx.guild)
+        matches = engine.search_cards(pool_cards, query)
+        if not matches:
+            await ctx.send(
+                f"No character in the pool matches **{query.strip()}** "
+                f"({len(pool_cards)} searched) — safe to add."
+            )
+            return
+
+        def line(c: Card) -> str:
+            series = f" ({c.series})" if c.series else ""
+            flag = " [retired]" if c.retired else ""
+            return f"{c.card_id}\t{c.rarity}\t{c.name}{series}\tfavs={c.favourites}{flag}"
+
+        header = f"**{len(matches)}** match{'es' if len(matches) != 1 else ''} for **{query.strip()}**"
+        if len(matches) <= 15:
+            body = "\n".join(line(c).replace("`", "'") for c in matches)
+            await ctx.send(f"{header}:\n```\n{body}\n```")
+            return
+        buf = io.BytesIO("\n".join(line(c) for c in matches).encode("utf-8"))
+        await ctx.send(content=f"{header}. Full list attached.", file=discord.File(buf, filename="pool_search.txt"))
+
     @card.command(name="version")
     async def card_version(self, ctx: commands.Context):
         """Show the running cardcollect version (deploy probe)."""

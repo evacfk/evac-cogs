@@ -155,3 +155,26 @@ def test_record_claim_increments_within_a_day_and_resets_on_a_new_day():
     assert engine.record_claim(4, "2026-09-22", today="2026-09-22") == (5, "2026-09-22")
     # stale date -> starts over at 1, doesn't keep incrementing yesterday's count
     assert engine.record_claim(9, "2026-09-21", today="2026-09-22") == (1, "2026-09-22")
+
+
+def test_search_cards_matches_partial_words_in_any_order_ignoring_case_and_accents():
+    pool = [
+        Card(1, "Lucy", "Cyberpunk: Edgerunners", "rare", "1.png"),
+        Card(2, "Lucy Heartfilia", "Fairy Tail", "common", "2.png"),
+        Card(3, "Rébecca", "Cyberpunk: Edgerunners", "epic", "3.png"),
+        Card(4, "Nami", "One Piece", "common", "4.png"),
+    ]
+    assert [c.card_id for c in engine.search_cards(pool, "LUCY")] == [1, 2]
+    assert [c.card_id for c in engine.search_cards(pool, "heartfilia lucy")] == [2]
+    assert [c.card_id for c in engine.search_cards(pool, "rebecca")] == [3]
+    assert [c.card_id for c in engine.search_cards(pool, "lucy edgerunners")] == [1]
+    assert engine.search_cards(pool, "   ") == []
+    assert engine.search_cards(pool, "nobody") == []
+
+
+def test_search_cards_ranks_name_matches_ahead_of_series_only_matches():
+    pool = [
+        Card(1, "Zed", "Lucy's Show", "common", "1.png"),
+        Card(2, "Lucy", "Other", "common", "2.png"),
+    ]
+    assert [c.card_id for c in engine.search_cards(pool, "lucy")] == [2, 1]
