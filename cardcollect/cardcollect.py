@@ -826,13 +826,17 @@ class CardCollect(commands.Cog):
     @staticmethod
     def _card_line(card: Card) -> str:
         series = f" ({card.series})" if card.series else ""
-        return f"`{card.card_id}` {card.rarity} — {card.name.replace('`', chr(39))}{series.replace('`', chr(39))}"
+        text = f"{card.name}{series}".replace("`", "'")
+        if len(text) > 100:  # keep a 15-line list safely under Discord's 2000-char message cap
+            text = text[:99] + "…"
+        return f"`{card.card_id}` {card.rarity} — {text}"
 
     @card.command(name="show")
     @commands.guild_only()
     async def card_show(self, ctx: commands.Context, *, card_arg: str):
-        """Show one of YOUR cards at full size, by ID or name (a partial name
-        works if it only matches one card you own). Only cards you own."""
+        """Show one of YOUR cards at full size, by ID or by any part of the
+        name or series. If several of your cards match, they're listed with
+        their IDs so you can pick one. Only cards you own."""
         state, owned = await self._owned_cards(ctx.author)
         arg = card_arg.strip().lstrip("#")
 
@@ -841,10 +845,7 @@ class CardCollect(commands.Cog):
             card = next((c for c in owned if c.card_id == int(arg)), None)
         if card is None:
             matches = engine.search_cards(owned, arg)
-            exact = [c for c in matches if c.name.strip().casefold() == arg.casefold()]
-            if len(exact) == 1:
-                card = exact[0]
-            elif len(matches) == 1:
+            if len(matches) == 1:
                 card = matches[0]
             elif not matches:
                 await ctx.send("You don't own a card matching that. (`.card` shows your collection.)")
@@ -926,8 +927,8 @@ class CardCollect(commands.Cog):
             return f"{c.card_id}\t{c.rarity}\t{c.name}{series}\tfavs={c.favourites}{flag}"
 
         header = f"**{len(matches)}** match{'es' if len(matches) != 1 else ''} for **{query.strip()}**"
-        if len(matches) <= 15:
-            body = "\n".join(line(c).replace("`", "'") for c in matches)
+        body = "\n".join(line(c).replace("`", "'") for c in matches)
+        if len(matches) <= 15 and len(header) + len(body) < 1800:
             await ctx.send(f"{header}:\n```\n{body}\n```")
             return
         buf = io.BytesIO("\n".join(line(c) for c in matches).encode("utf-8"))

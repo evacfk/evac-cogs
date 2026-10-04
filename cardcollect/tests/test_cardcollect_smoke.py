@@ -2261,7 +2261,47 @@ async def test_show_with_several_owned_matches_asks_for_an_id(cog):
     assert "2 of your cards match" in ctx.sent[-1].content
     assert str(ids["Lucy"]) in ctx.sent[-1].content and str(ids["Lucy Heartfilia"]) in ctx.sent[-1].content
 
-    # an exact name still resolves directly even though "lucy" also prefixes another card
+    # no exact-name shortcut: "Lucy" is still a partial match for both Lucys, so it lists them
     ctx = FakeCtx(member, guild, channel)
     await cog.card.commands["show"].callback(cog, ctx, card_arg="Lucy")
+    assert not ctx.sent[-1].files
+    assert "2 of your cards match" in ctx.sent[-1].content
+
+    # ...and the ID from that list picks the one you meant
+    ctx = FakeCtx(member, guild, channel)
+    await cog.card.commands["show"].callback(cog, ctx, card_arg=str(ids["Lucy"]))
     assert ctx.sent[-1].files
+
+    # a narrower fragment that only fits one owned card resolves straight to it
+    ctx = FakeCtx(member, guild, channel)
+    await cog.card.commands["show"].callback(cog, ctx, card_arg="heart")
+    assert ctx.sent[-1].files and "Heartfilia" in ctx.sent[-1].content
+
+
+@pytest.mark.asyncio
+async def test_search_replies_stay_under_discords_message_limit_with_long_names(cog):
+    from cardcollect.models import MemberState
+
+    guild = FakeGuild(403)
+    admin = FakeMember(4030, guild)
+    guild.members = {4030: admin}
+    channel = FakeChannel(40300, guild)
+    long_series = "A Very Long Anime Title " * 8
+    for i in range(14):
+        ctx = FakeCtx(admin, guild, channel, attachments=[FakeAttachment(fake_art_bytes())])
+        await cog.card.commands["addcard"].callback(
+            cog, ctx, "common", name_and_series=f"Lucy Longname {i} " + "X" * 60 + f" | {long_series}"
+        )
+    pool = await cog.config.guild(guild).pool()
+    await cog._save_member_state(admin, MemberState(collection=[int(c) for c in pool]))
+
+    for cmd, kwargs in (("show", {"card_arg": "lucy"}), ("find", {"query": "lucy"})):
+        ctx = FakeCtx(admin, guild, channel)
+        await cog.card.commands[cmd].callback(cog, ctx, **kwargs)
+        assert len(ctx.sent[-1].content) < 2000, cmd
+
+    ctx = FakeCtx(admin, guild, channel)
+    await cog.card.commands["poolsearch"].callback(cog, ctx, query="lucy")
+    sent = ctx.sent[-1]
+    assert len(sent.content) < 2000
+    assert sent.files, "an oversized result list must fall back to a file"
