@@ -291,7 +291,7 @@ class WonderEvents(commands.Cog):
                 notes.append("couldn't create the Discord scheduled event (needs Manage Events)")
         try:  # the temporary "I'm going" role, deleted when the event is over
             ev["role_id"] = (await guild.create_role(
-                name=engine.event_role_name(ev), colour=discord.Colour(ROLE_COLOR), hoist=True,
+                name=engine.event_role_name(ev), colour=discord.Colour(ROLE_COLOR),
                 reason=f"Event #{event_id} RSVP role")).id
         except _DISCORD_ERRORS:
             notes.append("couldn't create the event role (needs Manage Roles)")
