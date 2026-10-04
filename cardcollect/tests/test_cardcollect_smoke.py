@@ -103,7 +103,7 @@ class FakeChannel:
     def mention(self):
         return f"<#{self.id}>"
 
-    async def send(self, content=None, embed=None, file=None, view=None):
+    async def send(self, content=None, embed=None, file=None, view=None, **kwargs):
         msg = FakeMessage(self._next_id, self, content=content, embed=embed, file=file, view=view)
         self._messages[msg.id] = msg
         self._next_id += 1
@@ -2123,9 +2123,9 @@ async def test_failed_flush_keeps_counts_for_retry(cog):
     assert sum(tracking["hourly_buckets"].values()) == 4
 
 
-def test_version_is_1_3_0():
+def test_version_is_1_4_0():
     from cardcollect.constants import COG_VERSION
-    assert COG_VERSION == "1.3.0"
+    assert COG_VERSION == "1.4.0"
 
 
 # --- search / show commands ---------------------------------------------------
@@ -2305,3 +2305,71 @@ async def test_search_replies_stay_under_discords_message_limit_with_long_names(
     sent = ctx.sent[-1]
     assert len(sent.content) < 2000
     assert sent.files, "an oversized result list must fall back to a file"
+
+
+# ---------------------------------------------------------------------------
+# .card daily
+# ---------------------------------------------------------------------------
+
+
+async def _pool_with(cog, guild, channel, author, entries):
+    for rarity, name in entries:
+        ctx = FakeCtx(author, guild, channel, attachments=[FakeAttachment(fake_art_bytes())])
+        await cog.card.commands["addcard"].callback(cog, ctx, rarity, name_and_series=f"{name} | Show")
+
+
+@pytest.mark.asyncio
+async def test_daily_pull_once_per_day_and_streak(cog, monkeypatch):
+    from cardcollect import engine
+    guild = FakeGuild(70)
+    author = FakeMember(71, guild)
+    channel = FakeChannel(700, guild)
+    await _pool_with(cog, guild, channel, author, [("common", "A"), ("rare", "B")])
+
+    days = iter(["2026-10-01", "2026-10-01", "2026-10-02", "2026-10-04"])
+    monkeypatch.setattr(engine, "today_str", lambda tz, now=None: next(days))
+
+    first = await cog.daily_pull(guild, author)
+    assert not isinstance(first, str) and first[3] == 1
+    again = await cog.daily_pull(guild, author)
+    assert isinstance(again, str) and "already pulled" in again
+    second = await cog.daily_pull(guild, author)
+    assert second[3] == 2
+    after_gap = await cog.daily_pull(guild, author)
+    assert after_gap[3] == 1  # missed Oct 3 -> streak restarts
+
+    state = await cog._member_state(author)
+    assert len(state.collection) + len(state.sell_tokens) == 3
+    assert state.daily_pull_date == "2026-10-04" and state.daily_streak == 1
+
+
+@pytest.mark.asyncio
+async def test_daily_pull_command_posts_card_and_is_not_counted_as_a_claim(cog):
+    guild = FakeGuild(72)
+    author = FakeMember(73, guild)
+    channel = FakeChannel(720, guild)
+    await _pool_with(cog, guild, channel, author, [("common", "A")])
+    ctx = FakeCtx(author, guild, channel)
+    await cog.card.commands["daily"].callback(cog, ctx)
+    msg = ctx.sent[-1]
+    assert "pulled **A**" in msg.content and "Streak: **1** day" in msg.content and msg.files
+    state = await cog._member_state(author)
+    assert state.daily_claims == 0  # the free pull doesn't eat the drop-claim quota
+
+
+@pytest.mark.asyncio
+async def test_daily_pull_empty_pool(cog):
+    guild = FakeGuild(74)
+    author = FakeMember(75, guild)
+    assert "empty" in await cog.daily_pull(guild, author)
+
+
+@pytest.mark.asyncio
+async def test_dailyodds_command(cog):
+    guild = FakeGuild(76)
+    author = FakeMember(77, guild)
+    channel = FakeChannel(760, guild)
+    ctx = FakeCtx(author, guild, channel)
+    await cog.card_set.commands["dailyodds"].callback(cog, ctx, 70.0, 25.0, 4.0, 1.0)
+    assert (await cog.config.guild(guild).daily_weights())["legendary"] == 1.0
+    assert "legendary 1%" in ctx.sent[-1].content

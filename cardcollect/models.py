@@ -94,6 +94,8 @@ class MemberState:
     sell_tokens: list = field(default_factory=list)  # list[SellToken]
     daily_claims: int = 0  # real claims made on daily_claims_date; see engine.has_quota_remaining
     daily_claims_date: str = ""  # ISO date (ACTIVITY_TIMEZONE) daily_claims was last reset for
+    daily_pull_date: str = ""  # ISO date of the last `.card daily`
+    daily_streak: int = 0  # consecutive days of `.card daily`
 
     def owns(self, card_id: int) -> bool:
         return card_id in self.collection
@@ -105,6 +107,8 @@ class MemberState:
             "sell_tokens": [t.to_dict() for t in self.sell_tokens],
             "daily_claims": self.daily_claims,
             "daily_claims_date": self.daily_claims_date,
+            "daily_pull_date": self.daily_pull_date,
+            "daily_streak": self.daily_streak,
         }
 
     @staticmethod
@@ -121,6 +125,8 @@ class MemberState:
             sell_tokens=[SellToken.from_dict(t) for t in data.get("sell_tokens", [])],
             daily_claims=data.get("daily_claims", 0),
             daily_claims_date=data.get("daily_claims_date", ""),
+            daily_pull_date=data.get("daily_pull_date", ""),
+            daily_streak=int(data.get("daily_streak", 0)),
         )
 
 

@@ -178,3 +178,41 @@ def test_search_cards_ranks_name_matches_ahead_of_series_only_matches():
         Card(2, "Lucy", "Other", "common", "2.png"),
     ]
     assert [c.card_id for c in engine.search_cards(pool, "lucy")] == [2, 1]
+
+
+
+def test_daily_streak_rules():
+    assert engine.daily_streak("", 0, "2026-10-04") == (True, 1)
+    assert engine.daily_streak("2026-10-03", 4, "2026-10-04") == (True, 5)
+    assert engine.daily_streak("2026-10-04", 5, "2026-10-04") == (False, 5)
+    assert engine.daily_streak("2026-10-01", 9, "2026-10-04") == (True, 1)
+    assert engine.daily_streak("2026-09-30", 2, "2026-10-01") == (True, 3)  # across a month end
+
+
+def test_bonus_day_and_upgrade():
+    assert engine.is_bonus_day(7, 7) and engine.is_bonus_day(14, 7) and not engine.is_bonus_day(6, 7)
+    assert engine.upgrade_tier("common") == "rare" and engine.upgrade_tier("legendary") == "legendary"
+
+
+def test_roll_daily_odds_are_roughly_right():
+    from cardcollect.constants import DEFAULT_DAILY_WEIGHTS
+    pool = make_pool()
+    rng = random.Random(1)
+    counts = {}
+    n = 200000
+    for _ in range(n):
+        c = engine.roll_daily(pool, DEFAULT_DAILY_WEIGHTS, False, rng)
+        counts[c.rarity] = counts.get(c.rarity, 0) + 1
+    assert abs(counts["common"] / n - 0.75) < 0.01
+    assert abs(counts["rare"] / n - 0.20) < 0.01
+    assert abs(counts["epic"] / n - 0.045) < 0.004
+    assert abs(counts["legendary"] / n - 0.005) < 0.0015
+
+
+def test_roll_daily_bonus_never_gives_common_and_falls_back_when_tier_empty():
+    pool = make_pool()
+    rng = random.Random(2)
+    assert all(engine.roll_daily(pool, {"common": 1}, True, rng).rarity == "rare" for _ in range(50))
+    only_common = [c for c in pool if c.rarity == "common"]
+    assert engine.roll_daily(only_common, {"legendary": 1}, False, rng).rarity == "common"
+    assert engine.roll_daily([], {"common": 1}, False, rng) is None

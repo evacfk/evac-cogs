@@ -28,6 +28,15 @@ DEFAULT_TIER_CUTOFFS = {
     "common": 0,
 }
 
+# `.card daily`: one free pull per member per Pacific day, rarer than ambient drops
+DEFAULT_DAILY_WEIGHTS = {
+    "common": 75,
+    "rare": 20,
+    "epic": 4.5,
+    "legendary": 0.5,
+}
+DAILY_STREAK_BONUS_EVERY = 7  # every 7th day in a row, that day's pull is bumped up one tier
+
 DEFAULT_DROP_SIZE = 3
 
 DEFAULT_DROP_CHANCE = 0.02  # 2% per qualifying message, retune via .card diagnostics
@@ -81,4 +90,4 @@ GALLERY_PAGE_SIZE = GALLERY_COLUMNS * GALLERY_ROWS_PER_PAGE
 GALLERY_VIEW_TIMEOUT_SECONDS = 180  # a stale pager after this just stops responding
 
 # bumped on every deploy so `.card version` can confirm the new build is live
-COG_VERSION = "1.3.0"
+COG_VERSION = "1.4.0"

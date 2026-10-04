@@ -36,7 +36,9 @@ from .constants import (
     ACTIVITY_TIMEZONE,
     COG_VERSION,
     DEFAULT_CLAIM_COOLDOWN_SECONDS,
+    DAILY_STREAK_BONUS_EVERY,
     DEFAULT_CLAIM_QUOTA,
+    DEFAULT_DAILY_WEIGHTS,
     DEFAULT_DROP_CHANCE,
     DEFAULT_DROP_COOLDOWN_SECONDS,
     DEFAULT_DROP_EXPIRY_SECONDS,
@@ -97,6 +99,7 @@ DEFAULT_GUILD = {
     "drop_cooldown_seconds": DEFAULT_DROP_COOLDOWN_SECONDS,
     "drop_size": DEFAULT_DROP_SIZE,
     "drop_weights": dict(DEFAULT_DROP_WEIGHTS),
+    "daily_weights": dict(DEFAULT_DAILY_WEIGHTS),
     "tier_cutoffs": dict(DEFAULT_TIER_CUTOFFS),
     "claim_cooldown_seconds": DEFAULT_CLAIM_COOLDOWN_SECONDS,
     "max_wrong_guesses": DEFAULT_MAX_WRONG_GUESSES,
@@ -114,6 +117,8 @@ DEFAULT_MEMBER = {
     "sell_tokens": [],
     "daily_claims": 0,
     "daily_claims_date": "",
+    "daily_pull_date": "",
+    "daily_streak": 0,
 }
 
 
@@ -939,6 +944,64 @@ class CardCollect(commands.Cog):
         """Show the running cardcollect version (deploy probe)."""
         await ctx.send(f"cardcollect v{COG_VERSION}")
 
+    @card.command(name="daily", aliases=["pull"])
+    @commands.guild_only()
+    async def card_daily(self, ctx: commands.Context):
+        """Your free card for today. Mostly commons, sometimes rares, rarely epics,
+        very rarely a legendary. Every 7th day in a row is bumped up one rarity."""
+        result = await self.daily_pull(ctx.guild, ctx.author)
+        if isinstance(result, str):
+            await ctx.send(result)
+            return
+        card, outcome, price, streak, bonus = result
+        lines = [f"\U0001f3b4 {ctx.author.mention} pulled **{card.name}**"
+                 + (f" ({card.series})" if card.series else "") + f" · **{card.rarity}** · `#{card.card_id}`"]
+        if outcome == "duplicate":
+            lines.append("Spare copy: you can trade it with `.card give`.")
+        elif outcome == "sell_token":
+            lines.append(f"Already at your copy limit, so it became a sell token (`.card sell` for {price:,}).")
+        streak_line = f"\U0001f525 Streak: **{streak}** day{'s' if streak != 1 else ''}"
+        if bonus:
+            streak_line += " — bonus day, rarity bumped up!"
+        else:
+            left = DAILY_STREAK_BONUS_EVERY - (streak % DAILY_STREAK_BONUS_EVERY)
+            streak_line += f" · bonus pull in {left} day{'s' if left != 1 else ''}"
+        lines.append(streak_line)
+        image_bytes = self._read_card_image(ctx.guild, card.card_id)
+        if image_bytes is None:
+            await ctx.send("\n".join(lines), allowed_mentions=discord.AllowedMentions.none())
+            return
+        rendered = await asyncio.to_thread(imagegen.render_single, card, image_bytes,
+                                           (await self._member_state(ctx.author)).collection.count(card.card_id))
+        await ctx.send("\n".join(lines), file=discord.File(rendered, filename="daily.png"),
+                       allowed_mentions=discord.AllowedMentions.none())
+
+    async def daily_pull(self, guild: discord.Guild, member: discord.Member):
+        """Do one `.card daily` pull. Returns an error string, or
+        (card, outcome, sell_price_or_None, streak, was_bonus_day)."""
+        async with self._get_claim_lock(guild.id):  # same lock as claims: one write to a member at a time
+            today = engine.today_str(ACTIVITY_TIMEZONE)
+            state = await self._member_state(member)
+            can_pull, streak = engine.daily_streak(state.daily_pull_date, state.daily_streak, today)
+            if not can_pull:
+                return ("You've already pulled today. Next pull at midnight Pacific "
+                        f"(streak: {state.daily_streak} day{'s' if state.daily_streak != 1 else ''}).")
+            conf = self.config.guild(guild)
+            bonus = engine.is_bonus_day(streak, DAILY_STREAK_BONUS_EVERY)
+            card = engine.roll_daily(await self._rollable_pool_cards(guild), await conf.daily_weights(), bonus)
+            if card is None:
+                return "The card pool is empty right now, so there's nothing to pull."
+            outcome = engine.claim_outcome(state.collection, card.card_id, MAX_COPIES_KEPT)
+            price = None
+            if outcome == "sell_token":
+                state.sell_tokens.append(engine.make_sell_token(card.card_id, card.rarity))
+                price = engine.sell_price(card.rarity, await conf.sell_prices())
+            else:
+                state.collection.append(card.card_id)
+            state.daily_pull_date, state.daily_streak = today, streak
+            await self._save_member_state(member, state)
+        return card, outcome, price, streak, bonus
+
     @card.command(name="quota")
     @commands.guild_only()
     async def card_quota(self, ctx: commands.Context):
@@ -1073,6 +1136,17 @@ class CardCollect(commands.Cog):
             return
         await self.config.guild(ctx.guild).claim_quota.set(quota)
         await ctx.send(f"Daily claim quota set to {quota if quota > 0 else 'unlimited'}.")
+
+    @card_set.command(name="dailyodds")
+    async def card_set_dailyodds(self, ctx: commands.Context, common: float, rare: float, epic: float, legendary: float):
+        """Odds for `.card daily`, in percent: `.card set dailyodds 75 20 4.5 0.5`."""
+        weights = {"common": common, "rare": rare, "epic": epic, "legendary": legendary}
+        if any(v < 0 for v in weights.values()) or sum(weights.values()) <= 0:
+            await ctx.send("Odds must be zero or more, and not all zero.")
+            return
+        await self.config.guild(ctx.guild).daily_weights.set(weights)
+        total = sum(weights.values())
+        await ctx.send("Daily pull odds: " + ", ".join(f"{t} {v / total * 100:g}%" for t, v in weights.items()))
 
     @card_set.command(name="wrongguesses")
     async def card_set_wrongguesses(self, ctx: commands.Context, count: int):

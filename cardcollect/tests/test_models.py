@@ -108,3 +108,11 @@ def test_active_drop_zero_cap_means_never_locked_out():
     drop = _drop(max_wrong_guesses=0)
     drop.wrong_guesses[5] = 999
     assert drop.is_locked_out(5) is False
+
+
+
+def test_member_state_keeps_daily_pull_fields():
+    from cardcollect.models import MemberState
+    s = MemberState.from_dict({"daily_pull_date": "2026-10-04", "daily_streak": 6})
+    assert MemberState.from_dict(s.to_dict()).daily_streak == 6
+    assert MemberState.from_dict({}).daily_pull_date == ""

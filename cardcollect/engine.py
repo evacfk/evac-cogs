@@ -11,7 +11,7 @@ import random
 import time
 import unicodedata
 import uuid
-from datetime import datetime
+from datetime import date, datetime, timedelta
 from typing import List, Optional, Sequence, Tuple
 from zoneinfo import ZoneInfo
 
@@ -210,3 +210,45 @@ def search_cards(cards: Sequence[Card], query: str) -> List[Card]:
             ranked.append((0 if in_name else 1, name, card.card_id, card))
     ranked.sort(key=lambda r: r[:3])
     return [r[3] for r in ranked]
+
+
+def daily_streak(last_date: str, streak: int, today: str) -> Tuple[bool, int]:
+    """`.card daily` bookkeeping. Returns (can_pull, streak_after_this_pull).
+    Already pulled today -> (False, streak). Pulled yesterday -> streak + 1.
+    Anything older (or never) -> streak restarts at 1."""
+    if last_date == today:
+        return False, streak
+    try:
+        yesterday = (date.fromisoformat(today) - timedelta(days=1)).isoformat()
+    except ValueError:
+        return True, 1
+    return True, (streak + 1 if last_date == yesterday else 1)
+
+
+def upgrade_tier(tier: str) -> str:
+    """One tier rarer; legendary stays legendary."""
+    i = TIERS.index(tier)
+    return TIERS[min(i + 1, len(TIERS) - 1)]
+
+
+def is_bonus_day(streak: int, every: int) -> bool:
+    return every > 0 and streak > 0 and streak % every == 0
+
+
+def roll_daily(pool: Sequence[Card], weights: dict, bonus: bool, rng: Optional[random.Random] = None) -> Optional[Card]:
+    """Roll a tier with `weights` (bumped one tier on a bonus day) and pick a
+    card in it. If the pool has nothing in that tier, fall back to the nearest
+    tier that has cards, preferring rarer first so a member is never shortchanged."""
+    rng = _rng(rng)
+    if not pool:
+        return None
+    tier = roll_tier(weights, rng)
+    if bonus:
+        tier = upgrade_tier(tier)
+    i = TIERS.index(tier)
+    order = [tier] + [TIERS[j] for j in range(i + 1, len(TIERS))] + [TIERS[j] for j in range(i - 1, -1, -1)]
+    for t in order:
+        card = pick_card_for_tier(pool, t, rng)
+        if card is not None:
+            return card
+    return None
