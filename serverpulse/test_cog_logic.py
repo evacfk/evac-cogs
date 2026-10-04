@@ -122,6 +122,7 @@ def make_cog(tmp_path, bot=None):
     cog._trackers, cog._cache, cog._flushed = {}, {}, {}
     cog._locks, cog._init_locks, cog._backfill_tasks, cog._cancel = {}, {}, {}, set()
     cog._allowed = None
+    cog._init_retention_state()
     return cog
 
 
@@ -323,7 +324,7 @@ async def test_a_closed_hour_is_finalised_and_the_next_hour_continues(tmp_path, 
 
 async def test_join_and_leave_are_counted_per_day(tmp_path, clock):
     cog = make_cog(tmp_path)
-    member = SimpleNamespace(bot=False, guild=GUILD)
+    member = SimpleNamespace(bot=False, guild=GUILD, id=77)
     await cog.on_member_join(member)
     await cog.on_member_remove(member)
     await cog.on_member_join(SimpleNamespace(bot=True, guild=GUILD))  # bots ignored

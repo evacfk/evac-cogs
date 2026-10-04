@@ -25,18 +25,21 @@ from redbot.core.bot import Red
 from redbot.core.data_manager import cog_data_path
 
 from . import backfill as bf
-from . import embeds, engine, heatmap, models, storage
+from . import cohorts, embeds, engine, heatmap, models, storage
+from .cohort_store import CohortStore
 from . import export as export_mod
 from .constants import (
     BEST_WINDOW_HOURS,
     BEST_WINDOW_TOP_N,
     BOARD_HISTORY_DAYS,
     BOARD_INTERVAL_MINUTES,
+    COHORT_FLUSH_SECONDS,
     CONFIG_IDENTIFIER,
     DEFAULT_GUILD,
     DEFAULT_WINDOW_DAYS,
     DIGEST_CHECK_MINUTES,
     FLUSH_INTERVAL_SECONDS,
+    RETENTION_DEFAULT_DAYS,
     TIMEZONE,
     USER_RETENTION_DAYS,
     WEEKDAY_NAMES,
@@ -96,11 +99,20 @@ class ServerPulse(commands.Cog):
         self._init_locks: dict[int, asyncio.Lock] = {}
         self._backfill_tasks: dict[int, asyncio.Task] = {}
         self._cancel: set[int] = set()
+        self._init_retention_state()
 
         if tasks is not None:
             self._flush_loop.start()
             self._board_loop.start()
             self._digest_loop.start()
+
+    def _init_retention_state(self) -> None:
+        self._cohorts: dict[int, CohortStore] = {}
+        self._cohort_flushed_at: dict[int, float] = {}
+        self._invites: dict[int, dict[str, int]] = {}
+        self._inviters: dict[int, dict[str, str]] = {}
+        self._invite_locks: dict[int, asyncio.Lock] = {}
+        self._joinlog_running: set[int] = set()
 
     def cog_unload(self):
         if tasks is not None:
@@ -113,11 +125,27 @@ class ServerPulse(commands.Cog):
             self._flush_all_sync()  # synchronous on purpose: a reload must not lose the last few minutes
         except Exception:
             log.exception("serverpulse: final flush on unload failed")
+        for gid, store in self._cohorts.items():
+            try:
+                store.flush()
+            except Exception:
+                log.exception("serverpulse: final join-record flush failed for guild %s", gid)
 
     async def red_delete_data_for_user(self, *, requester, user_id: int):
         for guild_dir in (self.data_dir / "days").glob("*"):
             if guild_dir.name.isdigit():
                 await asyncio.to_thread(storage.delete_user, self.data_dir, int(guild_dir.name), user_id)
+        for guild_dir in (self.data_dir / "cohorts").glob("*"):
+            if not guild_dir.name.isdigit():
+                continue
+            store = self._cohorts.get(int(guild_dir.name))
+            if store is None:
+                store = CohortStore(self.data_dir, int(guild_dir.name))
+                await asyncio.to_thread(store.load)
+            for key in [k for k, r in store.records.items() if r["u"] == user_id]:
+                store.touch(store.records.pop(key))
+            store.close(user_id)
+            await asyncio.to_thread(store.flush)
 
     # ------------------------------------------------------------------
     # Per-guild state
@@ -183,6 +211,10 @@ class ServerPulse(commands.Cog):
 
             tracker = GuildTracker(floor_ts=data["live_since"])
             await asyncio.to_thread(self._hydrate, tracker, guild.id, now)
+            store = CohortStore(self.data_dir, guild.id)
+            await asyncio.to_thread(store.load)
+            store.ensure_tracking_since(now)
+            self._cohorts[guild.id] = store
             self._trackers[guild.id] = tracker
             self._flushed[guild.id] = tracker.changes
             self._cache[guild.id] = self._settings_from(data)
@@ -268,6 +300,7 @@ class ServerPulse(commands.Cog):
             return
         st = self._cache.get(guild.id) or await self._ensure_guild(guild)
         ts = message.created_at.timestamp()
+        self._cohort_message(guild.id, message.author.id, ts)
         if ts < st["live_since"]:
             return
         content = message.content or ""
@@ -294,6 +327,10 @@ class ServerPulse(commands.Cog):
             return
         await self._ensure_guild(member.guild)
         self._trackers[member.guild.id].record_join(time.time())
+        try:
+            await self._cohort_join(member)
+        except Exception:
+            log.exception("serverpulse: could not record join of %s", getattr(member, "id", "?"))
 
     @commands.Cog.listener()
     async def on_member_remove(self, member: discord.Member):
@@ -301,6 +338,127 @@ class ServerPulse(commands.Cog):
             return
         await self._ensure_guild(member.guild)
         self._trackers[member.guild.id].record_leave(time.time())
+        try:
+            self._cohort_leave(member)
+        except Exception:
+            log.exception("serverpulse: could not record leave of %s", getattr(member, "id", "?"))
+
+    @commands.Cog.listener()
+    async def on_invite_create(self, invite):
+        guild = getattr(invite, "guild", None)
+        if guild is None or guild.id not in self._invites:
+            return
+        self._invites[guild.id][invite.code] = int(invite.uses or 0)
+        inviter = getattr(invite, "inviter", None)
+        if inviter is not None:
+            self._inviters.setdefault(guild.id, {})[invite.code] = getattr(inviter, "display_name", None) or str(inviter)
+
+    @commands.Cog.listener()
+    async def on_invite_delete(self, invite):
+        guild = getattr(invite, "guild", None)
+        if guild is not None and guild.id in self._invites:
+            self._invites[guild.id].pop(invite.code, None)
+
+    # ------------------------------------------------------------------
+    # New-member retention: one record per join, followed for 45 days
+    # ------------------------------------------------------------------
+
+    def _cohort_message(self, guild_id: int, user_id: int, ts: float) -> None:
+        """Any human message (commands and ignored channels included) counts as 'they talked'."""
+        store = self._cohorts.get(guild_id)
+        if store is None:
+            return
+        rec = store.open_record(user_id)
+        if rec is not None and cohorts.watching(rec, ts) and cohorts.record_message(rec, ts):
+            store.touch(rec)
+
+    async def _snapshot_invites(self, guild) -> tuple[dict[str, int], dict[str, str]] | None:
+        fetch = getattr(guild, "invites", None)
+        if fetch is None:
+            return None
+        try:
+            invites = await fetch()
+        except (discord.Forbidden, discord.HTTPException):
+            return None
+        uses = {i.code: int(i.uses or 0) for i in invites}
+        names = {}
+        for i in invites:
+            inviter = getattr(i, "inviter", None)
+            if inviter is not None:
+                names[i.code] = getattr(inviter, "display_name", None) or str(inviter)
+        if "VANITY_URL" in (getattr(guild, "features", None) or ()):
+            try:
+                vanity = await guild.vanity_invite()
+                if vanity is not None:
+                    uses["vanity"] = int(vanity.uses or 0)
+            except (discord.Forbidden, discord.HTTPException):
+                pass
+        return uses, names
+
+    async def _warm_invites(self, guild) -> None:
+        async with self._invite_locks.setdefault(guild.id, asyncio.Lock()):
+            snap = await self._snapshot_invites(guild)
+            if snap is not None:
+                self._invites[guild.id], self._inviters[guild.id] = snap
+
+    async def _detect_invite(self, guild) -> str | None:
+        """Which invite was just used: diff the use counts. None when it can't be told apart."""
+        async with self._invite_locks.setdefault(guild.id, asyncio.Lock()):
+            before = self._invites.get(guild.id)
+            snap = await self._snapshot_invites(guild)
+            if snap is None:
+                return None
+            uses, names = snap
+            self._invites[guild.id] = uses
+            self._inviters.setdefault(guild.id, {}).update(names)
+            if before is None:
+                return None  # no baseline yet (first join after a load before the warm-up ran)
+            used = cohorts.invite_diff(before, uses)
+            return used[0] if len(used) == 1 else None
+
+    async def _cohort_join(self, member) -> None:
+        guild = member.guild
+        store = self._cohorts.get(guild.id)
+        uid = getattr(member, "id", None)
+        if store is None or uid is None:
+            return
+        code = await self._detect_invite(guild)
+        labels = await self.config.guild(guild).invite_sources()
+        source = cohorts.source_label(code, labels, self._inviters.get(guild.id, {}).get(code))
+        joined_at = getattr(member, "joined_at", None)
+        flags = getattr(member, "flags", None)
+        rec = cohorts.new_record(
+            uid, joined_at.timestamp() if joined_at else time.time(), source=source, code=code,
+            origin="live", rejoin=getattr(flags, "did_rejoin", None),
+        )
+        store.add(rec)
+
+    def _cohort_leave(self, member) -> None:
+        store = self._cohorts.get(member.guild.id)
+        uid = getattr(member, "id", None)
+        if store is None or uid is None:
+            return
+        rec = store.open_record(uid)
+        if rec is None:
+            return
+        flags = getattr(member, "flags", None)
+        roles = getattr(member, "roles", None)
+        cohorts.record_leave(
+            rec, time.time(), onboarding=getattr(flags, "completed_onboarding", None),
+            roles=max(0, len(roles) - 1) if roles is not None else None,  # minus @everyone
+        )
+        store.touch(rec)
+        store.close(uid)
+
+    async def _flush_cohorts(self, guild_id: int, force: bool = False) -> None:
+        store = self._cohorts.get(guild_id)
+        if store is None or not (store.dirty or store.meta_dirty):
+            return
+        now = time.time()
+        if not force and now - self._cohort_flushed_at.get(guild_id, 0) < COHORT_FLUSH_SECONDS:
+            return
+        await asyncio.to_thread(store.flush)
+        self._cohort_flushed_at[guild_id] = now
 
     # ------------------------------------------------------------------
     # Access control: mods only, mod channel only
@@ -451,7 +609,7 @@ class ServerPulse(commands.Cog):
     @commands.group(name="pulse", aliases=["activity"], invoke_without_command=True)
     @commands.guild_only()
     async def pulse(self, ctx: commands.Context):
-        """Server activity at a glance. See `.pulse day|week|month|hours|hour|heatmap|best|channels|top|anomalies|export`."""
+        """Server activity at a glance. See `.pulse day|week|month|hours|hour|heatmap|best|channels|top|anomalies|retention|sources|joinlog|export`."""
         prep = await self._prepare(ctx.guild)
         if await self._no_data(ctx, prep):
             return
@@ -693,6 +851,163 @@ class ServerPulse(commands.Cog):
         ]
         await ctx.send(embed=embeds.members_embed(rows, f"last {days_n} days"))
 
+    # -- new-member retention ---------------------------------------------------
+
+    def _retention_window(self, guild_id: int, days_n: int | None):
+        days_n = max(1, min(days_n or RETENTION_DEFAULT_DAYS, MAX_DAYS_ARG))
+        now = time.time()
+        store = self._cohorts.get(guild_id)
+        recs = store.in_range(now - days_n * 86400, now + 1) if store else []
+        return days_n, now, recs, store
+
+    @pulse.command(name="retention", aliases=["joiners", "newmembers"])
+    async def pulse_retention(self, ctx: commands.Context, days_n: int = RETENTION_DEFAULT_DAYS):
+        """What happens to people after they join: who leaves fast, who talks, who sticks. `.pulse retention [days=120]`."""
+        await self._ensure_guild(ctx.guild)
+        days_n, now, recs, store = self._retention_window(ctx.guild.id, days_n)
+        summary = cohorts.summarize(recs, now)
+        weekly = cohorts.weekly_cohorts(recs, now)
+        sources = cohorts.by_source(recs, now)
+        notes = [f"last {days_n} days"]
+        if store and store.tracking_since:
+            rebuilt = sum(1 for r in recs if r.get("o") != "live")
+            if rebuilt:
+                notes.append(f"joins before {models.local_dt(store.tracking_since).strftime('%b %-d')} rebuilt from the join log (day-level)")
+        await ctx.send(embed=embeds.retention_embed(summary, weekly, sources, f"last {days_n} days", notes))
+
+    @pulse.command(name="sources")
+    async def pulse_sources(self, ctx: commands.Context, days_n: int = 30):
+        """Joins by invite (Disboard, discord.me, personal invites) and how each group sticks. `.pulse sources [days=30]`."""
+        await self._ensure_guild(ctx.guild)
+        days_n, now, recs, store = self._retention_window(ctx.guild.id, days_n)
+        await ctx.send(embed=embeds.sources_embed(cohorts.by_source(recs, now), f"last {days_n} days",
+                                                  store.tracking_since if store else None))
+
+    @pulse.group(name="joinlog", invoke_without_command=True)
+    async def pulse_joinlog(self, ctx: commands.Context):
+        """Rebuild past joins from your join/leave log channel(s). `.pulse joinlog set #joins [#leaves]`, `test`, `backfill [days=120]`."""
+        cfg = await self.config.guild(ctx.guild).joinlog()
+        j, l = cfg.get("join_channel"), cfg.get("leave_channel")
+        if not j:
+            await ctx.send("No log channel set. `.pulse joinlog set #join-log [#leave-log]` (one channel if both are logged together).")
+            return
+        await ctx.send(
+            f"Joins read from <#{j}>, leaves from <#{l or j}>. Check parsing with `.pulse joinlog test`, "
+            "then rebuild with `.pulse joinlog backfill 120`."
+        )
+
+    @pulse_joinlog.command(name="set")
+    async def pulse_joinlog_set(self, ctx: commands.Context, join_channel: discord.TextChannel, leave_channel: discord.TextChannel | None = None):
+        """Where your bot logs joins (and leaves, if a different channel)."""
+        await self.config.guild(ctx.guild).joinlog.set(
+            {"join_channel": join_channel.id, "leave_channel": leave_channel.id if leave_channel else None}
+        )
+        await self._ack(ctx)
+
+    def _parse_log_message(self, m, *, channel_kind: str | None) -> tuple[str | None, int | None]:
+        """(kind, user id) for one log message. channel_kind is 'join'/'leave' when the channel only logs one."""
+        if getattr(getattr(m, "type", None), "name", "") == "new_member":
+            return "join", m.author.id  # Discord's own "X joined the server" system message
+        if not getattr(m.author, "bot", False) and not getattr(m, "webhook_id", None):
+            return "human", None  # only bot/webhook log lines count: a member typing "welcome @x" is not a join
+        texts = [m.content or ""]
+        for e in getattr(m, "embeds", None) or ():
+            texts += [getattr(e, "title", None) or "", getattr(e, "description", None) or ""]
+            for f in getattr(e, "fields", None) or ():
+                texts += [getattr(f, "name", "") or "", getattr(f, "value", "") or ""]
+            texts.append(getattr(getattr(e, "footer", None), "text", None) or "")
+            texts.append(getattr(getattr(e, "author", None), "name", None) or "")
+        ids = [i for i in (getattr(m, "raw_mentions", None) or []) if i != getattr(self.bot.user, "id", None)]
+        ids = ids or cohorts.ids_in_text(texts)
+        kind = channel_kind or cohorts.classify_text(" ".join(texts))
+        return kind, (ids[0] if ids else None)
+
+    async def _log_channels(self, guild):
+        cfg = await self.config.guild(guild).joinlog()
+        j = guild.get_channel_or_thread(cfg.get("join_channel") or 0)
+        l = guild.get_channel_or_thread(cfg.get("leave_channel") or 0) if cfg.get("leave_channel") else None
+        if j is None:
+            return []
+        if l is None or l.id == j.id:
+            return [(j, None)]
+        return [(j, "join"), (l, "leave")]
+
+    @pulse_joinlog.command(name="test")
+    async def pulse_joinlog_test(self, ctx: commands.Context):
+        """Show how the last few log messages are read (run this before backfilling)."""
+        chans = await self._log_channels(ctx.guild)
+        if not chans:
+            await ctx.send("Set the log channel first: `.pulse joinlog set #join-log [#leave-log]`.")
+            return
+        rows = []
+        for channel, kind in chans:
+            async for m in channel.history(limit=8):
+                k, uid = self._parse_log_message(m, channel_kind=kind)
+                snippet = (m.content or (m.embeds[0].description if getattr(m, "embeds", None) else "") or "").replace("\n", " ")[:50]
+                rows.append((models.local_dt(m.created_at.timestamp()).strftime("%b %d %H:%M"), k or "??", f"<@{uid}>" if uid else "no id", snippet))
+        note = "`??` = couldn't tell join from leave; `no id` = no member mention/ID in the message."
+        await ctx.send(embed=embeds.joinlog_test_embed(rows, note), allowed_mentions=discord.AllowedMentions.none())
+
+    @pulse_joinlog.command(name="backfill")
+    async def pulse_joinlog_backfill(self, ctx: commands.Context, days: int = RETENTION_DEFAULT_DAYS):
+        """Rebuild join records for the last N days (default 120) from the log + per-day message counts. Safe to re-run."""
+        guild = ctx.guild
+        chans = await self._log_channels(guild)
+        if not chans:
+            await ctx.send("Set the log channel first: `.pulse joinlog set #join-log [#leave-log]`.")
+            return
+        if guild.id in self._joinlog_running:
+            await ctx.send("A join-log rebuild is already running.")
+            return
+        days = max(1, min(days, 365))
+        self._joinlog_running.add(guild.id)
+        try:
+            await self._ensure_guild(guild)
+            store = self._cohorts[guild.id]
+            now = time.time()
+            start_ts = now - days * 86400
+            end_ts = store.tracking_since or now
+            await ctx.send(f"📜 Reading the join/leave log for the last {days} days…")
+            events, messages, unparsed, joins, leaves = [], 0, 0, 0, 0
+            async with ctx.typing():
+                start_dt = datetime.fromtimestamp(start_ts, TIMEZONE)
+                for channel, kind in chans:
+                    async for m in channel.history(limit=None, after=start_dt, oldest_first=True):
+                        k, uid = self._parse_log_message(m, channel_kind=kind)
+                        if k == "human":
+                            continue
+                        messages += 1
+                        if k not in ("join", "leave") or uid is None:
+                            unparsed += 1
+                            continue
+                        events.append((uid, k, m.created_at.timestamp()))
+                        joins += k == "join"
+                        leaves += k == "leave"
+                        if messages % 500 == 0:
+                            await asyncio.sleep(0)
+                today = models.local_dt(now).date()
+                start_day = models.local_dt(start_ts).date()
+                await self._flush_guild(guild.id)
+                docs = await self._days(guild.id, start_day, today)
+                day_counts = {dk: engine.user_counts(doc) for dk, doc in docs.items()}
+                with_users = sorted(dk for dk, c in day_counts.items() if c)
+                data_from = date.fromisoformat(with_users[0]) if with_users else None
+                members_now = {
+                    m.id: m.joined_at.timestamp() for m in guild.members if not m.bot and m.joined_at is not None
+                }
+                records = cohorts.build_log_records(
+                    events, members_now, start_ts=start_ts, end_ts=end_ts,
+                    day_counts=day_counts, today=today, data_from=data_from,
+                )
+                store.replace_rebuilt(records, end_ts)
+                await self._flush_cohorts(guild.id, force=True)
+            await ctx.send(embed=embeds.joinlog_embed({
+                "days": days, "messages": messages, "joins": joins, "leaves": leaves, "unparsed": unparsed,
+                "records": len(records), "data_from": data_from.isoformat() if data_from else None,
+            }))
+        finally:
+            self._joinlog_running.discard(guild.id)
+
     # -- export ---------------------------------------------------------------
 
     @pulse.command(name="export")
@@ -728,6 +1043,15 @@ class ServerPulse(commands.Cog):
                 days=days, start=first, end=prep.today, raw_start=max(first, prep.today - timedelta(days=raw_days - 1)),
                 channel_names=names, settings=settings, user_names=user_names, include_users="users" in words,
             )
+            _rd, rnow, recs, _store = self._retention_window(ctx.guild.id, RETENTION_DEFAULT_DAYS)
+            payload["retention"] = {
+                "window_days": RETENTION_DEFAULT_DAYS,
+                "summary": cohorts.summarize(recs, rnow),
+                "weekly": cohorts.weekly_cohorts(recs, rnow),
+                "by_source": [{"source": n, **v} for n, v in cohorts.by_source(recs, rnow)],
+                "joins": cohorts.anonymized(recs),
+                "note": "one row per join; no user ids. 'live' rows were tracked as they happened, 'log'/'member' rows were rebuilt from the join log with day-level message data",
+            }
             blob = await asyncio.to_thread(lambda: json.dumps(payload, separators=(",", ":")).encode("utf-8"))
             if len(blob) > 8 * 1024 * 1024:
                 payload["hourly"] = [h for h in payload["hourly"] if h["date"] >= (prep.today - timedelta(days=30)).isoformat()]
@@ -1188,6 +1512,17 @@ class ServerPulse(commands.Cog):
         await self._refresh_settings(ctx.guild)
         await self._ack(ctx)
 
+    @pulse_set.command(name="source")
+    async def pulse_set_source(self, ctx: commands.Context, code: str, *, name: str):
+        """Name an invite code for `.pulse sources` (`off` removes it). `.pulse set source etywguQBWq Disboard`."""
+        code = code.rsplit("/", 1)[-1]  # accept a full discord.gg link too
+        async with self.config.guild(ctx.guild).invite_sources() as labels:
+            if name.lower() == "off":
+                labels.pop(code, None)
+            else:
+                labels[code] = name[:40]
+        await self._ack(ctx)
+
     @pulse.command(name="settings")
     async def pulse_settings(self, ctx: commands.Context):
         """Show current settings."""
@@ -1217,6 +1552,7 @@ class ServerPulse(commands.Cog):
                 try:
                     await self._ensure_guild(guild)
                     await self._flush_guild(guild.id)
+                    await self._flush_cohorts(guild.id)
                     await self._housekeeping(guild)
                 except Exception:
                     log.exception("serverpulse: flush failed for guild %s", guild.id)
@@ -1252,6 +1588,12 @@ class ServerPulse(commands.Cog):
                 await self._load_allowed_guilds()
             except Exception:
                 log.exception("serverpulse: could not load the guild allowlist; staying open")
+            for guild in self.bot.guilds:
+                if self._guild_allowed(guild.id) and guild.id not in self._invites:
+                    try:
+                        await self._warm_invites(guild)
+                    except Exception:
+                        log.exception("serverpulse: could not read invites for guild %s", guild.id)
 
     async def _housekeeping(self, guild: discord.Guild) -> None:
         """Once per local day: drop per-user counts older than the retention window."""

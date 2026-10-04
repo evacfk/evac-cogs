@@ -3,8 +3,8 @@ from __future__ import annotations
 
 from zoneinfo import ZoneInfo
 
-COG_VERSION = "1.2.1"
-COG_BUILD = "2026-10-02"
+COG_VERSION = "1.3.0"
+COG_BUILD = "2026-10-03"
 
 TIMEZONE_NAME = "America/Los_Angeles"
 TIMEZONE = ZoneInfo(TIMEZONE_NAME)
@@ -76,4 +76,11 @@ DEFAULT_GUILD = {
     "digest_monthly": {"enabled": True, "last": ""},
     "last_purge": "",
     "backfill": {},
+    # -- new-member retention (1.3.0) --
+    # invite code -> label; joins through any other invite are labelled by its creator
+    "invite_sources": {"etywguQBWq": "Disboard", "829baEszgg": "discord.me"},
+    "joinlog": {"join_channel": None, "leave_channel": None},
 }
+
+COHORT_FLUSH_SECONDS = 600  # join records are rewritten at most this often (plus on unload)
+RETENTION_DEFAULT_DAYS = 120

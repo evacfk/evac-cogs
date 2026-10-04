@@ -528,3 +528,129 @@ def backfill_embed(state: dict, now_ts: float):
     if state.get("started"):
         e.add_field(name="Started", value=f"<t:{int(state['started'])}:R>", inline=True)
     return e
+
+
+# -- new-member retention (1.3.0) ------------------------------------------------------
+
+def _pc(hits: int, of: int) -> str:
+    return f"{100 * hits / of:.0f}%" if of else "–"
+
+
+def _frac(pair) -> str:
+    hits, of = pair
+    return f"{_pc(hits, of)} ({hits}/{of})" if of else "not enough data yet"
+
+
+def retention_sentence(s: dict) -> str:
+    if not s["joined"]:
+        return "No joins in this window yet."
+    parts = [f"**{s['joined']}** people joined"]
+    if s["left"]:
+        parts.append(f"{_pc(s['left_1h'], s['joined'])} left within an hour")
+    if s["spoke_known"]:
+        parts.append(f"{_pc(s['spoke_known'] - s['spoke'], s['spoke_known'])} never said anything")
+    wk2_hits, wk2_of = s["active_week2"]
+    if wk2_of:
+        parts.append(f"{_pc(wk2_hits, wk2_of)} were still chatting in their second week")
+    return ", ".join(parts) + "."
+
+
+def retention_embed(s: dict, weekly: list[dict], sources: list[tuple[str, dict]], label: str, notes: list[str]):
+    e = _embed(f"🚪 New-member retention — {label}", retention_sentence(s))
+    if not s["joined"]:
+        e.description += "\nRun `.pulse joinlog backfill` to rebuild the last 120 days from your join/leave log."
+        return _footer(e, label)
+    j = s["joined"]
+    med = s["median_minutes_to_leave_24h"]
+    e.add_field(name="Leaving fast", value=(
+        f"Left within 10 min: **{_pc(s['left_10m'], j)}** ({s['left_10m']})\n"
+        f"Left within 1 hour: **{_pc(s['left_1h'], j)}** ({s['left_1h']})\n"
+        f"Left within 7 days: **{_pc(s['left_7d'], j)}** ({s['left_7d']})\n"
+        + (f"Typical time before leaving (same-day leavers): **{fmt_duration(med * 60) if med >= 1 else '<1m'}**" if med is not None else "")
+    ), inline=True)
+    e.add_field(name="Talking", value=(
+        f"Said anything: **{_frac((s['spoke'], s['spoke_known']))}**\n"
+        f"Leavers who never spoke: **{_frac((s['silent_leavers'], s['leavers_known']))}**\n"
+        f"Came back another day: **{_frac(s['came_back'])}**"
+    ), inline=True)
+    q = s["quick"]
+    if q["count"]:
+        e.add_field(name=f"Who leaves within an hour ({q['count']})", value=(
+            f"Account under 30 days old: **{_pc(q['new_account_30d'], q['count'])}**\n"
+            f"Said something first: **{_frac(q['spoke'])}**\n"
+            f"Finished onboarding: **{_frac(q['onboarding_done'])}**\n"
+            f"Picked any roles: **{_frac(q['picked_roles'])}**"
+        ), inline=False)
+    e.add_field(name="Sticking around", value=(
+        f"Active in week 2 (days 7–13): **{_frac(s['active_week2'])}**\n"
+        f"Active around day 30: **{_frac(s['active_day30'])}**\n"
+        f"Still in the server: **{_pc(s['still_here'], j)}** ({s['still_here']})"
+    ), inline=True)
+    e.add_field(name="Accounts", value=(
+        f"Under 7 days old at join: **{_pc(s['new_accounts_7d'], j)}**\n"
+        f"Under 30 days old at join: **{_pc(s['new_accounts_30d'], j)}**"
+    ), inline=True)
+    if sources:
+        lines = []
+        for name, ss in sources[:6]:
+            lines.append(
+                f"**{name}**: {ss['joined']} joined · {_pc(ss['left_1h'], ss['joined'])} gone in 1h · "
+                f"{_pc(ss['spoke'], ss['spoke_known'])} spoke · wk2 {_pc(*ss['active_week2'])} · "
+                f"{_pc(ss['still_here'], ss['joined'])} still here"
+            )
+        e.add_field(name="By source (tracked live)", value=clip("\n".join(lines)), inline=False)
+    if weekly:
+        rows = ["Week of     joined gone<1h spoke  wk2  here"]
+        for w in weekly[-12:]:
+            wk2 = _pc(*w["active_week2"]) if w["active_week2"][1] else "  –"
+            rows.append(
+                f"{fmt_short_date(w['week']):<11} {w['joined']:>6} {_pc(w['left_1h'], w['joined']):>7} "
+                f"{_pc(w['spoke'], w['spoke_known']):>5} {wk2:>4} {_pc(w['still_here'], w['joined']):>5}"
+            )
+        e.add_field(name="Weekly cohorts", value=clip("```\n" + "\n".join(rows) + "\n```"), inline=False)
+    return _footer(e, " · ".join(notes) if notes else label)
+
+
+def sources_embed(sources: list[tuple[str, dict]], label: str, tracking_since: float | None):
+    e = _embed(f"🧭 Where joins come from — {label}")
+    if not sources:
+        e.description = (
+            "No joins tracked with a source yet. Sources are recorded live from now on "
+            f"(since {fmt_clock(tracking_since) if tracking_since else 'this update'}); the bot needs Manage Server to read invites."
+        )
+        return _footer(e, label)
+    lines = []
+    for name, s in sources:
+        lines.append(
+            f"**{name}** — {s['joined']} joined\n"
+            f"  gone within 1h {_pc(s['left_1h'], s['joined'])} · said anything {_pc(s['spoke'], s['spoke_known'])} · "
+            f"active wk2 {_pc(*s['active_week2'])} · still here {_pc(s['still_here'], s['joined'])}"
+        )
+    e.description = clip("\n".join(lines), 4000)
+    return _footer(e, f"{label} · rename a code with `.pulse set source <code> <name>`")
+
+
+def joinlog_embed(result: dict):
+    e = _embed("📜 Join/leave log rebuild", None, COLOR_GOOD if result.get("records") else COLOR_WARN)
+    e.add_field(name="Window", value=f"last {result['days']} days (before live tracking began)", inline=False)
+    e.add_field(name="Log messages read", value=fmt_int(result["messages"]), inline=True)
+    e.add_field(name="Joins found", value=fmt_int(result["joins"]), inline=True)
+    e.add_field(name="Leaves found", value=fmt_int(result["leaves"]), inline=True)
+    e.add_field(name="Couldn't read", value=fmt_int(result["unparsed"]), inline=True)
+    e.add_field(name="Join records built", value=fmt_int(result["records"]), inline=True)
+    if result.get("data_from"):
+        e.add_field(name="Message data from", value=fmt_short_date(result["data_from"]), inline=True)
+    if result.get("unparsed") and result["messages"] and result["unparsed"] > result["messages"] * 0.3:
+        e.add_field(name="⚠️ Many messages unreadable", value=(
+            "Check `.pulse joinlog test`: each log message needs the member's @mention or ID, and if joins and "
+            "leaves share one channel, wording like 'joined' / 'left'."
+        ), inline=False)
+    e.description = "Done. See `.pulse retention` for the analysis." if result.get("records") else "No join records could be built."
+    return e
+
+
+def joinlog_test_embed(rows: list[tuple[str, str, str, str]], config_note: str):
+    e = _embed("🔎 Join/leave log — last messages as I read them", config_note)
+    lines = [f"`{when}` {kind:<5} {who} — {snippet}" for when, kind, who, snippet in rows] or ["(no messages)"]
+    e.add_field(name="Parsed", value=clip("\n".join(lines)), inline=False)
+    return e
