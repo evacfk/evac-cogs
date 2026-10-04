@@ -1,7 +1,7 @@
 """Config defaults and fixed values for wonderevents."""
 from zoneinfo import ZoneInfo
 
-COG_VERSION = "1.3.0"
+COG_VERSION = "1.3.1"
 CONFIG_IDENTIFIER = 0x3E7E27A1
 HOME_TZ_NAME = "America/Los_Angeles"
 HOME_TZ = ZoneInfo(HOME_TZ_NAME)
@@ -15,7 +15,7 @@ EVENT_LOCATION = "Wonderland voice channels"  # Discord requires a place on non-
 ROLE_COLOR = 0x9B59B6
 
 GENERIC_PING_ROLE_ID = 1556157565262364754   # pinged for any kind that isn't a movie or a game
-BUILTIN_KINDS = {                            # work out of the box; no `.night kind add` needed
+BUILTIN_KINDS = {                            # work out of the box; no `.event kind add` needed
     "movie": {"label": "Movie Night", "emoji": "\N{CLAPPER BOARD}", "ping_role_id": 1536593335966367784,
               "duration": DEFAULT_DURATION_MIN},
     "game": {"label": "Game Night", "emoji": "\N{VIDEO GAME}", "ping_role_id": 1536590356492320768,
