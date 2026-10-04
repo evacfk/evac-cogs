@@ -4,7 +4,7 @@ Staff run `.night create movie` and fill in a short form (title, when, descripti
 vote options, image). The bot then:
 - posts the event in the events channel with the kind's ping role, Going / Maybe /
   Can't make it buttons and a <t:...> time everyone sees in their own timezone;
-- creates a native Discord Scheduled Event in the voice channel (members who click
+- creates a native Discord Scheduled Event (in the voice channel, or an external event if the kind has none) (members who click
   Interested get Discord's own start notification);
 - posts a native poll for the vote options (closes 2h before the event);
 - reminds only the people who said Going/Maybe, an hour before (configurable);
@@ -16,6 +16,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
+from typing import Optional
 from datetime import datetime, timedelta, timezone
 
 import discord
@@ -27,6 +28,7 @@ from .constants import (
     BTN_MAYBE,
     BTN_NO,
     COG_VERSION,
+    DEFAULT_LOCATION,
     CONFIG_IDENTIFIER,
     DEFAULT_DURATION_MIN,
     DEFAULT_GUILD,
@@ -277,13 +279,17 @@ class WonderEvents(commands.Cog):
         }
         vc = guild.get_channel(ev["vc_id"] or 0)
         notes = []
-        if vc is not None and hasattr(guild, "create_scheduled_event"):
+        if hasattr(guild, "create_scheduled_event"):
             try:
-                se = await guild.create_scheduled_event(
-                    name=ev["title"], start_time=start.astimezone(timezone.utc), channel=vc,
-                    entity_type=discord.EntityType.voice, privacy_level=discord.PrivacyLevel.guild_only,
-                    description=(ev["desc"] or ev["title"])[:1000],
-                )
+                common = dict(name=ev["title"], start_time=start.astimezone(timezone.utc),
+                              privacy_level=discord.PrivacyLevel.guild_only,
+                              description=(ev["desc"] or ev["title"])[:1000])
+                if vc is not None:
+                    se = await guild.create_scheduled_event(entity_type=discord.EntityType.voice, channel=vc, **common)
+                else:  # no fixed room (rooms are made on demand): an external event needs a place and an end time
+                    se = await guild.create_scheduled_event(
+                        entity_type=discord.EntityType.external, location=settings.get("location") or DEFAULT_LOCATION,
+                        end_time=(start + timedelta(minutes=ev["duration"])).astimezone(timezone.utc), **common)
                 ev["scheduled_event_id"] = se.id
             except _DISCORD_ERRORS:
                 notes.append("couldn't create the Discord scheduled event (needs Manage Events)")
@@ -438,9 +444,22 @@ class WonderEvents(commands.Cog):
     async def _do_sample(self, guild, ev, now_ts):
         ev["last_sample"] = now_ts
         vc = guild.get_channel(ev.get("vc_id") or 0)
-        if vc is None:
-            return
-        present = [m.id for m in getattr(vc, "members", []) if not m.bot]
+        if vc is not None:
+            present = [m.id for m in getattr(vc, "members", []) if not m.bot]
+        else:
+            # No fixed room: look in every voice channel, but only count people who said Going/Maybe
+            # or hold the kind's ping role, so unrelated voice chat doesn't count as attending.
+            lists = engine.rsvp_lists(ev.get("rsvp") or {})
+            rsvped = set(lists["going"]) | set(lists["maybe"])
+            role_id = ev.get("ping_role_id")
+            present = []
+            for ch in getattr(guild, "voice_channels", []):
+                for m in getattr(ch, "members", []):
+                    if m.bot:
+                        continue
+                    if m.id in rsvped or (role_id and any(r.id == role_id for r in getattr(m, "roles", []))):
+                        present.append(m.id)
+            present = list(dict.fromkeys(present))
         engine.add_sample(ev.setdefault("attend", {}), present)
 
     async def _do_end(self, guild, ev, now_ts):
@@ -629,9 +648,19 @@ class WonderEvents(commands.Cog):
         await self.config.guild(ctx.guild).remind_minutes.set(max(0, minutes))
         await ctx.send("Reminders off." if minutes <= 0 else f"Reminders go out {minutes} minutes before.")
 
+    @event.command(name="location")
+    @commands.admin_or_permissions(manage_guild=True)
+    async def event_location(self, ctx: commands.Context, *, text: str = None):
+        """Where events without a fixed voice channel are held (shown on the Discord event). No text = show."""
+        if text is None:
+            await ctx.send(f"Location: {await self.config.guild(ctx.guild).location() or DEFAULT_LOCATION}")
+            return
+        await self.config.guild(ctx.guild).location.set(text[:100])
+        await ctx.send(f"Location set to: {text[:100]}")
+
     @event.group(name="kind", invoke_without_command=True)
     async def event_kind(self, ctx: commands.Context):
-        """Event kinds: `.night kind add <key> <@ping role> <voice channel> [emoji] [hours]`, `remove`, `list`."""
+        """Event kinds: `.night kind add <key> <@ping role> [voice channel] [emoji] [hours]`, `remove`, `list`."""
         await self.event_kind_list(ctx)
 
     @event_kind.command(name="list")
@@ -641,7 +670,8 @@ class WonderEvents(commands.Cog):
             await ctx.send("No kinds yet. `.night kind add movie @MovieNight #Movie Night VC 🎬 3`")
             return
         lines = [
-            f"`{k}` {v.get('emoji', '')} **{v.get('label')}** — pings <@&{v.get('ping_role_id')}>, in <#{v.get('vc_id')}>, "
+            f"`{k}` {v.get('emoji', '')} **{v.get('label')}** — pings <@&{v.get('ping_role_id')}>, "
+            f"{'in <#' + str(v['vc_id']) + '>' if v.get('vc_id') else 'no fixed voice channel'}, "
             f"{v.get('duration', DEFAULT_DURATION_MIN) // 60}h"
             for k, v in kinds.items()
         ]
@@ -650,15 +680,18 @@ class WonderEvents(commands.Cog):
     @event_kind.command(name="add")
     @commands.admin_or_permissions(manage_guild=True)
     async def event_kind_add(self, ctx: commands.Context, key: str, ping_role: discord.Role,
-                             voice_channel: discord.VoiceChannel, emoji: str = None, hours: float = 3.0):
-        """Add or replace a kind. `.night kind add movie @Movie Night #Movie Night VC 🎬 3`"""
+                             voice_channel: Optional[discord.VoiceChannel] = None, emoji: str = None,
+                             hours: float = 3.0):
+        """Add or replace a kind. Voice channel is optional (skip it if rooms are made on demand).
+        `.night kind add game @GameNight 🎮 3` or `.night kind add movie @MovieNight #Movie VC 🎬 3`"""
         key = key.lower()
         label = {"movie": "Movie Night", "game": "Game Night"}.get(key, key.title())
         emoji = emoji or {"movie": "\N{CLAPPER BOARD}", "game": "\N{VIDEO GAME}"}.get(key, "\N{CALENDAR}")
         async with self.config.guild(ctx.guild).kinds() as kinds:
-            kinds[key] = {"label": label, "emoji": emoji, "ping_role_id": ping_role.id, "vc_id": voice_channel.id,
+            kinds[key] = {"label": label, "emoji": emoji, "ping_role_id": ping_role.id, "vc_id": voice_channel.id if voice_channel else None,
                           "duration": max(30, int(hours * 60))}
-        await ctx.send(f"Kind `{key}` saved: {emoji} {label}, pings {ping_role.name}, in {voice_channel.name}.",
+        await ctx.send(f"Kind `{key}` saved: {emoji} {label}, pings {ping_role.name}, "
+                       f"{'in ' + voice_channel.name if voice_channel else 'no fixed voice channel'}.",
                        allowed_mentions=discord.AllowedMentions.none())
 
     @event_kind.command(name="remove")

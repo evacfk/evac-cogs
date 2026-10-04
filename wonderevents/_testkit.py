@@ -215,6 +215,10 @@ class FakeGuild:
         self.channels[cid] = ch
         return ch
 
+    @property
+    def voice_channels(self):
+        return list(self.channels.values())
+
     def get_role(self, rid):
         return next((r for r in self.roles if r.id == rid), None)
 
@@ -382,7 +386,7 @@ def install_ui(monkeypatch):
     for name, value in (
         ("ButtonStyle", _t.SimpleNamespace(success=1, secondary=2, primary=3, danger=4)),
         ("TextStyle", _t.SimpleNamespace(short=1, paragraph=2)),
-        ("EntityType", _t.SimpleNamespace(voice=2)),
+        ("EntityType", _t.SimpleNamespace(voice=2, external=3)),
         ("PrivacyLevel", _t.SimpleNamespace(guild_only=2)),
     ):
         if not real:

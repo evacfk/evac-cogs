@@ -260,3 +260,21 @@ async def test_cancel_marks_and_cancels_scheduled_event(env):
     stored = await env.cog._get_event(env.guild, 1)
     assert stored["cancelled"] and env.guild.scheduled[ev["scheduled_event_id"]].calls == ["cancel"]
     assert env.chan.sent[0].view is None
+
+
+async def test_no_fixed_voice_channel_makes_external_event_and_samples_rsvps(env):
+    gconf = env.cog.config.guild(env.guild)
+    await gconf.channel_id.set(env.chan.id)
+    await gconf.kinds.set({"game": {"label": "Game Night", "emoji": "x", "ping_role_id": env.role.id,
+                                    "vc_id": None, "duration": 120}})
+    ev, _ = await env.cog.create_event(env.guild, kind="game", host_id=42, title="Game Night", start=START,
+                                       desc="", image=None, options=[], created_by=42)
+    se = env.guild.scheduled[ev["scheduled_event_id"]]
+    assert "channel" not in se.kw and se.kw["location"] and se.kw["end_time"] > se.kw["start_time"]
+    await env.cog.handle_rsvp(Interaction(env.guild, 5, message=env.chan.sent[0]), "going")
+    room = env.guild.add_channel(555, "meow")  # an auto-created room
+    room.members = [types.SimpleNamespace(id=5, bot=False, roles=[]), types.SimpleNamespace(id=9, bot=False, roles=[]),
+                    types.SimpleNamespace(id=8, bot=False, roles=[env.role])]
+    stored = await env.cog._get_event(env.guild, ev["id"])
+    await env.cog._do_sample(env.guild, stored, 1.0)
+    assert stored["attend"] == {"5": 5, "8": 5}  # RSVP'd + ping-role holder; random member 9 ignored
