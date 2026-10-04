@@ -184,8 +184,19 @@ class Celebrations(commands.Cog):
                 state["birthdays"][str(uid)]["gift"] = 0
                 await gconf.state.set(state)
 
+    def _tell_pet(self, event: str, guild, payload) -> None:
+        """Let the WonderPet cog (if loaded) react; harmless when it isn't."""
+        dispatch = getattr(self.bot, "dispatch", None)
+        if dispatch is None or not payload:
+            return
+        try:
+            dispatch(event, guild, payload)
+        except Exception:
+            log.exception("celebrations: could not dispatch %s", event)
+
     async def _post_birthdays(self, guild, s, state):
         gconf = self.config.guild(guild)
+        celebrated = []
         chat = guild.get_channel(s["channel_id"]) if s["channel_id"] else None
         ann_channel = guild.get_channel(s["announce_channel_id"]) if s["announce_channel_id"] else None
         if chat is None and ann_channel is None:
@@ -226,6 +237,8 @@ class Celebrations(commands.Cog):
                     log.warning("celebrations: could not post in announcements %s", ann_channel.id)
             entry["posted"] = True
             await gconf.state.set(state)
+            celebrated.append(member)
+        self._tell_pet("wonder_birthday", guild, celebrated)
 
     async def _post_anniversaries(self, guild, s, today, lurker_role_id):
         chat = guild.get_channel(s["channel_id"]) if s["channel_id"] else None
@@ -258,6 +271,7 @@ class Celebrations(commands.Cog):
                     await msg.add_reaction(s["star_emoji"])
                 except _DISCORD_ERRORS:
                     pass
+            self._tell_pet("wonder_anniversary", guild, [m for m, _ in rows[:5]])
         except _DISCORD_ERRORS:
             log.warning("celebrations: could not post anniversaries in %s", chat.id)
 

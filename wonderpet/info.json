@@ -1,0 +1,14 @@
+{
+    "name": "WonderPet",
+    "short": "One server pet raised together in #cuddle: daily free care, coin treats, weekly top carers, evolution.",
+    "description": "A single pet for the whole server. A card in the pet channel has Feed / Play / Clean / Treat buttons; every member gets one free Feed, Play and Clean per day, and treats cost wondercoins. The pet hatches from an egg, grows to a baby, teen and adult over a few weeks, and its adult form depends on how well it was looked after. Neglect goes through four escalating warnings (about three days) before it is lost, then a new egg arrives a day later. Shows weekly top carers, keeps a Pet Hall of past pets, and reacts to birthdays, anniversaries and event nights from the Celebrations and WonderEvents cogs.",
+    "end_user_data_statement": "This cog stores, per member, which free pet actions they used today and how many treats they gave, and it counts the number of times each member cared for the pet (this week, and for each pet's life). All of it is deleted on a Red data-deletion request.",
+    "install_msg": "Set up with `.wonderpet channel #cuddle`, optionally `.wonderpet pingrole @role` for the serious warnings, then `.wonderpet newegg` to start. Members use the buttons on the card, or `.wonderpet` to bring it back to the bottom of the channel. Upload your own pictures with `.wonderpet art <slot>`. The bot needs Send Messages, Embed Links and Attach Files in the pet channel.",
+    "author": ["evacfk"],
+    "requirements": ["Pillow"],
+    "tags": ["pet", "community", "tamagotchi", "daily"],
+    "min_bot_version": "3.5.0",
+    "hidden": false,
+    "disabled": false,
+    "type": "COG"
+}

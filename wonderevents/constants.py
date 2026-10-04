@@ -1,7 +1,7 @@
 """Config defaults and fixed values for wonderevents."""
 from zoneinfo import ZoneInfo
 
-COG_VERSION = "1.3.2"
+COG_VERSION = "1.3.3"
 CONFIG_IDENTIFIER = 0x3E7E27A1
 HOME_TZ_NAME = "America/Los_Angeles"
 HOME_TZ = ZoneInfo(HOME_TZ_NAME)

@@ -482,6 +482,12 @@ class WonderEvents(commands.Cog):
                 pass
         ids = engine.rsvp_lists(ev.get("rsvp") or {})["going"]
         await self._ping_reply(guild, ev, f"{ev.get('emoji') or ''} **{ev['title']}** is starting now!".strip(), ids)
+        dispatch = getattr(self.bot, "dispatch", None)
+        if dispatch is not None:  # the WonderPet cog (if loaded) cheers the event on
+            try:
+                dispatch("wonder_event_start", guild, ev["title"])
+            except Exception:
+                log.exception("wonderevents: could not dispatch wonder_event_start")
 
     async def _do_sample(self, guild, ev, now_ts):
         """Whoever said Going/Maybe and is sitting in any voice channel right now counts as present."""

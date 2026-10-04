@@ -186,3 +186,38 @@ async def test_save_birthday_command_path(env):
     assert "March 4, 1999" in sent[-1] and "age" in sent[-1]
     mc = await env.cog.config.member(a).all()
     assert (mc["month"], mc["day"], mc["year"]) == (3, 4, 1999)
+
+
+async def test_pet_cog_is_told_about_birthdays_and_anniversaries(env):
+    calls = []
+    env.cog.bot.dispatch = lambda *a: calls.append(a)
+    await env.setup()
+    a = tk.FakeMember(env.guild, 1, JOINED_LONG_AGO, name="Ana")
+    await _bday(env, a, 10, 3, 1998)
+    await env.cog._tick(env.guild, at(2026, 10, 3, 9, 5))
+    births = [c for c in calls if c[0] == "wonder_birthday"]
+    assert len(births) == 1 and births[0][2] == [a]
+    await env.cog._tick(env.guild, at(2026, 10, 3, 9, 20))   # nothing new: not announced twice
+    assert len([c for c in calls if c[0] == "wonder_birthday"]) == 1
+    assert not [c for c in calls if c[0] == "wonder_anniversary"]   # nobody has a join anniversary today
+
+
+async def test_pet_cog_is_told_about_anniversaries(env):
+    calls = []
+    env.cog.bot.dispatch = lambda *a: calls.append(a)
+    await env.setup()
+    three = tk.FakeMember(env.guild, 1, datetime(2023, 10, 3, 14, tzinfo=TZ), name="Three")
+    await env.cog._tick(env.guild, at(2026, 10, 3, 9, 10))
+    ann = [c for c in calls if c[0] == "wonder_anniversary"]
+    assert len(ann) == 1 and ann[0][2] == [three]
+
+
+async def test_a_broken_dispatch_never_breaks_the_posts(env):
+    def boom(*a):
+        raise RuntimeError("no")
+    env.cog.bot.dispatch = boom
+    await env.setup()
+    a = tk.FakeMember(env.guild, 1, JOINED_LONG_AGO, name="Ana")
+    await _bday(env, a, 10, 3, 1998)
+    await env.cog._tick(env.guild, at(2026, 10, 3, 9, 5))
+    assert len(env.chat.sent) >= 1

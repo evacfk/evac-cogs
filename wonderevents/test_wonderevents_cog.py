@@ -341,3 +341,14 @@ async def test_only_staff_moderators_superpowers_may_host(env):
 
 async def _false():
     return False
+
+
+async def test_pet_cog_is_told_when_an_event_starts(env):
+    calls = []
+    env.cog.bot.dispatch = lambda *a: calls.append(a)
+    await _setup(env)
+    ev, _ = await _create(env, options=())
+    await env.cog._tick(env.guild, START.timestamp() + 30)
+    assert calls == [("wonder_event_start", env.guild, "Movie Night")]
+    await env.cog._tick(env.guild, START.timestamp() + 90)
+    assert len(calls) == 1   # once per event
