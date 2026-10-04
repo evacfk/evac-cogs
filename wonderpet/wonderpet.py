@@ -264,7 +264,7 @@ class WonderPet(commands.Cog):
                 await gconf.history.set(history)
                 msgs.append((embeds.ended_text(pet, entry), False))
                 await self._delete_card(guild, await gconf.all())
-                await gconf.pet.set(None)
+                await gconf.pet.set({})
                 await gconf.next_egg_ts.set(now + NEW_EGG_DELAY_HOURS * 3600)
                 return msgs
         await gconf.pet.set(pet)

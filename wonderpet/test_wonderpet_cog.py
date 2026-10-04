@@ -230,7 +230,7 @@ async def test_warning_ladder_announces_each_level_once_and_pings_only_serious(e
     assert len(pings) == 3                                              # sick, critical, final
     assert sum("passed away" in t or "ran away" in t for t in said) == 1
     s = await env.cog.config.guild(env.guild).all()
-    assert s["pet"] is None and s["history"][-1]["end"] in ("died", "ran_away")
+    assert not s["pet"] and s["history"][-1]["end"] in ("died", "ran_away")
     assert s["card_message_id"] is None
     assert [m for m in env.chan.sent if m.embed is not None and not m.deleted] == []
 
@@ -242,10 +242,10 @@ async def test_new_egg_arrives_a_day_after_losing_the_pet(env):
     await env.cog.config.guild(env.guild).pet.set(pet)
     env.clock.t += H
     await env.cog._tick(env.guild, env.clock.t)
-    assert (await _pet(env)) is None
+    assert not (await _pet(env))
     env.clock.t += 23 * H
     await env.cog._tick(env.guild, env.clock.t)
-    assert (await _pet(env)) is None
+    assert not (await _pet(env))
     env.clock.t += 2 * H
     await env.cog._tick(env.guild, env.clock.t)
     pet = await _pet(env)

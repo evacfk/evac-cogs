@@ -1,7 +1,7 @@
 """Config defaults and fixed values for verdict (Daily Verdict)."""
 from zoneinfo import ZoneInfo
 
-COG_VERSION = "1.0.0"
+COG_VERSION = "1.0.1"
 CONFIG_IDENTIFIER = 0x7E4D1C70
 HOME_TZ = ZoneInfo("America/Los_Angeles")
 
@@ -36,7 +36,8 @@ DEFAULT_GUILD = {
     "mind_reader_role_id": None,  # monthly title
     "queue": [],                  # approved questions waiting their turn: {question, options, submitter_id}
     "pending": {},                # review message id -> {question, options, submitter_id}
-    "current": None,              # the open question (see verdict.py)
+    "current": {},                # the open question (see verdict.py); {} = none. Not None: Red's Config
+                                  # cannot merge a stored dict into a None default
     "seq": 0,                     # how many questions have been posted
     "last_post_date": "",         # Pacific date of the last post
     "used_seeds": [],

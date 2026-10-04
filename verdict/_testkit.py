@@ -55,7 +55,16 @@ class _Group:
         return _Val(self._bucket, name, self._defaults[name])
 
     async def all(self):
-        return {k: copy.deepcopy(self._bucket.get(k, d)) for k, d in self._defaults.items()}
+        # Same merge as redbot's Config.nested_update, including its limitation: a stored dict under a key
+        # whose default is not a dict (e.g. None) raises, exactly like it does on the real bot.
+        def merge(current, defaults):
+            for key, value in current.items():
+                if isinstance(value, dict):
+                    defaults[key] = merge(value, defaults.get(key, {}))
+                else:
+                    defaults[key] = copy.deepcopy(value)
+            return defaults
+        return merge(self._bucket, copy.deepcopy(self._defaults))
 
     async def clear(self):
         self._bucket.clear()

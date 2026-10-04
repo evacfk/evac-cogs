@@ -355,3 +355,12 @@ async def test_someone_who_never_guessed_is_not_named_a_lone_wolf(env):
     await env.cog.on_interaction(Click(env.g, Member(env.g, 399), f"verdict:a:{cur['qid']}:1"))  # minority, no guess
     await env.cog.post_daily(env.g, ts(2026, 10, 6))
     assert "399" not in str(env.chan.sent[1].embed.fields[0].value)
+
+
+async def test_settings_command_works_while_a_question_is_open(env):
+    # Regression: a stored dict under a None default makes Red's Config.all() raise TypeError on the real bot.
+    await env.cog._tick(env.g, ts(2026, 10, 5, 10, 5))
+    assert await env.conf.current()
+    mod = Ctx(env, Member(env.g, 61, roles=[types.SimpleNamespace(id=426696709780013066)]))
+    await cmd(env, "verdict_settings")(env.cog, mod)
+    assert "Daily Verdict" in mod.sent[-1]

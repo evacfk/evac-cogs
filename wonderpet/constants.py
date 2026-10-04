@@ -1,7 +1,7 @@
 """Config defaults and lookup tables for wonderpet. No discord/redbot imports here."""
 from zoneinfo import ZoneInfo
 
-COG_VERSION = "1.0.1"
+COG_VERSION = "1.0.2"
 CONFIG_IDENTIFIER = 0x3E7E27B2
 HOME_TZ = ZoneInfo("America/Los_Angeles")
 
@@ -81,7 +81,7 @@ DEFAULT_GUILD = {
     "daily_hour": 9,              # Pacific hour the card is re-posted fresh
     "treat_price": DEFAULT_TREAT_PRICE,
     "treat_cap": DEFAULT_TREAT_DAILY_CAP,
-    "pet": None,                  # the current pet's state (see engine.new_pet)
+    "pet": {},                    # current pet's state; {} = none (Red's Config can't merge a dict into a None default)
     "card_message_id": None,
     "daily_post_date": None,
     "next_egg_ts": None,          # when the next egg arrives after a pet is gone
