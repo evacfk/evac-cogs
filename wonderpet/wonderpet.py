@@ -453,7 +453,7 @@ class WonderPet(commands.Cog):
 
     # -- commands -------------------------------------------------------------
 
-    @commands.group(name="wonderpet", aliases=["pet"], invoke_without_command=True)
+    @commands.group(name="wonderpet", invoke_without_command=True)
     @commands.guild_only()
     async def pet(self, ctx: commands.Context):
         """The server pet. Posts its card so you can feed, play and clean."""

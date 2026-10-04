@@ -1,7 +1,7 @@
 """Config defaults and lookup tables for wonderpet. No discord/redbot imports here."""
 from zoneinfo import ZoneInfo
 
-COG_VERSION = "1.0.0"
+COG_VERSION = "1.0.1"
 CONFIG_IDENTIFIER = 0x3E7E27B2
 HOME_TZ = ZoneInfo("America/Los_Angeles")
 
