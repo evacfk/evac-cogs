@@ -102,6 +102,15 @@ class FakeRole:
     def __init__(self, guild, rid, name, position=10, hoist=False, managed=False):
         self.guild, self.id, self.name, self.position = guild, rid, name, position
         self.hoist, self.managed = hoist, managed
+        self.deleted = False
+
+    async def delete(self, reason=None):
+        self.deleted = True
+        if self in self.guild.roles:
+            self.guild.roles.remove(self)
+
+    async def edit(self, **kw):
+        self.name = kw.get("name", self.name)
 
     def __eq__(self, o):
         return getattr(o, "id", None) == self.id
@@ -204,6 +213,12 @@ class FakeGuild:
         self.default_role = FakeRole(self, gid, "@everyone", 0)
         self.me = types.SimpleNamespace(top_role=FakeRole(self, 999, "Bot", 100))
         self.name = "Wonderland"
+
+    _next_role = 5000
+
+    async def create_role(self, *, name, **kw):
+        FakeGuild._next_role += 1
+        return self.add_role(FakeGuild._next_role, name, hoist=kw.get("hoist", False))
 
     def add_role(self, rid, name, **kw):
         role = FakeRole(self, rid, name, **kw)

@@ -65,7 +65,7 @@ async def env(mod):  # async: real discord.py Views need a running loop
     g = EventsGuild()
     role = g.add_role(300, "Movie Night")
     chan = g.add_channel(100, "server-updates")
-    vc = g.add_channel(200, "Movie Night VC")
+    vc = g.add_channel(200, "some auto room")
     bot = tk.FakeBot(g)
     bot.add_view = lambda view: None
     cog = mod.WonderEvents(bot)
@@ -76,7 +76,7 @@ async def _setup(env):
     gconf = env.cog.config.guild(env.guild)
     await gconf.channel_id.set(env.chan.id)
     await gconf.kinds.set({"movie": {"label": "Movie Night", "emoji": "🎬", "ping_role_id": env.role.id,
-                                     "vc_id": env.vc.id, "duration": 120}})
+                                     "duration": 120}})
 
 
 START = datetime(2026, 10, 17, 18, 0, tzinfo=LA)
@@ -91,7 +91,8 @@ async def _create(env, options=("Project Hail Mary", "Dune 2")):
 class Interaction:
     def __init__(self, guild, user_id, message=None):
         self.guild, self.message = guild, message
-        self.user = types.SimpleNamespace(id=user_id, guild=guild, roles=[], guild_permissions=None)
+        self.user = Member(user_id)
+        self.user.guild, self.user.guild_permissions = guild, None
         self.edits, self.sent = [], []
         outer = self
 
@@ -127,7 +128,9 @@ async def test_create_posts_pings_schedules_and_votes(env):
     assert post.kw["view"] is env.cog.rsvp_view
     assert post.embed is not None
     se = env.guild.scheduled[ev["scheduled_event_id"]]
-    assert se.kw["channel"] is env.vc and se.kw["start_time"] == START.astimezone(timezone.utc)
+    assert "channel" not in se.kw and se.kw["location"] and se.kw["end_time"] > se.kw["start_time"]
+    assert se.kw["start_time"] == START.astimezone(timezone.utc)
+    assert env.guild.get_role(ev["role_id"]).name == "🎬 Movie Night · Oct 17"
     assert poll.kw["poll"].question == "What should we watch?"
     stored = (await env.cog.config.guild(env.guild).events())["1"]
     assert stored["message_id"] == post.id and stored["poll_message_id"] == poll.id
@@ -173,7 +176,7 @@ async def test_full_timeline_remind_start_attendance_end(env):
     assert env.chan.sent[-1] is reminder  # once only
 
     env.vc.members = [types.SimpleNamespace(id=5, bot=False), types.SimpleNamespace(id=9, bot=False),
-                      types.SimpleNamespace(id=1, bot=True)]
+                      types.SimpleNamespace(id=1, bot=True)]  # 9 never RSVP'd, 1 is a bot
     await env.cog._tick(env.guild, s + 30)
     start_msg = env.chan.sent[-1]
     assert "starting now" in start_msg.content and "<@5>" in start_msg.content and "<@6>" not in start_msg.content
@@ -182,7 +185,7 @@ async def test_full_timeline_remind_start_attendance_end(env):
     for minute in range(5, 30, 5):
         await env.cog._tick(env.guild, s + 30 + minute * 60)
     stored = await env.cog._get_event(env.guild, 1)
-    assert stored["attend"] == {"5": 30, "9": 30}
+    assert stored["attend"] == {"5": 30}
 
     await env.cog._tick(env.guild, s + 121 * 60)
     stored = await env.cog._get_event(env.guild, 1)
@@ -262,19 +265,54 @@ async def test_cancel_marks_and_cancels_scheduled_event(env):
     assert env.chan.sent[0].view is None
 
 
-async def test_no_fixed_voice_channel_makes_external_event_and_samples_rsvps(env):
-    gconf = env.cog.config.guild(env.guild)
-    await gconf.channel_id.set(env.chan.id)
-    await gconf.kinds.set({"game": {"label": "Game Night", "emoji": "x", "ping_role_id": env.role.id,
-                                    "vc_id": None, "duration": 120}})
-    ev, _ = await env.cog.create_event(env.guild, kind="game", host_id=42, title="Game Night", start=START,
-                                       desc="", image=None, options=[], created_by=42)
-    se = env.guild.scheduled[ev["scheduled_event_id"]]
-    assert "channel" not in se.kw and se.kw["location"] and se.kw["end_time"] > se.kw["start_time"]
+class Member:
+    def __init__(self, uid):
+        self.id, self.bot, self.roles = uid, False, []
+
+    async def add_roles(self, *r, reason=None):
+        self.roles += [x for x in r if x not in self.roles]
+
+    async def remove_roles(self, *r, reason=None):
+        self.roles = [x for x in self.roles if x not in r]
+
+
+async def test_rsvp_role_given_on_going_maybe_removed_on_no_and_deleted_at_end(env):
+    await _setup(env)
+    ev, _ = await _create(env, options=())
+    msg = env.chan.sent[0]
+    role = env.guild.get_role(ev["role_id"])
+    m = Member(5)
+    ia = Interaction(env.guild, 5, message=msg)
+    ia.user = m
+    m.guild = env.guild
+    await env.cog.handle_rsvp(ia, "going")
+    assert role in m.roles
+    await env.cog.handle_rsvp(ia, "maybe")
+    assert role in m.roles
+    await env.cog.handle_rsvp(ia, "no")
+    assert role not in m.roles
+    await env.cog.handle_rsvp(ia, "going")
+    assert role in m.roles
+    await env.cog._tick(env.guild, START.timestamp() + 121 * 60)
+    stored = await env.cog._get_event(env.guild, 1)
+    assert role.deleted and stored["role_id"] is None
+
+
+async def test_cancel_deletes_role(env):
+    await _setup(env)
+    ev, _ = await _create(env, options=())
+    role = env.guild.get_role(ev["role_id"])
+    async with env.cog._lock(env.guild.id):
+        await env.cog._drop_role(env.guild, ev)
+    assert role.deleted
+
+
+async def test_attendance_counts_rsvps_in_any_room_not_strangers(env):
+    await _setup(env)
+    ev, _ = await _create(env, options=())
     await env.cog.handle_rsvp(Interaction(env.guild, 5, message=env.chan.sent[0]), "going")
     room = env.guild.add_channel(555, "meow")  # an auto-created room
-    room.members = [types.SimpleNamespace(id=5, bot=False, roles=[]), types.SimpleNamespace(id=9, bot=False, roles=[]),
-                    types.SimpleNamespace(id=8, bot=False, roles=[env.role])]
+    room.members = [types.SimpleNamespace(id=5, bot=False), types.SimpleNamespace(id=9, bot=False)]
     stored = await env.cog._get_event(env.guild, ev["id"])
     await env.cog._do_sample(env.guild, stored, 1.0)
-    assert stored["attend"] == {"5": 5, "8": 5}  # RSVP'd + ping-role holder; random member 9 ignored
+    assert stored["attend"] == {"5": 5}

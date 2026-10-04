@@ -1,7 +1,7 @@
 """Config defaults and fixed values for wonderevents."""
 from zoneinfo import ZoneInfo
 
-COG_VERSION = "1.1.0"
+COG_VERSION = "1.2.0"
 CONFIG_IDENTIFIER = 0x3E7E27A1
 HOME_TZ_NAME = "America/Los_Angeles"
 HOME_TZ = ZoneInfo(HOME_TZ_NAME)
@@ -11,7 +11,8 @@ TICK_SECONDS = 60
 SAMPLE_MINUTES = 5          # voice attendance is sampled this often while an event runs
 ATTEND_MIN_MINUTES = 20     # this long in the voice channel counts as "came"
 DEFAULT_DURATION_MIN = 180
-DEFAULT_LOCATION = "Wonderland voice channels (join Room Creator)"
+EVENT_LOCATION = "Wonderland voice channels"  # Discord requires a place on non-voice events
+ROLE_COLOR = 0x9B59B6
 DEFAULT_REMIND_MIN = 60
 POLL_CLOSE_BEFORE_HOURS = 2  # a vote closes this long before the event starts
 POLL_MAX_HOURS = 168
@@ -30,10 +31,9 @@ DEFAULT_GUILD = {
     "channel_id": None,           # where event announcements are posted (e.g. #server-updates)
     "host_role_ids": [DEFAULT_MOD_ROLE_ID],  # besides admins/mods, these roles may create/edit events
     "remind_minutes": DEFAULT_REMIND_MIN,
-    "kinds": {},                  # key -> {label, emoji, ping_role_id, vc_id, duration}
+    "kinds": {},                  # key -> {label, emoji, ping_role_id, duration}
     "events": {},                 # str(id) -> event record
     "next_id": 1,
-    "location": None,             # text location for events with no fixed voice channel
 }
 
 DEFAULT_MEMBER = {

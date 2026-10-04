@@ -226,3 +226,11 @@ def regulars(events: list[dict], since_ts: float) -> list[tuple[int, int]]:
         for uid in attendees(ev.get("attend") or {}):
             counts[uid] = counts.get(uid, 0) + 1
     return sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))
+
+
+def event_role_name(ev: dict) -> str:
+    """Name of the temporary RSVP role, e.g. "🎬 Movie Night · Oct 17" (Discord caps role names at 100)."""
+    from datetime import datetime
+    from .constants import HOME_TZ
+    when = datetime.fromtimestamp(ev["start_ts"], HOME_TZ)
+    return f"{ev.get('emoji') or ''} {ev['title']} \u00b7 {when.strftime('%b')} {when.day}".strip()[:100]

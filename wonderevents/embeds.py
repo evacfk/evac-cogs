@@ -29,8 +29,6 @@ def event_embed(ev: dict, *, guild_id: int):
         title, color = f"{emoji} {ev['title']}", COLOR_EVENT
     e = discord.Embed(title=title[:256], description=(ev.get("desc") or None), color=discord.Color(color))
     e.add_field(name="\N{SPIRAL CALENDAR PAD} When", value=f"<t:{ts}:F>\n<t:{ts}:R>", inline=True)
-    if ev.get("vc_id"):
-        e.add_field(name="\N{ROUND PUSHPIN} Where", value=f"<#{ev['vc_id']}>", inline=True)
     if ev.get("host_id"):
         e.add_field(name="\N{MICROPHONE} Host", value=f"<@{ev['host_id']}>", inline=True)
     lists = engine.rsvp_lists(ev.get("rsvp") or {})
