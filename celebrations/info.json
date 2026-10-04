@@ -1,0 +1,14 @@
+{
+    "name": "Celebrations",
+    "short": "Birthdays (hoisted role, wondercoin gift, posts) and join-anniversary shout-outs.",
+    "description": "Members save their birthday with `.birthday set March 14` (year optional). On the day (Pacific time) they get a hoisted birthday role and a configurable wondercoin gift, a birthday embed is posted in the chat channel with a star reaction for the starboard, and a temporary post goes to #announcements that is deleted when the day ends. Also posts a daily shout-out for members celebrating their join anniversary. Lurkers are skipped.",
+    "end_user_data_statement": "This cog stores each member's birthday (month, day and, only if they provide it, year) and the date they were last celebrated. Members can remove it with `.birthday remove`; it is deleted on a Red data-deletion request.",
+    "install_msg": "Set it up with `.celebrations channel #cuddle`, `.celebrations announcements #announcements`, `.celebrations makerole` (or `.celebrations role @role`). Members use `.birthday set March 14`. See `.celebrations` for all settings.",
+    "author": ["evacfk"],
+    "requirements": [],
+    "tags": ["birthday", "anniversary", "community"],
+    "min_bot_version": "3.5.0",
+    "hidden": false,
+    "disabled": false,
+    "type": "COG"
+}
