@@ -280,7 +280,7 @@ def _stale(env, member):
 
 def test_module_imports_and_defines_cog(mod):
     assert hasattr(mod, "Lurker")
-    assert mod.VERSION == "2.1.0"
+    assert mod.VERSION == "2.2.0"
     for name in ("lurker_version", "lurker_backfill", "lurker_backfill_confirm",
                  "lurker_sweep_preview", "lurker_sweep_run", "lurker_report",
                  "lurker_report_send", "lurker_exempt_audit"):
@@ -590,3 +590,132 @@ async def test_unflag_clears_the_record_in_one_write(env):
     assert m.role_ids() == {601, 602}                    # roles back, Lurker gone
     assert calls == [10]
     assert env.cog.config.data[("m", env.guild.id, 10)] == {}  # no leftover entry
+
+
+# ---------------------------------------------------------------- year club (v2.2)
+
+def _years_ago(years, extra_days=0):
+    """A join timestamp `years` calendar years ago (+extra_days earlier), safely away from today's boundary."""
+    from lurker import engine
+    now_local = datetime.now(engine.LOCAL_TZ)
+    try:
+        j = now_local.replace(year=now_local.year - years)
+    except ValueError:  # Feb 29
+        j = now_local.replace(year=now_local.year - years, day=28)
+    return j - timedelta(days=extra_days)
+
+
+def _club_env(env):
+    club = {n: env.guild.add_role(FakeRole(700 + n, f"{n} year club!", 30 + n)) for n in range(1, 13)}
+    env.cog.config.guild(env.guild).yearclub_roles.store({str(n): r.id for n, r in club.items()})
+    env.cog.config.guild(env.guild).yearclub_enabled.store(True)
+    env.cog.config.guild(env.guild).lurker_role_id.store(env.lurker.id)
+    return club
+
+
+def _member_joined(env, uid, joined_dt, roles=()):
+    m = FakeMember(env.guild, uid, roles=roles)
+    m.joined_at = joined_dt
+    return m
+
+
+def test_engine_years_completed_uses_local_calendar_date():
+    from lurker import engine
+    tz = engine.LOCAL_TZ
+    joined = datetime(2020, 10, 3, 12, 0, tzinfo=tz).timestamp()
+    assert engine.years_completed(joined, datetime(2026, 10, 2, 23, 59, tzinfo=tz).timestamp()) == 5
+    assert engine.years_completed(joined, datetime(2026, 10, 3, 0, 1, tzinfo=tz).timestamp()) == 6
+    leap = datetime(2024, 2, 29, 9, 0, tzinfo=tz).timestamp()
+    assert engine.years_completed(leap, datetime(2025, 2, 28, 23, 0, tzinfo=tz).timestamp()) == 0
+    assert engine.years_completed(leap, datetime(2025, 3, 1, 0, 30, tzinfo=tz).timestamp()) == 1
+    assert engine.years_completed(leap, datetime(2020, 1, 1, tzinfo=tz).timestamp()) == 0  # never negative
+
+
+def test_engine_club_names_targets_and_plans():
+    from lurker import engine
+    assert engine.parse_club_role_name("7 year club!") == 7
+    assert engine.parse_club_role_name("12 Year Club") == 12
+    assert engine.parse_club_role_name("1 yr club") == 1
+    assert engine.parse_club_role_name("year club fan") is None
+    assert engine.parse_club_role_name("Movie Night") is None
+    mapping = {1: 11, 2: 12, 3: 13, 12: 112}
+    assert engine.club_target(0, mapping) is None
+    assert engine.club_target(2, mapping) == 12
+    assert engine.club_target(7, mapping) == 13  # gap: keeps the highest configured <= years
+    assert engine.club_target(14, mapping) == 112
+    clubs = set(mapping.values())
+    assert engine.club_plan({11, 12, 13, 99}, 13, clubs) == (None, {11, 12})
+    assert engine.club_plan({99}, 12, clubs) == (12, set())
+    assert engine.club_plan({11, 99}, None, clubs) == (None, {11})
+    assert engine.club_mapping({"3": "13", "x": 1, "4": None}) == {3: 13}
+
+
+async def test_yearclub_sync_leaves_exactly_one_current_role(env):
+    club = _club_env(env)
+    stacked = _member_joined(env, 20, _years_ago(3, 10), roles=[club[1], club[2], club[3], env.a])
+    due = _member_joined(env, 21, _years_ago(2, 1), roles=[club[1]])  # anniversary passed: 1 -> 2
+    fresh = _member_joined(env, 22, _years_ago(0, 30), roles=[club[1]])  # under a year: stale role goes
+    veteran = _member_joined(env, 23, _years_ago(14, 5))  # past the top role: keeps 12
+    lurker = _member_joined(env, 24, _years_ago(5, 5), roles=[env.lurker, club[1]])
+    correct = _member_joined(env, 25, _years_ago(4, 5), roles=[club[4]])
+
+    stats = await env.cog._yearclub_pass(env.guild, auto=False)
+
+    assert stacked.role_ids() == {club[3].id, env.a.id}
+    assert due.role_ids() == {club[2].id}
+    assert fresh.role_ids() == set()
+    assert veteran.role_ids() == {club[12].id}
+    assert lurker.role_ids() == {env.lurker.id, club[1].id}  # lurkers are never touched
+    assert correct.role_ids() == {club[4].id}
+    assert stats["changed"] == 4 and stats["skipped_lurkers"] == 1 and stats["errors"] == 0
+
+
+async def test_yearclub_auto_pass_aborts_on_mass_change(env, monkeypatch):
+    club = _club_env(env)
+    monkeypatch.setattr(env.mod.engine, "YEARCLUB_AUTO_MAX", 2)
+    alerts = []
+
+    async def fake_alert(guild, text):
+        alerts.append(text)
+
+    env.cog._send_alert = fake_alert
+    members = [_member_joined(env, 30 + i, _years_ago(3, 3), roles=[club[1]]) for i in range(3)]
+
+    stats = await env.cog._yearclub_pass(env.guild, auto=True)
+
+    assert stats["aborted"] is True and alerts
+    assert all(m.role_ids() == {club[1].id} for m in members)  # nothing changed
+
+
+async def test_flag_never_stores_club_roles_and_unflag_restores_current_year(env):
+    """REGRESSION: lurker used to store the year role at flag time and restore that
+    stale role later, e.g. a member flagged in year 2 came back holding '2 year club!'
+    in year 3 (or stacked with the right one)."""
+    club = _club_env(env)
+    m = _member_joined(env, 40, _years_ago(3, 2), roles=[env.a, club[2]])
+    _stale(env, m)
+
+    assert await env.cog._flag_member(m, env.lurker, set(), cutoff=env.cutoff, source="sweep") == "flagged"
+    assert await env.cog.config.member(m).stored_roles() == [env.a.id]
+
+    await env.cog._unflag_member(m, env.lurker, source="post")
+    assert m.role_ids() == {env.a.id, club[3].id}
+
+
+async def test_unflag_filters_stale_club_role_stored_by_older_version(env):
+    club = _club_env(env)
+    m = _member_joined(env, 41, _years_ago(5, 2), roles=[env.lurker])
+    await env.cog.config.member(m).stored_roles.set([env.b.id, club[1].id])
+    await env.cog.config.member(m).flagged.set(True)
+
+    await env.cog._unflag_member(m, env.lurker, source="post")
+    assert m.role_ids() == {env.b.id, club[5].id}
+
+
+async def test_club_roles_are_stored_normally_when_yearclub_is_off(env):
+    club = _club_env(env)
+    env.cog.config.guild(env.guild).yearclub_enabled.store(False)
+    m = _member_joined(env, 42, _years_ago(3, 2), roles=[env.a, club[3]])
+    _stale(env, m)
+    await env.cog._flag_member(m, env.lurker, set(), cutoff=env.cutoff, source="sweep")
+    assert await env.cog.config.member(m).stored_roles() == [env.a.id, club[3].id]
