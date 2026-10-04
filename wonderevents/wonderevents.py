@@ -35,6 +35,7 @@ from .constants import (
     CONFIG_IDENTIFIER,
     DEFAULT_DURATION_MIN,
     DEFAULT_GUILD,
+    STAFF_ROLE_IDS,
     DEFAULT_MEMBER,
     HOME_TZ,
     POLL_MAX_OPTIONS,
@@ -176,21 +177,18 @@ class WonderEvents(commands.Cog):
     # -- permissions ------------------------------------------------------
 
     async def _can_host(self, member) -> bool:
-        perms = getattr(member, "guild_permissions", None)
-        if perms is not None and (perms.administrator or perms.manage_guild or getattr(perms, "manage_events", False)):
+        """Only Staff, Moderators and superpowers (or the bot owner); Discord permissions alone don't count."""
+        if any(r.id in STAFF_ROLE_IDS for r in getattr(member, "roles", [])):
             return True
         try:
-            if await self.bot.is_mod(member):
-                return True
+            return bool(await self.bot.is_owner(member))
         except Exception:
-            pass
-        host_roles = set(await self.config.guild(member.guild).host_role_ids())
-        return any(r.id in host_roles for r in member.roles)
+            return False
 
     async def _require_host(self, ctx) -> bool:
         if await self._can_host(ctx.author):
             return True
-        await ctx.send("Only staff and event hosts can do that.")
+        await ctx.send("Only Staff, Moderators and superpowers can do that.")
         return False
 
     # -- helpers ----------------------------------------------------------
@@ -663,23 +661,18 @@ class WonderEvents(commands.Cog):
     # -- settings ---------------------------------------------------------
 
     @event.command(name="channel")
-    @commands.admin_or_permissions(manage_guild=True)
     async def event_channel(self, ctx: commands.Context, channel: discord.TextChannel):
         """Where event announcements are posted."""
+        if not await self._require_host(ctx):
+            return
         await self.config.guild(ctx.guild).channel_id.set(channel.id)
         await ctx.send(f"Events are posted in {channel.mention}.")
 
-    @event.command(name="hostroles")
-    @commands.admin_or_permissions(manage_guild=True)
-    async def event_hostroles(self, ctx: commands.Context, *roles: discord.Role):
-        """Roles (besides admins/mods) that may create and manage events. Replaces the list."""
-        await self.config.guild(ctx.guild).host_role_ids.set([r.id for r in roles])
-        await ctx.send("Event hosts: " + (", ".join(r.name for r in roles) or "admins/mods only"))
-
     @event.command(name="remind")
-    @commands.admin_or_permissions(manage_guild=True)
     async def event_remind(self, ctx: commands.Context, minutes: int):
         """How long before start the Going/Maybe reminder goes out (0 = off). Default 60."""
+        if not await self._require_host(ctx):
+            return
         await self.config.guild(ctx.guild).remind_minutes.set(max(0, minutes))
         await ctx.send("Reminders off." if minutes <= 0 else f"Reminders go out {minutes} minutes before.")
 
@@ -699,10 +692,11 @@ class WonderEvents(commands.Cog):
         await ctx.send("\n".join(lines), allowed_mentions=discord.AllowedMentions.none())
 
     @event_kind.command(name="add")
-    @commands.admin_or_permissions(manage_guild=True)
     async def event_kind_add(self, ctx: commands.Context, key: str, emoji: str = None, hours: float = 3.0):
         """Add a new kind (pings the generic event role), or change the emoji/length of movie, game or event.
         `.event kind add trivia 🧠 2`"""
+        if not await self._require_host(ctx):
+            return
         key = key.lower()
         base = BUILTIN_KINDS.get(key) or {"label": key.title(), "emoji": "\N{CALENDAR}"}
         emoji = emoji or base["emoji"]
@@ -711,8 +705,9 @@ class WonderEvents(commands.Cog):
         await ctx.send(f"Kind `{key}` saved: {emoji} {base['label']}, {max(30, int(hours * 60)) // 60}h.")
 
     @event_kind.command(name="remove")
-    @commands.admin_or_permissions(manage_guild=True)
     async def event_kind_remove(self, ctx: commands.Context, key: str):
+        if not await self._require_host(ctx):
+            return
         async with self.config.guild(ctx.guild).kinds() as kinds:
             kinds.pop(key.lower(), None)
         await ctx.send(f"Removed kind `{key.lower()}`.")
@@ -721,7 +716,7 @@ class WonderEvents(commands.Cog):
     async def event_settings(self, ctx: commands.Context):
         """Show event settings."""
         s = await self.config.guild(ctx.guild).all()
-        hosts = ", ".join(f"<@&{r}>" for r in s["host_role_ids"]) or "admins/mods only"
+        hosts = ", ".join(f"<@&{r}>" for r in STAFF_ROLE_IDS)
         channel = f"<#{s['channel_id']}>" if s["channel_id"] else "not set"
         await ctx.send(
             f"**WonderEvents v{COG_VERSION}**\nChannel: {channel}\n"

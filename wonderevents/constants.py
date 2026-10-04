@@ -1,11 +1,15 @@
 """Config defaults and fixed values for wonderevents."""
 from zoneinfo import ZoneInfo
 
-COG_VERSION = "1.3.1"
+COG_VERSION = "1.3.2"
 CONFIG_IDENTIFIER = 0x3E7E27A1
 HOME_TZ_NAME = "America/Los_Angeles"
 HOME_TZ = ZoneInfo(HOME_TZ_NAME)
-DEFAULT_MOD_ROLE_ID = 426696709780013066
+STAFF_ROLE_IDS = (            # the only roles that may create or manage events (plus the bot owner)
+    1556159237451681803,      # Staff
+    426696709780013066,       # Moderators
+    723377047950590033,       # superpowers
+)
 
 TICK_SECONDS = 60
 SAMPLE_MINUTES = 5          # voice attendance is sampled this often while an event runs
@@ -39,7 +43,6 @@ BTN_NO = "wonderevents:no"
 
 DEFAULT_GUILD = {
     "channel_id": None,           # where event announcements are posted (e.g. #server-updates)
-    "host_role_ids": [DEFAULT_MOD_ROLE_ID],  # besides admins/mods, these roles may create/edit events
     "remind_minutes": DEFAULT_REMIND_MIN,
     "kinds": {},                  # key -> {label, emoji, ping_role_id, duration}
     "events": {},                 # str(id) -> event record

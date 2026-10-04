@@ -250,7 +250,7 @@ async def test_cancel_marks_and_cancels_scheduled_event(env):
     class Ctx:
         guild = env.guild
         author = types.SimpleNamespace(guild_permissions=types.SimpleNamespace(administrator=True, manage_guild=True),
-                                       roles=[], guild=env.guild)
+                                       roles=[types.SimpleNamespace(id=723377047950590033)], guild=env.guild)
         replies = []
 
         async def send(self, text=None, **kw):
@@ -327,3 +327,17 @@ async def test_builtin_kinds_use_hardcoded_ping_roles_without_setup(env):
     kinds = await env.cog._kinds(env.guild)
     assert kinds["trivia"]["ping_role_id"] == 1556157565262364754 and kinds["trivia"]["duration"] == 60
     assert kinds["game"]["ping_role_id"] == 1536590356492320768 and kinds["game"]["duration"] == 90  # role can't be overridden
+
+
+async def test_only_staff_moderators_superpowers_may_host(env):
+    env.cog.bot.is_owner = lambda m: _false()
+    for rid in (1556159237451681803, 426696709780013066, 723377047950590033):
+        assert await env.cog._can_host(types.SimpleNamespace(roles=[types.SimpleNamespace(id=rid)]))
+    admin = types.SimpleNamespace(roles=[types.SimpleNamespace(id=1)],
+                                  guild_permissions=types.SimpleNamespace(administrator=True, manage_guild=True, manage_events=True))
+    assert not await env.cog._can_host(admin)  # Discord permissions alone are not enough
+    assert not await env.cog._can_host(types.SimpleNamespace(roles=[]))
+
+
+async def _false():
+    return False
