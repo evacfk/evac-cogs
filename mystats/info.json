@@ -1,0 +1,14 @@
+{
+    "name": "MyStats",
+    "short": "One command that shows a member's stats from every game the server hosts.",
+    "description": "`.mystats [member]` pulls a member's record from the minigames in chat, duels, heists, the casino, card collecting, the server puzzle, the Daily Verdict, the server pet, bumps and the lottery, and shows them on one embed. It only reads what the other cogs already store, keeps no data of its own, and quietly skips any game whose cog is not loaded.",
+    "end_user_data_statement": "This cog stores no data. It only reads statistics that other cogs already keep.",
+    "install_msg": "Load it and run `.mystats`. Nothing to configure. Games whose cog is not loaded are simply left out.",
+    "author": ["evacfk"],
+    "requirements": [],
+    "tags": ["stats", "games", "profile", "leaderboard"],
+    "min_bot_version": "3.5.0",
+    "hidden": false,
+    "disabled": false,
+    "type": "COG"
+}
