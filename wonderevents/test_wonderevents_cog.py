@@ -63,7 +63,7 @@ class EventsGuild(tk.FakeGuild):
 @pytest.fixture
 async def env(mod):  # async: real discord.py Views need a running loop
     g = EventsGuild()
-    role = g.add_role(300, "Movie Night")
+    role = g.add_role(1536593335966367784, "Movie Night")
     chan = g.add_channel(100, "server-updates")
     vc = g.add_channel(200, "some auto room")
     bot = tk.FakeBot(g)
@@ -75,8 +75,7 @@ async def env(mod):  # async: real discord.py Views need a running loop
 async def _setup(env):
     gconf = env.cog.config.guild(env.guild)
     await gconf.channel_id.set(env.chan.id)
-    await gconf.kinds.set({"movie": {"label": "Movie Night", "emoji": "🎬", "ping_role_id": env.role.id,
-                                     "duration": 120}})
+    await gconf.kinds.set({"movie": {"emoji": "🎬", "duration": 120}})
 
 
 START = datetime(2026, 10, 17, 18, 0, tzinfo=LA)
@@ -124,7 +123,7 @@ async def test_create_posts_pings_schedules_and_votes(env):
     ev, note = await _create(env)
     assert "Posted event #1" in note
     post, poll = env.chan.sent
-    assert post.content.startswith("<@&300>") and "<@42> is hosting" in post.content
+    assert post.content.startswith("<@&1536593335966367784>") and "<@42> is hosting" in post.content
     assert post.kw["view"] is env.cog.rsvp_view
     assert post.embed is not None
     se = env.guild.scheduled[ev["scheduled_event_id"]]
@@ -316,3 +315,15 @@ async def test_attendance_counts_rsvps_in_any_room_not_strangers(env):
     stored = await env.cog._get_event(env.guild, ev["id"])
     await env.cog._do_sample(env.guild, stored, 1.0)
     assert stored["attend"] == {"5": 5}
+
+
+async def test_builtin_kinds_use_hardcoded_ping_roles_without_setup(env):
+    kinds = await env.cog._kinds(env.guild)
+    assert kinds["game"]["ping_role_id"] == 1536590356492320768
+    assert kinds["movie"]["ping_role_id"] == 1536593335966367784
+    assert kinds["event"]["ping_role_id"] == 1556157565262364754
+    await env.cog.config.guild(env.guild).kinds.set({"trivia": {"emoji": "x", "duration": 60},
+                                                     "game": {"emoji": "g", "duration": 90, "ping_role_id": 1}})
+    kinds = await env.cog._kinds(env.guild)
+    assert kinds["trivia"]["ping_role_id"] == 1556157565262364754 and kinds["trivia"]["duration"] == 60
+    assert kinds["game"]["ping_role_id"] == 1536590356492320768 and kinds["game"]["duration"] == 90  # role can't be overridden

@@ -28,7 +28,9 @@ from .constants import (
     BTN_MAYBE,
     BTN_NO,
     COG_VERSION,
+    BUILTIN_KINDS,
     EVENT_LOCATION,
+    GENERIC_PING_ROLE_ID,
     ROLE_COLOR,
     CONFIG_IDENTIFIER,
     DEFAULT_DURATION_MIN,
@@ -201,6 +203,17 @@ class WonderEvents(commands.Cog):
         events = await self.config.guild(guild).events()
         return events.get(str(event_id))
 
+    async def _kinds(self, guild) -> dict:
+        """movie / game / event come built in with their ping roles; saved entries only change emoji and length
+        for those, and add new kinds (which ping the generic event role)."""
+        saved = await self.config.guild(guild).kinds()
+        kinds = {k: dict(v) for k, v in BUILTIN_KINDS.items()}
+        for key, v in saved.items():
+            base = kinds.get(key) or {"label": key.title(), "ping_role_id": GENERIC_PING_ROLE_ID}
+            base.update({f: v[f] for f in ("emoji", "duration") if v.get(f)})
+            kinds[key] = base
+        return kinds
+
     async def _save_event(self, guild, ev: dict) -> None:
         async with self.config.guild(guild).events() as events:
             events[str(ev["id"])] = ev
@@ -262,7 +275,7 @@ class WonderEvents(commands.Cog):
     async def create_event(self, guild, *, kind, host_id, title, start, desc, image, options, created_by):
         gconf = self.config.guild(guild)
         settings = await gconf.all()
-        k = settings["kinds"].get(kind) or {}
+        k = (await self._kinds(guild)).get(kind) or {}
         channel = guild.get_channel(settings["channel_id"] or 0)
         if channel is None:
             return None, "Set the events channel first: `.night channel #channel`."
@@ -523,10 +536,10 @@ class WonderEvents(commands.Cog):
         """Create an event: `.night create movie` (or `game`, any kind from `.night kind list`). Optional host."""
         if not await self._require_host(ctx):
             return
-        kinds = await self.config.guild(ctx.guild).kinds()
+        kinds = await self._kinds(ctx.guild)
         kind = kind.lower()
         if kind not in kinds:
-            known = ", ".join(f"`{k}`" for k in kinds) or "none yet: `.night kind add movie @MovieNight 🎬 3`"
+            known = ", ".join(f"`{k}`" for k in kinds)
             await ctx.send(f"Unknown kind `{kind}`. Kinds: {known}")
             return
         if not await self.config.guild(ctx.guild).channel_id():
@@ -672,15 +685,12 @@ class WonderEvents(commands.Cog):
 
     @event.group(name="kind", invoke_without_command=True)
     async def event_kind(self, ctx: commands.Context):
-        """Event kinds: `.night kind add <key> <@ping role> [emoji] [hours]`, `remove`, `list`."""
+        """Event kinds: `list`, and `add <key> [emoji] [hours]`/`remove` for extras. movie, game and event are built in."""
         await self.event_kind_list(ctx)
 
     @event_kind.command(name="list")
     async def event_kind_list(self, ctx: commands.Context):
-        kinds = await self.config.guild(ctx.guild).kinds()
-        if not kinds:
-            await ctx.send("No kinds yet. `.night kind add movie @MovieNight 🎬 3`")
-            return
+        kinds = await self._kinds(ctx.guild)
         lines = [
             f"`{k}` {v.get('emoji', '')} **{v.get('label')}** — pings <@&{v.get('ping_role_id')}>, "
             f"{v.get('duration', DEFAULT_DURATION_MIN) // 60}h"
@@ -690,17 +700,15 @@ class WonderEvents(commands.Cog):
 
     @event_kind.command(name="add")
     @commands.admin_or_permissions(manage_guild=True)
-    async def event_kind_add(self, ctx: commands.Context, key: str, ping_role: discord.Role,
-                             emoji: str = None, hours: float = 3.0):
-        """Add or replace a kind: `.night kind add game @GameNight 🎮 3` (key, ping role, emoji, hours)."""
+    async def event_kind_add(self, ctx: commands.Context, key: str, emoji: str = None, hours: float = 3.0):
+        """Add a new kind (pings the generic event role), or change the emoji/length of movie, game or event.
+        `.night kind add trivia 🧠 2`"""
         key = key.lower()
-        label = {"movie": "Movie Night", "game": "Game Night"}.get(key, key.title())
-        emoji = emoji or {"movie": "\N{CLAPPER BOARD}", "game": "\N{VIDEO GAME}"}.get(key, "\N{CALENDAR}")
+        base = BUILTIN_KINDS.get(key) or {"label": key.title(), "emoji": "\N{CALENDAR}"}
+        emoji = emoji or base["emoji"]
         async with self.config.guild(ctx.guild).kinds() as kinds:
-            kinds[key] = {"label": label, "emoji": emoji, "ping_role_id": ping_role.id,
-                          "duration": max(30, int(hours * 60))}
-        await ctx.send(f"Kind `{key}` saved: {emoji} {label}, pings {ping_role.name}, {max(30, int(hours * 60)) // 60}h.",
-                       allowed_mentions=discord.AllowedMentions.none())
+            kinds[key] = {"emoji": emoji, "duration": max(30, int(hours * 60))}
+        await ctx.send(f"Kind `{key}` saved: {emoji} {base['label']}, {max(30, int(hours * 60)) // 60}h.")
 
     @event_kind.command(name="remove")
     @commands.admin_or_permissions(manage_guild=True)
@@ -717,6 +725,6 @@ class WonderEvents(commands.Cog):
         channel = f"<#{s['channel_id']}>" if s["channel_id"] else "not set"
         await ctx.send(
             f"**WonderEvents v{COG_VERSION}**\nChannel: {channel}\n"
-            f"Hosts: {hosts}\nReminder: {s['remind_minutes']} min before\nKinds: {', '.join(s['kinds']) or 'none'}",
+            f"Hosts: {hosts}\nReminder: {s['remind_minutes']} min before\nKinds: {', '.join((await self._kinds(ctx.guild)))}",
             allowed_mentions=discord.AllowedMentions.none(),
         )

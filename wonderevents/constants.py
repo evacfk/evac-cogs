@@ -1,7 +1,7 @@
 """Config defaults and fixed values for wonderevents."""
 from zoneinfo import ZoneInfo
 
-COG_VERSION = "1.2.1"
+COG_VERSION = "1.3.0"
 CONFIG_IDENTIFIER = 0x3E7E27A1
 HOME_TZ_NAME = "America/Los_Angeles"
 HOME_TZ = ZoneInfo(HOME_TZ_NAME)
@@ -13,6 +13,16 @@ ATTEND_MIN_MINUTES = 20     # this long in the voice channel counts as "came"
 DEFAULT_DURATION_MIN = 180
 EVENT_LOCATION = "Wonderland voice channels"  # Discord requires a place on non-voice events
 ROLE_COLOR = 0x9B59B6
+
+GENERIC_PING_ROLE_ID = 1556157565262364754   # pinged for any kind that isn't a movie or a game
+BUILTIN_KINDS = {                            # work out of the box; no `.night kind add` needed
+    "movie": {"label": "Movie Night", "emoji": "\N{CLAPPER BOARD}", "ping_role_id": 1536593335966367784,
+              "duration": DEFAULT_DURATION_MIN},
+    "game": {"label": "Game Night", "emoji": "\N{VIDEO GAME}", "ping_role_id": 1536590356492320768,
+             "duration": DEFAULT_DURATION_MIN},
+    "event": {"label": "Event", "emoji": "\N{CALENDAR}", "ping_role_id": GENERIC_PING_ROLE_ID,
+              "duration": DEFAULT_DURATION_MIN},
+}
 DEFAULT_REMIND_MIN = 60
 POLL_CLOSE_BEFORE_HOURS = 2  # a vote closes this long before the event starts
 POLL_MAX_HOURS = 168
