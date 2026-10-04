@@ -1,6 +1,6 @@
 """wonderevents: movie nights and game nights with RSVPs, reminders, votes and attendance.
 
-Staff run `.event create movie` and fill in a short form (title, when, description,
+Staff run `.night create movie` and fill in a short form (title, when, description,
 vote options, image). The bot then:
 - posts the event in the events channel with the kind's ping role, Going / Maybe /
   Can't make it buttons and a <t:...> time everyone sees in their own timezone;
@@ -9,7 +9,7 @@ vote options, image). The bot then:
 - posts a native poll for the vote options (closes 2h before the event);
 - reminds only the people who said Going/Maybe, an hour before (configurable);
 - marks the event live at start time and samples who is in the voice channel every
-  5 minutes, so `.event regulars` can show who actually shows up.
+  5 minutes, so `.night regulars` can show who actually shows up.
 """
 from __future__ import annotations
 
@@ -262,7 +262,7 @@ class WonderEvents(commands.Cog):
         k = settings["kinds"].get(kind) or {}
         channel = guild.get_channel(settings["channel_id"] or 0)
         if channel is None:
-            return None, "Set the events channel first: `.event channel #channel`."
+            return None, "Set the events channel first: `.night channel #channel`."
         async with self._lock(guild.id):
             event_id = await gconf.next_id()
             await gconf.next_id.set(event_id + 1)
@@ -457,10 +457,10 @@ class WonderEvents(commands.Cog):
 
     # -- commands ---------------------------------------------------------
 
-    @commands.group(name="event", aliases=["events"], invoke_without_command=True)
+    @commands.group(name="night", aliases=["nights"], invoke_without_command=True)
     @commands.guild_only()
     async def event(self, ctx: commands.Context):
-        """Upcoming events. Staff: `.event create <kind>`, `edit`, `cancel`, `poll`. Everyone: `.event regulars`."""
+        """Upcoming events. Staff: `.night create <kind>`, `edit`, `cancel`, `poll`. Everyone: `.night regulars`."""
         await self.event_list(ctx)
 
     @event.command(name="list")
@@ -480,17 +480,17 @@ class WonderEvents(commands.Cog):
 
     @event.command(name="create")
     async def event_create(self, ctx: commands.Context, kind: str, host: discord.Member = None):
-        """Create an event: `.event create movie` (or `game`, any kind from `.event kind list`). Optional host."""
+        """Create an event: `.night create movie` (or `game`, any kind from `.night kind list`). Optional host."""
         if not await self._require_host(ctx):
             return
         kinds = await self.config.guild(ctx.guild).kinds()
         kind = kind.lower()
         if kind not in kinds:
-            known = ", ".join(f"`{k}`" for k in kinds) or "none yet: `.event kind add movie @MovieNight #Movie Night VC 🎬`"
+            known = ", ".join(f"`{k}`" for k in kinds) or "none yet: `.night kind add movie @MovieNight #Movie Night VC 🎬`"
             await ctx.send(f"Unknown kind `{kind}`. Kinds: {known}")
             return
         if not await self.config.guild(ctx.guild).channel_id():
-            await ctx.send("Set the events channel first: `.event channel #channel`.")
+            await ctx.send("Set the events channel first: `.night channel #channel`.")
             return
         label = kinds[kind].get("label") or kind.title()
         view = OpenFormView(self, author_id=ctx.author.id, guild_id=ctx.guild.id, kind=kind,
@@ -538,7 +538,7 @@ class WonderEvents(commands.Cog):
 
     @event.command(name="poll")
     async def event_poll(self, ctx: commands.Context, event_id: int, *, options: str):
-        """Add a vote to an event: `.event poll 3 Project Hail Mary | Dune 2 | Arrival`."""
+        """Add a vote to an event: `.night poll 3 Project Hail Mary | Dune 2 | Arrival`."""
         if not await self._require_host(ctx):
             return
         ev = await self._get_event(ctx.guild, event_id)
@@ -631,14 +631,14 @@ class WonderEvents(commands.Cog):
 
     @event.group(name="kind", invoke_without_command=True)
     async def event_kind(self, ctx: commands.Context):
-        """Event kinds: `.event kind add <key> <@ping role> <voice channel> [emoji] [hours]`, `remove`, `list`."""
+        """Event kinds: `.night kind add <key> <@ping role> <voice channel> [emoji] [hours]`, `remove`, `list`."""
         await self.event_kind_list(ctx)
 
     @event_kind.command(name="list")
     async def event_kind_list(self, ctx: commands.Context):
         kinds = await self.config.guild(ctx.guild).kinds()
         if not kinds:
-            await ctx.send("No kinds yet. `.event kind add movie @MovieNight #Movie Night VC 🎬 3`")
+            await ctx.send("No kinds yet. `.night kind add movie @MovieNight #Movie Night VC 🎬 3`")
             return
         lines = [
             f"`{k}` {v.get('emoji', '')} **{v.get('label')}** — pings <@&{v.get('ping_role_id')}>, in <#{v.get('vc_id')}>, "
@@ -651,7 +651,7 @@ class WonderEvents(commands.Cog):
     @commands.admin_or_permissions(manage_guild=True)
     async def event_kind_add(self, ctx: commands.Context, key: str, ping_role: discord.Role,
                              voice_channel: discord.VoiceChannel, emoji: str = None, hours: float = 3.0):
-        """Add or replace a kind. `.event kind add movie @Movie Night #Movie Night VC 🎬 3`"""
+        """Add or replace a kind. `.night kind add movie @Movie Night #Movie Night VC 🎬 3`"""
         key = key.lower()
         label = {"movie": "Movie Night", "game": "Game Night"}.get(key, key.title())
         emoji = emoji or {"movie": "\N{CLAPPER BOARD}", "game": "\N{VIDEO GAME}"}.get(key, "\N{CALENDAR}")

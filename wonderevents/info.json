@@ -1,9 +1,9 @@
 {
     "name": "WonderEvents",
     "short": "Movie and game nights: RSVP buttons, Discord scheduled events, votes, reminders and attendance.",
-    "description": "Staff run `.event create movie` and fill in a short form. The bot posts the event with the kind's ping role, Going / Maybe / Can't make it buttons and a time everyone sees in their own timezone, creates a native Discord Scheduled Event in the voice channel, posts a native vote for the movie/game, reminds only the people who said Going/Maybe an hour before, marks the event live at start and samples the voice channel to record who actually came (`.event regulars`).",
+    "description": "Staff run `.night create movie` and fill in a short form. The bot posts the event with the kind's ping role, Going / Maybe / Can't make it buttons and a time everyone sees in their own timezone, creates a native Discord Scheduled Event in the voice channel, posts a native vote for the movie/game, reminds only the people who said Going/Maybe an hour before, marks the event live at start and samples the voice channel to record who actually came (`.night regulars`).",
     "end_user_data_statement": "This cog stores, per event, the user IDs of members who RSVP'd and how many minutes each member spent in the event's voice channel, plus a staff member's chosen timezone if they set one. It is deleted on a Red data-deletion request.",
-    "install_msg": "Set up with `.event channel #server-updates`, then `.event kind add movie @MovieNightRole #Movie Night VC 🎬 3` and `.event kind add game @GameNightRole #Game VC 🎮 3`. Create events with `.event create movie`. The bot needs Manage Events for the Discord scheduled event.",
+    "install_msg": "Set up with `.night channel #server-updates`, then `.night kind add movie @MovieNightRole #Movie Night VC 🎬 3` and `.night kind add game @GameNightRole #Game VC 🎮 3`. Create events with `.night create movie`. The bot needs Manage Events for the Discord scheduled event.",
     "author": ["evacfk"],
     "requirements": [],
     "tags": ["events", "movie night", "game night", "rsvp"],
