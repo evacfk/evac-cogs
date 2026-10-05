@@ -133,3 +133,38 @@ def pick_seed(used: Iterable[int], total: int, rng: Optional[random.Random] = No
         used, fresh = [], list(range(total))
     choice = rng.choice(fresh)
     return choice, used + [choice]
+
+
+def history_entry(cur: dict, counts: list, win, players, readers, wolves) -> dict:
+    """What we keep about a closed question. User ids only; who picked which option is NOT kept."""
+    return {"seq": cur["seq"], "question": cur["question"], "options": list(cur["options"]),
+            "posted_ts": cur.get("posted_ts"), "counts": list(counts), "winners": sorted(win),
+            "players": sorted(players, key=int), "readers": sorted(readers, key=int),
+            "wolves": sorted(wolves, key=int)}
+
+
+def results_pages(entry: dict, limit: int = 1900) -> list:
+    """Plain-text pages (each under `limit` chars) listing everyone who played one closed question."""
+    total = sum(entry["counts"])
+    head = f"**Daily Verdict #{entry['seq']}**: {entry['question']}\n"
+    head += " · ".join(f"{o}: {n}" for o, n in zip(entry["options"], entry["counts"]))
+    head += f"\n{len(entry['players'])} played · {len(entry['readers'])} read the crowd · {len(entry['wolves'])} lone wolves"
+    if not total:
+        return [head]
+    sections = []
+    for title, key in (("Played", "players"), ("Read the crowd", "readers"), ("Lone wolves", "wolves")):
+        if entry[key]:
+            sections.append((title, [f"<@{u}>" for u in entry[key]]))
+    pages, cur = [], head
+    for title, mentions in sections:
+        line = f"\n**{title}:** "
+        for m in mentions:
+            piece = (m if line.endswith(": ") else ", " + m)
+            if len(cur) + len(line) + len(piece) > limit:
+                pages.append(cur + line)
+                cur, line = "", f"**{title} (cont.):** " + m
+            else:
+                line += piece
+        cur += line
+    pages.append(cur)
+    return [p for p in pages if p.strip()]

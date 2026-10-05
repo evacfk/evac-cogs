@@ -98,3 +98,20 @@ def test_uses_up_day_only_for_posts_near_or_after_the_posting_hour():
     assert engine.uses_up_day(t(4), 10)
     assert engine.uses_up_day(t(10), 10)
     assert engine.uses_up_day(t(22), 10)
+
+
+def test_results_pages_split_under_the_limit_and_keep_everyone():
+    entry = {"seq": 3, "question": "Q?", "options": ["a", "b"], "counts": [300, 200], "winners": [0],
+             "players": [str(1000 + i) for i in range(500)], "readers": [str(1000 + i) for i in range(300)],
+             "wolves": ["1001"]}
+    pages = engine.results_pages(entry)
+    assert len(pages) > 1 and all(len(p) <= 2000 for p in pages)
+    text = "\n".join(pages)
+    for i in range(500):
+        assert f"<@{1000 + i}>" in text
+
+
+def test_results_pages_for_a_question_nobody_answered_is_just_the_header():
+    entry = {"seq": 1, "question": "Q?", "options": ["a", "b"], "counts": [0, 0], "winners": [],
+             "players": [], "readers": [], "wolves": []}
+    assert len(engine.results_pages(entry)) == 1

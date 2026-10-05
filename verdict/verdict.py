@@ -18,7 +18,7 @@ from redbot.core import Config, commands
 
 from . import embeds, engine
 from .constants import (
-    COG_VERSION, CONFIG_IDENTIFIER, CROSS, DEFAULT_GUILD, DEFAULT_MEMBER, KEEP_MONTHS, MAX_PENDING_PER_USER,
+    COG_VERSION, CONFIG_IDENTIFIER, CROSS, DEFAULT_GUILD, DEFAULT_MEMBER, KEEP_HISTORY, KEEP_MONTHS, MAX_PENDING_PER_USER,
     STAFF_ROLE_IDS, STREAK_MILESTONES, SUGGEST_COOLDOWN_SECONDS, TICK, TICK_SECONDS, EARLY_MANUAL_HOURS,
 )
 from .seeds import SEED_QUESTIONS
@@ -195,6 +195,9 @@ class Verdict(commands.Cog):
                 scores[uid] = [c + (1 if uid in readers else 0), p + 1]
             for old in sorted(months)[:-KEEP_MONTHS]:
                 months.pop(old, None)
+        async with conf.history() as hist:
+            hist.append(engine.history_entry(cur, counts, win, players, readers, wolves))
+            del hist[:-KEEP_HISTORY]
         milestones = []
         for uid in players:
             mconf = self.config.member_from_ids(guild.id, int(uid))
@@ -394,6 +397,22 @@ class Verdict(commands.Cog):
         lines = [f"`{i}.` <@{uid}> — {c}/{p} right" for i, (uid, c, p) in enumerate(rows, 1)]
         await ctx.send("\N{BRAIN} **Mind Readers this month**\n" + "\n".join(lines),
                        allowed_mentions=discord.AllowedMentions.none())
+
+    @verdict.command(name="results")
+    async def verdict_results(self, ctx: commands.Context, number: int = 0):
+        """Staff: everyone who played a closed question (default: the latest). Not who picked what."""
+        if not await self._require_staff(ctx):
+            return
+        hist = await self.config.guild(ctx.guild).history()
+        if not hist:
+            await ctx.send("No closed questions kept yet. Participants are saved from the next close onward.")
+            return
+        entry = hist[-1] if not number else next((h for h in hist if h["seq"] == number), None)
+        if entry is None:
+            await ctx.send(f"I only keep the last {KEEP_HISTORY} questions, and #{number} isn't one of them.")
+            return
+        for page in engine.results_pages(entry):
+            await ctx.send(page, allowed_mentions=discord.AllowedMentions.none())
 
     @verdict.command(name="suggest")
     async def verdict_suggest(self, ctx: commands.Context, *, text: str):

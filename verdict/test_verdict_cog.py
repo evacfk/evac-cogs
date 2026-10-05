@@ -382,3 +382,34 @@ async def test_manual_post_in_the_afternoon_still_counts_for_the_day(env):
     assert len(env.chan.sent) == 1
     await env.cog._tick(env.g, ts(2026, 10, 5, 10, 5))
     assert len(env.chan.sent) == 2
+
+
+async def test_close_keeps_participants_and_results_command_lists_them(env):
+    await env.cog.post_daily(env.g, ts(2026, 10, 5))
+    for uid, a, p in ((10, 0, 0), (11, 0, 1), (12, 1, 0)):
+        await play(env, Member(env.g, uid), a, p)
+    await env.cog.post_daily(env.g, ts(2026, 10, 6))
+    hist = await env.conf.history()
+    assert len(hist) == 1 and hist[0]["seq"] == 1
+    assert hist[0]["players"] == ["10", "11", "12"] and hist[0]["readers"] == ["10", "12"]
+    assert "answers" not in hist[0] and "predictions" not in hist[0]  # who picked what is not kept
+
+    ctx = Ctx(env, Member(env.g, 1))  # bot owner
+    await cmd(env, "verdict_results")(env.cog, ctx)
+    out = "\n".join(ctx.sent)
+    assert "<@10>" in out and "<@11>" in out and "<@12>" in out and "3 played" in out and "2 read the crowd" in out
+
+    rando = Ctx(env, Member(env.g, 99))
+    await cmd(env, "verdict_results")(env.cog, rando)
+    assert "Only Staff" in rando.sent[0]
+
+
+async def test_results_with_no_history_and_unknown_number(env):
+    ctx = Ctx(env, Member(env.g, 1))
+    await cmd(env, "verdict_results")(env.cog, ctx)
+    assert "No closed questions" in ctx.sent[0]
+    await env.cog.post_daily(env.g, ts(2026, 10, 5))
+    await env.cog.post_daily(env.g, ts(2026, 10, 6))
+    ctx2 = Ctx(env, Member(env.g, 1))
+    await cmd(env, "verdict_results")(env.cog, ctx2, number=7)
+    assert "isn't one of them" in ctx2.sent[0]

@@ -1,7 +1,7 @@
 """Config defaults and fixed values for verdict (Daily Verdict)."""
 from zoneinfo import ZoneInfo
 
-COG_VERSION = "1.0.2"
+COG_VERSION = "1.1.0"
 CONFIG_IDENTIFIER = 0x7E4D1C70
 HOME_TZ = ZoneInfo("America/Los_Angeles")
 
@@ -23,6 +23,7 @@ LONE_WOLF_MIN_VOTES = 5       # ...and at least this many people voted
 MIND_READER_MIN_PLAYED = 5    # to be eligible for the monthly title
 STREAK_MILESTONES = (7, 30, 100, 365)
 KEEP_MONTHS = 3
+KEEP_HISTORY = 60             # closed questions whose participant lists are kept
 BAR_WIDTH = 10
 
 TICK, CROSS = "\N{WHITE HEAVY CHECK MARK}", "\N{CROSS MARK}"
@@ -45,6 +46,7 @@ DEFAULT_GUILD = {
     "months": {},                 # "YYYY-MM" -> {uid: [correct, played]}
     "last_award_month": "",
     "mind_reader_holder": None,
+    "history": [],                # closed questions, newest last: who played, who read the crowd, lone wolves
 }
 
 DEFAULT_MEMBER = {
