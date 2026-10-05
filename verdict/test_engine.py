@@ -86,3 +86,15 @@ def test_pick_seed_never_repeats_until_exhausted():
     assert sorted(seen) == [0, 1, 2, 3, 4]
     i, used = engine.pick_seed(used, 5, rng)  # exhausted -> start over
     assert used == [i]
+
+
+def test_uses_up_day_only_for_posts_near_or_after_the_posting_hour():
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+    la = ZoneInfo("America/Los_Angeles")
+    t = lambda h: datetime(2026, 10, 4, h, 0, tzinfo=la).timestamp()  # noqa: E731
+    assert not engine.uses_up_day(t(0), 10)
+    assert not engine.uses_up_day(t(3), 10)
+    assert engine.uses_up_day(t(4), 10)
+    assert engine.uses_up_day(t(10), 10)
+    assert engine.uses_up_day(t(22), 10)

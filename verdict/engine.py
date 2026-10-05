@@ -104,6 +104,11 @@ def pt_hour(ts: float) -> int:
     return datetime.fromtimestamp(ts, HOME_TZ).hour
 
 
+def uses_up_day(ts: float, post_hour: int, early_hours: int = 6) -> bool:
+    """False for a manual post made well before the scheduled hour (e.g. 12:36am), so the daily post still goes out."""
+    return pt_hour(ts) >= post_hour - early_hours
+
+
 def pick_monthly_winner(scores: dict, min_played: int = MIND_READER_MIN_PLAYED) -> Optional[str]:
     """Most correct guesses, then best accuracy, then lowest user id (stable). Needs enough games played."""
     eligible = [(uid, c, p) for uid, (c, p) in scores.items() if p >= min_played and c > 0]

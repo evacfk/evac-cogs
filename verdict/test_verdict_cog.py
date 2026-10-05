@@ -364,3 +364,21 @@ async def test_settings_command_works_while_a_question_is_open(env):
     mod = Ctx(env, Member(env.g, 61, roles=[types.SimpleNamespace(id=426696709780013066)]))
     await cmd(env, "verdict_settings")(env.cog, mod)
     assert "Daily Verdict" in mod.sent[-1]
+
+
+async def test_manual_post_after_midnight_does_not_block_the_10am_post(env):
+    """Regression: a .verdict post at 12:36am used up the day, so the 10am tick never fired."""
+    await env.cog.post_daily(env.g, ts(2026, 10, 4, 0, 36))
+    assert len(env.chan.sent) == 1
+    await env.cog._tick(env.g, ts(2026, 10, 4, 10, 5))
+    assert len(env.chan.sent) == 2
+    await env.cog._tick(env.g, ts(2026, 10, 4, 18))
+    assert len(env.chan.sent) == 2  # still once at the scheduled hour
+
+
+async def test_manual_post_in_the_afternoon_still_counts_for_the_day(env):
+    await env.cog.post_daily(env.g, ts(2026, 10, 4, 15))
+    await env.cog._tick(env.g, ts(2026, 10, 4, 18))
+    assert len(env.chan.sent) == 1
+    await env.cog._tick(env.g, ts(2026, 10, 5, 10, 5))
+    assert len(env.chan.sent) == 2

@@ -19,7 +19,7 @@ from redbot.core import Config, commands
 from . import embeds, engine
 from .constants import (
     COG_VERSION, CONFIG_IDENTIFIER, CROSS, DEFAULT_GUILD, DEFAULT_MEMBER, KEEP_MONTHS, MAX_PENDING_PER_USER,
-    STAFF_ROLE_IDS, STREAK_MILESTONES, SUGGEST_COOLDOWN_SECONDS, TICK, TICK_SECONDS,
+    STAFF_ROLE_IDS, STREAK_MILESTONES, SUGGEST_COOLDOWN_SECONDS, TICK, TICK_SECONDS, EARLY_MANUAL_HOURS,
 )
 from .seeds import SEED_QUESTIONS
 
@@ -174,7 +174,8 @@ class Verdict(commands.Cog):
             await conf.queue.set(queue)
             await conf.used_seeds.set(used)
             await conf.seq.set(seq)
-            await conf.last_post_date.set(engine.pt_date(now_ts))
+            if engine.uses_up_day(now_ts, hour, EARLY_MANUAL_HOURS):
+                await conf.last_post_date.set(engine.pt_date(now_ts))
             return f"Posted Daily Verdict #{seq}."
 
     async def _close(self, guild, cur: dict, now_ts: float) -> str:

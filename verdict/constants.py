@@ -1,7 +1,7 @@
 """Config defaults and fixed values for verdict (Daily Verdict)."""
 from zoneinfo import ZoneInfo
 
-COG_VERSION = "1.0.1"
+COG_VERSION = "1.0.2"
 CONFIG_IDENTIFIER = 0x7E4D1C70
 HOME_TZ = ZoneInfo("America/Los_Angeles")
 
@@ -12,6 +12,7 @@ STAFF_ROLE_IDS = (            # may add/queue/remove questions (config stays adm
 )
 
 TICK_SECONDS = 60
+EARLY_MANUAL_HOURS = 6        # a manual post this many hours (or more) before the posting hour does not use up the day
 DEFAULT_POST_HOUR = 10        # Pacific; before chat dies for Europe, after the US wakes up
 MIN_OPTIONS, MAX_OPTIONS = 2, 4
 MAX_QUESTION_LEN, MAX_OPTION_LEN = 200, 40
