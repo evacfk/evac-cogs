@@ -185,6 +185,9 @@ async def test_non_mod_gets_read_only_page_even_when_form_class_is_supplied():
         def validate_on_submit(self):  # a submit that WOULD succeed
             return True
 
+        async def validate_dpy_converters(self):
+            return True
+
     cog, data = make_cog()
     guild = make_guild(member_ids_plain=[8])
     result = await cog.dashboard_redditfeed(make_user(8), guild, method="POST", Form=Base)
@@ -211,6 +214,9 @@ async def test_post_through_a_real_wtforms_form_pauses_and_notifies():
         def validate_on_submit(self):
             return self.validate()
 
+        async def validate_dpy_converters(self):
+            return True
+
     cog, data = make_cog(bot=FakeBot(mods={5}))
     guild = make_guild(member_ids_plain=[5])
     result = await cog.dashboard_redditfeed(make_user(5), guild, method="POST", Form=Base)
@@ -230,6 +236,9 @@ async def test_post_for_a_feed_not_in_the_dropdown_is_rejected_by_the_form():
 
         def validate_on_submit(self):
             return self.validate()
+
+        async def validate_dpy_converters(self):
+            return True
 
     cog, data = make_cog(bot=FakeBot(owners={7}))
     result = await cog.dashboard_redditfeed(make_user(7), make_guild(), method="POST", Form=Base)
@@ -271,3 +280,20 @@ def test_template_empty_and_read_only_states_render():
            "last_post": "never", "last_error": "", "require": "", "block": ""}
     read_only = env.from_string(PAGE_TEMPLATE).render(rows=[row], form=None, can_edit=False, guild_name="G")
     assert "needs the mod role" in read_only
+
+
+@pytest.mark.parametrize("autoescape", [True, False])
+def test_template_outputs_the_dashboards_prerendered_form_unescaped(autoescape):
+    """Regression: the dashboard hands the template `form` as pre-rendered HTML
+    (Markup), not a form object. The old template did form.subreddit.label and
+    died with UndefinedError: 'Markup' object has no attribute 'subreddit'."""
+    jinja2 = pytest.importorskip("jinja2")
+    from markupsafe import Markup
+
+    env = jinja2.Environment(autoescape=autoescape)
+    rendered_form = Markup('<form method="post"><select name="x"></select></form>')
+    html = env.from_string(PAGE_TEMPLATE).render(
+        rows=[], form=rendered_form, can_edit=True, guild_name="G"
+    )
+    assert '<form method="post"><select name="x"></select></form>' in html
+    assert "&lt;form" not in html

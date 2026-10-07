@@ -1,5 +1,8 @@
 """Jinja template for the RedditFeed dashboard page. No discord/redbot imports.
 
+The pause/resume form is rendered by the dashboard itself (it hands the template a
+pre-rendered `form`, so it is output with `|safe`, never built field by field).
+
 All data reaches the template as variables (never formatted into this string),
 and every value is passed through `|e` -- that is safe whether or not the
 dashboard's Jinja environment has autoescape on (an already-escaped value is
@@ -44,12 +47,7 @@ PAGE_TEMPLATE = """\
   {% endif %}
 
   {% if form %}
-  <form method="post" class="row g-2 align-items-end">
-    {% if form.hidden_tag is defined %}{{ form.hidden_tag() }}{% elif form.csrf_token is defined %}{{ form.csrf_token }}{% endif %}
-    <div class="col-auto">{{ form.subreddit.label }} {{ form.subreddit(class_="form-select") }}</div>
-    <div class="col-auto">{{ form.action.label }} {{ form.action(class_="form-select") }}</div>
-    <div class="col-auto">{{ form.submit(class_="btn btn-primary") }}</div>
-  </form>
+  {{ form|safe }}
   {% elif rows and not can_edit %}
   <p class="text-muted">Pausing or resuming a feed needs the mod role or Manage Server.</p>
   {% endif %}

@@ -207,7 +207,7 @@ class RedditFeed(DashboardIntegration, commands.Cog):
     @redditfeed.command(name="version")
     async def redditfeed_version(self, ctx: commands.Context) -> None:
         """Version-probe command -- confirms a deploy actually took."""
-        await ctx.send("redditfeed build: dashboard-v2 (Arctic Shift source)")
+        await ctx.send("redditfeed build: dashboard-v3 (Arctic Shift source)")
 
     @redditfeed.command(name="add")
     async def redditfeed_add(
@@ -450,7 +450,7 @@ class RedditFeed(DashboardIntegration, commands.Cog):
             form = PauseForm()
             visible = engine.mappings_for_channels(await self.config.mappings(), guild_channel_ids)
             form.subreddit.choices = [(m.subreddit, f"r/{m.subreddit}") for m in visible]
-            if form.validate_on_submit():
+            if form.validate_on_submit() and await form.validate_dpy_converters():
                 category, message = await self._dashboard_apply_pause(
                     user, guild, form.subreddit.data, form.action.data
                 )

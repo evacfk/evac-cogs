@@ -70,7 +70,7 @@ def test_version_probe_text_is_the_new_build():
 
     from redditfeed import redditfeed
 
-    assert "redditfeed build: dashboard-v2" in inspect.getsource(redditfeed)
+    assert "redditfeed build: dashboard-v3" in inspect.getsource(redditfeed)
 
 
 def test_setup_function_exists():
