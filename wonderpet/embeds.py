@@ -77,7 +77,7 @@ def card_embed(pet: dict, *, now: float, this_week: list, last_week: list, art_f
     e.add_field(name="Top carers this week", value=_people(this_week), inline=False)
     if last_week:
         e.add_field(name="Last week", value=_people(last_week[:3]), inline=False)
-    e.set_footer(text="Everyone gets one free Feed, Play and Clean a day. Treats cost wondercoins.")
+    e.set_footer(text="One free care a day: pick Feed, Play or Clean for whichever meter is lowest. Treats cost wondercoins.")
     if art_file:
         e.set_thumbnail(url=f"attachment://{art_file}")
     return e
@@ -95,7 +95,7 @@ def _people(rows: list) -> str:
 
 def hatch_text(pet: dict) -> str:
     return (f"\N{HATCHING CHICK} **The egg hatched!** Say hello to **{pet['name']}**. "
-            f"Feed, play and clean to help it grow. Everyone can do each once a day.")
+            f"Everyone gets one free feed, play or clean a day, so pick the meter that needs it most.")
 
 
 def grew_text(pet: dict, stage: str) -> str:

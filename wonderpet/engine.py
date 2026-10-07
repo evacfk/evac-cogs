@@ -159,9 +159,11 @@ def _grow(pet: dict, now: float) -> list[str]:
 # --- daily limits (per member) ----------------------------------------------------------------
 
 def daily_for(daily: dict | None, today: str) -> dict:
+    """A member's day: which single free action they used (None = still free) and how many treats."""
     if not daily or daily.get("date") != today:
-        return {"date": today, "feed": False, "play": False, "clean": False, "treats": 0}
-    return dict(daily)
+        return {"date": today, "used": None, "treats": 0}
+    used = daily.get("used") or next((k for k in ACTIONS if daily.get(k)), None)  # 1.0.x stored a flag per action
+    return {"date": today, "used": used, "treats": int(daily.get("treats", 0))}
 
 
 # --- care --------------------------------------------------------------------------------------

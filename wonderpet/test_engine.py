@@ -126,7 +126,7 @@ def test_growth_is_paused_while_sick():
 
 def test_baby_and_teen_stages_need_time_and_care():
     p = pet("baby")
-    p["stage_care"] = 200
+    p["stage_care"] = 80
     p.update(hunger=100.0, happy=100.0, clean=100.0)
     p["last_tick_ts"] = 0
     assert engine.advance(p, 6 * 24 * H) == [] and p["stage"] == "baby"   # care yes, time no
@@ -143,7 +143,7 @@ def test_adult_form_follows_how_well_it_was_raised():
 
 def test_teen_becomes_adult_with_a_form():
     p = pet("teen")
-    p["stage_care"] = 500
+    p["stage_care"] = 200
     p["quality_sum"], p["quality_hours"] = 80.0 * 50, 50.0
     p.update(hunger=100.0, happy=100.0, clean=100.0)
     p["last_tick_ts"] = 10 * 24 * H - 60
@@ -173,15 +173,23 @@ def test_care_is_capped_at_100_and_credited_to_the_carer():
 def test_treat_prices_scale():
     assert engine.treat_price("snack", 2000) == 2000
     assert engine.treat_price("feast", 2000) == 8000
+    assert engine.treat_price("snack", 10000) == 10000 and engine.treat_price("feast", 10000) == 40000
 
 
 def test_daily_limits_reset_at_pacific_midnight():
     t1 = datetime(2026, 10, 10, 23, 59, tzinfo=LA).timestamp()
     t2 = datetime(2026, 10, 11, 0, 1, tzinfo=LA).timestamp()
     d = engine.daily_for(None, engine.local_date(t1).isoformat())
-    d["feed"] = True
-    assert engine.daily_for(d, engine.local_date(t1).isoformat())["feed"] is True
-    assert engine.daily_for(d, engine.local_date(t2).isoformat())["feed"] is False
+    d["used"] = "feed"
+    assert engine.daily_for(d, engine.local_date(t1).isoformat())["used"] == "feed"
+    assert engine.daily_for(d, engine.local_date(t2).isoformat())["used"] is None
+
+
+def test_daily_reads_the_old_per_action_flags_so_nobody_gets_a_second_free_care_on_deploy_day():
+    today = "2026-10-07"
+    old = {"date": today, "feed": False, "play": True, "clean": False, "treats": 2}
+    d = engine.daily_for(old, today)
+    assert d["used"] == "play" and d["treats"] == 2
 
 
 def test_weeks_roll_over_and_old_weeks_are_dropped():

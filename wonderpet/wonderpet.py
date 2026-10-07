@@ -1,7 +1,7 @@
 """WonderPet: one pet for the whole server, raised together in #cuddle.
 
 - a single card with Feed / Play / Clean / Treat buttons; each member gets one free
-  Feed, Play and Clean per day (Pacific time), treats cost wondercoins;
+  free Feed, Play or Clean per day (their choice of one, Pacific time), treats cost wondercoins;
 - the pet grows egg > baby > teen > adult over a few weeks and its adult form depends on how well
   it was looked after; neglect goes through four escalating warnings (about 3 days) before it is
   lost, and a new egg arrives a day later;
@@ -340,9 +340,10 @@ class WonderPet(commands.Cog):
                 return
             today = engine.local_date(now).isoformat()
             daily = engine.daily_for(await mconf.daily(), today)
-            if daily[kind]:
+            if daily["used"]:
                 await interaction.response.send_message(
-                    f"You already did that for {pet['name']} today. Come back tomorrow, or try a treat.", ephemeral=True)
+                    f"You already used your free care today ({_VERBS[daily['used']]} {pet['name']}). "
+                    f"Come back tomorrow, or give a treat.", ephemeral=True)
                 return
             events = engine.advance(pet, now)
             if any(e.startswith("lost:") or e == "retired" for e in events):
@@ -350,14 +351,17 @@ class WonderPet(commands.Cog):
                 reply = f"It was too late. {pet['name']} is gone."
                 changed = False
             else:
+                before = round(pet[engine.ACTION_METER[kind]])
                 engine.give_care(pet, kind, member.id)
-                daily[kind] = True
+                after = round(pet[engine.ACTION_METER[kind]])
+                daily["used"] = kind
                 events += engine.advance(pet, now)
                 week = engine.record_week(s["week_carers"], now, member.id)
                 await gconf.week_carers.set(week)
                 await mconf.daily.set(daily)
                 msgs = await self._process(guild, s, pet, events, now)
-                reply = f"{embeds.pet_emoji(pet)} You {_VERBS[kind]} {pet['name']}. Thanks!"
+                reply = (f"{embeds.pet_emoji(pet)} You {_VERBS[kind]} {pet['name']} ({engine.ACTION_METER[kind]} "
+                         f"{before} to {after}). That was your free care for today. Treats are still open.")
                 changed = True
             s = await gconf.all()
         await interaction.response.send_message(reply, ephemeral=True)
@@ -485,9 +489,9 @@ class WonderPet(commands.Cog):
         now = self._now()
         daily = engine.daily_for(await self.config.member(ctx.author).daily(), engine.local_date(now).isoformat())
         s = await self.config.guild(ctx.guild).all()
-        left = [k.title() for k in engine.ACTIONS if not daily[k]]
         treats = max(0, s["treat_cap"] - daily["treats"])
-        await ctx.send(f"Free today: {', '.join(left) if left else 'all done'}. Treats left: {treats}.")
+        free = "used (" + daily["used"] + ")" if daily["used"] else "still available, pick one of Feed, Play or Clean"
+        await ctx.send(f"Your free care today: {free}. Treats left: {treats}.")
 
     @pet.command(name="carers")
     async def pet_carers(self, ctx: commands.Context):

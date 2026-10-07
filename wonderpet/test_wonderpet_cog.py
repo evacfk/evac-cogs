@@ -122,26 +122,36 @@ async def test_newegg_posts_one_card_with_buttons(env):
     assert s["card_message_id"] == cards[0].id and s["pet"]["stage"] == "egg"
 
 
-async def test_each_free_action_once_per_member_per_day(env):
+async def test_each_member_gets_one_free_care_a_day_of_their_choice(env):
     await _setup(env, "baby")
     a, b = Member(1), Member(2)
     ia = Interaction(env.guild, a)
     await env.cog.handle_action(ia, "feed")
-    assert "fed" in ia.text
+    assert "fed" in ia.text and "hunger" in ia.text and " to " in ia.text   # shows the meter that moved
     await env.cog.handle_action(ia, "feed")
-    assert "already" in ia.text
-    await env.cog.handle_action(ia, "play")          # a different action is still available
-    assert "played" in ia.text
+    assert "already used your free care" in ia.text
+    await env.cog.handle_action(ia, "play")          # a different action is NOT available any more
+    assert "already used your free care" in ia.text and "played" not in ia.text.split("(")[0]
     ib = Interaction(env.guild, b)
-    await env.cog.handle_action(ib, "feed")          # another member can feed too
-    assert "fed" in ib.text
+    await env.cog.handle_action(ib, "play")          # another member gets their own pick
+    assert "played" in ib.text
     pet = await _pet(env)
-    assert pet["carers"] == {"1": 2, "2": 1}
+    assert pet["carers"] == {"1": 1, "2": 1}
     week = (await env.cog.config.guild(env.guild).all())["week_carers"]
-    assert list(week.values()) == [{"1": 2, "2": 1}]
+    assert list(week.values()) == [{"1": 1, "2": 1}]
     env.clock.t += 24 * H                             # tomorrow it resets
-    await env.cog.handle_action(ia, "feed")
-    assert "fed" in ia.text
+    await env.cog.handle_action(ia, "play")
+    assert "played" in ia.text
+
+
+async def test_treats_still_work_after_the_free_care_is_used(env):
+    await _setup(env, "baby")
+    m = Member(5)
+    env.bank.balances[5] = 10_000
+    await env.cog.handle_action(Interaction(env.guild, m), "feed")
+    ia = Interaction(env.guild, m)
+    await env.cog.handle_treat(ia, "toy")
+    assert env.bank.withdrawals[-1] == (5, 10000)
 
 
 async def test_card_redraw_is_batched_not_per_click(env):
@@ -177,15 +187,15 @@ async def test_egg_hatches_after_enough_love_and_time(env):
 async def test_treat_costs_coins_and_boosts_more_than_free_care(env):
     await _setup(env, "baby")
     m = Member(5)
-    env.bank.balances[5] = 10_000
+    env.bank.balances[5] = 50_000
     pet = await _pet(env)
     pet["hunger"] = 10.0
     await env.cog.config.guild(env.guild).pet.set(pet)
     ia = Interaction(env.guild, m)
     await env.cog.handle_treat(ia, "snack")
-    assert env.bank.withdrawals == [(5, 2000)] and (await _pet(env))["hunger"] == 40.0
-    await env.cog.handle_treat(ia, "feast")        # 8,000 needed, only 8,000 left: allowed
-    assert env.bank.withdrawals[-1] == (5, 8000) and (await _pet(env))["clean"] >= 80
+    assert env.bank.withdrawals == [(5, 10000)] and (await _pet(env))["hunger"] == 40.0
+    await env.cog.handle_treat(ia, "feast")        # 40,000 needed, exactly 40,000 left: allowed
+    assert env.bank.withdrawals[-1] == (5, 40000) and (await _pet(env))["clean"] >= 80
 
 
 async def test_treat_refused_without_funds_and_changes_nothing(env):

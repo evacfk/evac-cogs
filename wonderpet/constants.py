@@ -1,7 +1,7 @@
 """Config defaults and lookup tables for wonderpet. No discord/redbot imports here."""
 from zoneinfo import ZoneInfo
 
-COG_VERSION = "1.0.2"
+COG_VERSION = "1.1.0"
 CONFIG_IDENTIFIER = 0x3E7E27B2
 HOME_TZ = ZoneInfo("America/Los_Angeles")
 
@@ -33,8 +33,8 @@ CARE_FREE = 1                  # growth points for a free action
 CARE_TREAT = 2                 # growth points for a treat
 STAGES = {                     # stage -> (min hours in stage, care points needed in stage, next stage)
     "egg": (12, 6, "baby"),
-    "baby": (7 * 24, 200, "teen"),
-    "teen": (10 * 24, 500, "adult"),
+    "baby": (7 * 24, 80, "teen"),     # 1.1.0: one free action a day (was three), so the point targets were cut to match
+    "teen": (10 * 24, 200, "adult"),
 }
 ADULT_RETIRE_DAYS = 21         # an adult is sent off to the Pet Hall after this long, then a new egg arrives
 NEW_EGG_DELAY_HOURS = 24
@@ -51,7 +51,7 @@ TREATS = {
     "bubbles": ("Bubble bath", "\N{BUBBLES}", ("clean",), 1),
     "feast": ("Royal feast", "\N{GLOWING STAR}", METERS, 4),
 }
-DEFAULT_TREAT_PRICE = 2000
+DEFAULT_TREAT_PRICE = 10000
 DEFAULT_TREAT_DAILY_CAP = 3
 
 # --- looks (placeholders until the community's own art is uploaded with `.wonderpet art`) ----
@@ -92,5 +92,5 @@ DEFAULT_GUILD = {
 }
 
 DEFAULT_MEMBER = {
-    "daily": {},                  # {"date": iso, "feed": bool, "play": bool, "clean": bool, "treats": int}
+    "daily": {},                  # {"date": iso, "used": "feed"|"play"|"clean"|None, "treats": int}
 }
