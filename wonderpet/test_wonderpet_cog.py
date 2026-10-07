@@ -218,11 +218,11 @@ async def test_treat_daily_cap_and_not_for_eggs(env):
     pet = await _pet(env)
     pet["stage"] = "baby"
     await env.cog.config.guild(env.guild).pet.set(pet)
-    for _ in range(3):
+    for _ in range(2):                                  # default cap is 2 a day
         await env.cog.handle_treat(ia, "snack")
-    assert len(env.bank.withdrawals) == 3
+    assert len(env.bank.withdrawals) == 2
     await env.cog.handle_treat(ia, "snack")
-    assert "already" in ia.text and len(env.bank.withdrawals) == 3
+    assert "already" in ia.text and len(env.bank.withdrawals) == 2
 
 
 async def test_warning_ladder_announces_each_level_once_and_pings_only_serious(env):
@@ -375,3 +375,82 @@ async def test_card_embed_shows_weekly_carers_and_time_left(env):
     s["pet"].update(hunger=5.0, happy=5.0, clean=5.0)
     embed, _ = await env.cog._card(env.guild, s, env.clock.t)
     assert any("Time left" in f.name for f in embed.fields)
+
+
+async def test_streak_grows_on_consecutive_days_resets_after_a_gap_and_shows_in_me(env):
+    await _setup(env, "baby")
+    m = Member(8)
+    ia = Interaction(env.guild, m)
+    await env.cog.handle_action(ia, "feed")
+    assert "streak" not in ia.text                      # day one: nothing to brag about yet
+    env.clock.t += 24 * H
+    await env.cog.handle_action(ia, "play")
+    assert "2-day care streak" in ia.text
+    env.clock.t += 24 * H
+    env.bank.balances[8] = 10_000
+    await env.cog.handle_treat(ia, "snack")             # a treat alone keeps the streak going
+    assert "3-day care streak" in ia.text
+    state = await env.cog.config.member(m).all()
+    assert state["streak"] == 3 and state["best_streak"] == 3
+    env.clock.t += 3 * 24 * H                           # skipped days: streak is gone
+    ctx = types.SimpleNamespace(author=m, guild=env.guild, sent=[])
+
+    async def send(text, **kw):
+        ctx.sent.append(text)
+    ctx.send = send
+    me = getattr(env.mod.WonderPet.pet_me, "callback", env.mod.WonderPet.pet_me)
+    await me(env.cog, ctx)
+    assert "No care streak yet" in ctx.sent[0] and "best 3" in ctx.sent[0]
+    await env.cog.handle_action(ia, "feed")
+    assert (await env.cog.config.member(m).all())["streak"] == 1
+
+
+async def test_card_names_the_neediest_meter():
+    from wonderpet import embeds, engine
+    pet = engine.new_pet(0.0, 1)
+    pet.update(stage="baby", hunger=90.0, happy=35.0, clean=70.0)
+    assert "Happy" in embeds.needs_line(pet) and "Play" in embeds.needs_line(pet) and "35%" in embeds.needs_line(pet)
+    pet.update(hunger=95.0, happy=90.0, clean=85.0)
+    assert "nothing right now" in embeds.needs_line(pet)
+
+
+async def test_card_command_has_a_15_minute_server_wide_cooldown_staff_skip_it(env):
+    await _setup(env, "baby")
+    reposts = []
+
+    async def fake_repost(guild):
+        reposts.append(1)
+    env.cog._repost = fake_repost
+
+    def ctx_for(member):
+        c = types.SimpleNamespace(author=member, guild=env.guild, channel=env.chan, sent=[])
+
+        async def send(text=None, **kw):
+            c.sent.append(text)
+        c.send = send
+        return c
+
+    card = getattr(env.mod.WonderPet.pet_card, "callback", env.mod.WonderPet.pet_card)
+    a, b = ctx_for(Member(1)), ctx_for(Member(2))
+    await card(env.cog, a)
+    await card(env.cog, b)                                  # someone else, seconds later
+    assert len(reposts) == 1 and "again in about" in b.sent[0]
+    env.clock.t += 14 * 60
+    c14 = ctx_for(Member(3))
+    await card(env.cog, c14)
+    assert len(reposts) == 1 and "about 2 min" in c14.sent[0]
+    staff = ctx_for(Member(4, roles=[types.SimpleNamespace(id=426696709780013066)]))
+    await card(env.cog, staff)                              # staff can force it
+    assert len(reposts) == 2
+    env.clock.t += 15 * 60 + 1
+    await card(env.cog, ctx_for(Member(5)))
+    assert len(reposts) == 3
+
+
+async def test_card_embed_carries_the_needs_line_in_the_wellbeing_field():
+    from wonderpet import embeds, engine
+    pet = engine.new_pet(0.0, 1)
+    pet.update(stage="baby", hunger=20.0, happy=80.0, clean=80.0)
+    e = embeds.card_embed(pet, now=3600.0, this_week=[], last_week=[])
+    field = next(f for f in e.fields if f.name == "Wellbeing")
+    assert "Needs most" in field.value and "Feed" in field.value

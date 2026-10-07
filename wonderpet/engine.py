@@ -5,11 +5,11 @@ No discord.py / redbot imports, so it is fully unit-testable. All times are unix
 from __future__ import annotations
 
 import random
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 
 from .constants import (
     ADULT_RETIRE_DAYS, CARE_FREE, CARE_GAIN, CARE_TREAT, DECAY_PER_HOUR, DEFAULT_NAMES, FORM_HAPPY_QUALITY,
-    FORM_RADIANT_QUALITY, GONE_HOURS, HOME_TZ, LEVEL_HOURS, MAX_CATCHUP_HOURS, METERS, NEGLECT_AVG, RECOVER_AVG,
+    EMPTY_BELOW, FORM_RADIANT_QUALITY, GONE_HOURS, HOME_TZ, LEVEL_HOURS, MAX_CATCHUP_HOURS, METERS, NEGLECT_AVG, RECOVER_AVG,
     STAGES, TREAT_GAIN, TREATS, WORRIED_AVG,
 )
 
@@ -48,6 +48,10 @@ def avg_meter(pet: dict) -> float:
     return sum(pet[m] for m in METERS) / len(METERS)
 
 
+def any_empty(pet: dict) -> bool:
+    return any(pet[m] < EMPTY_BELOW for m in METERS)
+
+
 def lowest_meter(pet: dict) -> str:
     return min(METERS, key=lambda m: pet[m])
 
@@ -56,7 +60,7 @@ def level_for(pet: dict) -> int:
     """0 fine, 1 needs help, 2 sick (growth paused), 3 critical, 4 final warning."""
     if pet["stage"] == "egg" or not pet["alive"]:
         return 0
-    if avg_meter(pet) >= RECOVER_AVG:
+    if avg_meter(pet) >= RECOVER_AVG and not any_empty(pet):
         return 0   # looked after again: better right away. The neglect clock still burns down on its own,
                    # so a relapse picks up where it left off instead of starting from zero.
     hours = pet["neglect_hours"]
@@ -116,10 +120,10 @@ def advance(pet: dict, now: float) -> list[str]:
         avg = avg_meter(pet)
         pet["quality_sum"] += avg * dt
         pet["quality_hours"] += dt
-        if avg < NEGLECT_AVG:
+        if avg < NEGLECT_AVG or any_empty(pet):
             pet["neglect_hours"] += dt
             pet["weak"] = lowest_meter(pet)
-        elif avg >= RECOVER_AVG:
+        elif avg >= RECOVER_AVG and not any_empty(pet):
             pet["neglect_hours"] = max(0.0, pet["neglect_hours"] - 2 * dt)
 
     if pet["neglect_hours"] >= GONE_HOURS:
@@ -186,6 +190,25 @@ def _credit(pet: dict, uid: int, points: float) -> None:
     pet["care_points"] += points
     pet["stage_care"] += points
     pet["carers"][str(uid)] = pet["carers"].get(str(uid), 0) + 1
+
+
+def bump_streak(state: dict, today: str) -> dict:
+    """Record that a member cared today. state: {streak, best_streak, last_care}."""
+    last = state.get("last_care") or ""
+    if last == today:
+        return {"streak": state.get("streak", 0), "best_streak": state.get("best_streak", 0), "last_care": today}
+    yesterday = (date.fromisoformat(today) - timedelta(days=1)).isoformat()
+    streak = state.get("streak", 0) + 1 if last == yesterday else 1
+    return {"streak": streak, "best_streak": max(state.get("best_streak", 0), streak), "last_care": today}
+
+
+def live_streak(state: dict, today: str) -> int:
+    """The streak to show: still alive if they cared today or yesterday, otherwise 0."""
+    last = state.get("last_care") or ""
+    if not last:
+        return 0
+    yesterday = (date.fromisoformat(today) - timedelta(days=1)).isoformat()
+    return state.get("streak", 0) if last in (today, yesterday) else 0
 
 
 def treat_price(key: str, base: int) -> int:

@@ -1,6 +1,6 @@
 """Fixed values for mystats. No discord/redbot imports here."""
 
-COG_VERSION = "1.0.0"
+COG_VERSION = "1.0.1"
 COLOR = 0xF48FB1
 COOLDOWN_SECONDS = 15
 FIELD_LIMIT = 1024

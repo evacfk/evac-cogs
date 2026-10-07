@@ -241,3 +241,39 @@ def test_relapse_resumes_the_clock_instead_of_resetting_it():
     p.update(hunger=1.0, happy=1.0, clean=1.0)      # everyone wanders off again
     ev = engine.advance(p, 2 * H)
     assert "warn:3" in ev   # straight back to critical, not "worried" again
+
+
+def test_an_empty_meter_runs_the_neglect_clock_even_when_the_average_looks_fine():
+    p = pet("baby")
+    p.update(hunger=0.0, happy=100.0, clean=100.0)       # average 66, but hunger is empty
+    p["last_tick_ts"] = 0
+    engine.advance(p, 1 * H)
+    assert p["neglect_hours"] > 0.9 and p["weak"] == "hunger"
+    assert engine.level_for(p) >= 1
+
+
+def test_neglect_does_not_recover_while_a_meter_is_still_empty_and_does_once_it_is_not():
+    p = pet("baby")
+    p.update(hunger=0.0, happy=100.0, clean=100.0)
+    p["neglect_hours"] = 10.0
+    p["last_tick_ts"] = 0
+    engine.advance(p, 1 * H)
+    assert p["neglect_hours"] > 10.0
+    p.update(hunger=60.0, happy=100.0, clean=100.0)
+    p["last_tick_ts"] = 1 * H
+    n = p["neglect_hours"]
+    engine.advance(p, 2 * H)
+    assert p["neglect_hours"] < n
+
+
+def test_streak_math():
+    s = engine.bump_streak({}, "2026-10-07")
+    assert s == {"streak": 1, "best_streak": 1, "last_care": "2026-10-07"}
+    assert engine.bump_streak(s, "2026-10-07")["streak"] == 1                 # same day: unchanged
+    s = engine.bump_streak(s, "2026-10-08")
+    assert s["streak"] == 2
+    s = engine.bump_streak(s, "2026-10-10")                                    # gap
+    assert s["streak"] == 1 and s["best_streak"] == 2
+    assert engine.live_streak({"streak": 4, "last_care": "2026-10-09"}, "2026-10-10") == 4   # yesterday still counts
+    assert engine.live_streak({"streak": 4, "last_care": "2026-10-08"}, "2026-10-10") == 0
+    assert engine.live_streak({}, "2026-10-10") == 0

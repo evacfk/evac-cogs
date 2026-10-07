@@ -116,9 +116,15 @@ def pet_lines(data: Optional[dict]) -> list[str]:
     if not data:
         return []
     cared = _int(data.get("care_recent"))
-    if not cared:
+    best = _int(data.get("best_streak"))
+    if not cared and not best:
         return []
-    return [f"Looked after the pet {cared:,} time{'s' if cared != 1 else ''} in the last few weeks"]
+    lines = []
+    if cared:
+        lines.append(f"Looked after the pet {cared:,} time{'s' if cared != 1 else ''} in the last few weeks")
+    if best >= 2:
+        lines.append(f"Best pet care streak: {best} days")
+    return lines
 
 
 def bump_lines(data: Optional[dict]) -> list[str]:

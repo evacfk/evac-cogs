@@ -1,7 +1,7 @@
 """Config defaults and lookup tables for wonderpet. No discord/redbot imports here."""
 from zoneinfo import ZoneInfo
 
-COG_VERSION = "1.1.0"
+COG_VERSION = "1.2.0"
 CONFIG_IDENTIFIER = 0x3E7E27B2
 HOME_TZ = ZoneInfo("America/Los_Angeles")
 
@@ -13,6 +13,7 @@ STAFF_ROLE_IDS = (            # may run the staff commands
 
 TICK_SECONDS = 300
 MAX_CATCHUP_HOURS = 6          # after a restart/outage the pet is only aged this much, never punished for downtime
+CARD_COMMAND_COOLDOWN = 15 * 60  # `.wonderpet` brings the card back at most this often, server-wide (staff skip it)
 RENDER_DELAY_SECONDS = 5       # button presses redraw the card at most this often
 
 # --- meters (0-100), all drain slowly so a quiet weekend is survivable -------------------------
@@ -22,6 +23,7 @@ CARE_GAIN = 20                 # a free Feed / Play / Clean
 TREAT_GAIN = 30
 
 # --- neglect: how a pet can be lost, and how much warning there is -----------------------------
+EMPTY_BELOW = 1                # a meter under this counts as empty: neglect runs even if the other two cover the average
 NEGLECT_AVG = 25               # average meter below this = neglected, the clock runs
 RECOVER_AVG = 45               # at/above this the clock runs backwards
 WORRIED_AVG = 40               # below this (or any meter under 20) the pet "needs help" (level 1)
@@ -52,7 +54,7 @@ TREATS = {
     "feast": ("Royal feast", "\N{GLOWING STAR}", METERS, 4),
 }
 DEFAULT_TREAT_PRICE = 10000
-DEFAULT_TREAT_DAILY_CAP = 3
+DEFAULT_TREAT_DAILY_CAP = 2
 
 # --- looks (placeholders until the community's own art is uploaded with `.wonderpet art`) ----
 STAGE_LABEL = {"egg": "Egg", "baby": "Baby", "teen": "Teen", "adult": "Adult"}
@@ -92,5 +94,8 @@ DEFAULT_GUILD = {
 }
 
 DEFAULT_MEMBER = {
+    "streak": 0,                  # consecutive Pacific days with any care (free or treat)
+    "best_streak": 0,
+    "last_care": "",              # ISO date of the last day they cared
     "daily": {},                  # {"date": iso, "used": "feed"|"play"|"clean"|None, "treats": int}
 }

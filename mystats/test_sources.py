@@ -107,9 +107,9 @@ async def test_puzzle_reads_this_members_lifetime_entry_and_missing_member_is_em
 
 async def test_pet_sums_this_members_care_across_kept_weeks():
     weeks = {"2026-W40": {"42": 3, "7": 5}, "2026-W41": {"42": 4}, "2026-W42": {}}
-    cog = types.SimpleNamespace(config=Config(guild={"week_carers": weeks}))
+    cog = types.SimpleNamespace(config=Config(guild={"week_carers": weeks}, member={"best_streak": 5}))
     out = await sources.gather(Bot(WonderPet=cog), MEMBER)
-    assert out["pet"] == {"care_recent": 7}
+    assert out["pet"] == {"care_recent": 7, "best_streak": 5}
 
 
 async def test_a_broken_reader_is_isolated_and_logged(caplog):

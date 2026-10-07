@@ -147,4 +147,4 @@ async def test_version_probe(mod):
     cog = mod.MyStats(Bot())
     ctx = Ctx(Member(5, "x", GUILD), GUILD)
     await cog.mystats.subs["version"].callback(cog, ctx)
-    assert ctx.sent[0][0] == "MyStats v1.0.0"
+    assert ctx.sent[0][0] == "MyStats v1.0.1"

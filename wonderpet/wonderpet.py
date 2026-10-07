@@ -22,7 +22,7 @@ from redbot.core.data_manager import cog_data_path
 
 from . import embeds, engine
 from .constants import (
-    ART_SLOTS, BTN_CLEAN, BTN_FEED, BTN_PLAY, BTN_TREAT, COG_VERSION, CONFIG_IDENTIFIER, DEFAULT_GUILD,
+    ART_SLOTS, BTN_CLEAN, CARD_COMMAND_COOLDOWN, BTN_FEED, BTN_PLAY, BTN_TREAT, COG_VERSION, CONFIG_IDENTIFIER, DEFAULT_GUILD,
     DEFAULT_MEMBER, NEW_EGG_DELAY_HOURS, RENDER_DELAY_SECONDS, STAFF_ROLE_IDS, TICK_SECONDS, TREATS,
 )
 
@@ -328,6 +328,14 @@ class WonderPet(commands.Cog):
 
     # -- buttons --------------------------------------------------------------
 
+    async def _touch_streak(self, mconf, today: str) -> int:
+        """Count today as a care day for this member. Returns the streak to show."""
+        state = engine.bump_streak(await mconf.all(), today)
+        await mconf.streak.set(state["streak"])
+        await mconf.best_streak.set(state["best_streak"])
+        await mconf.last_care.set(state["last_care"])
+        return state["streak"]
+
     async def handle_action(self, interaction, kind: str) -> None:
         guild, member, now = interaction.guild, interaction.user, self._now()
         gconf, mconf = self.config.guild(guild), self.config.member(member)
@@ -359,9 +367,11 @@ class WonderPet(commands.Cog):
                 week = engine.record_week(s["week_carers"], now, member.id)
                 await gconf.week_carers.set(week)
                 await mconf.daily.set(daily)
+                streak = await self._touch_streak(mconf, today)
                 msgs = await self._process(guild, s, pet, events, now)
                 reply = (f"{embeds.pet_emoji(pet)} You {_VERBS[kind]} {pet['name']} ({engine.ACTION_METER[kind]} "
-                         f"{before} to {after}). That was your free care for today. Treats are still open.")
+                         f"{before} to {after}). That was your free care for today. Treats are still open."
+                         f"{embeds.streak_suffix(streak)}")
                 changed = True
             s = await gconf.all()
         await interaction.response.send_message(reply, ephemeral=True)
@@ -418,10 +428,12 @@ class WonderPet(commands.Cog):
             events += engine.advance(pet, now)
             await gconf.week_carers.set(engine.record_week(s["week_carers"], now, member.id))
             await mconf.daily.set(daily)
+            streak = await self._touch_streak(mconf, today)
             msgs = await self._process(guild, s, pet, events, now)
             s = await gconf.all()
         label, emoji, _m, _mult = TREATS[key]
-        await interaction.response.send_message(f"{emoji} {pet['name']} loved the {label.lower()}! (-{price:,})", ephemeral=True)
+        await interaction.response.send_message(
+            f"{emoji} {pet['name']} loved the {label.lower()}! (-{price:,}){embeds.streak_suffix(streak)}", ephemeral=True)
         await self._send_all(guild, s, msgs)
         self._request_render(guild)
 
@@ -474,8 +486,12 @@ class WonderPet(commands.Cog):
             await ctx.send("No pet right now. A new egg is on its way.")
             return
         now = self._now()
-        if now - self._last_card_cmd.get(ctx.guild.id, 0) < 30:
-            await ctx.send("The card was just posted. Check the channel.")
+        wait = CARD_COMMAND_COOLDOWN - (now - self._last_card_cmd.get(ctx.guild.id, 0))
+        if wait > 0 and not await self._is_staff(ctx.author):
+            channel = self._channel(ctx.guild, s)
+            where = f" in {channel.mention}" if channel is not None else ""
+            await ctx.send(f"The card was brought back recently, so it's already close by{where}. "
+                           f"You can call it again in about {int(wait // 60) + 1} min.")
             return
         self._last_card_cmd[ctx.guild.id] = now
         await self._repost(ctx.guild)
@@ -491,7 +507,13 @@ class WonderPet(commands.Cog):
         s = await self.config.guild(ctx.guild).all()
         treats = max(0, s["treat_cap"] - daily["treats"])
         free = "used (" + daily["used"] + ")" if daily["used"] else "still available, pick one of Feed, Play or Clean"
-        await ctx.send(f"Your free care today: {free}. Treats left: {treats}.")
+        today = engine.local_date(now).isoformat()
+        state = await self.config.member(ctx.author).all()
+        streak = engine.live_streak(state, today)
+        line = f"Your care streak: {streak} day{'s' if streak != 1 else ''}" if streak else "No care streak yet. Do any care today to start one"
+        best = state.get("best_streak", 0)
+        await ctx.send(f"Your free care today: {free}. Treats left: {treats}.\n\N{FIRE} {line}"
+                       + (f" (best {best})." if best > streak else "."))
 
     @pet.command(name="carers")
     async def pet_carers(self, ctx: commands.Context):

@@ -63,7 +63,9 @@ async def _pet(bot, member) -> Optional[dict]:
     if cog is None:
         return None
     weeks = await cog.config.guild(member.guild).week_carers()
-    return {"care_recent": sum(int((bucket or {}).get(str(member.id), 0)) for bucket in weeks.values())}
+    state = await cog.config.member(member).all()
+    return {"care_recent": sum(int((bucket or {}).get(str(member.id), 0)) for bucket in weeks.values()),
+            "best_streak": state.get("best_streak", 0)}
 
 
 async def _bumps(bot, member) -> Optional[dict]:

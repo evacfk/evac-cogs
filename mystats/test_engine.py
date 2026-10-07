@@ -62,6 +62,10 @@ def test_puzzle_verdict_pet_bumps_lottery():
     assert engine.verdict_lines({"played": 0}) == []
     assert engine.pet_lines({"care_recent": 1}) == ["Looked after the pet 1 time in the last few weeks"]
     assert engine.pet_lines({"care_recent": 0}) == []
+    assert engine.pet_lines({"care_recent": 0, "best_streak": 1}) == []
+    assert engine.pet_lines({"care_recent": 3, "best_streak": 6}) == [
+        "Looked after the pet 3 times in the last few weeks", "Best pet care streak: 6 days"]
+    assert engine.pet_lines({"care_recent": 0, "best_streak": 4}) == ["Best pet care streak: 4 days"]
     assert engine.bump_lines({"total_bumps": 3}) == ["3 server bumps"]
     assert engine.lottery_lines({"tickets": {"a": 2, "b": 3, "weird": {"x": 1}}}) == ["Holding 5 lottery tickets"]
     assert engine.lottery_lines({"tickets": {}}) == []

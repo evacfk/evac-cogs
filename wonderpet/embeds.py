@@ -48,6 +48,24 @@ def mood_line(pet: dict) -> str:
     return f"{name} is doing great. Thanks, everyone!"
 
 
+def streak_suffix(streak: int) -> str:
+    if streak < 2:
+        return ""
+    return f" \N{FIRE} {streak}-day care streak!"
+
+
+_NEEDS = {"hunger": ("\N{CUT OF MEAT} Hunger", "Feed"), "happy": ("\N{SLIGHTLY SMILING FACE} Happy", "Play"),
+          "clean": ("\N{BUBBLES} Clean", "Clean")}
+
+
+def needs_line(pet: dict) -> str:
+    low = engine.lowest_meter(pet)
+    label, button = _NEEDS[low]
+    if pet[low] >= 80:
+        return "Needs most: nothing right now. Everything is looking good."
+    return f"Needs most: **{label}** ({int(pet[low])}%). Tap **{button}**."
+
+
 def card_embed(pet: dict, *, now: float, this_week: list, last_week: list, art_file: str | None = None) -> discord.Embed:
     level = engine.level_for(pet)
     color = COLOR_EGG if pet["stage"] == "egg" else COLOR_BAD if level >= 3 else COLOR_WARN if level >= 1 else COLOR_OK
@@ -58,7 +76,7 @@ def card_embed(pet: dict, *, now: float, this_week: list, last_week: list, art_f
             name="Wellbeing",
             value="\n".join(f"{label} {engine.bar(pet[m])} {int(pet[m])}%" for label, m in
                             (("\N{CUT OF MEAT} Hunger", "hunger"), ("\N{SLIGHTLY SMILING FACE} Happy ", "happy"),
-                             ("\N{BUBBLES} Clean ", "clean"))),
+                             ("\N{BUBBLES} Clean ", "clean"))) + "\n" + needs_line(pet),
             inline=False,
         )
     prog = engine.growth_progress(pet, now)
