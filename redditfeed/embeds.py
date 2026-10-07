@@ -1,34 +1,19 @@
 """Discord-facing rendering for redditfeed. Kept separate from engine.py so the
-pure logic never needs discord.py imported to be tested.
+pure logic never needs discord.py imported to be tested. (No longer imports
+discord.py at all -- everything here is now plain strings, image-only/no-text
+per the spec, posted as bare URLs that Discord unfurls on its own.)
 """
 from __future__ import annotations
 
-import discord
-
-from . import constants
 from .models import MediaItem, SubredditMapping
 
 
-def build_image_embed(post: dict, media_item: MediaItem) -> discord.Embed:
-    """One embed per image (gallery images get one each -- Discord embeds only
-    render a single image, so multiple images means multiple messages/embeds).
-    """
-    title = (post.get("title") or "")[:256]
-    permalink = post.get("permalink", "")
-    embed = discord.Embed(
-        title=title,
-        url=f"https://www.reddit.com{permalink}" if permalink else None,
-        color=discord.Color.orange(),
-    )
-    embed.set_image(url=media_item.url)
-    subreddit = post.get("subreddit", "")
-    embed.set_footer(text=f"r/{subreddit}" if subreddit else None)
-    return embed
-
-
 def build_link_message(post: dict, media_item: MediaItem) -> str:
-    """Video/RedGIFs posts can't be re-hosted as a plain image -- post the link
-    and let Discord unfurl it. Image-only per the spec, so no title/author text.
+    """Every item (direct image, gallery image, or a video/RedGIFs link that
+    can't be re-hosted as a plain image) is posted as a bare URL. Discord's own
+    unfurl then renders just the media -- no embed title, no poster/author
+    name, no subreddit footer, no clickable title-as-link. `post` is accepted
+    but intentionally unused: image-only, no text, by design.
     """
     return media_item.url
 

@@ -157,12 +157,14 @@ class RedditFeed(commands.Cog):
         return dedup_store
 
     async def _post_media_items(self, channel, post: dict, media_items: list) -> None:
+        """Image-only, no text: every item (image, gallery image, video/RedGIFs
+        link) is posted as a bare URL so Discord's own unfurl renders just the
+        media -- no embed title, no author/poster name, no subreddit footer,
+        no clickable title-as-link.
+        """
         for item in media_items:
             try:
-                if item.is_link_only:
-                    await channel.send(embeds.build_link_message(post, item))
-                else:
-                    await channel.send(embed=embeds.build_image_embed(post, item))
+                await channel.send(embeds.build_link_message(post, item))
             except discord.Forbidden:
                 log.warning("redditfeed: missing permission to post in channel %s", channel.id)
                 break  # no point retrying the rest of this post's items in the same channel
