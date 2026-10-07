@@ -1,0 +1,12 @@
+{
+    "author": ["evac"],
+    "min_bot_version": "3.5.0",
+    "description": "Config-driven subreddit-to-channel image feed replacing Reddit RSS/API-based posting (both discontinued). Many subreddits can map to one channel. Posts images, gallery images, and links for video/RedGIFs posts. Per-mapping keyword filters and pause toggle, shared poll loop with configurable interval/stagger, dedup by channel+post-id with a rolling TTL, and a `.redditfeed status` command. Data source (Arctic Shift) is swappable behind a fetch interface.",
+    "hidden": false,
+    "install_msg": "Thanks for installing redditfeed!\n\nMap a subreddit to a channel: `.redditfeed add <subreddit> #channel`\nMultiple subreddits can point at the same channel (e.g. `feet` and `feetish` both into `#feet`).\nCheck it's working: `.redditfeed status`\nPause/resume a mapping without losing it: `.redditfeed pause <subreddit>` / `.redditfeed resume <subreddit>`\nTune the shared poll loop: `.redditfeed interval <seconds>` (default 120) and `.redditfeed stagger <seconds>` (default 1.5)\n\nNo backfill -- only posts made after a mapping is added will show up. Target channels should be marked NSFW in Discord yourself; this cog doesn't change channel settings.",
+    "name": "RedditFeed",
+    "short": "Config-driven subreddit-to-channel image feed (Arctic Shift-backed, swappable source).",
+    "end_user_data_statement": "This cog stores no end-user data. It stores guild-level configuration (subreddit-to-channel mappings, keyword filters, poll settings) and a rolling dedup cache of recently-posted Reddit post IDs.",
+    "tags": ["reddit", "feed", "images", "automation"],
+    "type": "COG"
+}
