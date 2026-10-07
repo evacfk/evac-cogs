@@ -209,7 +209,7 @@ def mod(monkeypatch):
 
     # top up whatever the installed/stubbed discord is missing (names used at def time)
     for name in ("Message", "Member", "Guild", "Role", "Interaction", "TextChannel",
-                 "RawReactionActionEvent", "Reaction", "Thread", "ForumChannel"):
+                 "RawReactionActionEvent", "Reaction", "Thread", "ForumChannel", "User"):
         if not hasattr(discord, name):
             monkeypatch.setattr(discord, name, type(name, (), {}), raising=False)
     for name in ("Forbidden", "HTTPException", "NotFound"):
@@ -280,7 +280,7 @@ def _stale(env, member):
 
 def test_module_imports_and_defines_cog(mod):
     assert hasattr(mod, "Lurker")
-    assert mod.VERSION == "2.2.0"
+    assert mod.VERSION == "2.3.0"
     for name in ("lurker_version", "lurker_backfill", "lurker_backfill_confirm",
                  "lurker_sweep_preview", "lurker_sweep_run", "lurker_report",
                  "lurker_report_send", "lurker_exempt_audit"):
@@ -719,3 +719,78 @@ async def test_club_roles_are_stored_normally_when_yearclub_is_off(env):
     _stale(env, m)
     await env.cog._flag_member(m, env.lurker, set(), cutoff=env.cutoff, source="sweep")
     assert await env.cog.config.member(m).stored_roles() == [env.a.id, club[3].id]
+
+
+# ------------------------------------------------------------ dashboard page
+
+def _dash_user(env, uid, *, manage_guild=False, manage_roles=False, is_mod=False, owner=False):
+    m = FakeMember(env.guild, uid)
+    m.guild_permissions = types.SimpleNamespace(manage_guild=manage_guild, manage_roles=manage_roles)
+
+    async def is_owner(u):
+        return owner
+
+    async def is_mod_(member):
+        return is_mod
+
+    env.cog.bot.is_owner, env.cog.bot.is_mod = is_owner, is_mod_
+    return m
+
+
+def test_dashboard_page_registration_params(mod):
+    """REGRESSION: name=None registers as 'None' on the dashboard; needs an explicit name."""
+    args, kwargs = mod.Lurker.dashboard_lurker.__dashboard_decorator_params__
+    assert kwargs["name"] == "overview"
+    assert tuple(kwargs["methods"]) == ("GET",)
+    assert mod.Lurker.on_dashboard_cog_add  # mixin present
+    assert mod.Lurker.__mro__[1].__name__ == "DashboardIntegration"
+
+
+async def test_dashboard_denies_non_mod_and_shows_no_data(env):
+    env.guild.name = "Wonderland"
+    user = _dash_user(env, 70)
+    out = await env.cog.dashboard_lurker(user, env.guild)
+    wc = out["web_content"]
+    assert wc["denied"] is True and wc["rows"] == []
+
+
+async def test_dashboard_overview_for_mod_has_only_settings_and_counts(env):
+    env.guild.name = "Wonderland"
+    env.lurker.members = [object(), object()]
+    env.guild.channels[7] = types.SimpleNamespace(id=7, name="lurkers")
+    cfg = env.cog.config.guild(env.guild)
+    await cfg.lurker_role_id.set(500)
+    await cfg.lurker_channel_id.set(7)
+    await cfg.exempt_role_ids.set([501])
+    await cfg.last_active.set({"1": 1.0, "2": 2.0, "3": 3.0})
+    user = _dash_user(env, 71, is_mod=True)
+
+    out = await env.cog.dashboard_lurker(user, env.guild)
+    rows = dict(out["web_content"]["rows"])
+    assert out["web_content"]["denied"] is False
+    assert rows["Lurker role"] == "lurker"
+    assert rows["Reactivation channel"] == "lurkers"
+    assert rows["Members currently flagged"] == "2"
+    assert rows["Members with tracked activity"] == "3"
+    assert rows["Exempt roles"] == "Mod"
+    assert rows["Last sweep"] == "never"
+    # page view must not write Config or load the cache
+    assert env.guild.id not in env.cog._loaded_guilds
+
+
+async def test_dashboard_allows_manage_roles_and_owner(env):
+    env.guild.name = "W"
+    for uid, kw in ((72, {"manage_roles": True}), (73, {"manage_guild": True}), (74, {"owner": True})):
+        user = _dash_user(env, uid, **kw)
+        out = await env.cog.dashboard_lurker(user, env.guild)
+        assert out["web_content"]["denied"] is False, kw
+
+
+def test_dashboard_template_escapes_values():
+    jinja2 = pytest.importorskip("jinja2")
+    from lurker.dashboard_view import PAGE_TEMPLATE
+
+    html = jinja2.Template(PAGE_TEMPLATE).render(
+        denied=False, guild_name="<b>x</b>", rows=[("Lurker role", "<script>alert(1)</script>")]
+    )
+    assert "<script>" not in html and "&lt;script&gt;" in html and "<b>x</b>" not in html

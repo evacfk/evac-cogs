@@ -10,13 +10,15 @@ from redbot.core import Config, checks, commands
 from redbot.core.utils.chat_formatting import humanize_list
 
 from . import engine
+from .dashboard_integration import DashboardIntegration, dashboard_page
+from .dashboard_view import PAGE_TEMPLATE, build_overview
 
 log = logging.getLogger("red.evac-cogs.lurker")
 
-VERSION = "2.2.0"
+VERSION = "2.3.0"
 
 
-class Lurker(commands.Cog):
+class Lurker(DashboardIntegration, commands.Cog):
     """
     Auto-hide long-inactive members behind a Lurker role.
 
@@ -979,13 +981,75 @@ class Lurker(commands.Cog):
 
         await ctx.send(f"Posted and pinned in {channel.mention}.")
 
+    # ------------------------------------------------------------ dashboard
+
+    async def _dashboard_can_view(self, user, guild: discord.Guild) -> bool:
+        """Bot owner, Manage Server / Manage Roles, or the mod role."""
+        if await self.bot.is_owner(user):
+            return True
+        member = guild.get_member(user.id)
+        if member is None:
+            return False
+        perms = member.guild_permissions
+        if perms.manage_guild or perms.manage_roles:
+            return True
+        return await self.bot.is_mod(member)
+
+    @dashboard_page(
+        name="overview",
+        description="Read-only Lurker settings and counts.",
+        methods=("GET",),
+    )
+    async def dashboard_lurker(self, user: discord.User, guild: discord.Guild, **kwargs):
+        if not await self._dashboard_can_view(user, guild):
+            return {
+                "status": 0,
+                "web_content": {"source": PAGE_TEMPLATE, "denied": True, "rows": [], "guild_name": guild.name},
+            }
+        # Read-only on purpose: no Config writes and no _ensure_loaded (which would
+        # populate the cache) on a page view.
+        cfg = self.config.guild(guild)
+        role_id = await cfg.lurker_role_id()
+        chan_id = await cfg.lurker_channel_id()
+        report_id = await cfg.report_channel_id()
+        role = guild.get_role(role_id) if role_id else None
+        channel = guild.get_channel(chan_id) if chan_id else None
+        report = guild.get_channel(report_id) if report_id else None
+        exempt = [guild.get_role(rid) for rid in await cfg.exempt_role_ids()]
+        if guild.id in self._loaded_guilds:
+            tracked = len(self._cache.get(guild.id, {}))
+        else:
+            tracked = len(await cfg.last_active())
+        rows = build_overview(
+            enabled=await cfg.enabled(),
+            threshold_days=await cfg.threshold_days(),
+            role_name=role.name if role else None,
+            channel_name=channel.name if channel else None,
+            report_channel_name=report.name if report else None,
+            report_interval_days=await cfg.report_interval_days(),
+            last_report_ts=await cfg.last_report_ts(),
+            last_sweep=await cfg.last_sweep(),
+            sweep_max=await cfg.sweep_max(),
+            exempt_names=[r.name for r in exempt if r],
+            yearclub_enabled=await cfg.yearclub_enabled(),
+            yearclub_role_count=len(await cfg.yearclub_roles()),
+            yearclub_last=await cfg.yearclub_last(),
+            lurker_member_count=len(role.members) if role else None,
+            tracked_count=tracked,
+            now_ts=datetime.now(timezone.utc).timestamp(),
+        )
+        return {
+            "status": 0,
+            "web_content": {"source": PAGE_TEMPLATE, "denied": False, "rows": rows, "guild_name": guild.name},
+        }
+
     # ------------------------------------------------------- manual / debug
 
     @checks.mod_or_permissions(manage_roles=True)
     @commands.command(name="lurkerversion")
     async def lurker_version(self, ctx):
         """Show the running Lurker cog version (deploy probe)."""
-        await ctx.send(f"Lurker cog v{VERSION}")
+        await ctx.send(f"Lurker cog v{VERSION} (dashboard overview page)")
 
     @checks.mod_or_permissions(manage_roles=True)
     @commands.command(name="lurker")
