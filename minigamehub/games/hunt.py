@@ -32,6 +32,8 @@ Design doc per-game-type notes:
    shiny coin, mouse + cheese) posts that on success instead of "saluted the
    <animal>", and gets no salute reaction since you can't salute a crow into
    paying you. See offerings.py.
+10. Per-animal safe reaction (`safe_reaction` on the safe_animals entry) -- the
+   mouse is fed with a cheese emoji reaction instead of a typed word.
 """
 import asyncio
 import logging
@@ -88,7 +90,15 @@ async def spawn(cog, channel: discord.TextChannel, game_conf: dict, dry_run: boo
         # premise. If the game is reaction-only there's no word to type, so
         # the salute reaction stays as the only way to succeed.
         success_template = offerings.offering_text(animal_conf) if is_safe else ""
-        salute_reaction = is_safe and not (success_template and accepts_word)
+        # An animal can also have its own safe reaction (the mouse's cheese
+        # emoji). It then succeeds by reaction only -- its safe word is not
+        # accepted -- unless the game is word-only, where the word is all
+        # there is.
+        animal_reaction = ((animal_conf or {}).get("safe_reaction") or "").strip() if is_safe else ""
+        use_animal_reaction = bool(animal_reaction) and accepts_reaction
+        safe_emoji = animal_reaction if use_animal_reaction else game_conf["safe_reaction"]
+        salute_reaction = is_safe and (use_animal_reaction or not (success_template and accepts_word))
+        safe_by_word = is_safe and not use_animal_reaction
 
         prefix = "\U0001F9EA **[TEST]** " if dry_run else ""
         message = await channel.send(f"{prefix}{animal['emoji']} {animal['text']}")
@@ -96,7 +106,7 @@ async def spawn(cog, channel: discord.TextChannel, game_conf: dict, dry_run: boo
             try:
                 await message.add_reaction(parse_emoji(game_conf["shoot_reaction"]))
                 if salute_reaction:
-                    await message.add_reaction(parse_emoji(game_conf["safe_reaction"]))
+                    await message.add_reaction(parse_emoji(safe_emoji))
             except discord.HTTPException:
                 pass
 
@@ -120,7 +130,7 @@ async def spawn(cog, channel: discord.TextChannel, game_conf: dict, dry_run: boo
             if m.channel.id != channel.id or m.author.bot or not m.content:
                 return False
             content = m.content.strip().lower()
-            return bool(shoot_pattern.match(content)) or (is_safe and bool(safe_pattern.match(content)))
+            return bool(shoot_pattern.match(content)) or (safe_by_word and bool(safe_pattern.match(content)))
 
         def reaction_check(payload: discord.RawReactionActionEvent):
             if payload.channel_id != channel.id or payload.message_id != message.id:
@@ -128,7 +138,7 @@ async def spawn(cog, channel: discord.TextChannel, game_conf: dict, dry_run: boo
             if payload.member is None or payload.member.bot:
                 return False
             return emoji_matches(game_conf["shoot_reaction"], payload.emoji) or (
-                salute_reaction and emoji_matches(game_conf["safe_reaction"], payload.emoji)
+                salute_reaction and emoji_matches(safe_emoji, payload.emoji)
             )
 
         futures = []
@@ -160,10 +170,10 @@ async def spawn(cog, channel: discord.TextChannel, game_conf: dict, dry_run: boo
         result = done.pop().result()
         if isinstance(result, discord.Message):
             author = result.author
-            saluted = is_safe and bool(safe_pattern.match(result.content.strip().lower()))
+            saluted = safe_by_word and bool(safe_pattern.match(result.content.strip().lower()))
         else:
             author = result.member
-            saluted = salute_reaction and emoji_matches(game_conf["safe_reaction"], result.emoji)
+            saluted = salute_reaction and emoji_matches(safe_emoji, result.emoji)
 
         member = guild.get_member(author.id) or author
         currency = await bank.get_currency_name(guild)

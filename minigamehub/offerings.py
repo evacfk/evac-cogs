@@ -36,15 +36,19 @@ MOUSE_TEXT = (
 # existing safe animal that has no success_text yet.
 MOUSE_ANIMAL = {
     "emoji": "\U0001F401",
-    "text": "**_Squeak!_** *sniffs the air hopefully... it sure would love some cheese.*",
+    "text": "**_Squeak!_** *sniffs the air hopefully... it sure would love some \U0001F9C0*",
 }
+# The mouse is fed by reacting with the cheese emoji, not by typing a word.
 MOUSE_SAFE_ENTRY = {
     "safe": True,
     "penalty_pct": 5.0,
     "reward_range": [50, 200],
-    "safe_word": "cheese",
+    "safe_reaction": "\U0001F9C0",
     "success_text": MOUSE_TEXT,
 }
+# First build seeded the mouse as a typed "cheese" word; fix_mouse_reaction
+# converts exactly that shape.
+_OLD_MOUSE_TEXT = "**_Squeak!_** *sniffs the air hopefully... it sure would love some cheese.*"
 
 
 def render(template: str, *, user: str, animal: str, amount: int, currency: str) -> str:
@@ -62,6 +66,21 @@ def offering_text(animal_conf) -> str:
     if not animal_conf or not animal_conf.get("safe", True):
         return ""
     return (animal_conf.get("success_text") or "").strip()
+
+
+def fix_mouse_reaction(hunt_conf: dict) -> bool:
+    """Convert a mouse seeded by the first build (safe word "cheese") to the
+    cheese-emoji reaction. Only touches that exact shape, so an admin's own
+    mouse settings are left alone. Returns True if anything changed."""
+    entry = (hunt_conf.get("safe_animals") or {}).get("mouse")
+    if not entry or entry.get("safe_word") != "cheese" or entry.get("safe_reaction"):
+        return False
+    entry.pop("safe_word", None)
+    entry["safe_reaction"] = MOUSE_SAFE_ENTRY["safe_reaction"]
+    mouse = (hunt_conf.get("animals") or {}).get("mouse")
+    if mouse and mouse.get("text") == _OLD_MOUSE_TEXT:
+        mouse["text"] = MOUSE_ANIMAL["text"]
+    return True
 
 
 def seed_hunt_offerings(hunt_conf: dict) -> bool:

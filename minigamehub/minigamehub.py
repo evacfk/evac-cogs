@@ -198,6 +198,7 @@ class MinigameHub(commands.Cog):
             # Mouse + crow offering messages -- once per guild, so removing the
             # mouse or editing the crow's text later sticks.
             offerings.seed_hunt_offerings(games["hunt"])
+            offerings.fix_mouse_reaction(games["hunt"])
             if not games["lootdrop"]["scenarios"]:
                 games["lootdrop"]["scenarios"] = copy.deepcopy(scenario_data.SEED_LOOTDROP_SCENARIOS)
             if not games["boss"]["scenarios"]:
@@ -1056,6 +1057,8 @@ class MinigameHub(commands.Cog):
             lo, hi = conf.get("reward_range") or conf.get("salute_reward", [0, 0])
             word = conf.get("safe_word")
             word_txt = f" | safe word: {word}" if word else ""
+            if conf.get("safe_reaction"):
+                word_txt += f" | safe reaction: {conf['safe_reaction']}"
             is_offering = bool(offerings.offering_text(conf))
             reward_label = "offering reward" if is_offering else "salute reward"
             lines.append(f"{key:<12} penalty {pct:g}% of balance | {reward_label} {_fmt_range(lo, hi)}{word_txt}")
@@ -1093,6 +1096,7 @@ class MinigameHub(commands.Cog):
             existing = games["hunt"]["safe_animals"].get(animal_key, {})
             existing_word = existing.get("safe_word")
             existing_text = existing.get("success_text")
+            existing_reaction = existing.get("safe_reaction")
             entry = {
                 "safe": True,
                 "penalty_pct": penalty_pct,
@@ -1102,6 +1106,8 @@ class MinigameHub(commands.Cog):
                 entry["safe_word"] = existing_word
             if existing_text:
                 entry["success_text"] = existing_text
+            if existing_reaction:
+                entry["safe_reaction"] = existing_reaction
             games["hunt"]["safe_animals"][animal_key] = entry
         await ctx.send(
             f"`{animal_key}` is now safe: shooting it costs {penalty_pct:g}% of balance, "
@@ -1178,6 +1184,41 @@ class MinigameHub(commands.Cog):
             await ctx.send(f"`{animal_key}` now uses the game-wide safe word.")
         else:
             await ctx.send(f"`{animal_key}`'s safe word is now `{word.lower()}`.")
+
+    @mgh_huntsafe.command(name="reaction")
+    async def mgh_huntsafe_reaction(self, ctx: commands.Context, animal_key: str, emoji: Optional[str] = None):
+        """Show, set, or reset an already-safe animal's own safe reaction.
+
+        With one, players succeed by reacting with that emoji instead of
+        typing the safe word (the mouse uses \U0001F9C0).
+
+        `.mgh huntsafe reaction mouse`        -- show it
+        `.mgh huntsafe reaction mouse \U0001F9C0`  -- set it
+        `.mgh huntsafe reaction mouse default` -- back to word/game-wide reaction
+        """
+        animal_key = animal_key.lower()
+        emoji = emoji.strip() if emoji else None
+        reset = bool(emoji) and emoji.lower() in ("default", "reset", "none")
+        async with self.config.guild(ctx.guild).games() as games:
+            conf = games["hunt"]["safe_animals"].get(animal_key)
+            if not conf or not conf.get("safe", True):
+                await ctx.send(f"`{animal_key}` isn't marked safe yet -- use `.minigamehub huntsafe add` first.")
+                return
+            if emoji is None:
+                current = conf.get("safe_reaction")
+            elif reset:
+                conf.pop("safe_reaction", None)
+            else:
+                conf["safe_reaction"] = emoji
+        if emoji is None:
+            await ctx.send(
+                f"`{animal_key}` safe reaction: {current}" if current
+                else f"`{animal_key}` has no reaction of its own -- it uses its safe word / the game-wide reaction."
+            )
+        elif reset:
+            await ctx.send(f"`{animal_key}` is back to its safe word / the game-wide reaction.")
+        else:
+            await ctx.send(f"`{animal_key}` is now fed by reacting with {emoji}.")
 
     @mgh_huntsafe.command(name="text")
     async def mgh_huntsafe_text(self, ctx: commands.Context, animal_key: str, *, template: Optional[str] = None):

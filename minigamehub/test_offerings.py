@@ -36,12 +36,13 @@ def test_offering_text_only_for_safe_animals_with_text():
     assert offerings.offering_text({"success_text": "hi"}) == "hi"
 
 
-def test_seed_adds_mouse_with_cheese_word_and_text():
+def test_seed_adds_mouse_fed_by_cheese_reaction_not_a_word():
     hunt = _hunt()
     assert offerings.seed_hunt_offerings(hunt) is True
     assert "mouse" in hunt["animals"]
     entry = hunt["safe_animals"]["mouse"]
-    assert entry["safe"] is True and entry["safe_word"] == "cheese"
+    assert entry["safe"] is True
+    assert entry["safe_reaction"] == "\U0001F9C0" and "safe_word" not in entry
     assert entry["success_text"] == offerings.MOUSE_TEXT
     assert hunt["offerings_seeded"] is True
     # eagle (existing safe animal) untouched
@@ -84,3 +85,22 @@ def test_seed_does_not_overwrite_an_existing_mouse():
 
 def test_default_schema_flag_starts_false():
     assert DEFAULT_GUILD["games"]["hunt"]["offerings_seeded"] is False
+
+
+def test_fix_converts_first_build_mouse_to_reaction():
+    hunt = _hunt()
+    hunt["animals"]["mouse"] = {"emoji": "m", "text": offerings._OLD_MOUSE_TEXT}
+    hunt["safe_animals"]["mouse"] = {"safe": True, "safe_word": "cheese", "success_text": "x"}
+    assert offerings.fix_mouse_reaction(hunt) is True
+    entry = hunt["safe_animals"]["mouse"]
+    assert entry["safe_reaction"] == "\U0001F9C0" and "safe_word" not in entry and entry["success_text"] == "x"
+    assert hunt["animals"]["mouse"]["text"] == offerings.MOUSE_ANIMAL["text"]
+    assert offerings.fix_mouse_reaction(hunt) is False
+
+
+def test_fix_leaves_custom_mouse_alone():
+    hunt = _hunt()
+    hunt["safe_animals"]["mouse"] = {"safe": True, "safe_word": "brie"}
+    assert offerings.fix_mouse_reaction(hunt) is False
+    assert hunt["safe_animals"]["mouse"] == {"safe": True, "safe_word": "brie"}
+    assert offerings.fix_mouse_reaction({}) is False

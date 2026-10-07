@@ -596,6 +596,9 @@ class _AnimalEditModal(discord.ui.Modal):
             prior_text = (games["hunt"]["safe_animals"].get(self.key) or {}).get("success_text")
             if prior_text and is_safe:
                 entry["success_text"] = prior_text
+            prior_reaction = (games["hunt"]["safe_animals"].get(self.key) or {}).get("safe_reaction")
+            if prior_reaction and is_safe:
+                entry["safe_reaction"] = prior_reaction
             games["hunt"]["safe_animals"][self.key] = entry
             self.parent_view.animals = animals
             self.parent_view.safe_animals = games["hunt"]["safe_animals"]
