@@ -1,7 +1,12 @@
 import pytest
 
 from redditfeed import arctic_shift as arctic_shift_module
-from redditfeed.arctic_shift import ArcticShiftSource, RedditSourceError, parse_arctic_shift_response
+from redditfeed.arctic_shift import (
+    ArcticShiftSource,
+    RedditSourceError,
+    format_http_error,
+    parse_arctic_shift_response,
+)
 
 
 @pytest.fixture(autouse=True)
@@ -89,3 +94,22 @@ class TestArcticShiftSourceFetch:
         source = ArcticShiftSource(request_fn=boom, max_retries=0)
         with pytest.raises(RedditSourceError):
             await source.fetch_new_posts("feet", after_ts=None, limit=10)
+
+
+class TestFormatHttpError:
+    """REGRESSION: Arctic Shift sends its own timeouts as HTTP 422 with the real
+    reason in a JSON body; raise_for_status() used to throw that body away and
+    the log only said "Unprocessable Entity"."""
+
+    def test_extracts_error_field_from_json_body(self):
+        body = '{"data":null,"error":"Timeout. Maybe slow down a bit"}'
+        assert format_http_error(422, body) == "HTTP 422: Timeout. Maybe slow down a bit"
+
+    def test_falls_back_to_raw_text_when_body_is_not_json(self):
+        assert format_http_error(502, "Bad Gateway") == "HTTP 502: Bad Gateway"
+
+    def test_status_only_when_body_empty(self):
+        assert format_http_error(500, "") == "HTTP 500"
+
+    def test_long_bodies_are_truncated(self):
+        assert len(format_http_error(500, "x" * 5000)) <= len("HTTP 500: ") + 200

@@ -167,6 +167,16 @@ def is_nsfw_over_18(post: dict) -> bool:
 
 # -- Settings validation ----------------------------------------------------------
 
+def compute_after_ts(
+    last_poll_ts: Optional[float], now_ts: float, max_lookback: float = constants.MAX_LOOKBACK_SECONDS
+) -> Optional[float]:
+    """Cursor to fetch from: the last successful poll, but never older than
+    `max_lookback` seconds. None stays None (the source then sends no `after`)."""
+    if last_poll_ts is None:
+        return None
+    return max(last_poll_ts, now_ts - max_lookback)
+
+
 def clamp_poll_interval(seconds: int) -> int:
     return max(int(seconds), constants.MIN_POLL_INTERVAL_SECONDS)
 

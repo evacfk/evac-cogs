@@ -6,6 +6,10 @@ DEFAULT_POLL_INTERVAL_SECONDS = 120
 DEFAULT_STAGGER_SECONDS = 1.5
 DEFAULT_FETCH_LIMIT = 25           # posts fetched per subreddit per poll
 DEFAULT_DEDUP_TTL_DAYS = 7
+# After failed polls the cursor stays put so missed posts are retried next cycle,
+# but never looks further back than this (a long-dead subreddit shouldn't dump
+# days-old posts when it recovers).
+MAX_LOOKBACK_SECONDS = 3600
 
 MIN_POLL_INTERVAL_SECONDS = 30      # floor so a typo can't hammer the source
 MIN_STAGGER_SECONDS = 0.0

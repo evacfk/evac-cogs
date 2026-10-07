@@ -107,17 +107,26 @@ class RedditFeed(commands.Cog):
                 await asyncio.sleep(stagger)
             first = False
 
+            poll_started = time.time()
+            advance_cursor = True
             try:
                 dedup_store = await self._poll_one_subreddit(mapping, fetch_limit, dedup_store, now)
                 mapping.last_error = None
             except RedditSourceError as exc:
                 mapping.last_error = str(exc)
+                # Fetch failed, nothing was processed: keep the cursor where it was so
+                # the posts from this window are picked up on the next successful poll
+                # (bounded by MAX_LOOKBACK_SECONDS; dedup prevents any double-posting).
+                advance_cursor = False
                 log.warning("redditfeed: fetch failed for r/%s: %s", mapping.subreddit, exc)
             except Exception as exc:  # noqa: BLE001 -- one bad subreddit must not stop the rest
                 mapping.last_error = f"unexpected error: {exc}"
                 log.exception("redditfeed: unexpected error polling r/%s", mapping.subreddit)
 
-            mapping.last_poll_ts = time.time()
+            if advance_cursor:
+                # Start-of-fetch time, not end: posts created while the fetch/post loop
+                # ran are re-fetched next cycle rather than missed (dedup absorbs repeats).
+                mapping.last_poll_ts = poll_started
             mappings_raw[key] = mapping.to_dict()
 
         await self.config.mappings.set(mappings_raw)
@@ -126,7 +135,8 @@ class RedditFeed(commands.Cog):
     async def _poll_one_subreddit(
         self, mapping: SubredditMapping, fetch_limit: int, dedup_store: dict, now: float
     ) -> dict:
-        posts = await self.source.fetch_new_posts(mapping.subreddit, mapping.last_poll_ts, fetch_limit)
+        after_ts = engine.compute_after_ts(mapping.last_poll_ts, time.time())
+        posts = await self.source.fetch_new_posts(mapping.subreddit, after_ts, fetch_limit)
         posts = engine.sort_posts_oldest_first(posts)
 
         newest_post = None
@@ -216,7 +226,7 @@ class RedditFeed(commands.Cog):
     @redditfeed.command(name="version")
     async def redditfeed_version(self, ctx: commands.Context) -> None:
         """Version-probe command -- confirms a deploy actually took."""
-        await ctx.send("redditfeed build: dashboard-integration-v1 (Arctic Shift source)")
+        await ctx.send("redditfeed build: cursor-retry-v2 (Arctic Shift source)")
 
     @redditfeed.command(name="add")
     async def redditfeed_add(

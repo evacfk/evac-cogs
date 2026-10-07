@@ -208,3 +208,21 @@ class TestSortPostsOldestFirst:
         posts = [{"id": "new", "created_utc": 300}, {"id": "old", "created_utc": 100}]
         sorted_posts = engine.sort_posts_oldest_first(posts)
         assert [p["id"] for p in sorted_posts] == ["old", "new"]
+
+
+class TestComputeAfterTs:
+    """REGRESSION: a failed poll used to advance the cursor to now, permanently
+    skipping every post made in that window. The cursor now stays at the last
+    successful poll, capped so a long-dead subreddit can't dump days of posts."""
+
+    def test_none_cursor_stays_none(self):
+        assert engine.compute_after_ts(None, now_ts=10_000) is None
+
+    def test_recent_cursor_is_used_unchanged(self):
+        assert engine.compute_after_ts(9_900, now_ts=10_000, max_lookback=3600) == 9_900
+
+    def test_stale_cursor_is_capped_to_max_lookback(self):
+        assert engine.compute_after_ts(100, now_ts=10_000, max_lookback=3600) == 6_400
+
+    def test_default_cap_is_one_hour(self):
+        assert engine.compute_after_ts(0, now_ts=100_000) == 100_000 - 3600

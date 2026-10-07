@@ -10,6 +10,7 @@ stays importable under the dev test stub, which doesn't provide aiohttp.
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 from abc import ABC, abstractmethod
 from typing import Optional
@@ -56,7 +57,10 @@ class ArcticShiftSource(RedditSource):
         timeout = aiohttp.ClientTimeout(total=constants.ARCTIC_SHIFT_TIMEOUT_SECONDS)
         async with aiohttp.ClientSession(timeout=timeout) as session:
             async with session.get(url) as resp:
-                resp.raise_for_status()
+                if resp.status >= 400:
+                    # Not raise_for_status(): that discards the body, and Arctic
+                    # Shift puts its real reason there (see format_http_error).
+                    raise RedditSourceError(format_http_error(resp.status, await resp.text()))
                 return await resp.json()
 
     def _build_url(self, subreddit: str, after_ts: Optional[float], limit: int) -> str:
@@ -85,6 +89,22 @@ class ArcticShiftSource(RedditSource):
                     await asyncio.sleep(constants.ARCTIC_SHIFT_RETRY_BACKOFF_SECONDS * (attempt + 1))
 
         raise RedditSourceError(f"Arctic Shift fetch failed for r/{subreddit}: {last_error}")
+
+
+def format_http_error(status: int, body: str) -> str:
+    """Arctic Shift reports its own query timeouts as HTTP 422 with a JSON body
+    like {"data": null, "error": "Timeout. Maybe slow down a bit"}. Pull the
+    "error" field out so the log says why, instead of a bare "Unprocessable Entity".
+    """
+    detail = (body or "").strip()
+    try:
+        parsed = json.loads(detail)
+    except ValueError:
+        parsed = None
+    if isinstance(parsed, dict) and parsed.get("error"):
+        detail = str(parsed["error"])
+    detail = detail[:200]
+    return f"HTTP {status}: {detail}" if detail else f"HTTP {status}"
 
 
 def parse_arctic_shift_response(payload: dict) -> list[dict]:
