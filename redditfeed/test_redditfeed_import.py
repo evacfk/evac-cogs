@@ -31,13 +31,46 @@ def test_redditfeed_command_group_and_subcommands_exist():
     assert group is not None
 
 
-def test_dashboard_integration_degrades_gracefully_without_dashboard_cog():
-    """The dashboard cog isn't installed in this sandbox, so the module must
-    import via the no-op dashboard_page fallback rather than raising ImportError."""
+def test_cog_inherits_dashboard_mixin_ahead_of_cog():
+    """Documented pattern: `class Cog(DashboardIntegration, commands.Cog)`."""
+    from redbot.core import commands
+
+    from redditfeed.dashboard_integration import DashboardIntegration
+    from redditfeed.redditfeed import RedditFeed
+
+    mro = RedditFeed.__mro__
+    assert mro.index(DashboardIntegration) < mro.index(commands.Cog)
+    assert hasattr(RedditFeed, "on_dashboard_cog_add")
+
+
+def test_dashboard_page_decorator_actually_attaches_its_params():
+    """Regression: the old cog tried to import the decorator from
+    dashboard.rpc.thirdparties (a module that doesn't exist; it is
+    third_parties) and silently fell back to a no-op, so no params were ever
+    attached and the page could never register."""
+    from redditfeed.redditfeed import RedditFeed
+
+    args, kwargs = RedditFeed.dashboard_redditfeed.__dashboard_decorator_params__
+    assert kwargs["name"] is None
+    assert kwargs["methods"] == ("GET", "POST")
+
+
+def test_cog_module_no_longer_imports_from_the_dashboard_cog():
+    import inspect
+
     from redditfeed import redditfeed
 
-    assert redditfeed.DASHBOARD_INTEGRATION_AVAILABLE is False
-    assert hasattr(redditfeed.RedditFeed, "dashboard_redditfeed_settings")
+    source = inspect.getsource(redditfeed)
+    assert "dashboard.rpc" not in source
+    assert "DASHBOARD_INTEGRATION_AVAILABLE" not in source
+
+
+def test_version_probe_text_is_the_new_build():
+    import inspect
+
+    from redditfeed import redditfeed
+
+    assert "redditfeed build: dashboard-v1" in inspect.getsource(redditfeed)
 
 
 def test_setup_function_exists():

@@ -7,7 +7,7 @@ from typing import Optional
 from urllib.parse import urlparse
 
 from . import constants
-from .models import MediaItem
+from .models import MediaItem, SubredditMapping
 
 
 # -- Normalization ----------------------------------------------------------
@@ -187,3 +187,72 @@ def clamp_stagger(seconds: float) -> float:
 
 def sort_posts_oldest_first(posts: list[dict]) -> list[dict]:
     return sorted(posts, key=lambda p: p.get("created_utc", 0))
+
+
+# -- Dashboard helpers (pure; the cog supplies Discord data) ------------------------
+
+def parse_pause_action(action: str) -> Optional[bool]:
+    """'pause' -> True, 'resume' -> False, anything else -> None (invalid)."""
+    action = (action or "").strip().lower()
+    if action == constants.DASHBOARD_ACTION_PAUSE:
+        return True
+    if action == constants.DASHBOARD_ACTION_RESUME:
+        return False
+    return None
+
+
+def mappings_for_channels(mappings_raw: dict, guild_channel_ids: set[int]) -> list[SubredditMapping]:
+    """Mappings with at least one channel in the given guild, sorted by name.
+    Mappings are global config, so a guild's dashboard only shows (and may only
+    change) the ones that actually post into that guild.
+    """
+    visible = []
+    for raw in mappings_raw.values():
+        mapping = SubredditMapping.from_dict(raw)
+        if any(cid in guild_channel_ids for cid in mapping.channel_ids):
+            visible.append(mapping)
+    return sorted(visible, key=lambda m: m.subreddit)
+
+
+def format_age(ts: Optional[float], now_ts: float) -> str:
+    """'never', 'just now', '45s ago', '12m ago', '3h ago', '2d ago'."""
+    if ts is None:
+        return "never"
+    seconds = max(int(now_ts - ts), 0)
+    if seconds < 5:
+        return "just now"
+    if seconds < 60:
+        return f"{seconds}s ago"
+    if seconds < 3600:
+        return f"{seconds // 60}m ago"
+    if seconds < 86400:
+        return f"{seconds // 3600}h ago"
+    return f"{seconds // 86400}d ago"
+
+
+def build_dashboard_rows(
+    mappings: list[SubredditMapping], channel_names: dict[int, str], now_ts: float
+) -> list[dict]:
+    """Plain-string rows for the dashboard table. `channel_names` maps this
+    guild's channel ids to display names; channels of the same mapping that live
+    elsewhere are collapsed into a '+N in other servers' note, never named.
+    """
+    rows = []
+    for mapping in mappings:
+        names = [channel_names[cid] for cid in mapping.channel_ids if cid in channel_names]
+        elsewhere = len(mapping.channel_ids) - len(names)
+        if elsewhere:
+            names.append(f"+{elsewhere} in other servers")
+        rows.append(
+            {
+                "subreddit": mapping.subreddit,
+                "state": "paused" if mapping.paused else "active",
+                "channels": names,
+                "last_poll": format_age(mapping.last_poll_ts, now_ts),
+                "last_post": format_age(mapping.last_post_found_ts, now_ts),
+                "last_error": mapping.last_error or "",
+                "require": ", ".join(mapping.require_keywords),
+                "block": ", ".join(mapping.block_keywords),
+            }
+        )
+    return rows

@@ -18,33 +18,14 @@ from redbot.core.bot import Red
 
 from . import constants, embeds, engine
 from .arctic_shift import ArcticShiftSource, RedditSource, RedditSourceError
+from .dashboard_integration import DashboardIntegration, dashboard_page
+from .dashboard_view import PAGE_TEMPLATE
 from .models import SubredditMapping
 
 log = logging.getLogger("red.redditfeed")
 
-# -- Dashboard integration (best-effort third-party page registration) ------
-# UNVERIFIED against the live `dashboard` cog -- the hook name
-# (`on_dashboard_cog_add`) and `add_third_party` call are the documented
-# pattern other Red third-party cogs use, but the exact `dashboard_page`
-# decorator signature and the GET/POST content-exchange shape have not been
-# tested against this bot's installed dashboard version. If this page 404s
-# or the cog fails to register, the command interface below is the fallback
-# -- that's why it was built in parallel rather than dashboard-only.
-try:
-    from dashboard.rpc.thirdparties import dashboard_page
 
-    DASHBOARD_INTEGRATION_AVAILABLE = True
-except Exception:  # noqa: BLE001 -- dashboard cog not installed/loaded
-    DASHBOARD_INTEGRATION_AVAILABLE = False
-
-    def dashboard_page(*_args, **_kwargs):
-        def _decorator(func):
-            return func
-
-        return _decorator
-
-
-class RedditFeed(commands.Cog):
+class RedditFeed(DashboardIntegration, commands.Cog):
     """Subreddit -> Discord channel image feed, Arctic Shift-backed."""
 
     def __init__(self, bot: Red):
@@ -226,7 +207,7 @@ class RedditFeed(commands.Cog):
     @redditfeed.command(name="version")
     async def redditfeed_version(self, ctx: commands.Context) -> None:
         """Version-probe command -- confirms a deploy actually took."""
-        await ctx.send("redditfeed build: cursor-retry-v2 (Arctic Shift source)")
+        await ctx.send("redditfeed build: dashboard-v1 (Arctic Shift source)")
 
     @redditfeed.command(name="add")
     async def redditfeed_add(
@@ -284,16 +265,24 @@ class RedditFeed(commands.Cog):
         """Resume polling for a previously paused subreddit."""
         await self._set_paused(ctx, subreddit, False)
 
-    async def _set_paused(self, ctx: commands.Context, subreddit: str, paused: bool) -> None:
-        name = engine.normalize_subreddit(subreddit)
+    async def _apply_paused(self, name: str, paused: bool) -> bool:
+        """The one place a mapping's paused flag is written -- the commands and
+        the dashboard page both go through here. False if `name` isn't mapped.
+        """
         async with self.config.mappings() as mappings:
             raw = mappings.get(name)
             if not raw:
-                await ctx.send(f"r/{name} isn't mapped.")
-                return
+                return False
             mapping = SubredditMapping.from_dict(raw)
             mapping.paused = paused
             mappings[name] = mapping.to_dict()
+        return True
+
+    async def _set_paused(self, ctx: commands.Context, subreddit: str, paused: bool) -> None:
+        name = engine.normalize_subreddit(subreddit)
+        if not await self._apply_paused(name, paused):
+            await ctx.send(f"r/{name} isn't mapped.")
+            return
         await ctx.send(f"r/{name} is now {'paused' if paused else 'active'}.")
 
     @redditfeed.command(name="interval")
@@ -389,45 +378,99 @@ class RedditFeed(commands.Cog):
             mappings[name] = mapping.to_dict()
         await ctx.send(f"r/{name} {mode} keywords: {', '.join(target) or '(none)'}")
 
-    # -- Dashboard integration (see module-level note above) ----------------------
+    # -- Dashboard page ------------------------------------------------------------
+    # Registration is handled by DashboardIntegration (dashboard_integration.py).
+    # Everything the page can do is also a `.redditfeed` command; the page is a
+    # second front end over the same config, and writes go through _apply_paused.
 
-    @commands.Cog.listener()
-    async def on_dashboard_cog_add(self, dashboard_cog) -> None:
-        if DASHBOARD_INTEGRATION_AVAILABLE:
-            dashboard_cog.rpc.third_parties_handler.add_third_party(self)
+    async def _dashboard_can_edit(self, user, guild: discord.Guild) -> bool:
+        """Same bar as the command group: bot owner, Manage Server, or mod role."""
+        if await self.bot.is_owner(user):
+            return True
+        member = guild.get_member(user.id)
+        if member is None:
+            return False
+        if member.guild_permissions.manage_guild:
+            return True
+        return await self.bot.is_mod(member)
+
+    async def _dashboard_apply_pause(
+        self, user, guild: discord.Guild, subreddit: str, action: str
+    ) -> tuple[str, str]:
+        """Permission-checked pause/resume for the dashboard. Returns
+        (notification category, message). Checks happen here, in the write path
+        itself, not only in whether the form was shown.
+        """
+        paused = engine.parse_pause_action(action)
+        if paused is None:
+            return "error", "Unknown action."
+        if not await self._dashboard_can_edit(user, guild):
+            return "error", "You need the mod role or Manage Server to do that."
+        name = engine.normalize_subreddit(subreddit)
+        visible = engine.mappings_for_channels(
+            await self.config.mappings(), {c.id for c in guild.text_channels}
+        )
+        if name not in {m.subreddit for m in visible}:
+            return "error", f"r/{name} isn't mapped to a channel in this server."
+        if not await self._apply_paused(name, paused):
+            return "error", f"r/{name} isn't mapped."
+        return "success", f"r/{name} is now {'paused' if paused else 'active'}."
 
     @dashboard_page(
-        name="settings",
-        description="Manage RedditFeed subreddit-to-channel mappings.",
+        name=None,
+        description="View RedditFeed subreddit feeds and pause or resume them.",
         methods=("GET", "POST"),
     )
-    async def dashboard_redditfeed_settings(self, user, guild: discord.Guild, **kwargs):
-        """Dashboard page: lists mappings and lets a mod toggle pause or edit
-        keyword filters. Parity fallback for everything this page can't do yet
-        is the `.redditfeed` command tree above -- use that if this page 404s
-        or a form doesn't submit, this hasn't been exercised against a live
-        dashboard cog yet.
-        """
-        mappings_raw = await self.config.mappings()
-        mappings = [SubredditMapping.from_dict(raw) for raw in mappings_raw.values()]
+    async def dashboard_redditfeed(self, user: discord.User, guild: discord.Guild, **kwargs):
+        can_edit = await self._dashboard_can_edit(user, guild)
+        guild_channel_ids = {c.id for c in guild.text_channels}
+        notifications = []
+        form = None
 
-        if kwargs.get("method") == "POST":
-            data = kwargs.get("data", {})
-            name = engine.normalize_subreddit(data.get("subreddit", ""))
-            if name in mappings_raw:
-                async with self.config.mappings() as live_mappings:
-                    mapping = SubredditMapping.from_dict(live_mappings[name])
-                    mapping.paused = data.get("paused") == "on"
-                    live_mappings[name] = mapping.to_dict()
+        Form = kwargs.get("Form")
+        if Form is not None and can_edit:
+            import wtforms  # shipped with the dashboard; imported lazily so the cog loads without it
 
-        rows = "".join(
-            f"<tr><td>r/{m.subreddit}</td><td>{'paused' if m.paused else 'active'}</td>"
-            f"<td>{', '.join(str(c) for c in m.channel_ids)}</td></tr>"
-            for m in sorted(mappings, key=lambda m: m.subreddit)
-        )
-        html = (
-            "<h3>RedditFeed</h3>"
-            "<table><tr><th>Subreddit</th><th>State</th><th>Channels</th></tr>"
-            f"{rows}</table>"
-        )
-        return {"status": 0, "web_content": {"source": html}}
+            class PauseForm(Form):
+                def __init__(self):
+                    super().__init__(prefix="redditfeed_pause_form_")
+
+                subreddit: wtforms.SelectField = wtforms.SelectField(
+                    "Subreddit", validators=[wtforms.validators.InputRequired()]
+                )
+                action: wtforms.SelectField = wtforms.SelectField(
+                    "Action",
+                    choices=[
+                        (constants.DASHBOARD_ACTION_PAUSE, "Pause"),
+                        (constants.DASHBOARD_ACTION_RESUME, "Resume"),
+                    ],
+                )
+                submit: wtforms.SubmitField = wtforms.SubmitField("Apply")
+
+            form = PauseForm()
+            visible = engine.mappings_for_channels(await self.config.mappings(), guild_channel_ids)
+            form.subreddit.choices = [(m.subreddit, f"r/{m.subreddit}") for m in visible]
+            if form.validate_on_submit():
+                category, message = await self._dashboard_apply_pause(
+                    user, guild, form.subreddit.data, form.action.data
+                )
+                notifications.append({"message": message, "category": category})
+
+        # Read after any write so the table shows the new state.
+        visible = engine.mappings_for_channels(await self.config.mappings(), guild_channel_ids)
+        channel_names = {c.id: f"#{c.name}" for c in guild.text_channels}
+        rows = engine.build_dashboard_rows(visible, channel_names, time.time())
+
+        result = {
+            "status": 0,
+            "web_content": {
+                "source": PAGE_TEMPLATE,
+                "rows": rows,
+                "form": form,
+                "can_edit": can_edit,
+                "guild_name": guild.name,
+            },
+        }
+        if notifications:
+            result["notifications"] = notifications
+        return result

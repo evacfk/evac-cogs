@@ -226,3 +226,82 @@ class TestComputeAfterTs:
 
     def test_default_cap_is_one_hour(self):
         assert engine.compute_after_ts(0, now_ts=100_000) == 100_000 - 3600
+
+
+# -- dashboard helpers -------------------------------------------------------------
+
+from redditfeed.models import SubredditMapping  # noqa: E402
+
+
+class TestParsePauseAction:
+    def test_pause_and_resume(self):
+        assert engine.parse_pause_action("pause") is True
+        assert engine.parse_pause_action(" Resume ") is False
+
+    @pytest.mark.parametrize("bad", ["", None, "delete", "paused"])
+    def test_anything_else_is_invalid(self, bad):
+        assert engine.parse_pause_action(bad) is None
+
+
+class TestMappingsForChannels:
+    def _raw(self):
+        return {
+            "b": SubredditMapping(subreddit="b", channel_ids=[1, 99]).to_dict(),
+            "a": SubredditMapping(subreddit="a", channel_ids=[2]).to_dict(),
+            "other": SubredditMapping(subreddit="other", channel_ids=[99]).to_dict(),
+            "empty": SubredditMapping(subreddit="empty", channel_ids=[]).to_dict(),
+        }
+
+    def test_only_mappings_with_a_channel_in_the_guild_sorted_by_name(self):
+        result = engine.mappings_for_channels(self._raw(), {1, 2})
+        assert [m.subreddit for m in result] == ["a", "b"]
+
+    def test_no_guild_channels_means_nothing_visible(self):
+        assert engine.mappings_for_channels(self._raw(), set()) == []
+
+
+class TestFormatAge:
+    @pytest.mark.parametrize(
+        "ts,expected",
+        [
+            (None, "never"),
+            (9_998, "just now"),
+            (9_955, "45s ago"),
+            (9_280, "12m ago"),
+            (10_000 - 3 * 3600, "3h ago"),
+            (10_000 - 2 * 86400, "2d ago"),
+            (10_500, "just now"),  # clock skew: future timestamp never goes negative
+        ],
+    )
+    def test_buckets(self, ts, expected):
+        assert engine.format_age(ts, 10_000) == expected
+
+
+class TestBuildDashboardRows:
+    def test_row_fields_and_other_server_channels_are_collapsed(self):
+        mapping = SubredditMapping(
+            subreddit="feet",
+            channel_ids=[1, 2, 99],
+            require_keywords=["a", "b"],
+            block_keywords=["c"],
+            paused=True,
+            last_poll_ts=9_940,
+            last_error="HTTP 422: Timeout",
+        )
+        rows = engine.build_dashboard_rows([mapping], {1: "#one", 2: "#two"}, 10_000)
+        assert rows == [
+            {
+                "subreddit": "feet",
+                "state": "paused",
+                "channels": ["#one", "#two", "+1 in other servers"],
+                "last_poll": "1m ago",
+                "last_post": "never",
+                "last_error": "HTTP 422: Timeout",
+                "require": "a, b",
+                "block": "c",
+            }
+        ]
+
+    def test_active_with_no_error_has_empty_error_string(self):
+        row = engine.build_dashboard_rows([SubredditMapping(subreddit="x", channel_ids=[1])], {1: "#c"}, 0)[0]
+        assert row["state"] == "active" and row["last_error"] == ""

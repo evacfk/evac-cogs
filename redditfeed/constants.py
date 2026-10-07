@@ -21,6 +21,11 @@ KEYWORD_MODE_REQUIRE = "require"
 KEYWORD_MODE_BLOCK = "block"
 KEYWORD_MODES = (KEYWORD_MODE_REQUIRE, KEYWORD_MODE_BLOCK)
 
+# -- Dashboard page actions -----------------------------------------------
+
+DASHBOARD_ACTION_PAUSE = "pause"
+DASHBOARD_ACTION_RESUME = "resume"
+
 # -- Media classification --------------------------------------------------
 
 MEDIA_KIND_IMAGE = "image"              # direct image, posted as an embed/attachment
