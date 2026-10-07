@@ -51,7 +51,7 @@ def test_dashboard_page_decorator_actually_attaches_its_params():
     from redditfeed.redditfeed import RedditFeed
 
     args, kwargs = RedditFeed.dashboard_redditfeed.__dashboard_decorator_params__
-    assert kwargs["name"] is None
+    assert kwargs["name"] == "feeds"  # an explicit lowercase name; name=None registered as "None" and its link 404s
     assert kwargs["methods"] == ("GET", "POST")
 
 
@@ -70,7 +70,7 @@ def test_version_probe_text_is_the_new_build():
 
     from redditfeed import redditfeed
 
-    assert "redditfeed build: dashboard-v1" in inspect.getsource(redditfeed)
+    assert "redditfeed build: dashboard-v2" in inspect.getsource(redditfeed)
 
 
 def test_setup_function_exists():

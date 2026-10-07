@@ -207,7 +207,7 @@ class RedditFeed(DashboardIntegration, commands.Cog):
     @redditfeed.command(name="version")
     async def redditfeed_version(self, ctx: commands.Context) -> None:
         """Version-probe command -- confirms a deploy actually took."""
-        await ctx.send("redditfeed build: dashboard-v1 (Arctic Shift source)")
+        await ctx.send("redditfeed build: dashboard-v2 (Arctic Shift source)")
 
     @redditfeed.command(name="add")
     async def redditfeed_add(
@@ -417,7 +417,7 @@ class RedditFeed(DashboardIntegration, commands.Cog):
         return "success", f"r/{name} is now {'paused' if paused else 'active'}."
 
     @dashboard_page(
-        name=None,
+        name="feeds",
         description="View RedditFeed subreddit feeds and pause or resume them.",
         methods=("GET", "POST"),
     )
