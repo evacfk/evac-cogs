@@ -21,7 +21,7 @@ from discord.ext import tasks
 from redbot.core import Config, bank, commands
 from redbot.core.utils.chat_formatting import box, humanize_list, pagify
 
-from . import pacing, scenarios as scenario_data, stats
+from . import offerings, pacing, scenarios as scenario_data, stats
 from .activity import ActivityTracker, is_channel_active
 from .config_schema import DEFAULT_GUILD, DEFAULT_MEMBER
 from .constants import CONFIG_IDENTIFIER, GAME_KEYS, MOD_ROLE_ID, RESET_TIMEZONE, SCHEDULER_TICK_SECONDS
@@ -195,6 +195,9 @@ class MinigameHub(commands.Cog):
                         continue  # handled below, conditional on being empty
                     if field not in game_conf:
                         game_conf[field] = copy.deepcopy(default_val)
+            # Mouse + crow offering messages -- once per guild, so removing the
+            # mouse or editing the crow's text later sticks.
+            offerings.seed_hunt_offerings(games["hunt"])
             if not games["lootdrop"]["scenarios"]:
                 games["lootdrop"]["scenarios"] = copy.deepcopy(scenario_data.SEED_LOOTDROP_SCENARIOS)
             if not games["boss"]["scenarios"]:
@@ -1053,7 +1056,9 @@ class MinigameHub(commands.Cog):
             lo, hi = conf.get("reward_range") or conf.get("salute_reward", [0, 0])
             word = conf.get("safe_word")
             word_txt = f" | safe word: {word}" if word else ""
-            lines.append(f"{key:<12} penalty {pct:g}% of balance | salute reward {_fmt_range(lo, hi)}{word_txt}")
+            is_offering = bool(offerings.offering_text(conf))
+            reward_label = "offering reward" if is_offering else "salute reward"
+            lines.append(f"{key:<12} penalty {pct:g}% of balance | {reward_label} {_fmt_range(lo, hi)}{word_txt}")
         await ctx.send(box("\n".join(lines), lang="text"))
 
     @mgh_huntsafe.command(name="add")
@@ -1085,7 +1090,9 @@ class MinigameHub(commands.Cog):
             # dict replace here would silently discard its custom word every
             # time someone just wants to adjust the numbers, unlike the Edit
             # GUI which keeps it by default.
-            existing_word = games["hunt"]["safe_animals"].get(animal_key, {}).get("safe_word")
+            existing = games["hunt"]["safe_animals"].get(animal_key, {})
+            existing_word = existing.get("safe_word")
+            existing_text = existing.get("success_text")
             entry = {
                 "safe": True,
                 "penalty_pct": penalty_pct,
@@ -1093,6 +1100,8 @@ class MinigameHub(commands.Cog):
             }
             if existing_word:
                 entry["safe_word"] = existing_word
+            if existing_text:
+                entry["success_text"] = existing_text
             games["hunt"]["safe_animals"][animal_key] = entry
         await ctx.send(
             f"`{animal_key}` is now safe: shooting it costs {penalty_pct:g}% of balance, "
@@ -1169,6 +1178,48 @@ class MinigameHub(commands.Cog):
             await ctx.send(f"`{animal_key}` now uses the game-wide safe word.")
         else:
             await ctx.send(f"`{animal_key}`'s safe word is now `{word.lower()}`.")
+
+    @mgh_huntsafe.command(name="text")
+    async def mgh_huntsafe_text(self, ctx: commands.Context, animal_key: str, *, template: Optional[str] = None):
+        """Show, set, or reset an offering message for a safe animal.
+
+        An animal with a message is an "offering" animal (crow + shiny coin,
+        mouse + cheese): the message replaces "saluted the X" and the salute
+        reaction is dropped for it. Placeholders: `{user}` `{animal}`
+        `{amount}` `{currency}`.
+
+        `.mgh huntsafe text mouse`            -- show the current message
+        `.mgh huntsafe text mouse <message>`  -- set it
+        `.mgh huntsafe text mouse default`    -- remove it (back to "saluted")
+
+        Pair it with `.mgh huntsafe word <animal> <word>` for what players type.
+        """
+        animal_key = animal_key.lower()
+        template = template.strip() if template else None
+        reset = bool(template) and template.lower() in ("default", "reset", "none")
+        if template and not reset and len(template) > offerings.MAX_TEMPLATE_LEN:
+            await ctx.send(f"Message must be {offerings.MAX_TEMPLATE_LEN} characters or fewer.")
+            return
+        async with self.config.guild(ctx.guild).games() as games:
+            conf = games["hunt"]["safe_animals"].get(animal_key)
+            if not conf or not conf.get("safe", True):
+                await ctx.send(f"`{animal_key}` isn't marked safe yet -- use `.minigamehub huntsafe add` first.")
+                return
+            if template is None:
+                current = conf.get("success_text")
+            elif reset:
+                conf.pop("success_text", None)
+            else:
+                conf["success_text"] = template
+        if template is None:
+            if current:
+                await ctx.send(f"`{animal_key}` offering message:\n{box(current, lang='text')}")
+            else:
+                await ctx.send(f"`{animal_key}` has no offering message -- it uses the normal \"saluted\" line.")
+        elif reset:
+            await ctx.send(f"`{animal_key}` is back to the normal \"saluted\" line.")
+        else:
+            await ctx.send(f"`{animal_key}` offering message set. Placeholders: {', '.join(offerings.PLACEHOLDERS)}.")
 
     # -- migration from the four old cogs -------------------------------- #
 

@@ -589,6 +589,13 @@ class _AnimalEditModal(discord.ui.Modal):
             }
             if custom_word:
                 entry["safe_word"] = custom_word
+            # Carry over an offering message (crow/mouse) -- the modal has no
+            # field for it (5-input cap), so a plain rebuild would wipe it.
+            # Set it with `.mgh huntsafe text`. Dropped if the animal is no
+            # longer safe, since it only applies to safe animals.
+            prior_text = (games["hunt"]["safe_animals"].get(self.key) or {}).get("success_text")
+            if prior_text and is_safe:
+                entry["success_text"] = prior_text
             games["hunt"]["safe_animals"][self.key] = entry
             self.parent_view.animals = animals
             self.parent_view.safe_animals = games["hunt"]["safe_animals"]

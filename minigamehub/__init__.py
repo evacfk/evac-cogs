@@ -1,6 +1,6 @@
-from .minigamehub import MinigameHub
-
-
 async def setup(bot):
-    cog = MinigameHub(bot)
-    await bot.add_cog(cog)
+    # Imported lazily so pure-logic modules (offerings.py) stay importable and
+    # testable without discord.py or redbot installed.
+    from .minigamehub import MinigameHub
+
+    await bot.add_cog(MinigameHub(bot))

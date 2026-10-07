@@ -57,6 +57,9 @@ DEFAULT_GUILD = {
             "safe_word": "salute",
             "shoot_reaction": "\U0001F4A5",  # 💥
             "safe_reaction": "\U0001FAE1",   # 🫡
+            # Flips to True once offerings.seed_hunt_offerings has added the
+            # mouse / crow message for this guild, so admin edits stick.
+            "offerings_seeded": False,
             "animals": {
                 "dove": {"emoji": "\U0001F54A️", "text": "**_Coo!_**"},
                 "penguin": {"emoji": "\U0001F427", "text": "**_Noot!_**"},
@@ -79,6 +82,11 @@ DEFAULT_GUILD = {
                 # Optional "safe_word" overrides the game-wide safe_word for
                 # just this animal (e.g. "caw" for a crow) -- unset means it
                 # uses the game-wide word. Only meaningful while "safe": True.
+                # Optional "success_text" turns it into an offering animal
+                # (crow + shiny coin, mouse + cheese): that template is posted
+                # on success instead of "saluted the X", and the salute
+                # reaction is dropped for it. Placeholders: {user} {animal}
+                # {amount} {currency}. See offerings.py.
                 "eagle": {"safe": True, "penalty_pct": 8.0, "reward_range": [50, 200]},
             },
         },

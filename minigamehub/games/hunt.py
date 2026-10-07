@@ -28,6 +28,10 @@ Design doc per-game-type notes:
    Falls back to the game-wide word when unset. The safe *reaction* emoji
    stays game-wide only -- not asked for, and there's no way to hint a
    per-animal emoji to players the way spawn text already hints a word.
+9. Offering animals -- a safe animal with a `success_text` template (crow +
+   shiny coin, mouse + cheese) posts that on success instead of "saluted the
+   <animal>", and gets no salute reaction since you can't salute a crow into
+   paying you. See offerings.py.
 """
 import asyncio
 import logging
@@ -37,7 +41,7 @@ import re
 import discord
 from redbot.core import bank
 
-from .. import pacing, stats
+from .. import offerings, pacing, stats
 from ..emoji_utils import emoji_matches, parse_emoji
 from .base import register
 
@@ -79,13 +83,19 @@ async def spawn(cog, channel: discord.TextChannel, game_conf: dict, dry_run: boo
         mode = game_conf.get("trigger_mode", "both")
         accepts_word = mode in ("both", "word")
         accepts_reaction = mode in ("both", "reaction")
+        # Offering animals (success_text set) are word-only for the safe
+        # outcome -- the salute reaction would contradict the "give it cheese"
+        # premise. If the game is reaction-only there's no word to type, so
+        # the salute reaction stays as the only way to succeed.
+        success_template = offerings.offering_text(animal_conf) if is_safe else ""
+        salute_reaction = is_safe and not (success_template and accepts_word)
 
         prefix = "\U0001F9EA **[TEST]** " if dry_run else ""
         message = await channel.send(f"{prefix}{animal['emoji']} {animal['text']}")
         if accepts_reaction:
             try:
                 await message.add_reaction(parse_emoji(game_conf["shoot_reaction"]))
-                if is_safe:
+                if salute_reaction:
                     await message.add_reaction(parse_emoji(game_conf["safe_reaction"]))
             except discord.HTTPException:
                 pass
@@ -118,7 +128,7 @@ async def spawn(cog, channel: discord.TextChannel, game_conf: dict, dry_run: boo
             if payload.member is None or payload.member.bot:
                 return False
             return emoji_matches(game_conf["shoot_reaction"], payload.emoji) or (
-                is_safe and emoji_matches(game_conf["safe_reaction"], payload.emoji)
+                salute_reaction and emoji_matches(game_conf["safe_reaction"], payload.emoji)
             )
 
         futures = []
@@ -153,7 +163,7 @@ async def spawn(cog, channel: discord.TextChannel, game_conf: dict, dry_run: boo
             saluted = is_safe and bool(safe_pattern.match(result.content.strip().lower()))
         else:
             author = result.member
-            saluted = is_safe and emoji_matches(game_conf["safe_reaction"], result.emoji)
+            saluted = salute_reaction and emoji_matches(game_conf["safe_reaction"], result.emoji)
 
         member = guild.get_member(author.id) or author
         currency = await bank.get_currency_name(guild)
@@ -188,9 +198,20 @@ async def spawn(cog, channel: discord.TextChannel, game_conf: dict, dry_run: boo
             actual = await pacing.settle_reward(cog.config, member, base, dry_run=dry_run)
             if not dry_run:
                 await stats.record_result(cog.config, member, "hunt", good=True)
-            try:
+            if success_template:
+                # Offering animal: its own line, no "saluted" wording. A 0
+                # payout (daily cap, 0 range) swaps to a line that doesn't
+                # claim it handed over coins.
+                template = success_template if actual > 0 else offerings.ZERO_REWARD_TEXT
+                line = offerings.render(
+                    template, user=member.mention, animal=animal_key, amount=actual, currency=currency
+                )
+                msg = f"{prefix}{line}{note}"
+            else:
                 reward_txt = f" and earned {actual:,} {currency}!{note}" if actual > 0 else f"!{note}"
-                await channel.send(f"{prefix}{member.mention} saluted the {animal_key}{reward_txt} Good instincts!")
+                msg = f"{prefix}{member.mention} saluted the {animal_key}{reward_txt} Good instincts!"
+            try:
+                await channel.send(msg)
             except discord.HTTPException:
                 pass
             return
