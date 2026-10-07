@@ -2,7 +2,9 @@
 cog). They prove the logic and that the module wires up; they do NOT prove the
 live dashboard renders/accepts the page -- that is verified on the host.
 """
+import asyncio
 import copy
+import threading
 from types import SimpleNamespace
 
 import pytest
@@ -297,3 +299,70 @@ def test_template_outputs_the_dashboards_prerendered_form_unescaped(autoescape):
     )
     assert '<form method="post"><select name="x"></select></form>' in html
     assert "&lt;form" not in html
+
+
+# -- bot-loop marshaling -----------------------------------------------------------------------
+
+class _BotLoopThread:
+    """A second event loop on its own thread, standing in for Red's loop while
+    the test coroutine plays the dashboard's web-thread loop."""
+
+    def __enter__(self):
+        self.loop = asyncio.new_event_loop()
+        self.thread = threading.Thread(target=self.loop.run_forever, daemon=True)
+        self.thread.start()
+        return self.loop
+
+    def __exit__(self, *exc):
+        self.loop.call_soon_threadsafe(self.loop.stop)
+        self.thread.join(timeout=5)
+        self.loop.close()
+
+
+async def test_on_bot_loop_runs_the_coroutine_on_the_bot_loop_from_another_loop():
+    cog, _ = make_cog()
+    seen = {}
+
+    async def probe():
+        seen["loop"] = asyncio.get_running_loop()
+        return "done"
+
+    with _BotLoopThread() as bot_loop:
+        cog.bot.loop = bot_loop
+        assert await cog._on_bot_loop(probe()) == "done"
+    assert seen["loop"] is bot_loop
+    assert seen["loop"] is not asyncio.get_running_loop()
+
+
+async def test_on_bot_loop_runs_inline_when_already_on_the_bot_loop():
+    cog, _ = make_cog()
+    cog.bot.loop = asyncio.get_running_loop()
+    seen = {}
+
+    async def probe():
+        seen["loop"] = asyncio.get_running_loop()
+        return 1
+
+    assert await cog._on_bot_loop(probe()) == 1
+    assert seen["loop"] is asyncio.get_running_loop()
+
+
+async def test_dashboard_pause_write_executes_on_the_bot_loop():
+    """Regression: the dashboard's loop is not Red's loop (a Discord call from
+    it fails with "Timeout context manager should be used inside a task"), so
+    the config write must hop to the bot loop."""
+    cog, data = make_cog(bot=FakeBot(owners={7}))
+    seen = []
+    original = cog._apply_paused
+
+    async def spy(name, paused):
+        seen.append(asyncio.get_running_loop())
+        return await original(name, paused)
+
+    cog._apply_paused = spy
+    with _BotLoopThread() as bot_loop:
+        cog.bot.loop = bot_loop
+        result = await cog._dashboard_apply_pause(make_user(7), make_guild(), "feet", "pause")
+    assert result[0] == "success"
+    assert data["feet"]["paused"] is True
+    assert seen == [bot_loop]

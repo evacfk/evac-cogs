@@ -207,7 +207,7 @@ class RedditFeed(DashboardIntegration, commands.Cog):
     @redditfeed.command(name="version")
     async def redditfeed_version(self, ctx: commands.Context) -> None:
         """Version-probe command -- confirms a deploy actually took."""
-        await ctx.send("redditfeed build: dashboard-v3 (Arctic Shift source)")
+        await ctx.send("redditfeed build: dashboard-v4 (Arctic Shift source)")
 
     @redditfeed.command(name="add")
     async def redditfeed_add(
@@ -383,6 +383,24 @@ class RedditFeed(DashboardIntegration, commands.Cog):
     # Everything the page can do is also a `.redditfeed` command; the page is a
     # second front end over the same config, and writes go through _apply_paused.
 
+    async def _on_bot_loop(self, coro):
+        """Run `coro` on the bot's own event loop and await its result.
+
+        The dashboard calls page handlers from its web thread's event loop, not
+        Red's. Anything that writes Red Config (asyncio locks, the JSON driver)
+        or talks to Discord must run on the bot's loop; across loops it can raise
+        "bound to a different event loop" or race the poll loop. If we are
+        already on the bot's loop this just awaits inline.
+        """
+        loop = getattr(self.bot, "loop", None)
+        try:
+            running = asyncio.get_running_loop()
+        except RuntimeError:
+            running = None
+        if loop is None or loop is running:
+            return await coro
+        return await asyncio.wrap_future(asyncio.run_coroutine_threadsafe(coro, loop))
+
     async def _dashboard_can_edit(self, user, guild: discord.Guild) -> bool:
         """Same bar as the command group: bot owner, Manage Server, or mod role."""
         if await self.bot.is_owner(user):
@@ -412,7 +430,7 @@ class RedditFeed(DashboardIntegration, commands.Cog):
         )
         if name not in {m.subreddit for m in visible}:
             return "error", f"r/{name} isn't mapped to a channel in this server."
-        if not await self._apply_paused(name, paused):
+        if not await self._on_bot_loop(self._apply_paused(name, paused)):
             return "error", f"r/{name} isn't mapped."
         return "success", f"r/{name} is now {'paused' if paused else 'active'}."
 
