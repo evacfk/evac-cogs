@@ -141,6 +141,26 @@ def extract_media_items(post: dict) -> list[MediaItem]:
     return items
 
 
+def partition_media_items(items: list[MediaItem]) -> tuple[list[MediaItem], list[MediaItem]]:
+    """Split into (batchable image items, link-only items). Direct images and
+    gallery images can be batched into one multi-embed gallery message;
+    video/RedGIFs links can't be rendered as an embed image and always post
+    individually as a bare URL.
+    """
+    image_items = [item for item in items if not item.is_link_only]
+    link_items = [item for item in items if item.is_link_only]
+    return image_items, link_items
+
+
+def chunk_items(items: list, size: int) -> list[list]:
+    """Split into chunks of at most `size` -- used to stay under Discord's
+    10-embeds-per-message cap for large galleries.
+    """
+    if size <= 0:
+        raise ValueError("size must be positive")
+    return [items[i : i + size] for i in range(0, len(items), size)]
+
+
 def is_nsfw_over_18(post: dict) -> bool:
     return bool(post.get("over_18"))
 

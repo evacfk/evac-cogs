@@ -157,20 +157,52 @@ class RedditFeed(commands.Cog):
         return dedup_store
 
     async def _post_media_items(self, channel, post: dict, media_items: list) -> None:
-        """Image-only, no text: every item (image, gallery image, video/RedGIFs
-        link) is posted as a bare URL so Discord's own unfurl renders just the
-        media -- no embed title, no author/poster name, no subreddit footer,
-        no clickable title-as-link.
+        """Image-only, no text, no embed title/author/footer/link anywhere.
+
+        A single direct image posts as a bare URL (Discord unfurls it inline).
+        Multiple images from one post (a gallery) are batched into ONE message
+        as multiple image-only embeds sharing a grouping url -- Discord tiles
+        those into a single gallery message instead of N separate ones.
+        Video/RedGIFs links can't be embedded as an image and always post
+        individually as a bare URL.
         """
-        for item in media_items:
-            try:
-                await channel.send(embeds.build_link_message(post, item))
-            except discord.Forbidden:
-                log.warning("redditfeed: missing permission to post in channel %s", channel.id)
-                break  # no point retrying the rest of this post's items in the same channel
-            except discord.HTTPException as exc:
-                log.warning("redditfeed: failed to post to channel %s: %s", channel.id, exc)
-            await asyncio.sleep(0.5)  # small gap between gallery images
+        image_items, link_items = engine.partition_media_items(media_items)
+
+        if len(image_items) == 1:
+            await self._send_text(channel, embeds.build_link_message(post, image_items[0]))
+        elif len(image_items) > 1:
+            for batch in engine.chunk_items(image_items, constants.MAX_EMBEDS_PER_MESSAGE):
+                if not await self._send_embeds(channel, embeds.build_gallery_embeds(post, batch)):
+                    return  # no permission -- don't bother with the rest of this post
+                await asyncio.sleep(0.5)
+
+        for item in link_items:
+            if not await self._send_text(channel, embeds.build_link_message(post, item)):
+                return
+            await asyncio.sleep(0.5)
+
+    async def _send_text(self, channel, content: str) -> bool:
+        """Returns False on a permission failure (caller should stop posting
+        further items to this channel for this post); True otherwise.
+        """
+        try:
+            await channel.send(content)
+        except discord.Forbidden:
+            log.warning("redditfeed: missing permission to post in channel %s", channel.id)
+            return False
+        except discord.HTTPException as exc:
+            log.warning("redditfeed: failed to post to channel %s: %s", channel.id, exc)
+        return True
+
+    async def _send_embeds(self, channel, embed_list: list) -> bool:
+        try:
+            await channel.send(embeds=embed_list)
+        except discord.Forbidden:
+            log.warning("redditfeed: missing permission to post in channel %s", channel.id)
+            return False
+        except discord.HTTPException as exc:
+            log.warning("redditfeed: failed to post gallery to channel %s: %s", channel.id, exc)
+        return True
 
     # -- Command tree -------------------------------------------------------------
 

@@ -175,6 +175,34 @@ class TestClamping:
         assert engine.clamp_stagger(2.5) == 2.5
 
 
+class TestPartitionMediaItems:
+    def test_splits_image_items_from_link_items(self):
+        image = MediaItem(kind=constants.MEDIA_KIND_IMAGE, url="https://a/1.jpg")
+        gallery = MediaItem(kind=constants.MEDIA_KIND_GALLERY_IMAGE, url="https://a/2.jpg")
+        video = MediaItem(kind=constants.MEDIA_KIND_VIDEO_LINK, url="https://reddit.com/x", is_link_only=True)
+        image_items, link_items = engine.partition_media_items([image, gallery, video])
+        assert image_items == [image, gallery]
+        assert link_items == [video]
+
+    def test_empty_list(self):
+        assert engine.partition_media_items([]) == ([], [])
+
+
+class TestChunkItems:
+    def test_splits_into_chunks_of_requested_size(self):
+        assert engine.chunk_items([1, 2, 3, 4, 5], 2) == [[1, 2], [3, 4], [5]]
+
+    def test_single_chunk_when_under_size(self):
+        assert engine.chunk_items([1, 2], 10) == [[1, 2]]
+
+    def test_empty_list_yields_no_chunks(self):
+        assert engine.chunk_items([], 10) == []
+
+    def test_rejects_non_positive_size(self):
+        with pytest.raises(ValueError):
+            engine.chunk_items([1], 0)
+
+
 class TestSortPostsOldestFirst:
     def test_sorts_ascending_by_created_utc(self):
         posts = [{"id": "new", "created_utc": 300}, {"id": "old", "created_utc": 100}]

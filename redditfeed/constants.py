@@ -30,6 +30,12 @@ REDGIFS_DOMAINS = ("redgifs.com", "www.redgifs.com")
 
 IMAGE_HOST_DOMAINS = ("i.redd.it", "i.imgur.com", "imgur.com")
 
+# Discord allows at most 10 embeds per message. Embeds sharing the same
+# embed.url (with no title set, so that url is never shown as visible text)
+# get visually grouped into one tiled gallery by Discord's client -- this is
+# what lets a multi-image gallery post land as one message instead of N.
+MAX_EMBEDS_PER_MESSAGE = 10
+
 # -- Arctic Shift data source ----------------------------------------------
 
 ARCTIC_SHIFT_BASE_URL = "https://arctic-shift.photon-reddit.com/api/posts/search"
