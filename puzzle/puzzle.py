@@ -18,6 +18,7 @@ from discord.ext import tasks
 MIN_PIECE_COUNT = 2
 MAX_PIECE_COUNT = 25
 DEFAULT_PIECE_COUNT = 9  # used when no per-server default and no per-image size is set
+DEFAULT_LOW_POOL_THRESHOLD = 2  # warn admins when this many unplayed images (or fewer) remain
 
 CHECK_INTERVAL_MINUTES = 5  # how often the background loop wakes up to check posting timers
 SHARED_SWEEP_INTERVAL_SECONDS = 30  # how often open shared-mode pieces are checked for an expired claim window
@@ -52,7 +53,7 @@ class Puzzle(commands.Cog):
     per person across every round.
     """
 
-    __version__ = "1.4.0"
+    __version__ = "1.5.0"
 
     def __init__(self, bot: Red):
         self.bot = bot
@@ -64,7 +65,9 @@ class Puzzle(commands.Cog):
             "interval_max_hours": 8,
             "claim_emoji": "\N{JIGSAW PUZZLE PIECE}",
             "reward_role_id": None,
-            # str(image_id) -> {"piece_rows", "img_w", "img_h", "filename", "added_by", "image_hash"}
+            # str(image_id) -> {"piece_rows", "img_w", "img_h", "filename", "added_by", "image_hash",
+            # "retired", and once won: "won_by" [user_ids], "won_at" (unix ts),
+            # "won_after_seconds", "pieces_posted"}
             "pool": {},
             "next_id": 1,
             "used_ids": [],
@@ -86,6 +89,16 @@ class Puzzle(commands.Cog):
             "live_status_message_id": None,
             # str(user_id) -> {"pieces_collected": int, "puzzles_won": int}, all-time
             "lifetime_stats": {},
+            # True only when the game paused itself because no eligible image was
+            # left (every one won/retired or the pool is empty). Adding or
+            # unretiring an image resumes the game automatically while this is
+            # set; an admin's `[p]puzzle stop` clears it so it stays stopped.
+            "paused_for_pool": False,
+            # warn when this many (or fewer) unplayed images remain after a new
+            # puzzle starts; 0 turns the warning off
+            "low_pool_threshold": DEFAULT_LOW_POOL_THRESHOLD,
+            # where low-pool warnings go; falls back to the puzzle channel
+            "alert_channel_id": None,
         }
         self.config.register_guild(**default_guild)
 
@@ -529,6 +542,92 @@ class Puzzle(commands.Cog):
         await self.config.guild(guild).last_image_id.set(choice)
         return choice
 
+    @staticmethod
+    def _fmt_duration(seconds: float) -> str:
+        seconds = int(max(0, seconds))
+        days, rem = divmod(seconds, 86400)
+        hours, rem = divmod(rem, 3600)
+        minutes = rem // 60
+        parts = []
+        if days:
+            parts.append(f"{days}d")
+        if hours:
+            parts.append(f"{hours}h")
+        if minutes or not parts:
+            parts.append(f"{minutes}m")
+        return " ".join(parts)
+
+    async def _prefix(self, guild: discord.Guild) -> str:
+        """The server's command prefix, for messages sent outside a command
+        context (where a literal `[p]` would not be replaced)."""
+        try:
+            prefixes = [p for p in await self.bot.get_valid_prefixes(guild) if not p.startswith("<@")]
+            if prefixes:
+                return prefixes[0]
+        except Exception:
+            pass
+        return "."
+
+    async def _eligible_count(self, guild: discord.Guild) -> int:
+        pool = await self.config.guild(guild).pool()
+        return sum(1 for meta in pool.values() if not meta.get("retired"))
+
+    async def _alert_low_pool(self, guild: discord.Guild, upcoming: int):
+        """Warn when few unplayed images remain after the current one.
+        `upcoming` excludes the puzzle that's running right now. Purely a
+        heads-up: failures are logged and never interrupt the game."""
+        conf = self.config.guild(guild)
+        threshold = await conf.low_pool_threshold()
+        if threshold <= 0 or upcoming > threshold:
+            return
+        channel_id = await conf.alert_channel_id() or await conf.channel_id()
+        channel = guild.get_channel(channel_id) if channel_id else None
+        if channel is None:
+            return
+        prefix = await self._prefix(guild)
+        if upcoming <= 0:
+            text = (
+                "\N{WARNING SIGN} Puzzle pool: this is the **last** eligible image. Once it's won the "
+                f"game pauses. Admins: add more with `{prefix}puzzle addimage`."
+            )
+        else:
+            text = (
+                f"\N{WARNING SIGN} Puzzle pool is running low: {upcoming} more image(s) after the current "
+                f"one. Admins: add more with `{prefix}puzzle addimage`."
+            )
+        try:
+            await channel.send(text)
+        except discord.HTTPException:
+            log.exception("Failed to send the low-pool puzzle warning in guild %s", guild.id)
+
+    async def _resume_if_paused(self, guild: discord.Guild, quiet_channel_id: Optional[int] = None) -> Optional[int]:
+        """If the game paused itself because the pool ran dry, start a new
+        round now that an image is available. Returns the new image id, or
+        None if nothing was resumed. `quiet_channel_id` is a channel the
+        caller is already replying in, so it isn't told twice."""
+        conf = self.config.guild(guild)
+        if not await conf.paused_for_pool():
+            return None
+        if await self._get_active(guild) is not None:
+            await conf.paused_for_pool.set(False)
+            return None
+        channel_id = await conf.channel_id()
+        channel = guild.get_channel(channel_id) if channel_id else None
+        if channel is None:
+            return None
+        image_id = await self._pick_next_image_id(guild)
+        if image_id is None:
+            return None
+        if await self._start_round(guild, image_id) is not None:
+            return None
+        if channel.id != quiet_channel_id:
+            try:
+                await channel.send(f"Starting a new puzzle with image #{image_id}!")
+            except discord.HTTPException:
+                log.exception("Failed to announce the resumed puzzle in guild %s", guild.id)
+        await self._alert_low_pool(guild, await self._eligible_count(guild) - 1)
+        return image_id
+
     async def _roll_interval_hours(self, guild: discord.Guild) -> float:
         """Pick a fresh random wait (in hours) within the configured range,
         so the posting schedule can't be predicted/camped."""
@@ -588,8 +687,13 @@ class Puzzle(commands.Cog):
             # same as always -- there's no window to wait for there.
             "finalize_after_message": None,
             "finalize_after_ts": None,
+            # optional (not part of the required schema keys, so older rounds
+            # without it keep working): when the round began, for the
+            # completion-time record on the hall of fame
+            "started_ts": time.time(),
         }
         await self.config.guild(guild).active.set(active)
+        await self.config.guild(guild).paused_for_pool.set(False)
         await self._update_live_status(guild)
         return None
 
@@ -724,6 +828,8 @@ class Puzzle(commands.Cog):
                 return  # already finished by a concurrent call -- nothing to do
             image_id = active["image_id"]
             img_w, img_h, piece_rows = active["img_w"], active["img_h"], active["piece_rows"]
+            started_ts = active.get("started_ts")
+            posted_total = active.get("posted_total", 0)
             await self.config.guild(guild).active.set(None)
 
         channel_id = await self.config.guild(guild).channel_id()
@@ -736,15 +842,27 @@ class Puzzle(commands.Cog):
             # a puzzle that was actually won is retired for good -- it never
             # gets picked again, so the same image can't run twice. A puzzle
             # that was skipped/stopped with no winners stays in the pool.
+            # the record of who won it, when, and how long it took stays on the
+            # pool entry so `[p]puzzle gallery` can show it later
+            now_ts = int(time.time())
+            won_after = max(0, now_ts - int(started_ts)) if started_ts else None
             async with self.config.guild(guild).pool() as pool:
-                if str(image_id) in pool:
-                    pool[str(image_id)]["retired"] = True
+                pool_meta = pool.get(str(image_id))
+                if pool_meta is not None:
+                    pool_meta["retired"] = True
+                    pool_meta["won_by"] = list(winners)
+                    pool_meta["won_at"] = now_ts
+                    pool_meta["pieces_posted"] = posted_total
+                    if won_after is not None:
+                        pool_meta["won_after_seconds"] = won_after
 
             mentions = []
             for user_id in winners:
                 member = guild.get_member(user_id)
                 mentions.append(member.mention if member else f"<@{user_id}>")
             text = f"\N{PARTY POPPER} " + ", ".join(mentions) + " completed the puzzle!"
+            if won_after is not None:
+                text += f" (It took {self._fmt_duration(won_after)} and {posted_total} pieces posted.)"
 
             if channel is not None:
                 if full_image_path is not None:
@@ -809,11 +927,15 @@ class Puzzle(commands.Cog):
 
         next_id = await self._pick_next_image_id(guild)
         if next_id is None:
+            # adding or unretiring an image resumes the game automatically
+            await self.config.guild(guild).paused_for_pool.set(True)
             if channel is not None:
+                prefix = await self._prefix(guild)
                 await channel.send(
                     "No eligible images left in the pool (everything's either empty or already "
                     "won and retired), so the puzzle game is paused. An admin can add more with "
-                    "`[p]puzzle addimage`, or bring a retired one back with `[p]puzzle unretire`."
+                    f"`{prefix}puzzle addimage` or bring a retired one back with `{prefix}puzzle unretire` "
+                    "and it will start again on its own."
                 )
             return
 
@@ -822,6 +944,8 @@ class Puzzle(commands.Cog):
             await channel.send(f"Couldn't start the next puzzle automatically: {err}")
         elif channel is not None:
             await channel.send(f"Starting a new puzzle with image #{next_id}!")
+        if not err:
+            await self._alert_low_pool(guild, await self._eligible_count(guild) - 1)
 
     # ------------------------------------------------------------------ #
     # background loops
@@ -944,6 +1068,13 @@ class Puzzle(commands.Cog):
             shared = entry["shared"]
             user_id = payload.member.id
             user_key = str(user_id)
+
+            if not shared and piece_index in active["inventories"].get(user_key, []):
+                # an exclusive piece is single-use, so only someone who still
+                # needs this position can claim it -- otherwise a player who
+                # already owns it could burn the piece for everyone else.
+                # Leave it open for the next reactor.
+                return
 
             if shared:
                 if user_id in entry["claimants"]:
@@ -1162,6 +1293,11 @@ class Puzzle(commands.Cog):
             lines.append("Nothing was added.")
         await ctx.send("\n".join(lines))
 
+        if added:
+            resumed = await self._resume_if_paused(ctx.guild, quiet_channel_id=ctx.channel.id)
+            if resumed is not None:
+                await ctx.send(f"The game had paused with an empty pool, so I started it again with image #{resumed}.")
+
     @puzzle.command(name="setpieces")
     @checks.admin_or_permissions(manage_guild=True)
     async def puzzle_setpieces(self, ctx: commands.Context, count: int):
@@ -1354,6 +1490,10 @@ class Puzzle(commands.Cog):
             meta["retired"] = False
         await ctx.send(f"Image #{image_id} is back in rotation.")
 
+        resumed = await self._resume_if_paused(ctx.guild, quiet_channel_id=ctx.channel.id)
+        if resumed is not None:
+            await ctx.send(f"The game had paused with an empty pool, so I started it again with image #{resumed}.")
+
     @puzzle.command(name="images")
     async def puzzle_images(self, ctx: commands.Context):
         """List the images currently in the pool."""
@@ -1385,6 +1525,56 @@ class Puzzle(commands.Cog):
             await ctx.send("\n".join(lines), file=discord.File(buf, filename="pool.png"))
         else:
             await ctx.send("\n".join(lines))
+
+    def _gallery_line(self, guild: discord.Guild, image_id: str, meta: dict) -> str:
+        names = []
+        for user_id in meta.get("won_by", [])[:10]:
+            member = guild.get_member(user_id)
+            names.append(member.display_name if member else f"User {user_id}")
+        line = f"#{image_id}: won by {', '.join(names) if names else 'unknown'} on <t:{meta['won_at']}:D>"
+        if meta.get("won_after_seconds") is not None:
+            line += f" in {self._fmt_duration(meta['won_after_seconds'])}"
+        return line
+
+    @puzzle.command(name="gallery", aliases=["history", "halloffame"])
+    async def puzzle_gallery(self, ctx: commands.Context, image_id: Optional[int] = None):
+        """Hall of fame: completed puzzles, newest first, with who won and
+        how long it took. Give an image ID to see that puzzle's completed
+        picture again."""
+        pool = await self.config.guild(ctx.guild).pool()
+        won = {iid: meta for iid, meta in pool.items() if meta.get("won_at")}
+
+        if image_id is not None:
+            meta = won.get(str(image_id))
+            if meta is None:
+                await ctx.send(f"Image #{image_id} hasn't been won yet.")
+                return
+            text = self._gallery_line(ctx.guild, str(image_id), meta)
+            full_path = await asyncio.to_thread(
+                self._ensure_full_image,
+                self._image_dir(ctx.guild.id, image_id),
+                meta["img_w"],
+                meta["img_h"],
+                meta["piece_rows"],
+            )
+            if full_path is not None:
+                await ctx.send(text, file=discord.File(full_path, filename="completed.png"))
+            else:
+                await ctx.send(text)
+            return
+
+        if not won:
+            await ctx.send("No puzzles have been completed yet.")
+            return
+
+        ordered = sorted(won.items(), key=lambda kv: -kv[1]["won_at"])
+        lines = ["**Completed puzzles** (newest first)"]
+        for iid, meta in ordered[:10]:
+            lines.append(self._gallery_line(ctx.guild, iid, meta))
+        if len(ordered) > 10:
+            lines.append(f"...and {len(ordered) - 10} more.")
+        lines.append(f"Use `{ctx.clean_prefix}puzzle gallery <id>` to see one again.")
+        await ctx.send("\n".join(lines))
 
     @puzzle.command(name="migratepool")
     @checks.admin_or_permissions(manage_guild=True)
@@ -1504,6 +1694,8 @@ class Puzzle(commands.Cog):
         if task is not None:
             task.cancel()
         await self.config.guild(ctx.guild).active.set(None)
+        # an admin stop is deliberate -- don't let a later addimage restart it
+        await self.config.guild(ctx.guild).paused_for_pool.set(False)
         await self._update_live_status(ctx.guild)
         await ctx.send("Puzzle stopped and reset. The pool and settings are untouched.")
 
@@ -1720,6 +1912,32 @@ class Puzzle(commands.Cog):
             f"{count} winner(s) have collected every piece."
         )
 
+    @puzzle.command(name="setlowpool")
+    @checks.admin_or_permissions(manage_guild=True)
+    async def puzzle_setlowpool(self, ctx: commands.Context, count: int):
+        """Warn when this many unplayed images (or fewer) remain after a new
+        puzzle starts. Since won images are retired for good, this is the
+        heads-up to add more. 0 turns the warning off."""
+        if count < 0:
+            await ctx.send("Must be 0 or more.")
+            return
+        await self.config.guild(ctx.guild).low_pool_threshold.set(count)
+        if count == 0:
+            await ctx.send("Low-pool warnings are off.")
+        else:
+            await ctx.send(f"I'll warn when {count} or fewer unplayed image(s) remain after a puzzle starts.")
+
+    @puzzle.command(name="setalertchannel")
+    @checks.admin_or_permissions(manage_guild=True)
+    async def puzzle_setalertchannel(self, ctx: commands.Context, channel: Optional[discord.TextChannel] = None):
+        """Set (or clear, if no channel given) where low-pool warnings go.
+        With none set they're posted in the puzzle channel."""
+        await self.config.guild(ctx.guild).alert_channel_id.set(channel.id if channel else None)
+        if channel:
+            await ctx.send(f"Low-pool warnings will go to {channel.mention}.")
+        else:
+            await ctx.send("Alert channel cleared; warnings will go to the puzzle channel.")
+
     @puzzle.command(name="settings")
     async def puzzle_settings(self, ctx: commands.Context):
         """Show the current puzzle configuration for this server."""
@@ -1735,8 +1953,11 @@ class Puzzle(commands.Cog):
         shared_window_minutes = await guild_conf.shared_window_minutes()
         announce_channel_id = await guild_conf.announce_channel_id()
         live_status_channel_id = await guild_conf.live_status_channel_id()
+        low_pool_threshold = await guild_conf.low_pool_threshold()
+        alert_channel_id = await guild_conf.alert_channel_id()
         pool = await guild_conf.pool()
 
+        alert_channel = ctx.guild.get_channel(alert_channel_id) if alert_channel_id else None
         channel = ctx.guild.get_channel(channel_id) if channel_id else None
         role = ctx.guild.get_role(reward_role_id) if reward_role_id else None
         announce_channel = ctx.guild.get_channel(announce_channel_id) if announce_channel_id else None
@@ -1754,5 +1975,8 @@ class Puzzle(commands.Cog):
             f"Live status: {('enabled in ' + live_status_channel.mention) if live_status_channel else 'off'}",
             f"Images in pool: {len(pool)} "
             f"({sum(1 for meta in pool.values() if meta.get('retired'))} retired)",
+            "Low-pool warning: "
+            + (f"at {low_pool_threshold} or fewer unplayed" if low_pool_threshold > 0 else "off")
+            + f" (to {alert_channel.mention if alert_channel else 'the puzzle channel'})",
         ]
         await ctx.send("\n".join(lines))

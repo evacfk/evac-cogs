@@ -62,11 +62,18 @@ Everything is under `[p]puzzle`. "Admin" means admin or Manage Server.
   showing your claimed pieces in place and the rest blanked out.
 - `[p]puzzle leaderboard` (alias: `lb`) — all-time top 10: most puzzles won,
   then most pieces collected, across every round ever played on the server.
+- `[p]puzzle gallery [id]` (aliases: `history`, `halloffame`) — hall of fame of
+  completed puzzles, newest first, with winners, date and how long each took.
+  Give an image ID to see that puzzle's completed picture again.
 
 **Managing the pool**
 
 - `[p]puzzle addimage [size]` (admin, attach image(s)) — add images to the pool.
 - `[p]puzzle delimage <id>` (admin) — remove an image from the pool by ID.
+- `[p]puzzle retire <id>` / `[p]puzzle unretire <id>` (admin) — take an image
+  out of rotation for good / bring it back. Images are retired automatically
+  when someone wins them. If the game paused because nothing eligible was
+  left, adding or unretiring an image restarts it on its own.
 - `[p]puzzle images` — list the pool with IDs, piece counts and which one is
   active, plus a labeled thumbnail grid so you can tell images apart at a
   glance instead of relying on filenames.
@@ -104,6 +111,10 @@ Everything is under `[p]puzzle`. "Admin" means admin or Manage Server.
 - `[p]puzzle setsharedmode <on|off>` — shared-credit mode, see below.
 - `[p]puzzle setsharedwindow <minutes>` — how long a piece stays open in
   shared mode (greater than 0, up to 60; defaults to 1).
+- `[p]puzzle setlowpool <count>` — warn when this many unplayed images (or
+  fewer) remain after a puzzle starts (default 2, `0` turns it off).
+- `[p]puzzle setalertchannel [#channel]` — where those warnings go; omit the
+  channel to fall back to the puzzle channel.
 - `[p]puzzle setannouncechannel [#channel]` — also post every puzzle
   completion in this channel, for when the collection channel is busy enough
   to bury it. Omit the channel to clear it.
@@ -127,8 +138,10 @@ Everything is under `[p]puzzle`. "Admin" means admin or Manage Server.
   fixed countdown — so nobody can predict the next spawn and camp the
   channel for it. The background loop checks its timers every 5 minutes, so
   posts can land up to about that much after their exact due time.
-- **Claiming (default)**: first reaction with the claim emoji on a given posted
-  piece wins that copy of it, permanently. Everyone builds their own
+- **Claiming (default)**: first reaction with the claim emoji from someone who
+  still needs that piece wins that copy of it, permanently. Reactions from
+  people who already own that position are ignored, so they can't burn a
+  piece for everyone else. Everyone builds their own
   collection independently — claiming a piece doesn't take it away from
   anyone else's future chances, since the same position can be posted again.
 - **Claiming (shared mode)**: with `[p]puzzle setsharedmode on`, everyone who
@@ -143,10 +156,11 @@ Everything is under `[p]puzzle`. "Admin" means admin or Manage Server.
   have finished, the full image posts, all winners are announced together
   (and copied to the announcement channel if one is set), the champion role
   rotates, and a new puzzle starts automatically.
-- **Rotation**: images are picked at random from the pool without repeats
-  until the whole pool has been used once, then the cycle resets. The image
-  that just finished is never picked again immediately, as long as the pool
-  has another option.
+- **Rotation**: images are picked at random from the pool. An image that gets
+  won is retired for good (with the winners, date and completion time kept for
+  `[p]puzzle gallery`); skipped or stopped puzzles stay in the pool. When no
+  eligible image is left the game pauses, and adding or unretiring an image
+  starts it again automatically (an admin `stop` stays stopped).
 - **Deleting**: you can't delete the image that's the currently active
   puzzle — stop the round first.
 - **Restart-safe**: piece timing is based on a stored timestamp, not an
