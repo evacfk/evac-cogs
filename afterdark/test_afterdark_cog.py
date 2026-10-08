@@ -1328,3 +1328,11 @@ async def test_grantinterest_completes_a_partial_join(w):
     ctx = FakeCtx(w.guild, w.member("admin"))
     await w.cog.afterdark_grantinterest.func(w.cog, ctx, m, "feet")
     assert m in w.feet2.overwrites and m in w.feet3.overwrites
+
+
+def test_shipped_rules_fit_the_panel_and_render_white_with_the_how_to_section():
+    from . import embeds
+    assert C.RULES_TEXT.strip() and len(C.RULES_TEXT) < 4000
+    emb = embeds.panel_embed([], 7, 14)
+    assert emb.title.endswith("Rabbit Hole rules") and emb.description.startswith("**Welcome to the Rabbit Hole.**")
+    assert any(f.name == "Pick your rabbit holes" and "14 days" in f.value for f in emb.fields)

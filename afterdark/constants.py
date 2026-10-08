@@ -1,7 +1,7 @@
 """All defaults and lookup tables for afterdark -- no discord/redbot imports."""
 
-VERSION = "1.3.0"
-BUILD = "afterdark build: multi-v1 (interests open several channels, rules panel)"
+VERSION = "1.3.1"
+BUILD = "afterdark build: multi-v1 (interests open several channels, rules in panel)"
 
 CONFIG_IDENTIFIER = 7316482950
 DAY = 86400
@@ -37,7 +37,28 @@ CONTACT_TEXT = "Contact ModMail."
 WHITE = 0xFFFFFF   # the white rabbit: border colour of the Rabbit Hole embeds
 # The Rabbit Hole rules, shown in the panel embed. Plain text / Discord markdown,
 # at most ~3800 characters. Empty = no rules section.
-RULES_TEXT = ""
+RULES_TEXT = """**Welcome to the Rabbit Hole.** This is an adults-only space inside Wonderland. Staying here is a privilege, so please read all of this.
+
+**Who's here**
+- You must be 18+. If you're not, or you're unsure, leave now.
+- Access can be removed at any time at staff discretion.
+
+**Respect**
+- Don't pester members. No unsolicited DMs, repeated requests or pressure. "No" means no.
+- No harassment, hate speech or doxxing.
+- Keep content in the right channel and use spoilers where a channel asks for them.
+- No selling, trading, advertising or self-promotion unless a channel says so.
+- Only members with the **Age Verified** role, and with a moderator's permission, may post photos of themselves with nudity.
+- The Age Verified role is optional and only for people who want to share photos of themselves. We don't collect IDs from everyone, to avoid the security risk.
+
+**Privacy**
+- What's posted here stays here. Don't screenshot, re-post or share content or members outside this space.
+- Don't ask other members for personal info.
+
+**Staying in**
+- Each interest channel you join is tracked separately. If you stop posting or reacting in one for a while, you'll get a warning and then lose access to that channel. You can rejoin from the buttons below.
+- Losing your Adult Chat or age role removes you from the Rabbit Hole.
+- If you've lost access and think it's a mistake, contact ModMail."""
 
 ACCESS_MODES = ("roles", "overwrites")
 # Discord allows 100 permission overwrites per channel; refuse before the cap.
