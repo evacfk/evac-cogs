@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import List, Optional, Tuple
 
 import discord
-from PIL import Image, ImageDraw
+from PIL import Image, ImageDraw, ImageFont
 from redbot.core import Config, checks, commands
 from redbot.core.data_manager import cog_data_path
 from redbot.core.bot import Red
@@ -52,7 +52,7 @@ class Puzzle(commands.Cog):
     per person across every round.
     """
 
-    __version__ = "1.3.0"
+    __version__ = "1.4.0"
 
     def __init__(self, bot: Red):
         self.bot = bot
@@ -365,6 +365,36 @@ class Puzzle(commands.Cog):
         return buf
 
     @staticmethod
+    def _load_label_font(size: int) -> ImageFont.ImageFont:
+        """Load a legible font at the given pixel size for drawing the
+        missing-piece position numbers. Pillow >= 10.1 bundles its own
+        scalable font and can hand it back at any size via
+        `load_default(size=...)` with no filesystem dependency at all --
+        try that first since it works identically on any host. Older
+        Pillow's `load_default()` doesn't take a size, so fall back to
+        hunting for a real TrueType/OpenType font on disk, and only use
+        the tiny fixed-size bitmap font as an absolute last resort."""
+        try:
+            return ImageFont.load_default(size=size)
+        except TypeError:
+            pass
+
+        candidates = [
+            Path(ImageFont.__file__).parent / "fonts" / "DejaVuSans-Bold.ttf",
+            Path("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"),
+            Path("/usr/share/fonts/truetype/freefont/FreeSansBold.ttf"),
+            Path("/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf"),
+        ]
+        for candidate in candidates:
+            try:
+                if candidate.exists():
+                    return ImageFont.truetype(str(candidate), size=size)
+            except Exception:
+                continue
+
+        return ImageFont.load_default()
+
+    @staticmethod
     def _build_progress_image(
         image_dir: Path, img_w: int, img_h: int, rows: List[int], owned: set
     ) -> Optional[io.BytesIO]:
@@ -379,6 +409,14 @@ class Puzzle(commands.Cog):
 
         canvas = Image.new("RGBA", (img_w, img_h), (32, 32, 36, 255))
         draw = ImageDraw.Draw(canvas)
+
+        # Size the label font relative to the smallest box dimension across
+        # the whole layout, so it reads clearly whether the grid is a sparse
+        # 2x2 or a dense 5x5 -- capped so it never looks absurd on huge boxes.
+        smallest_dim = min(min(x1 - x0, y1 - y0) for x0, y0, x1, y1 in boxes)
+        font_size = max(14, min(96, int(smallest_dim * 0.55)))
+        font = Puzzle._load_label_font(font_size)
+
         for i, (x0, y0, x1, y1) in enumerate(boxes):
             if i in owned:
                 piece_path = image_dir / f"piece_{i}.png"
@@ -392,11 +430,11 @@ class Puzzle(commands.Cog):
                     width=2,
                 )
                 label = str(i + 1)
-                bbox = draw.textbbox((0, 0), label)
+                bbox = draw.textbbox((0, 0), label, font=font)
                 text_w, text_h = bbox[2] - bbox[0], bbox[3] - bbox[1]
                 cx = x0 + (x1 - x0 - text_w) // 2 - bbox[0]
                 cy = y0 + (y1 - y0 - text_h) // 2 - bbox[1]
-                draw.text((cx, cy), label, fill=(160, 160, 170, 255))
+                draw.text((cx, cy), label, font=font, fill=(225, 225, 232, 255))
 
         buf = io.BytesIO()
         canvas.save(buf, format="PNG")
@@ -466,12 +504,17 @@ class Puzzle(commands.Cog):
         pool = await self.config.guild(guild).pool()
         if not pool:
             return None
+        # images that have already been won are retired permanently and are
+        # never eligible again, regardless of the used/cycle bookkeeping below
+        eligible_ids = {int(i) for i, meta in pool.items() if not meta.get("retired")}
+        if not eligible_ids:
+            return None
         used = await self.config.guild(guild).used_ids()
-        available = [int(i) for i in pool.keys() if int(i) not in used]
+        available = [i for i in eligible_ids if i not in used]
         if not available:
             # exhausted the pool without repeats; reshuffle the cycle
             used = []
-            available = [int(i) for i in pool.keys()]
+            available = list(eligible_ids)
 
         # never immediately repeat the image that just finished, as long as
         # there's another option -- this matters most right when a cycle
@@ -617,7 +660,7 @@ class Puzzle(commands.Cog):
             await self.config.guild(guild).active.set(active)
 
     async def _close_shared_piece_message(
-        self, guild: discord.Guild, message_id: int, entry: dict, total: int
+        self, guild: discord.Guild, message_id: int, entry: dict, total: int, image_id: int
     ):
         """Cosmetically close out a shared-mode piece message once its claim
         window has elapsed: show who claimed it (and which piece it was) and
@@ -650,7 +693,9 @@ class Puzzle(commands.Cog):
                 color=discord.Color.dark_grey(),
             )
             new_embed.set_image(url="attachment://piece.png")
-            await message.edit(embed=new_embed, attachments=message.attachments)
+            image_dir = self._image_dir(guild.id, image_id)
+            new_file = discord.File(image_dir / f"piece_{piece_index}.png", filename="piece.png")
+            await message.edit(embed=new_embed, attachments=[new_file])
             try:
                 await message.clear_reactions()
             except discord.HTTPException:
@@ -688,6 +733,13 @@ class Puzzle(commands.Cog):
         full_image_path = await asyncio.to_thread(self._ensure_full_image, image_dir, img_w, img_h, piece_rows)
 
         if winners:
+            # a puzzle that was actually won is retired for good -- it never
+            # gets picked again, so the same image can't run twice. A puzzle
+            # that was skipped/stopped with no winners stays in the pool.
+            async with self.config.guild(guild).pool() as pool:
+                if str(image_id) in pool:
+                    pool[str(image_id)]["retired"] = True
+
             mentions = []
             for user_id in winners:
                 member = guild.get_member(user_id)
@@ -759,8 +811,9 @@ class Puzzle(commands.Cog):
         if next_id is None:
             if channel is not None:
                 await channel.send(
-                    "The image pool is empty, so the puzzle game is paused. "
-                    "An admin can add more with `[p]puzzle addimage`."
+                    "No eligible images left in the pool (everything's either empty or already "
+                    "won and retired), so the puzzle game is paused. An admin can add more with "
+                    "`[p]puzzle addimage`, or bring a retired one back with `[p]puzzle unretire`."
                 )
             return
 
@@ -807,12 +860,14 @@ class Puzzle(commands.Cog):
             to_close = []
             finished_winners = None
             total = 0
+            image_id = None
             try:
                 async with self._guild_lock(guild.id):
                     active = await self._get_active(guild)
                     if active is None:
                         continue
                     total = sum(active["piece_rows"])
+                    image_id = active["image_id"]
                     now = time.time()
                     changed = False
                     for msg_key, entry in list(active["open_messages"].items()):
@@ -844,7 +899,7 @@ class Puzzle(commands.Cog):
                 # do the Discord API calls outside the lock so it's held as
                 # briefly as possible
                 for msg_key, entry in to_close:
-                    await self._close_shared_piece_message(guild, int(msg_key), entry, total)
+                    await self._close_shared_piece_message(guild, int(msg_key), entry, total, image_id)
 
                 if finished_winners is not None:
                     await self._finish_round(guild, finished_winners)
@@ -915,6 +970,8 @@ class Puzzle(commands.Cog):
             if channel is not None:
                 try:
                     message = await channel.fetch_message(payload.message_id)
+                    image_dir = self._image_dir(guild.id, active["image_id"])
+                    piece_path = image_dir / f"piece_{piece_index}.png"
                     if shared:
                         names = []
                         for cid in entry["claimants"][:15]:
@@ -952,7 +1009,15 @@ class Puzzle(commands.Cog):
                         # attachment so the image can't get detached and show up bare
                         new_embed.set_image(url="attachment://piece.png")
                         new_embed.add_field(name="Claimed by", value=payload.member.mention, inline=False)
-                    await message.edit(embed=new_embed, attachments=message.attachments)
+                    # Re-upload the piece image fresh on every edit rather than
+                    # trying to "carry over" the original attachment -- the
+                    # carry-over approach (passing back the already-fetched
+                    # Attachment objects) is what the embed used before, and
+                    # is prone to the image silently dropping out on the
+                    # first edit in some clients. A fresh File is guaranteed
+                    # to still be there, and the piece PNGs are tiny.
+                    new_file = discord.File(piece_path, filename="piece.png")
+                    await message.edit(embed=new_embed, attachments=[new_file])
                 except Exception:
                     log.exception(
                         "Failed to visually mark a puzzle piece claimed in guild %s (message %s); "
@@ -1082,6 +1147,7 @@ class Puzzle(commands.Cog):
                     "added_by": ctx.author.id,
                     "filename": attachment.filename,
                     "image_hash": image_hash,
+                    "retired": False,
                 }
             added.append(f"#{image_id} ({piece_count} pieces)")
 
@@ -1252,6 +1318,42 @@ class Puzzle(commands.Cog):
 
         await ctx.send(f"Removed image #{image_id} from the pool.")
 
+    @puzzle.command(name="retire")
+    @checks.admin_or_permissions(manage_guild=True)
+    async def puzzle_retire(self, ctx: commands.Context, image_id: int):
+        """Manually retire a pool image so it's never picked again.
+
+        Images are retired automatically once they're won (see
+        `[p]puzzle unretire` to bring one back). This is for retiring one
+        by hand without waiting for it to be won -- e.g. if you want to
+        stop it from appearing without deleting it outright.
+        """
+        async with self.config.guild(ctx.guild).pool() as pool:
+            meta = pool.get(str(image_id))
+            if meta is None:
+                await ctx.send(f"No image with ID {image_id} in the pool.")
+                return
+            if meta.get("retired"):
+                await ctx.send(f"Image #{image_id} is already retired.")
+                return
+            meta["retired"] = True
+        await ctx.send(f"Image #{image_id} is now retired and won't be picked again.")
+
+    @puzzle.command(name="unretire")
+    @checks.admin_or_permissions(manage_guild=True)
+    async def puzzle_unretire(self, ctx: commands.Context, image_id: int):
+        """Bring a retired pool image back into rotation."""
+        async with self.config.guild(ctx.guild).pool() as pool:
+            meta = pool.get(str(image_id))
+            if meta is None:
+                await ctx.send(f"No image with ID {image_id} in the pool.")
+                return
+            if not meta.get("retired"):
+                await ctx.send(f"Image #{image_id} isn't retired.")
+                return
+            meta["retired"] = False
+        await ctx.send(f"Image #{image_id} is back in rotation.")
+
     @puzzle.command(name="images")
     async def puzzle_images(self, ctx: commands.Context):
         """List the images currently in the pool."""
@@ -1273,6 +1375,8 @@ class Puzzle(commands.Cog):
         lines = []
         for image_id, meta in sorted(pool.items(), key=lambda kv: int(kv[0])):
             marker = " (active)" if active is not None and int(image_id) == active_id else ""
+            if meta.get("retired"):
+                marker += " (retired)"
             piece_count = sum(meta["piece_rows"])
             lines.append(f"#{image_id}: {piece_count} pieces ({meta['filename']}){marker}")
 
@@ -1342,6 +1446,10 @@ class Puzzle(commands.Cog):
                     if full_path.exists():
                         meta["image_hash"] = await asyncio.to_thread(lambda: hashlib.sha256(full_path.read_bytes()).hexdigest())
                         changed = True
+
+                if "retired" not in meta:
+                    meta["retired"] = False
+                    changed = True
 
                 if changed:
                     converted += 1
@@ -1644,6 +1752,7 @@ class Puzzle(commands.Cog):
             f"Shared mode: {'ON, ' + str(shared_window_minutes) + ' minute(s) per piece' if shared_mode else 'off'}",
             f"Announcement channel: {announce_channel.mention if announce_channel else 'not set'}",
             f"Live status: {('enabled in ' + live_status_channel.mention) if live_status_channel else 'off'}",
-            f"Images in pool: {len(pool)}",
+            f"Images in pool: {len(pool)} "
+            f"({sum(1 for meta in pool.values() if meta.get('retired'))} retired)",
         ]
         await ctx.send("\n".join(lines))
