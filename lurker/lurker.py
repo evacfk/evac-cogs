@@ -15,7 +15,10 @@ from .dashboard_view import PAGE_TEMPLATE, build_overview
 
 log = logging.getLogger("red.evac-cogs.lurker")
 
-VERSION = "2.3.0"
+VERSION = "2.4.0"
+
+# #mod-chat: mods get a "welcome them back" post whenever a lurker reactivates themselves.
+DEFAULT_WELCOME_CHANNEL_ID = 912520841613418596
 
 
 class Lurker(DashboardIntegration, commands.Cog):
@@ -52,6 +55,7 @@ class Lurker(DashboardIntegration, commands.Cog):
         self.config.register_guild(
             lurker_role_id=None,
             lurker_channel_id=None,
+            welcome_channel_id=DEFAULT_WELCOME_CHANNEL_ID,  # mod channel for "welcome them back" posts
             exempt_role_ids=[],
             threshold_days=30,
             last_active={},  # str(user_id) -> unix timestamp; periodically flushed from cache
@@ -466,6 +470,23 @@ class Lurker(DashboardIntegration, commands.Cog):
                 self._record_event(guild.id, "unflag", member, source)
             return len(to_add)
 
+    async def _announce_return(self, member: discord.Member):
+        """Tell mods a lurker just came back so they can welcome them. Never raises."""
+        try:
+            channel_id = await self.config.guild(member.guild).welcome_channel_id()
+            channel = member.guild.get_channel(channel_id) if channel_id else None
+            if channel is None:
+                return
+            await channel.send(
+                f"👋 {member.mention} ({member}) just came back from the lurker channel. "
+                f"Say hi and welcome them back!",
+                allowed_mentions=discord.AllowedMentions.none(),
+            )
+        except (discord.Forbidden, discord.HTTPException):
+            log.warning(f"Could not post welcome-back notice for {member} in {member.guild}")
+        except Exception:
+            log.exception(f"Welcome-back notice failed for {member} in {member.guild}")
+
     # ---------------------------------------------------------- listeners
 
     @commands.Cog.listener()
@@ -498,6 +519,8 @@ class Lurker(DashboardIntegration, commands.Cog):
                     log.exception(
                         f"Failed to unflag {message.author} ({message.author.id}) in {guild}"
                     )
+                else:
+                    await self._announce_return(message.author)
                 return
 
         self._touch(guild.id, message.author.id)
@@ -882,6 +905,18 @@ class Lurker(DashboardIntegration, commands.Cog):
             f"(first one {days} days from now). Preview any time with `.lurkerreport`."
         )
 
+    @lurkerset.command(name="welcomechannel")
+    async def lurkerset_welcomechannel(self, ctx, channel: Optional[discord.TextChannel] = None):
+        """Set the mod channel that gets a "welcome them back" post when a lurker reactivates.
+        Run with no channel to turn it off."""
+        cfg = self.config.guild(ctx.guild)
+        if channel is None:
+            await cfg.welcome_channel_id.set(None)
+            await ctx.send("Welcome-back notices disabled.")
+            return
+        await cfg.welcome_channel_id.set(channel.id)
+        await ctx.send(f"Welcome-back notices will post in {channel.mention}.")
+
     @lurkerset.command(name="reportdays")
     async def lurkerset_reportdays(self, ctx, days: int):
         """Set how many days between mod reports (default 7)."""
@@ -898,9 +933,11 @@ class Lurker(DashboardIntegration, commands.Cog):
         role_id = await cfg.lurker_role_id()
         chan_id = await cfg.lurker_channel_id()
         report_id = await cfg.report_channel_id()
+        welcome_id = await cfg.welcome_channel_id()
         role = ctx.guild.get_role(role_id) if role_id else None
         channel = ctx.guild.get_channel(chan_id) if chan_id else None
         report = ctx.guild.get_channel(report_id) if report_id else None
+        welcome = ctx.guild.get_channel(welcome_id) if welcome_id else None
         exempt = [ctx.guild.get_role(rid) for rid in await cfg.exempt_role_ids()]
         exempt = [r.name for r in exempt if r]
         enabled = await cfg.enabled()
@@ -911,6 +948,7 @@ class Lurker(DashboardIntegration, commands.Cog):
         lines = [
             f"Role: {role.mention if role else 'not set'}",
             f"Reactivation channel: {channel.mention if channel else 'not set'}",
+            f"Welcome-back notices: {welcome.mention if welcome else 'off'}",
             f"Threshold: {await cfg.threshold_days()} days",
             f"Automatic sweep: {'ENABLED' if enabled else 'disabled'}",
         ]
@@ -1049,7 +1087,7 @@ class Lurker(DashboardIntegration, commands.Cog):
     @commands.command(name="lurkerversion")
     async def lurker_version(self, ctx):
         """Show the running Lurker cog version (deploy probe)."""
-        await ctx.send(f"Lurker cog v{VERSION} (dashboard overview page)")
+        await ctx.send(f"Lurker cog v{VERSION} (welcome-back notice to mods)")
 
     @checks.mod_or_permissions(manage_roles=True)
     @commands.command(name="lurker")

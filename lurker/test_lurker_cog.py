@@ -166,6 +166,10 @@ class FakeMember:
     def __str__(self):
         return self.display_name
 
+    @property
+    def mention(self):
+        return f"<@{self.id}>"
+
     async def add_roles(self, *roles, reason=None):
         await asyncio.sleep(0)
         if any(r.id in self.deny for r in roles):
@@ -215,6 +219,11 @@ def mod(monkeypatch):
     for name in ("Forbidden", "HTTPException", "NotFound"):
         if not hasattr(discord, name):
             monkeypatch.setattr(discord, name, type(name, (Exception,), {}), raising=False)
+    if not hasattr(discord, "AllowedMentions"):
+        monkeypatch.setattr(
+            discord, "AllowedMentions",
+            type("AllowedMentions", (), {"none": classmethod(lambda cls: cls())}), raising=False,
+        )
     if not hasattr(discord, "abc"):
         monkeypatch.setattr(discord, "abc", types.SimpleNamespace(Messageable=object), raising=False)
 
@@ -276,11 +285,61 @@ def _stale(env, member):
     env.cog._loaded_guilds.add(env.guild.id)
 
 
+class FakeChannel:
+    def __init__(self, cid):
+        self.id, self.sent, self.fail = cid, [], None
+
+    @property
+    def mention(self):
+        return f"<#{self.id}>"
+
+    async def send(self, content=None, **kw):
+        if self.fail:
+            raise self.fail
+        self.sent.append((content, kw))
+
+
+def _post_in_lurker_channel(env, member, welcome=None, welcome_id=None):
+    """Drive the real on_message listener for a flagged member posting in #lurker."""
+    lurker_chan = FakeChannel(700)
+    env.guild.channels[700] = lurker_chan
+    if welcome is not None:
+        env.guild.channels[welcome.id] = welcome
+
+    async def _run():
+        cfg = env.cog.config.guild(env.guild)
+        await cfg.lurker_role_id.set(env.lurker.id)
+        await cfg.lurker_channel_id.set(700)
+        if welcome_id is not None:
+            await cfg.welcome_channel_id.set(welcome_id)
+        deleted = []
+
+        async def _delete():
+            deleted.append(True)
+
+        msg = types.SimpleNamespace(
+            guild=env.guild, author=member, channel=lurker_chan,
+            delete=_delete,
+        )
+        await env.cog.on_message(msg)
+        return deleted
+
+    return _run()
+
+
+@pytest.fixture
+def as_member(mod, monkeypatch):
+    """on_message only handles discord.Member authors; make FakeMember qualify."""
+    import discord
+    monkeypatch.setattr(discord, "Member", FakeMember, raising=False)
+    monkeypatch.setattr(mod.discord, "Member", FakeMember, raising=False)
+
+
 # ----------------------------------------------------------------- tests
 
 def test_module_imports_and_defines_cog(mod):
     assert hasattr(mod, "Lurker")
-    assert mod.VERSION == "2.3.0"
+    assert mod.VERSION == "2.4.0"
     for name in ("lurker_version", "lurker_backfill", "lurker_backfill_confirm",
                  "lurker_sweep_preview", "lurker_sweep_run", "lurker_report",
                  "lurker_report_send", "lurker_exempt_audit"):
@@ -794,3 +853,62 @@ def test_dashboard_template_escapes_values():
         denied=False, guild_name="<b>x</b>", rows=[("Lurker role", "<script>alert(1)</script>")]
     )
     assert "<script>" not in html and "&lt;script&gt;" in html and "<b>x</b>" not in html
+
+
+# ------------------------------------------------------ welcome-back notice
+
+async def _flagged_member(env, uid=21):
+    m = FakeMember(env.guild, uid, roles=[env.a, env.b])
+    _stale(env, m)
+    assert await env.cog._flag_member(m, env.lurker, set(), cutoff=env.cutoff, source="backfill") == "flagged"
+    return m
+
+
+async def test_default_welcome_channel_is_mod_chat(env):
+    assert await env.cog.config.guild(env.guild).welcome_channel_id() == 912520841613418596
+
+
+async def test_reactivation_posts_welcome_back_notice_to_mod_chat(env, as_member):
+    m = await _flagged_member(env)
+    mod_chat = FakeChannel(912520841613418596)
+    await _post_in_lurker_channel(env, m, welcome=mod_chat)
+
+    assert m.role_ids() == {601, 602}  # roles restored, lurker removed
+    assert len(mod_chat.sent) == 1
+    text, kw = mod_chat.sent[0]
+    assert f"<@{m.id}>" in text
+    assert "welcome" in text.lower()
+    assert "allowed_mentions" in kw  # never pings the member from mod chat
+
+
+async def test_welcome_notice_only_for_self_reactivation_not_mod_restore(env):
+    m = await _flagged_member(env, 22)
+    mod_chat = FakeChannel(912520841613418596)
+    env.guild.channels[mod_chat.id] = mod_chat
+    await env.cog._unflag_member(m, env.lurker, source="mod")
+    assert mod_chat.sent == []
+
+
+async def test_welcome_notice_can_be_disabled_or_redirected(env, as_member):
+    m = await _flagged_member(env, 23)
+    default_chat, other = FakeChannel(912520841613418596), FakeChannel(42)
+    env.guild.channels[other.id] = other
+    await _post_in_lurker_channel(env, m, welcome=default_chat, welcome_id=42)
+    assert default_chat.sent == [] and len(other.sent) == 1
+
+    m2 = await _flagged_member(env, 24)
+    await env.cog.config.guild(env.guild).welcome_channel_id.set(None)  # `.lurkerset welcomechannel` w/ no arg
+    await _post_in_lurker_channel(env, m2, welcome=default_chat)
+    assert default_chat.sent == [] and len(other.sent) == 1  # off -> nothing anywhere
+
+
+async def test_missing_or_broken_mod_channel_never_breaks_reactivation(env, as_member):
+    m = await _flagged_member(env, 25)
+    await _post_in_lurker_channel(env, m)  # channel not in guild
+    assert m.role_ids() == {601, 602}
+
+    m2 = await _flagged_member(env, 26)
+    broken = FakeChannel(912520841613418596)
+    broken.fail = m2._forbidden()
+    await _post_in_lurker_channel(env, m2, welcome=broken)
+    assert m2.role_ids() == {601, 602}
