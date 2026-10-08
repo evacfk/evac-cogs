@@ -80,6 +80,33 @@ def shuffled_candidates(candidates: Iterable[int], rng: random.Random) -> List[i
     return pool
 
 
+def rank_by_level(levels: Dict[int, int], snoozed: Dict[str, float], now: float,
+                  skip: Iterable[int] = ()) -> List[int]:
+    """Who to suggest next: highest level first, ties broken by the older account
+    (smaller id). Anyone snoozed ("not now") and not yet due, or in `skip`, is left out."""
+    skipped = {int(u) for u in skip}
+    ready = [uid for uid in levels
+             if uid not in skipped and float(snoozed.get(str(uid), 0)) <= now]
+    return sorted(ready, key=lambda uid: (-int(levels[uid]), uid))
+
+
+def snooze_until(now: float, days: float) -> float:
+    return now + max(0.0, days) * DAY
+
+
+def prune_snoozed(snoozed: Dict[str, float], now: float) -> Dict[str, float]:
+    return {uid: until for uid, until in snoozed.items() if float(until) > now}
+
+
+def new_round(date: str, target: int) -> dict:
+    return {"date": date, "target": int(target), "sent": 0, "done": False, "prompt": {}}
+
+
+def round_needs_prompt(rnd: dict) -> bool:
+    """True when a round is open (not finished) and nothing is waiting on a mod."""
+    return bool(rnd) and not rnd.get("done") and rnd.get("sent", 0) < rnd.get("target", 0) and not rnd.get("prompt")
+
+
 def expired_invites(invites: Dict[str, dict], now: float, ttl_days: float) -> List[str]:
     ttl = ttl_days * DAY
     return [uid for uid, inv in invites.items() if now - float(inv.get("ts", 0)) >= ttl]

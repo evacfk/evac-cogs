@@ -5,6 +5,7 @@ it imports cleanly under the stub. They do NOT prove live Discord behaviour:
 real button clicks, role edits, DMs and this bot's exact discord.py API shape
 still need a live check after deploy.
 """
+import asyncio
 import copy
 import random
 from types import SimpleNamespace
@@ -47,8 +48,10 @@ class FakeRole:
 
 
 class FakeMessage:
-    def __init__(self, mid, channel):
+    def __init__(self, mid, channel, embeds=None, view=None):
         self.id, self.channel = mid, channel
+        self.embeds = list(embeds or [])
+        self.view = view
         self.edits = []
 
     async def edit(self, **kwargs):
@@ -62,6 +65,7 @@ class FakeMember:
         FakeMember._next_id += 1
         self.id = FakeMember._next_id
         self.display_name = name
+        self.mention = f"<@{self.id}>"
         self.bot = bot
         self.guild = guild
         self.roles = list(roles)
@@ -90,6 +94,7 @@ class FakeChannel:
         self.id, self.name = cid, name
         self.overwrites = {}
         self.sent = []
+        self.messages = {}
 
     async def set_permissions(self, member, overwrite=None, reason=None):
         if overwrite is None:
@@ -99,10 +104,15 @@ class FakeChannel:
 
     async def send(self, text=None, **kwargs):
         self.sent.append(text)
-        return FakeMessage(len(self.sent), self)
+        embed = kwargs.get("embed")
+        message = FakeMessage(len(self.sent), self, [embed] if embed is not None else [], kwargs.get("view"))
+        self.messages[message.id] = message
+        return message
 
     async def fetch_message(self, mid):
-        raise discord.NotFound("gone")
+        if mid not in self.messages:
+            raise discord.NotFound("gone")
+        return self.messages[mid]
 
     mention = "#chan"
 
@@ -212,6 +222,7 @@ class FakeCtx:
 class FakeInteraction:
     def __init__(self, user, guild=None):
         self.user, self.guild = user, guild
+        self.message = None
         self.replies, self.edits = [], []
         self.response = SimpleNamespace(send_message=self._send, edit_message=self._edit)
 
@@ -314,7 +325,7 @@ async def test_cog_load_registers_persistent_views_and_unload_cleans_up(w):
     import asyncio
 
     await w.cog.cog_load()
-    assert len(w.bot.views) == 2
+    assert len(w.bot.views) == 3          # rabbit button, invitation DM, moderator review prompt
     task = w.cog._task
     assert task is not None and not task.done()
     await w.cog.cog_unload()
@@ -785,34 +796,190 @@ async def test_candidates_exclude_everyone_who_should_be_skipped(w):
     assert await w.cog._invite_candidates(w.guild, cfg) == [good.id]
 
 
-async def test_send_invites_sends_three_or_four_and_skips_closed_dms(w):
-    members = [w.member(f"m{i}") for i in range(10)]
-    for m in members[:3]:
-        m.dm_open = False
-    sent = await w.cog._send_invites(w.guild)
-    assert sent in (3, 4)
-    invites = await w.cog.config.guild(w.guild).invites()
-    assert len(invites) == sent
-    assert all(not m.dm_open or True for m in members)
-    assert all(str(m.id) not in invites for m in members[:3])
-    assert await w.cog.config.guild(w.guild).last_invite_date() == engine.la_date(NOW)
-    dm = next(m.dms[0] for m in members if m.dms)
-    assert dm["view"] is not None and "Rabbit Hole" in dm["embed"].description
+def prompts(w):
+    """Review prompts posted to the log channel, oldest first."""
+    return [m for m in w.log.messages.values() if m.view is not None]
 
 
-async def test_daily_batch_runs_once_per_la_day_and_only_when_enabled(w):
-    for i in range(8):
-        w.member(f"m{i}")
+def mod_click(w, message, name="mod"):
+    mod = w.member(name, roles=[w.staff])
+    click = FakeInteraction(mod, w.guild)
+    click.message = message
+    return click, mod
+
+
+async def test_review_prompt_goes_to_the_highest_level_member_first(w):
+    low, high, mid = w.member("low", level=4), w.member("high", level=40), w.member("mid", level=12)
+    await set_cfg(w, invites_enabled=True)
     await w.cog._sweep_guild(w.guild)
-    assert await w.cog.config.guild(w.guild).invites() == {}  # off by default
+    (prompt,) = prompts(w)
+    assert str(high.id) in prompt.embeds[0].description or high.mention in prompt.embeds[0].description
+    assert any(f.value == "40" for f in prompt.embeds[0].fields)
+    assert high.dms == []                                  # nothing is sent until a mod says yes
+
+
+async def test_equal_levels_go_oldest_account_first(w):
+    newer, older = w.member("a", level=9), w.member("b", level=9)
+    older.id, newer.id = 10, 20
+    w.levels[10] = w.levels[20] = 9
+    await set_cfg(w, invites_enabled=True)
+    await w.cog._start_round(w.guild)
+    assert (await w.cog.config.guild(w.guild).invite_round())["prompt"]["user_id"] == 10
+
+
+async def test_yes_sends_the_invitation_and_shows_the_next_candidate(w):
+    first, second = w.member("first", level=30), w.member("second", level=20)
+    await set_cfg(w, invites_enabled=True)
+    await w.cog._start_round(w.guild)
+    click, _ = mod_click(w, prompts(w)[0])
+    await w.cog.handle_review(click, True)
+
+    assert len(first.dms) == 1 and "Rabbit Hole" in first.dms[0]["embed"].description
+    assert str(first.id) in await w.cog.config.guild(w.guild).invites()
+    assert click.edits and click.edits[0]["view"] is None
+    assert "Invitation sent" in click.edits[0]["embed"].fields[-1].value
+    assert len(prompts(w)) == 2                            # the next candidate is up
+    assert (await w.cog.config.guild(w.guild).invite_round())["prompt"]["user_id"] == second.id
+    assert (await w.cog.config.guild(w.guild).invite_round())["sent"] == 1
+
+
+async def test_not_now_skips_them_but_keeps_them_in_the_pool(w):
+    first, second = w.member("first", level=30), w.member("second", level=20)
+    await set_cfg(w, invites_enabled=True)
+    await w.cog._start_round(w.guild)
+    click, _ = mod_click(w, prompts(w)[0])
+    await w.cog.handle_review(click, False)
+
+    assert first.dms == [] and "Not now" in click.edits[0]["embed"].fields[-1].value
+    cfg = await w.cog.config.guild(w.guild).all()
+    assert str(first.id) not in cfg["invites"] and first.id not in cfg["declined"]     # not locked out
+    assert cfg["invite_round"]["prompt"]["user_id"] == second.id                      # moved on
+    assert first.id in await w.cog._invite_candidates(w.guild, cfg)                    # still in the pool
+
+
+async def test_not_now_returns_after_the_snooze_and_not_before(w):
+    first = w.member("first", level=30)
+    await set_cfg(w, invites_enabled=True)
+    await w.cog._start_round(w.guild)
+    click, _ = mod_click(w, prompts(w)[0])
+    await w.cog.handle_review(click, False)
+    cfg = await w.cog.config.guild(w.guild).all()
+    pool, _ = await w.cog._review_pool(w.guild, cfg, NOW + 6 * DAY)
+    assert pool == []
+    pool, _ = await w.cog._review_pool(w.guild, cfg, NOW + 8 * DAY)
+    assert pool == [first.id]
+
+
+async def test_closed_dms_are_snoozed_and_the_round_moves_on(w):
+    closed = w.member("closed", level=30, dm_open=False)
+    ok = w.member("ok", level=20)
+    await set_cfg(w, invites_enabled=True)
+    await w.cog._start_round(w.guild)
+    click, _ = mod_click(w, prompts(w)[0])
+    await w.cog.handle_review(click, True)
+    assert "DMs closed" in click.edits[0]["embed"].fields[-1].value
+    cfg = await w.cog.config.guild(w.guild).all()
+    assert cfg["invite_round"]["sent"] == 0 and cfg["invite_round"]["prompt"]["user_id"] == ok.id
+    assert str(closed.id) in cfg["invite_snoozed"]
+
+
+async def test_round_stops_at_the_target(w):
+    for i in range(6):
+        w.member(f"m{i}", level=10 + i)
+    await set_cfg(w, invites_enabled=True, invite_min=2, invite_max=2)
+    await w.cog._start_round(w.guild)
+    for _ in range(2):
+        click, _ = mod_click(w, prompts(w)[-1])
+        await w.cog.handle_review(click, True)
+    rnd = await w.cog.config.guild(w.guild).invite_round()
+    assert rnd["sent"] == 2 and rnd["prompt"] == {} and len(prompts(w)) == 2
+    assert "today's 2 invitations" in click.edits[0]["embed"].fields[-1].value
+
+
+async def test_non_mod_cannot_answer_a_prompt(w):
+    w.member("m", level=10)
+    await set_cfg(w, invites_enabled=True)
+    await w.cog._start_round(w.guild)
+    stranger = w.member("stranger")
+    click = FakeInteraction(stranger, w.guild)
+    click.message = prompts(w)[0]
+    await w.cog.handle_review(click, True)
+    assert click.replies == ["Only moderators can answer this."]
+    assert (await w.cog.config.guild(w.guild).invite_round())["prompt"] != {}
+
+
+async def test_two_mods_clicking_at_once_send_one_invitation(w):
+    a = w.member("a", level=30)
+    w.member("b", level=20)
+    await set_cfg(w, invites_enabled=True)
+    await w.cog._start_round(w.guild)
+    prompt = prompts(w)[0]
+    c1, _ = mod_click(w, prompt, "mod1")
+    c2, _ = mod_click(w, prompt, "mod2")
+    await asyncio.gather(w.cog.handle_review(c1, True), w.cog.handle_review(c2, True))
+    assert len(a.dms) == 1
+    assert "out of date" in " ".join(c1.replies + c2.replies)
+
+
+async def test_member_who_became_ineligible_before_the_click_is_skipped(w):
+    first, second = w.member("first", level=30), w.member("second", level=20)
+    await set_cfg(w, invites_enabled=True)
+    await w.cog._start_round(w.guild)
+    first.roles.append(w.rabbit)                             # got in some other way meanwhile
+    click, _ = mod_click(w, prompts(w)[0])
+    await w.cog.handle_review(click, True)
+    assert first.dms == [] and "no longer eligible" in click.edits[0]["embed"].fields[-1].value
+
+
+async def test_one_round_per_la_day_and_only_when_enabled(w):
+    for i in range(8):
+        w.member(f"m{i}", level=10 + i)
+    await w.cog._sweep_guild(w.guild)
+    assert prompts(w) == []                                  # off by default
     await set_cfg(w, invites_enabled=True)
     first = await w.cog._sweep_guild(w.guild)
-    assert first["invited"] in (3, 4)
+    assert first["invited"] == 1 and len(prompts(w)) == 1
     second = await w.cog._sweep_guild(w.guild)
-    assert second["invited"] == 0  # same LA day
+    assert second["invited"] == 0 and len(prompts(w)) == 1   # same day: still the one waiting prompt
     w.clock[0] += DAY
     third = await w.cog._sweep_guild(w.guild)
-    assert third["invited"] in (3, 4)
+    assert third["invited"] == 1 and len(prompts(w)) == 2
+    assert "Replaced" in prompts(w)[0].edits[-1]["embed"].fields[-1].value   # yesterday's prompt was closed
+
+
+async def test_a_deleted_prompt_is_replaced_on_the_next_sweep(w):
+    w.member("m", level=10)
+    await set_cfg(w, invites_enabled=True)
+    await w.cog._sweep_guild(w.guild)
+    gone = prompts(w)[0]
+    del w.log.messages[gone.id]
+    await w.cog._sweep_guild(w.guild)
+    assert len(prompts(w)) == 1 and prompts(w)[0].id != gone.id
+
+
+async def test_everyone_snoozed_ends_the_round_quietly(w):
+    only = w.member("only", level=10)
+    await set_cfg(w, invites_enabled=True)
+    await w.cog._start_round(w.guild)
+    click, _ = mod_click(w, prompts(w)[0])
+    await w.cog.handle_review(click, False)
+    assert (await w.cog.config.guild(w.guild).invite_round())["done"] is True
+    assert "nobody left" in log_text(w)
+
+
+async def test_invite_now_starts_a_round_but_sends_nothing(w):
+    m = w.member("m", level=10)
+    ctx = FakeCtx(w.guild, w.member("admin"))
+    await w.cog.invite_now.func(w.cog, ctx)
+    assert len(prompts(w)) == 1 and m.dms == []
+
+
+async def test_clear_invite_also_lifts_a_snooze(w):
+    m = w.member("m")
+    await set_cfg(w, invite_snoozed={str(m.id): NOW + 5 * DAY})
+    ctx = FakeCtx(w.guild, w.member("mod"))
+    await w.cog.afterdark_clear.func(w.cog, ctx, m, "invite")
+    assert await w.cog.config.guild(w.guild).invite_snoozed() == {}
 
 
 async def test_invitation_expires_after_30_days_and_member_is_eligible_again(w):
@@ -964,11 +1131,25 @@ def test_interest_view_drops_an_invalid_stored_emoji(w):
     assert view.children[0].emoji is None
 
 
-def test_panel_embed_hides_an_invalid_stored_emoji():
+def test_panel_embed_is_white_and_carries_the_rules():
+    from . import embeds
+    emb = embeds.panel_embed([], 7, 14, rules="1. Be 18+.\n2. Be kind.")
+    assert emb.color.name == C.WHITE if hasattr(emb.color, "name") else emb.color.value == C.WHITE
+    assert "1. Be 18+." in emb.description and "Rabbit Hole rules" in emb.title
+    assert any("Tap a button" in f.value and "14 days" in f.value for f in emb.fields)
+
+
+def test_panel_embed_without_rules_still_explains_the_buttons():
+    from . import embeds
+    emb = embeds.panel_embed([], 7, 14, rules="")
+    assert "Tap a button" in emb.description and not emb.fields
+
+
+def test_panel_embed_no_longer_lists_channels_twice():
     from . import embeds
     from .models import Interest
-    emb = embeds.panel_embed([Interest(key="feet", name="Feet", emoji="Feet", channel_id=1, role_id=None)], 7, 14)
-    assert "Feet Feet" not in str(emb.fields[0].value)
+    emb = embeds.panel_embed([Interest(key="feet", name="Feet", emoji="Feet", channel_id=1, role_id=None)], 7, 14, rules="x")
+    assert all("Open now" != f.name for f in emb.fields)
 
 
 async def test_grantinterest_gives_a_per_user_overwrite_and_clears_a_lapse(w):

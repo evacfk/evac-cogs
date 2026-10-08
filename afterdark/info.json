@@ -1,12 +1,19 @@
 {
-    "author": ["evac"],
+    "author": [
+        "evac"
+    ],
     "min_bot_version": "3.5.0",
     "description": "Gated access to the Rabbit Hole (adult image channels). A cryptic button in Pillow Talk plus daily random invitations grant the Rabbit Hole role to members who hold Adult Chat, an 18+ age role and reach the configured LevelUp level. Members then opt into interest channels with toggle buttons; interest access is removed after a warning if they never post or react there, and re-entry goes through ModMail. Includes an exclude list that blocks every route and revokes access, automatic revocation on leaving / losing Adult Chat / gaining the underage role, a dry-run sweep with a circuit breaker, and per-user-overwrite or role-based interest access.",
     "hidden": false,
-    "install_msg": "Thanks for installing afterdark!\n\nFirst-time setup (IDs for Adult Chat, the Rabbit Hole role, the age roles, Pillow Talk and #mod-commands are pre-filled; check with `.afterdark status`):\n1. `.afterdark interest add feet #feet 🦶 Feet` (no role needed: access is per-user; mods can add people with `.afterdark grantinterest @user feet`)\n2. `.afterdark post` puts the 🐇 button in Pillow Talk; `.afterdark panel #after-dark-rules` posts the interest buttons.\n3. The sweep starts in DRY-RUN: `.afterdark sweep` shows what it would do in #mod-commands. When the report looks right: `.afterdark set dryrun off`.\n4. Daily invitations are OFF until `.afterdark set invites on`.\n\nMod commands: grant, revoke, exclude, unexclude, clear, check. Probe the build: `.afterdark version`.",
+    "install_msg": "Thanks for installing afterdark!\n\nFirst-time setup (IDs for Adult Chat, the Rabbit Hole role, the age roles, Pillow Talk and #mod-commands are pre-filled; check with `.afterdark status`):\n1. `.afterdark interest add feet #feet 🦶 Feet` (no role needed: access is per-user; mods can add people with `.afterdark grantinterest @user feet`)\n2. `.afterdark post` puts the 🐇 button in Pillow Talk; `.afterdark panel #after-dark-rules` posts the interest buttons.\n3. The sweep starts in DRY-RUN: `.afterdark sweep` shows what it would do in #mod-commands. When the report looks right: `.afterdark set dryrun off`.\n4. Daily invitations are OFF until `.afterdark set invites on`. When on, each day #mod-commands shows the highest-level eligible member with Send invitation / Not now buttons; nothing is sent until a mod says yes. Not now = skipped for 7 days (`.afterdark set invitesnooze`), never locked out.\n\nMod commands: grant, revoke, exclude, unexclude, clear, check. Probe the build: `.afterdark version`.",
     "name": "AfterDark",
     "short": "Gated Rabbit Hole access: button + invitations, interest opt-ins, inactivity cleanup, exclude list.",
     "end_user_data_statement": "This cog stores Discord user IDs and timestamps: who holds Rabbit Hole access and how they got it, per-interest join and last-activity times, the exclude list (with the moderator's reason), members who declined an invitation, members whose interest access lapsed, and outstanding invitations. It stores no message content.",
-    "tags": ["roles", "nsfw", "moderation", "automation"],
+    "tags": [
+        "roles",
+        "nsfw",
+        "moderation",
+        "automation"
+    ],
     "type": "COG"
 }

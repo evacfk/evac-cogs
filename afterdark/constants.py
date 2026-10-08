@@ -1,7 +1,7 @@
 """All defaults and lookup tables for afterdark -- no discord/redbot imports."""
 
-VERSION = "1.1.0"
-BUILD = "afterdark build: lean-v2 (per-user interest access, emoji guard, mod interest grant)"
+VERSION = "1.2.0"
+BUILD = "afterdark build: lean-v3 (mod-reviewed invitations by level, white rules panel)"
 
 CONFIG_IDENTIFIER = 7316482950
 DAY = 86400
@@ -12,6 +12,8 @@ LA_TZ = "America/Los_Angeles"
 RABBIT_CLAIM_ID = "afterdark:rabbit:claim"
 INVITE_ACCEPT_ID = "afterdark:invite:accept"
 INVITE_DECLINE_ID = "afterdark:invite:decline"
+REVIEW_YES_ID = "afterdark:review:yes"
+REVIEW_NO_ID = "afterdark:review:no"
 INTEREST_ID_PREFIX = "afterdark:interest:"
 
 # ---- Wonderland IDs (pre-filled so setup is just interests + posting) ----
@@ -31,6 +33,11 @@ DEFAULT_LOG_CHANNEL_ID = 416660303741452299    # #mod-commands
 DEFAULT_EXEMPT_ROLE_IDS = [426696709780013066, 723377047950590033, 458830622597840906]
 
 CONTACT_TEXT = "Contact ModMail."
+
+WHITE = 0xFFFFFF   # the white rabbit: border colour of the Rabbit Hole embeds
+# The Rabbit Hole rules, shown in the panel embed. Plain text / Discord markdown,
+# at most ~3800 characters. Empty = no rules section.
+RULES_TEXT = ""
 
 ACCESS_MODES = ("roles", "overwrites")
 # Discord allows 100 permission overwrites per channel; refuse before the cap.
@@ -61,6 +68,9 @@ GUILD_DEFAULTS = dict(
     invite_min=3,
     invite_max=4,
     invite_ttl_days=30,
+    invite_snooze_days=7,        # "Not now" keeps someone in the pool but skips them for this long
+    invite_snoozed={},           # str(uid) -> unix time they may be suggested again
+    invite_round={},             # today's review round: {"date","target","sent","done","prompt":{message_id,channel_id,user_id}}
     last_invite_date="",         # America/Los_Angeles date of the last daily batch
     invites={},                  # str(uid) -> Invite.to_dict()  (outstanding)
     declined=[],                 # uids that declined: never invited again

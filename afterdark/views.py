@@ -39,6 +39,22 @@ class InviteView(discord.ui.View):
         await self.cog.handle_invite_decline(interaction)
 
 
+class ReviewView(discord.ui.View):
+    """Yes / Not now on the moderator prompt that precedes every invitation."""
+
+    def __init__(self, cog):
+        super().__init__(timeout=None)
+        self.cog = cog
+
+    @discord.ui.button(label="Send invitation", style=discord.ButtonStyle.success, custom_id=C.REVIEW_YES_ID)
+    async def yes(self, interaction, button):
+        await self.cog.handle_review(interaction, True)
+
+    @discord.ui.button(label="Not now", style=discord.ButtonStyle.secondary, custom_id=C.REVIEW_NO_ID)
+    async def no(self, interaction, button):
+        await self.cog.handle_review(interaction, False)
+
+
 class InterestView(discord.ui.View):
     """One toggle button per configured interest (max 25 -- Discord's limit)."""
 

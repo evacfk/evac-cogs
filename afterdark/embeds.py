@@ -23,23 +23,47 @@ def rabbit_embed() -> "discord.Embed":
     return embed
 
 
-def panel_embed(interests: Iterable[Interest], warn_days: float, remove_days: float) -> "discord.Embed":
-    interests = list(interests)
-    embed = discord.Embed(
-        title="Pick your rabbit holes",
-        description=(
-            "Tap a button to join a channel. Tap it again to leave.\n\n"
-            f"Stay active there: post or react at least once every {int(remove_days)} days "
-            f"(you'll get a nudge after {int(warn_days)}) or access is removed. "
-            f"To come back after that, {C.CONTACT_TEXT[0].lower()}{C.CONTACT_TEXT[1:]}"
-        ),
-        color=discord.Color.dark_grey(),
+def panel_embed(interests: Iterable[Interest], warn_days: float, remove_days: float,
+                rules: str = None) -> "discord.Embed":
+    """The Rabbit Hole rules + how the interest buttons work, in one white embed.
+    (The buttons themselves sit under the message, so channels aren't listed twice.)"""
+    rules = C.RULES_TEXT if rules is None else rules
+    how = (
+        "Tap a button below to join a channel. Tap it again to leave.\n\n"
+        f"Stay active there: post or react at least once every {int(remove_days)} days "
+        f"(you'll get a nudge after {int(warn_days)}) or access is removed. "
+        f"To come back after that, {C.CONTACT_TEXT[0].lower()}{C.CONTACT_TEXT[1:]}"
     )
-    if interests:
-        lines = [f"{i.emoji if engine.valid_emoji(i.emoji) else ''} **{i.name}**".strip() for i in interests]
-        embed.add_field(name="Open now", value="\n".join(lines), inline=False)
+    rules = (rules or "").strip()
+    if rules:
+        embed = discord.Embed(title="\U0001F407 Rabbit Hole rules", description=rules[:4000], color=discord.Color(C.WHITE))
+        embed.add_field(name="Pick your rabbit holes", value=how[:1024], inline=False)
     else:
-        embed.add_field(name="Open now", value="Nothing yet.", inline=False)
+        embed = discord.Embed(title="Pick your rabbit holes", description=how, color=discord.Color(C.WHITE))
+    return embed
+
+
+def review_embed(member, level, sent: int, target: int) -> "discord.Embed":
+    """The prompt a moderator answers before anyone is invited."""
+    joined = getattr(member, "joined_at", None)
+    embed = discord.Embed(
+        title="\U0001F407 Invite this member to the Rabbit Hole?",
+        description=f"{member.mention} ({member.display_name})",
+        color=discord.Color(C.WHITE),
+    )
+    embed.add_field(name="Level", value=str(level), inline=True)
+    if joined:
+        embed.add_field(name="Joined", value=f"<t:{int(joined.timestamp())}:D>", inline=True)
+    embed.set_footer(text=f"Today: {sent} of {target} invitations sent. Highest level first. "
+                          "\"Not now\" keeps them in the pool.")
+    return embed
+
+
+def review_result_embed(old, text: str) -> "discord.Embed":
+    """The prompt after a decision: same details, buttons gone, result recorded."""
+    embed = old
+    embed.add_field(name="Result", value=text[:1024], inline=False)
+    embed.set_footer(text="Decided")
     return embed
 
 

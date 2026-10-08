@@ -24,7 +24,7 @@ from redbot.core import Config, commands
 from . import constants as C
 from . import embeds, engine
 from .models import ExcludeEntry, Interest, Invite
-from .views import InterestView, InviteView, RabbitView
+from .views import InterestView, InviteView, RabbitView, ReviewView
 
 log = logging.getLogger("red.evac-cogs.afterdark")
 
@@ -40,6 +40,7 @@ class AfterDark(commands.Cog):
         self._clock = time.time          # overridable in tests
         self._rng = random.Random()      # overridable in tests
         self._locks: Dict[Tuple[int, int], asyncio.Lock] = {}
+        self._review_locks: Dict[int, asyncio.Lock] = {}
         self._state: Dict[int, dict] = {}        # guild_id -> {interest_key: {str(uid): entry}}
         self._dirty: set = set()
         self._interest_views: Dict[int, InterestView] = {}
@@ -50,6 +51,7 @@ class AfterDark(commands.Cog):
     async def cog_load(self):
         self.bot.add_view(RabbitView(self))
         self.bot.add_view(InviteView(self))
+        self.bot.add_view(ReviewView(self))
         self._task = asyncio.create_task(self._sweep_loop())
 
     async def cog_unload(self):
@@ -705,7 +707,8 @@ class AfterDark(commands.Cog):
 
     async def _invite_maintenance(self, guild, cfg: dict, summary: dict):
         """Expire old invitations (no cooldown: an expired member is eligible
-        again) and send today's batch. Independent of dry-run."""
+        again), start today's review round, and keep an open round moving.
+        Independent of dry-run."""
         now = self._clock()
         invites = dict(cfg["invites"])
         for uid in engine.expired_invites(invites, now, cfg["invite_ttl_days"]):
@@ -714,8 +717,43 @@ class AfterDark(commands.Cog):
             await self._expire_invite_message(int(uid), inv)
         if invites != cfg["invites"]:
             await self.config.guild(guild).invites.set(invites)
-        if cfg["invites_enabled"] and cfg["last_invite_date"] != engine.la_date(now):
-            summary["invited"] = await self._send_invites(guild)
+        snoozed = engine.prune_snoozed(cfg["invite_snoozed"], now)
+        if snoozed != cfg["invite_snoozed"]:
+            await self.config.guild(guild).invite_snoozed.set(snoozed)
+        if not cfg["invites_enabled"]:
+            return
+        today = engine.la_date(now)
+        rnd = cfg["invite_round"]
+        if cfg["last_invite_date"] != today or rnd.get("date") != today:
+            await self._start_round(guild)
+            summary["invited"] = 1          # a new review round started
+            return
+        if rnd.get("prompt") and not await self._prompt_exists(guild, rnd["prompt"]):
+            await self._clear_prompt(guild)  # a mod deleted the prompt: put a fresh one up
+        await self._post_next_review(guild)
+
+    def _review_lock(self, guild) -> asyncio.Lock:
+        lock = self._review_locks.get(guild.id)
+        if lock is None:
+            lock = self._review_locks[guild.id] = asyncio.Lock()
+        return lock
+
+    async def _prompt_exists(self, guild, prompt: dict) -> bool:
+        channel = guild.get_channel(prompt.get("channel_id") or 0)
+        if channel is None:
+            return False
+        try:
+            await channel.fetch_message(prompt["message_id"])
+            return True
+        except discord.NotFound:
+            return False
+        except (discord.Forbidden, discord.HTTPException):
+            return True      # can't tell: don't spam a second prompt
+
+    async def _clear_prompt(self, guild):
+        rnd = dict(await self.config.guild(guild).invite_round())
+        rnd["prompt"] = {}
+        await self.config.guild(guild).invite_round.set(rnd)
 
     async def _expire_invite_message(self, user_id: int, inv: Invite):
         if not inv.message_id:
@@ -728,38 +766,137 @@ class AfterDark(commands.Cog):
         except Exception:
             log.debug("afterdark: could not edit expired invitation for %s", user_id)
 
-    async def _send_invites(self, guild) -> int:
-        """Send today's batch (3-4 by default). Closed DMs are skipped and the
-        next candidate is tried. Returns how many invitations went out."""
+    async def _start_round(self, guild) -> int:
+        """Open a new review round: pick today's target (3-4 by default) and put the
+        first candidate in front of the moderators. Any older open prompt is closed."""
         cfg = await self.config.guild(guild).all()
         now = self._clock()
-        wanted = engine.invite_count(self._rng, cfg["invite_min"], cfg["invite_max"])
-        order = engine.shuffled_candidates(await self._invite_candidates(guild, cfg), self._rng)
-        invites = dict(cfg["invites"])
-        sent = skipped = 0
-        for uid in order:
-            if sent >= wanted:
-                break
+        old = cfg["invite_round"].get("prompt")
+        if old:
+            await self._close_prompt(guild, old, "Replaced by a newer review round.")
+        target = engine.invite_count(self._rng, cfg["invite_min"], cfg["invite_max"])
+        await self.config.guild(guild).invite_round.set(engine.new_round(engine.la_date(now), target))
+        await self.config.guild(guild).last_invite_date.set(engine.la_date(now))
+        await self._post_next_review(guild)
+        return target
+
+    async def _close_prompt(self, guild, prompt: dict, text: str):
+        channel = guild.get_channel(prompt.get("channel_id") or 0)
+        if channel is None:
+            return
+        try:
+            message = await channel.fetch_message(prompt["message_id"])
+            old = message.embeds[0] if message.embeds else None
+            if old is not None:
+                await message.edit(embed=embeds.review_result_embed(old, text), view=None)
+        except Exception:
+            log.debug("afterdark: could not close an old review prompt")
+
+    async def _review_pool(self, guild, cfg: dict, now: float):
+        """Eligible members, highest level first, snoozed ones left out."""
+        levels: Dict[int, int] = {}
+        for uid in await self._invite_candidates(guild, cfg):
             member = guild.get_member(uid)
-            if member is None:
-                continue
+            if member is not None:
+                levels[uid] = await self._get_level(member) or 0
+        return engine.rank_by_level(levels, cfg["invite_snoozed"], now), levels
+
+    async def _post_next_review(self, guild):
+        """Put the next candidate in front of the moderators, unless a prompt is
+        already waiting or today's round is finished."""
+        async with self._review_lock(guild):
+            cfg = await self.config.guild(guild).all()
+            rnd = dict(cfg["invite_round"])
+            if not engine.round_needs_prompt(rnd):
+                return
+            now = self._clock()
+            channel = guild.get_channel(cfg["log_channel_id"] or 0)
+            if channel is None:
+                log.warning("afterdark: no log channel, so invitation reviews cannot be posted")
+                return
+            pool, levels = await self._review_pool(guild, cfg, now)
+            if not pool:
+                rnd["done"] = True
+                await self.config.guild(guild).invite_round.set(rnd)
+                await self._log(
+                    guild,
+                    f"\U0001F407 Invitation review: nobody left to suggest today ({rnd['sent']} of {rnd['target']} sent)."
+                )
+                return
+            member = guild.get_member(pool[0])
             try:
-                message = await member.send(
-                    embed=embeds.invite_embed(guild.name, cfg["invite_ttl_days"]), view=InviteView(self)
+                message = await channel.send(
+                    embed=embeds.review_embed(member, levels[member.id], rnd["sent"], rnd["target"]),
+                    view=ReviewView(self),
+                    allowed_mentions=discord.AllowedMentions.none(),
                 )
             except (discord.Forbidden, discord.HTTPException):
-                skipped += 1
-                continue
-            invites[str(uid)] = Invite(
-                ts=now, channel_id=getattr(message.channel, "id", None), message_id=message.id
-            ).to_dict()
-            sent += 1
-        await self.config.guild(guild).invites.set(invites)
-        await self.config.guild(guild).last_invite_date.set(engine.la_date(now))
-        await self._log(
-            guild, f"\U0001F407 Daily invitations: sent {sent} of {wanted} wanted ({skipped} had DMs closed)."
-        )
-        return sent
+                log.warning("afterdark: could not post an invitation review prompt", exc_info=True)
+                return
+            rnd["prompt"] = {"message_id": message.id, "channel_id": channel.id, "user_id": member.id}
+            await self.config.guild(guild).invite_round.set(rnd)
+
+    async def _dm_invite(self, member, cfg: dict):
+        try:
+            return await member.send(
+                embed=embeds.invite_embed(member.guild.name, cfg["invite_ttl_days"]), view=InviteView(self)
+            )
+        except (discord.Forbidden, discord.HTTPException):
+            return None
+
+    async def handle_review(self, interaction, accept: bool):
+        """A moderator answers the prompt: send the invitation, or 'not now'."""
+        guild, mod = interaction.guild, interaction.user
+        if guild is None or not hasattr(mod, "roles"):
+            return await self._reply(interaction, "This only works inside the server.")
+        cfg = await self.config.guild(guild).all()
+        if not self._is_staff(mod, cfg):
+            return await self._reply(interaction, "Only moderators can answer this.")
+        async with self._review_lock(guild):
+            cfg = await self.config.guild(guild).all()
+            rnd = dict(cfg["invite_round"])
+            prompt = rnd.get("prompt") or {}
+            if not prompt or prompt.get("message_id") != interaction.message.id:
+                return await self._reply(interaction, "That prompt is out of date.")
+            rnd["prompt"] = {}                        # claimed before any further await
+            await self.config.guild(guild).invite_round.set(rnd)
+            now = self._clock()
+            uid = int(prompt["user_id"])
+            target = guild.get_member(uid)
+            name = target.display_name if target else str(uid)
+            snoozed = dict(cfg["invite_snoozed"])
+            snooze_days = cfg["invite_snooze_days"]
+            if not accept:
+                snoozed[str(uid)] = engine.snooze_until(now, snooze_days)
+                result = f"\u23ed\ufe0f Not now, by {mod.display_name}. {name} stays in the pool and can come up again in {int(snooze_days)} days."
+            elif target is None or uid not in await self._invite_candidates(guild, cfg):
+                result = f"\u26a0\ufe0f {name} is no longer eligible (left, already in, or something changed). Skipped."
+            else:
+                message = await self._dm_invite(target, cfg)
+                if message is None:
+                    snoozed[str(uid)] = engine.snooze_until(now, snooze_days)
+                    result = f"\u26a0\ufe0f {name} has DMs closed, so no invitation went out. They stay in the pool; moving on."
+                else:
+                    invites = dict(cfg["invites"])
+                    invites[str(uid)] = Invite(
+                        ts=now, channel_id=getattr(message.channel, "id", None), message_id=message.id
+                    ).to_dict()
+                    await self.config.guild(guild).invites.set(invites)
+                    rnd["sent"] = rnd.get("sent", 0) + 1
+                    result = f"\u2705 Invitation sent to {name} by {mod.display_name}."
+            await self.config.guild(guild).invite_snoozed.set(snoozed)
+            await self.config.guild(guild).invite_round.set(rnd)
+            if rnd.get("sent", 0) >= rnd.get("target", 0):
+                result += f"\nThat's today's {rnd['target']} invitations."
+        old = interaction.message.embeds[0] if interaction.message.embeds else None
+        try:
+            if old is not None:
+                await interaction.response.edit_message(embed=embeds.review_result_embed(old, result), view=None)
+            else:
+                await interaction.response.edit_message(content=result, view=None)
+        except (discord.HTTPException, discord.NotFound):
+            log.warning("afterdark: could not update a review prompt")
+        await self._post_next_review(guild)
 
     # --------------------------------------------------------- panel / posts
 
@@ -953,6 +1090,10 @@ class AfterDark(commands.Cog):
         if lapsed != cfg["lapsed"]:
             await self.config.guild(ctx.guild).lapsed.set(lapsed)
         if what in ("invite", "all"):
+            snoozed = dict(cfg["invite_snoozed"])
+            if snoozed.pop(str(member.id), None) is not None:
+                await self.config.guild(ctx.guild).invite_snoozed.set(snoozed)
+                cleared.append("'not now' snooze")
             declined = [int(u) for u in cfg["declined"]]
             if member.id in declined:
                 declined.remove(member.id)
@@ -989,7 +1130,8 @@ class AfterDark(commands.Cog):
             ("Inactivity", f"warn {cfg['warn_days']}d / remove {cfg['remove_days']}d"),
             ("Sweep", f"{'DRY-RUN' if cfg['dry_run'] else 'LIVE'}, every {cfg['sweep_interval_minutes']}m, max {cfg['sweep_max']} actions"),
             ("Last sweep", last or "never"),
-            ("Invitations", f"{'ON' if cfg['invites_enabled'] else 'OFF'}: {cfg['invite_min']}-{cfg['invite_max']}/day, expire {cfg['invite_ttl_days']}d"),
+            ("Invitations", f"{'ON' if cfg['invites_enabled'] else 'OFF'}: you approve each one, {cfg['invite_min']}-{cfg['invite_max']}/day, highest level first, expire {cfg['invite_ttl_days']}d"),
+            ("Not now (snoozed)", f"{len([1 for t in cfg['invite_snoozed'].values() if float(t) > self._clock()])} member(s), {cfg['invite_snooze_days']}d each"),
             ("Rabbit Hole holders", len(rabbit.members) if rabbit else 0),
             ("Outstanding invites", len(cfg["invites"])),
             ("Declined / excluded", f"{len(cfg['declined'])} / {len(cfg['excluded'])}"),
@@ -1112,9 +1254,10 @@ class AfterDark(commands.Cog):
 
     @afterdark_invite.command(name="now")
     async def invite_now(self, ctx):
-        """Send a batch of invitations right now (ignores the once-a-day limit)."""
-        sent = await self._send_invites(ctx.guild)
-        await ctx.send(f"Sent {sent} invitation(s).")
+        """Start a review round right now (ignores the once-a-day limit). The first
+        candidate appears in the log channel; nothing is sent until you answer."""
+        target = await self._start_round(ctx.guild)
+        await ctx.send(f"Review round started: up to {target} invitation(s). Check <#{await self.config.guild(ctx.guild).log_channel_id()}>.")
 
     @afterdark_invite.command(name="list")
     async def invite_list(self, ctx):
@@ -1189,6 +1332,14 @@ class AfterDark(commands.Cog):
             return await ctx.send("Must be at least 1.")
         await self.config.guild(ctx.guild).sweep_max.set(count)
         await ctx.send(f"Circuit breaker set to {count}.")
+
+    @afterdark_set.command(name="invitesnooze")
+    async def set_invite_snooze(self, ctx, days: int):
+        """How long "Not now" skips a member before they can be suggested again (default 7)."""
+        if days < 0 or days > 365:
+            return await ctx.send("Pick between 0 and 365 days.")
+        await self.config.guild(ctx.guild).invite_snooze_days.set(days)
+        await ctx.send(f"\"Not now\" now skips a member for {days} day(s).")
 
     @afterdark_set.command(name="invitesperday")
     async def set_invites_per_day(self, ctx, low: int, high: int):
