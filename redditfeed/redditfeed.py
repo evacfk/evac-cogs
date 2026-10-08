@@ -365,10 +365,14 @@ class RedditFeed(DashboardIntegration, commands.Cog):
                 queue_channel_id=queue_channel.id,
             )
             content, card_embeds = queue_ui.build_queue_message(entry)
+            clip = await self._redgifs_preview(queue_channel, media_items)
+            fallback_content = content
+            if clip is not None:
+                content = None      # the clip itself is the preview; the link stays in the card's "open" field
             try:
-                message = await queue_channel.send(content, embeds=card_embeds, view=queue_ui.QueueView(self))
+                message = await self._send_queue_card(queue_channel, content, card_embeds, clip, fallback_content=fallback_content)
             except discord.Forbidden:
-                mapping.last_error = "I can't post in the queue channel (need Send Messages, Embed Links)"
+                mapping.last_error = "I can't post in the queue channel (need Send Messages, Embed Links, Attach Files)"
                 return dedup_store
             except discord.HTTPException as exc:
                 log.warning("redditfeed: could not queue a post from r/%s: %s", mapping.subreddit, exc)
@@ -387,6 +391,42 @@ class RedditFeed(DashboardIntegration, commands.Cog):
             mapping.last_post_found_ts = newest_post.get("created_utc")
             mapping.last_post_id = newest_post.get("id")
         return dedup_store
+
+    async def _redgifs_preview(self, queue_channel, media_items: list):
+        """`(filename, bytes)` of the RedGifs clip for a queue card, or None (not
+        a RedGifs post, previews off, or anything failed: the card then shows the
+        plain link like before). Downloaded again if the post is approved."""
+        link = next((i for i in media_items if i.kind == constants.MEDIA_KIND_REDGIFS_LINK), None)
+        if link is None or await self.config.redgifs_mode() != constants.REDGIFS_UPLOAD:
+            return None
+        limit = redgifs.upload_limit(getattr(getattr(queue_channel, "guild", None), "filesize_limit", None))
+        try:
+            async with self._redgifs_sem:
+                clip = await self.redgifs.fetch(link.url, limit)
+        except redgifs.RedgifsError as exc:
+            log.info("redditfeed: no RedGifs preview for %s: %s", link.url, exc)
+            self._bump("redgifs_preview_failed")
+            return None
+        self._bump("redgifs_preview")
+        return clip
+
+    async def _send_queue_card(self, channel, content, card_embeds: list, clip, fallback_content=None):
+        """Send a queue card, with the clip attached when we have one. If Discord
+        rejects the upload, send the card without it (the link is still on it)."""
+        view = queue_ui.QueueView(self)
+        if clip is not None:
+            try:
+                return await channel.send(
+                    content, embeds=card_embeds, view=view,
+                    file=discord.File(io.BytesIO(clip[1]), filename=clip[0]),
+                )
+            except discord.Forbidden:
+                raise
+            except discord.HTTPException as exc:
+                log.warning("redditfeed: queue clip upload rejected: %s", exc)
+                self._bump("redgifs_preview_failed")
+                content = fallback_content
+        return await channel.send(content, embeds=card_embeds, view=view)
 
     async def _is_moderator(self, user) -> bool:
         perms = getattr(user, "guild_permissions", None)
@@ -467,7 +507,8 @@ class RedditFeed(DashboardIntegration, commands.Cog):
 
             try:
                 await interaction.message.edit(
-                    content=None, embeds=queue_ui.resolved_embeds(list(interaction.message.embeds), result), view=None
+                    content=None, embeds=queue_ui.resolved_embeds(list(interaction.message.embeds), result),
+                    attachments=[], view=None,
                 )
             except discord.HTTPException as exc:
                 log.warning("redditfeed: could not update a queue card: %s", exc)
@@ -514,7 +555,7 @@ class RedditFeed(DashboardIntegration, commands.Cog):
                 await message.edit(
                     content=None,
                     embeds=queue_ui.resolved_embeds(list(message.embeds), "\u23f3 Expired: nobody decided in 24 hours, discarded."),
-                    view=None,
+                    attachments=[], view=None,
                 )
             except (discord.NotFound, discord.Forbidden, discord.HTTPException):
                 pass
@@ -531,7 +572,7 @@ class RedditFeed(DashboardIntegration, commands.Cog):
     @redditfeed.command(name="version")
     async def redditfeed_version(self, ctx: commands.Context) -> None:
         """Version-probe command -- confirms a deploy actually took."""
-        await ctx.send("redditfeed build: redgifs-v1 (RedGifs clips upload as video, mod queue, X button)")
+        await ctx.send("redditfeed build: redgifs-v2 (RedGifs clips play in the queue and the feed)")
 
     async def _map_subreddit(self, name: str, channel_id: int) -> bool:
         """The one place a subreddit gets mapped to a channel -- `add` and the

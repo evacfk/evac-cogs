@@ -50,6 +50,8 @@ class Msg:
 
     async def edit(self, **kw):
         self.edits.append(kw)
+        if "attachments" in kw:
+            self.file = None
         if "embeds" in kw:
             self.embeds = kw["embeds"]
 
@@ -838,3 +840,56 @@ async def test_redgifs_command_shows_and_sets_the_mode():
     assert await cog.config.redgifs_mode() == "link"
     await cb(cog, ctx, "nope")
     assert await cog.config.redgifs_mode() == "link" and "upload" in ctx.sent[-1]
+
+
+# ---------------------------------------------------------------- RedGifs in the queue
+
+def rg_post(pid="r1", **kw):
+    return post(pid, url=f"https://www.redgifs.com/watch/clip{pid}", **kw)
+
+
+async def test_queue_card_for_a_redgifs_post_carries_the_clip():
+    cog = make({"feet": [rg_post()]})
+    await cog._run_poll_cycle()
+    card = QUEUE_CH.sent[0]
+    assert card.file is not None and card.file.filename == "fantasticroundpuma.mp4"
+    assert card.content is None and card.view is not None
+    assert cog._last_stats["redgifs_preview"] == 1
+
+
+async def test_queue_card_falls_back_to_the_link_when_the_download_fails():
+    from redditfeed.redgifs import RedgifsError
+    cog = make({"feet": [rg_post()]})
+    cog.redgifs = FakeRedgifs(RedgifsError("HTTP 403"))
+    await cog._run_poll_cycle()
+    card = QUEUE_CH.sent[0]
+    assert card.file is None and card.content == "https://www.redgifs.com/watch/clipr1"
+    assert cog._last_stats["redgifs_preview_failed"] == 1 and cog._last_stats["queued"] == 1
+
+
+async def test_queue_card_falls_back_when_discord_rejects_the_upload():
+    import discord
+    cog = make({"feet": [rg_post()]})
+    QUEUE_CH.reject_files = discord.HTTPException("413")
+    await cog._run_poll_cycle()
+    card = QUEUE_CH.sent[0]
+    assert card.file is None and card.content == "https://www.redgifs.com/watch/clipr1"
+
+
+async def test_queue_card_in_link_mode_and_for_images_never_downloads():
+    cog = make({"feet": [rg_post(), post("img")]}, redgifs_mode="link")
+    await cog._run_poll_cycle()
+    assert cog.redgifs.calls == [] and all(m.file is None for m in QUEUE_CH.sent)
+    cog = make({"feet": [post("img2")]})
+    await cog._run_poll_cycle()
+    assert cog.redgifs.calls == []
+
+
+async def test_deciding_a_card_removes_the_clip_from_the_queue_channel():
+    cog = make({"feet": [rg_post()]})
+    await cog._run_poll_cycle()
+    card = QUEUE_CH.sent[0]
+    click = Click(card)
+    await cog.handle_queue_action(click, "approve")
+    assert card.file is None and card.edits[-1]["attachments"] == []
+    assert FEET_CH.sent and FEET_CH.sent[0].file is not None          # and the feed got its own copy
