@@ -111,6 +111,9 @@ Everything is under `[p]puzzle`. "Admin" means admin or Manage Server.
 - `[p]puzzle setsharedmode <on|off>` — shared-credit mode, see below.
 - `[p]puzzle setsharedwindow <minutes>` — how long a piece stays open in
   shared mode (greater than 0, up to 60; defaults to 1).
+- `[p]puzzle setpayout <amount>` — economy credits paid to every winner when
+  a puzzle is won, including all winners in shared mode (default 20000, `0`
+  turns it off).
 - `[p]puzzle setlowpool <count>` — warn when this many unplayed images (or
   fewer) remain after a puzzle starts (default 2, `0` turns it off).
 - `[p]puzzle setalertchannel [#channel]` — where those warnings go; omit the

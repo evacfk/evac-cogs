@@ -10,7 +10,7 @@ from typing import List, Optional, Tuple
 
 import discord
 from PIL import Image, ImageDraw, ImageFont
-from redbot.core import Config, checks, commands
+from redbot.core import Config, bank, checks, commands
 from redbot.core.data_manager import cog_data_path
 from redbot.core.bot import Red
 from discord.ext import tasks
@@ -19,6 +19,7 @@ MIN_PIECE_COUNT = 2
 MAX_PIECE_COUNT = 25
 DEFAULT_PIECE_COUNT = 9  # used when no per-server default and no per-image size is set
 DEFAULT_LOW_POOL_THRESHOLD = 2  # warn admins when this many unplayed images (or fewer) remain
+DEFAULT_WIN_PAYOUT = 20000  # economy credits paid to each winner of a puzzle
 
 CHECK_INTERVAL_MINUTES = 5  # how often the background loop wakes up to check posting timers
 SHARED_SWEEP_INTERVAL_SECONDS = 30  # how often open shared-mode pieces are checked for an expired claim window
@@ -53,7 +54,7 @@ class Puzzle(commands.Cog):
     per person across every round.
     """
 
-    __version__ = "1.5.0"
+    __version__ = "1.6.0"
 
     def __init__(self, bot: Red):
         self.bot = bot
@@ -99,6 +100,9 @@ class Puzzle(commands.Cog):
             "low_pool_threshold": DEFAULT_LOW_POOL_THRESHOLD,
             # where low-pool warnings go; falls back to the puzzle channel
             "alert_channel_id": None,
+            # economy credits deposited to EVERY winner when a puzzle is won
+            # (all winners in shared mode too); 0 turns payouts off
+            "win_payout": DEFAULT_WIN_PAYOUT,
         }
         self.config.register_guild(**default_guild)
 
@@ -568,6 +572,30 @@ class Puzzle(commands.Cog):
             pass
         return "."
 
+    async def _pay_winners(self, guild: discord.Guild, winners: list) -> Optional[str]:
+        """Deposit the win payout to every winner still in the server.
+        Returns a line for the completion post, or None if nothing was paid.
+        One failed deposit (e.g. a balance at the bank's cap) is logged and
+        never blocks the others or the rest of the round-finish."""
+        amount = await self.config.guild(guild).win_payout()
+        if amount <= 0:
+            return None
+        paid = 0
+        for user_id in winners:
+            member = guild.get_member(user_id)
+            if member is None:
+                continue
+            try:
+                await bank.deposit_credits(member, amount)
+                paid += 1
+            except Exception:
+                log.exception("Failed to pay the puzzle win payout to %s in guild %s", user_id, guild.id)
+        if not paid:
+            return None
+        currency = await bank.get_currency_name(guild)
+        who = "Each winner" if paid > 1 else "The winner"
+        return f"\N{MONEY BAG} {who} earned {amount:,} {currency}."
+
     async def _eligible_count(self, guild: discord.Guild) -> int:
         pool = await self.config.guild(guild).pool()
         return sum(1 for meta in pool.values() if not meta.get("retired"))
@@ -863,6 +891,9 @@ class Puzzle(commands.Cog):
             text = f"\N{PARTY POPPER} " + ", ".join(mentions) + " completed the puzzle!"
             if won_after is not None:
                 text += f" (It took {self._fmt_duration(won_after)} and {posted_total} pieces posted.)"
+            payout_note = await self._pay_winners(guild, winners)
+            if payout_note:
+                text += "\n" + payout_note
 
             if channel is not None:
                 if full_image_path is not None:
@@ -1927,6 +1958,22 @@ class Puzzle(commands.Cog):
         else:
             await ctx.send(f"I'll warn when {count} or fewer unplayed image(s) remain after a puzzle starts.")
 
+    @puzzle.command(name="setpayout")
+    @checks.admin_or_permissions(manage_guild=True)
+    async def puzzle_setpayout(self, ctx: commands.Context, amount: int):
+        """Set the economy credits paid to every winner when a puzzle is
+        won (all winners get the full amount, including in shared mode).
+        0 turns payouts off. Default 20000."""
+        if amount < 0:
+            await ctx.send("Must be 0 or more.")
+            return
+        await self.config.guild(ctx.guild).win_payout.set(amount)
+        if amount == 0:
+            await ctx.send("Win payouts are off.")
+        else:
+            currency = await bank.get_currency_name(ctx.guild)
+            await ctx.send(f"Every winner will now earn {amount:,} {currency} when a puzzle is won.")
+
     @puzzle.command(name="setalertchannel")
     @checks.admin_or_permissions(manage_guild=True)
     async def puzzle_setalertchannel(self, ctx: commands.Context, channel: Optional[discord.TextChannel] = None):
@@ -1953,6 +2000,7 @@ class Puzzle(commands.Cog):
         shared_window_minutes = await guild_conf.shared_window_minutes()
         announce_channel_id = await guild_conf.announce_channel_id()
         live_status_channel_id = await guild_conf.live_status_channel_id()
+        win_payout = await guild_conf.win_payout()
         low_pool_threshold = await guild_conf.low_pool_threshold()
         alert_channel_id = await guild_conf.alert_channel_id()
         pool = await guild_conf.pool()
@@ -1975,6 +2023,7 @@ class Puzzle(commands.Cog):
             f"Live status: {('enabled in ' + live_status_channel.mention) if live_status_channel else 'off'}",
             f"Images in pool: {len(pool)} "
             f"({sum(1 for meta in pool.values() if meta.get('retired'))} retired)",
+            f"Win payout (each winner): {f'{win_payout:,}' if win_payout > 0 else 'off'}",
             "Low-pool warning: "
             + (f"at {low_pool_threshold} or fewer unplayed" if low_pool_threshold > 0 else "off")
             + f" (to {alert_channel.mention if alert_channel else 'the puzzle channel'})",
