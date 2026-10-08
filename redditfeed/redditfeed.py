@@ -16,7 +16,7 @@ import discord
 from redbot.core import Config, commands
 from redbot.core.bot import Red
 
-from . import constants, embeds, engine
+from . import constants, discovery, discovery_ui, embeds, engine
 from .arctic_shift import ArcticShiftSource, RedditSource, RedditSourceError
 from .dashboard_integration import DashboardIntegration, dashboard_page
 from .dashboard_view import PAGE_TEMPLATE
@@ -38,10 +38,12 @@ class RedditFeed(DashboardIntegration, commands.Cog):
             fetch_limit=constants.DEFAULT_FETCH_LIMIT,
             dedup_store={},
             dedup_ttl_days=constants.DEFAULT_DEDUP_TTL_DAYS,
+            denied_subreddits=[],   # rejected in `discover`; never suggested again
         )
         self.source: RedditSource = ArcticShiftSource()
         self._poll_task: Optional[asyncio.Task] = None
         self._cycle_lock = asyncio.Lock()
+        self._discover_lock = asyncio.Lock()   # one discovery run at a time (politeness to Arctic Shift)
 
     async def cog_load(self) -> None:
         self._poll_task = self.bot.loop.create_task(self._poll_loop())
@@ -207,7 +209,22 @@ class RedditFeed(DashboardIntegration, commands.Cog):
     @redditfeed.command(name="version")
     async def redditfeed_version(self, ctx: commands.Context) -> None:
         """Version-probe command -- confirms a deploy actually took."""
-        await ctx.send("redditfeed build: dashboard-v4 (Arctic Shift source)")
+        await ctx.send("redditfeed build: discover-v1 (Arctic Shift source)")
+
+    async def _map_subreddit(self, name: str, channel_id: int) -> bool:
+        """The one place a subreddit gets mapped to a channel -- `add` and the
+        discovery Approve button both go through here. True if this created a
+        brand-new mapping, False if it only added a channel to an existing one.
+        """
+        async with self.config.mappings() as mappings:
+            raw = mappings.get(name)
+            mapping = SubredditMapping.from_dict(raw) if raw else SubredditMapping(subreddit=name)
+            if channel_id not in mapping.channel_ids:
+                mapping.channel_ids.append(channel_id)
+            if raw is None:
+                mapping.last_poll_ts = time.time()  # no backfill: starts polling from now
+            mappings[name] = mapping.to_dict()
+        return raw is None
 
     @redditfeed.command(name="add")
     async def redditfeed_add(
@@ -217,14 +234,7 @@ class RedditFeed(DashboardIntegration, commands.Cog):
         to a subreddit already mapped, or to map another subreddit to the same channel.
         """
         name = engine.normalize_subreddit(subreddit)
-        async with self.config.mappings() as mappings:
-            raw = mappings.get(name)
-            mapping = SubredditMapping.from_dict(raw) if raw else SubredditMapping(subreddit=name)
-            if channel.id not in mapping.channel_ids:
-                mapping.channel_ids.append(channel.id)
-            if raw is None:
-                mapping.last_poll_ts = time.time()  # no backfill: starts polling from now
-            mappings[name] = mapping.to_dict()
+        await self._map_subreddit(name, channel.id)
         await ctx.send(f"r/{name} -> {channel.mention}")
 
     @redditfeed.command(name="remove")
@@ -322,6 +332,122 @@ class RedditFeed(DashboardIntegration, commands.Cog):
         text = "\n\n".join(lines)
         for chunk_start in range(0, len(text), 1900):
             await ctx.send(text[chunk_start : chunk_start + 1900])
+
+    # -- Discovery: suggest subreddits, mods approve/deny with a preview ---------------
+
+    async def _approve_suggestion(self, name: str, channel_id: int) -> bool:
+        created = await self._map_subreddit(name, channel_id)
+        async with self.config.denied_subreddits() as denied:
+            if name in denied:
+                denied.remove(name)
+        return created
+
+    async def _deny_suggestion(self, name: str) -> None:
+        async with self.config.denied_subreddits() as denied:
+            if name not in denied:
+                denied.append(name)
+
+    @redditfeed.command(name="discover")
+    async def redditfeed_discover(
+        self,
+        ctx: commands.Context,
+        prefixes: str,
+        channel: discord.TextChannel,
+        min_subscribers: int = constants.DISCOVER_DEFAULT_MIN_SUBSCRIBERS,
+    ) -> None:
+        """Suggest NSFW subreddits whose NAME STARTS WITH a prefix, each with a
+        link, a preview of recent top posts, and Approve/Deny buttons.
+
+        Several prefixes: `feet,foot,sole` (max 5). Approved ones are mapped to
+        CHANNEL. Run it in an age-restricted channel (previews are explicit).
+        Example: `.redditfeed discover feet,foot #feet 5000`
+        """
+        if not ctx.channel.is_nsfw() or not channel.is_nsfw():
+            await ctx.send(
+                "Both this channel and the target channel must be age-restricted. "
+                "Previews are explicit, and approved feeds post there."
+            )
+            return
+        prefix_list = discovery.parse_prefixes(prefixes)
+        if not prefix_list:
+            await ctx.send("Give me one or more name prefixes (letters, numbers, underscores), e.g. `feet,foot`.")
+            return
+        if self._discover_lock.locked():
+            await ctx.send("A discovery run is already in progress. Give it a minute.")
+            return
+
+        async with self._discover_lock:
+            try:
+                await self._run_discovery(ctx, prefix_list, channel, max(0, min_subscribers))
+            except Exception:  # noqa: BLE001 -- surface it instead of dying silently
+                log.exception("redditfeed: discovery run crashed")
+                await ctx.send("Discovery hit an unexpected error. Check the bot logs.")
+
+    async def _run_discovery(
+        self, ctx: commands.Context, prefixes: list[str], channel: discord.TextChannel, min_subscribers: int
+    ) -> None:
+        raw_results: list[dict] = []
+        failures: list[str] = []
+        async with ctx.typing():
+            for i, prefix in enumerate(prefixes):
+                if i:
+                    await asyncio.sleep(constants.DISCOVER_STAGGER_SECONDS)
+                try:
+                    raw_results.extend(
+                        await self.source.search_subreddits(prefix, min_subscribers, constants.DISCOVER_SEARCH_LIMIT)
+                    )
+                except RedditSourceError as exc:
+                    failures.append(f"`{prefix}`: {exc}")
+
+            mapped = await self.config.mappings()
+            denied = await self.config.denied_subreddits()
+            suggestions, stats = discovery.filter_candidates(raw_results, mapped.keys(), denied)
+            await ctx.send(discovery.format_summary(stats, len(suggestions), prefixes, min_subscribers, failures))
+
+            for i, candidate in enumerate(suggestions):
+                if i:
+                    await asyncio.sleep(constants.DISCOVER_STAGGER_SECONDS)
+                preview_failed = False
+                try:
+                    posts = await self.source.fetch_new_posts(
+                        candidate.name,
+                        time.time() - constants.PREVIEW_WINDOW_SECONDS,
+                        constants.PREVIEW_FETCH_LIMIT,
+                    )
+                except RedditSourceError:
+                    posts, preview_failed = [], True
+                preview = discovery.pick_preview(posts)
+                suggestion_embeds = discovery_ui.build_suggestion_embeds(
+                    candidate, preview, channel.id, preview_failed=preview_failed
+                )
+                view = discovery_ui.SuggestionView(self, candidate.name, channel.id, suggestion_embeds, ctx.author.id)
+                try:
+                    view.message = await ctx.channel.send(embeds=suggestion_embeds, view=view)
+                except discord.Forbidden:
+                    await ctx.send("I can't post embeds here. I need Send Messages and Embed Links in this channel.")
+                    return
+                except discord.HTTPException as exc:
+                    log.warning("redditfeed: could not post suggestion for r/%s: %s", candidate.name, exc)
+
+    @redditfeed.command(name="denied")
+    async def redditfeed_denied(self, ctx: commands.Context) -> None:
+        """List subreddits you denied in `discover` (they're never suggested again)."""
+        denied = await self.config.denied_subreddits()
+        if not denied:
+            await ctx.send("No denied subreddits.")
+            return
+        await ctx.send("Denied: " + ", ".join(f"r/{name}" for name in sorted(denied)) + "\nUndo with `.redditfeed undeny <subreddit>`.")
+
+    @redditfeed.command(name="undeny")
+    async def redditfeed_undeny(self, ctx: commands.Context, subreddit: str) -> None:
+        """Let a previously denied subreddit be suggested again."""
+        name = engine.normalize_subreddit(subreddit)
+        async with self.config.denied_subreddits() as denied:
+            if name not in denied:
+                await ctx.send(f"r/{name} isn't on the denied list.")
+                return
+            denied.remove(name)
+        await ctx.send(f"r/{name} can be suggested again.")
 
     @redditfeed.group(name="keyword", invoke_without_command=True)
     async def redditfeed_keyword(self, ctx: commands.Context) -> None:

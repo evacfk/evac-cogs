@@ -113,3 +113,44 @@ class TestFormatHttpError:
 
     def test_long_bodies_are_truncated(self):
         assert len(format_http_error(500, "x" * 5000)) <= len("HTTP 500: ") + 200
+
+
+class TestSearchSubreddits:
+    async def test_builds_the_expected_query(self):
+        captured = {}
+
+        async def fake_request(url):
+            captured["url"] = url
+            return {"data": [{"display_name": "FeetInYourFace"}]}
+
+        source = ArcticShiftSource(request_fn=fake_request)
+        result = await source.search_subreddits("feet", min_subscribers=5000, limit=50)
+
+        assert result == [{"display_name": "FeetInYourFace"}]
+        url = captured["url"]
+        assert url.startswith("https://arctic-shift.photon-reddit.com/api/subreddits/search?")
+        for part in ("subreddit_prefix=feet", "over18=true", "min_subscribers=5000", "limit=50",
+                     "sort=desc", "sort_type=subscribers"):
+            assert part in url
+
+    async def test_prefix_is_url_encoded(self):
+        captured = {}
+
+        async def fake_request(url):
+            captured["url"] = url
+            return {"data": []}
+
+        source = ArcticShiftSource(request_fn=fake_request)
+        await source.search_subreddits("a&over18=false", min_subscribers=1, limit=5)
+
+        assert "subreddit_prefix=a%26over18%3Dfalse" in captured["url"]
+        assert captured["url"].count("over18=") == 1    # only the real param; the injected one stays encoded text
+        assert "&over18=false" not in captured["url"]
+
+    async def test_retries_then_raises_with_a_useful_message(self):
+        async def always_times_out(url):
+            return {"data": None, "error": "Timeout. Maybe slow down a bit"}
+
+        source = ArcticShiftSource(request_fn=always_times_out, max_retries=1)
+        with pytest.raises(RedditSourceError, match="subreddit search 'feet'"):
+            await source.search_subreddits("feet", min_subscribers=1, limit=5)

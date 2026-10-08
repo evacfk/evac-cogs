@@ -70,10 +70,17 @@ def test_version_probe_text_is_the_new_build():
 
     from redditfeed import redditfeed
 
-    assert "redditfeed build: dashboard-v4" in inspect.getsource(redditfeed)
+    assert "redditfeed build: discover-v1" in inspect.getsource(redditfeed)
 
 
 def test_setup_function_exists():
     from redditfeed import setup
 
     assert callable(setup)
+
+
+def test_discovery_commands_exist():
+    from redditfeed.redditfeed import RedditFeed
+
+    for name in ("redditfeed_discover", "redditfeed_denied", "redditfeed_undeny"):
+        assert hasattr(RedditFeed, name), name

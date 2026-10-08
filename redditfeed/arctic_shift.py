@@ -14,6 +14,7 @@ import json
 import logging
 from abc import ABC, abstractmethod
 from typing import Optional
+from urllib.parse import urlencode
 
 from . import constants
 
@@ -34,6 +35,15 @@ class RedditSource(ABC):
         """Return a list of raw post JSON dicts for `subreddit`, newest activity
         included, created after `after_ts` (epoch seconds) if given. Raises
         RedditSourceError if the fetch ultimately fails.
+        """
+        raise NotImplementedError
+
+    @abstractmethod
+    async def search_subreddits(
+        self, prefix: str, min_subscribers: int, limit: int
+    ) -> list[dict]:
+        """Return raw subreddit JSON dicts for NSFW subreddits whose name starts
+        with `prefix`, biggest first. Raises RedditSourceError on failure.
         """
         raise NotImplementedError
 
@@ -69,10 +79,9 @@ class ArcticShiftSource(RedditSource):
             params.append(f"after={int(after_ts)}")
         return f"{constants.ARCTIC_SHIFT_BASE_URL}?{'&'.join(params)}"
 
-    async def fetch_new_posts(
-        self, subreddit: str, after_ts: Optional[float], limit: int
-    ) -> list[dict]:
-        url = self._build_url(subreddit, after_ts, limit)
+    async def _get_data(self, url: str, what: str) -> list[dict]:
+        """GET `url` and return the parsed `data` list, retrying with backoff.
+        `what` names the request in logs/errors (e.g. "r/feet")."""
         last_error: Optional[Exception] = None
 
         for attempt in range(self._max_retries + 1):
@@ -82,13 +91,38 @@ class ArcticShiftSource(RedditSource):
             except Exception as exc:  # noqa: BLE001 -- any failure is a retry candidate
                 last_error = exc
                 log.warning(
-                    "Arctic Shift fetch failed for r/%s (attempt %d/%d): %s",
-                    subreddit, attempt + 1, self._max_retries + 1, exc,
+                    "Arctic Shift fetch failed for %s (attempt %d/%d): %s",
+                    what, attempt + 1, self._max_retries + 1, exc,
                 )
                 if attempt < self._max_retries:
                     await asyncio.sleep(constants.ARCTIC_SHIFT_RETRY_BACKOFF_SECONDS * (attempt + 1))
 
-        raise RedditSourceError(f"Arctic Shift fetch failed for r/{subreddit}: {last_error}")
+        raise RedditSourceError(f"Arctic Shift fetch failed for {what}: {last_error}")
+
+    async def fetch_new_posts(
+        self, subreddit: str, after_ts: Optional[float], limit: int
+    ) -> list[dict]:
+        url = self._build_url(subreddit, after_ts, limit)
+        return await self._get_data(url, f"r/{subreddit}")
+
+    def _build_subreddit_search_url(self, prefix: str, min_subscribers: int, limit: int) -> str:
+        query = urlencode(
+            {
+                "subreddit_prefix": prefix,
+                "over18": "true",
+                "min_subscribers": int(min_subscribers),
+                "limit": int(limit),
+                "sort": "desc",
+                "sort_type": "subscribers",
+            }
+        )
+        return f"{constants.ARCTIC_SHIFT_SUBREDDIT_SEARCH_URL}?{query}"
+
+    async def search_subreddits(
+        self, prefix: str, min_subscribers: int, limit: int
+    ) -> list[dict]:
+        url = self._build_subreddit_search_url(prefix, min_subscribers, limit)
+        return await self._get_data(url, f"subreddit search '{prefix}'")
 
 
 def format_http_error(status: int, body: str) -> str:

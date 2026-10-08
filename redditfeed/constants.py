@@ -51,3 +51,30 @@ ARCTIC_SHIFT_BASE_URL = "https://arctic-shift.photon-reddit.com/api/posts/search
 ARCTIC_SHIFT_TIMEOUT_SECONDS = 15
 ARCTIC_SHIFT_MAX_RETRIES = 2
 ARCTIC_SHIFT_RETRY_BACKOFF_SECONDS = 2.0
+ARCTIC_SHIFT_SUBREDDIT_SEARCH_URL = "https://arctic-shift.photon-reddit.com/api/subreddits/search"
+
+# -- Subreddit discovery (`.redditfeed discover`) ----------------------------
+
+DISCOVER_DEFAULT_MIN_SUBSCRIBERS = 5000
+DISCOVER_SEARCH_LIMIT = 50           # subreddits requested per prefix
+DISCOVER_MAX_PREFIXES = 5
+DISCOVER_MAX_SUGGESTIONS = 8         # suggestion messages posted per run
+DISCOVER_STAGGER_SECONDS = 1.5       # pause between Arctic Shift requests / suggestion posts
+DISCOVER_VIEW_TIMEOUT_SECONDS = 6 * 3600   # Approve/Deny buttons expire after this
+
+PREVIEW_WINDOW_SECONDS = 3 * 24 * 3600     # look at the last 3 days of posts
+PREVIEW_FETCH_LIMIT = 100
+PREVIEW_MAX_IMAGES = 4
+PREVIEW_MAX_POST_LINKS = 3
+
+# Coarse safety screen applied ONLY to discovery suggestions (subreddit name,
+# description and recent post titles). It cannot see images -- the human
+# preview + Approve/Deny step is the real control. Deliberately over-broad:
+# a false positive just hides a suggestion (use `.redditfeed add` to override),
+# a false negative would put something questionable in front of a mod.
+SAFETY_BLOCKED_TERMS = (
+    "teen", "young", "jailbait", "preteen", "pre-teen", "lolita", "loli", "shota",
+    "child", "kid", "underage", "under-age", "minor", "schoolgirl", "school girl",
+    "highschool", "high school", "toddler", "baby", "barely legal", "student",
+    "cheerleader", "daughter", "niece", "little girl", "little boy",
+)

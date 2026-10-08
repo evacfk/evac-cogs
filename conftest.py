@@ -71,6 +71,10 @@ except ImportError:
 
         def __init__(self, *args, **kwargs):
             self.children = []
+            self.stopped = False
+
+        def stop(self):
+            self.stopped = True
 
     def _button_decorator(*args, **kwargs):
         def deco(f):
