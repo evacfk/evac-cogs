@@ -46,7 +46,7 @@ class Msg:
     def __init__(self, channel, content=None, embeds=None, view=None):
         Msg._next += 1
         self.id, self.channel, self.content, self.embeds, self.view = Msg._next, channel, content, embeds or [], view
-        self.edits, self.deleted = [], False
+        self.edits, self.deleted, self.file = [], False, None
 
     async def edit(self, **kw):
         self.edits.append(kw)
@@ -62,6 +62,7 @@ class Msg:
 class Chan:
     def __init__(self, cid, nsfw=True, name="chan", everyone_can_view=False):
         self.id, self._nsfw, self.name, self.sent, self.delete_raises = cid, nsfw, name, [], None
+        self.reject_files = None
         self.mention = f"<#{cid}>"
         self.messages = {}
         self.everyone_can_view = everyone_can_view
@@ -74,7 +75,10 @@ class Chan:
         return SimpleNamespace(view_channel=self.everyone_can_view)
 
     async def send(self, content=None, **kw):
+        if kw.get("file") is not None and self.reject_files:
+            raise self.reject_files
         m = Msg(self, content, kw.get("embeds") or ([kw["embed"]] if kw.get("embed") else []), kw.get("view"))
+        m.file = kw.get("file")
         self.sent.append(m)
         self.messages[m.id] = m
         return m
@@ -114,6 +118,17 @@ class Source:
         return []
 
 
+class FakeRedgifs:
+    def __init__(self, error=None):
+        self.error, self.calls = error, []
+
+    async def fetch(self, url, max_bytes):
+        self.calls.append((url, max_bytes))
+        if self.error:
+            raise self.error
+        return "fantasticroundpuma.mp4", b"\x00\x00mp4"
+
+
 QUEUE_CH, FEET_CH, LOG_CH = Chan(10, name="mod-queue"), Chan(20, name="feet"), Chan(30, name="mod-commands")
 
 
@@ -126,7 +141,7 @@ def post(pid, age_min=120, score=10, **kw):
 
 def make(posts=None, mappings=None, mods=(1,), queue_channel=True, **cfg):
     for c in (QUEUE_CH, FEET_CH, LOG_CH):
-        c.sent, c.messages, c.delete_raises = [], {}, None
+        c.sent, c.messages, c.delete_raises, c.reject_files = [], {}, None, None
     cog = object.__new__(RedditFeed)
     cog.bot = Bot([QUEUE_CH, FEET_CH, LOG_CH], mods)
     cog.source = Source(posts)
@@ -137,11 +152,12 @@ def make(posts=None, mappings=None, mods=(1,), queue_channel=True, **cfg):
         queue_channel_id=10 if queue_channel else None, queue_min_score=3, queue_min_age_minutes=60,
         queue_max_pending=40, x_button=True, log_channel_id=30, posted_map={}, learned_topics={},
         new_channel_category_id=None, new_channel_prefix="", poll_interval_seconds=120, stagger_seconds=0,
-        fetch_limit=25, dedup_ttl_days=7,
+        fetch_limit=25, dedup_ttl_days=7, redgifs_mode="upload",
     )
     values.update(cfg)
     cog.config = SimpleNamespace(**{k: Val(v) for k, v in values.items()})
     cog._queue_locks, cog._posted_buf, cog._last_stats = {}, {}, {}
+    cog.redgifs, cog._redgifs_sem = FakeRedgifs(), asyncio.Semaphore(2)
     cog._channel_lock, cog._discover_lock, cog._cycle_lock = asyncio.Lock(), asyncio.Lock(), asyncio.Lock()
     return cog
 
@@ -737,3 +753,88 @@ async def test_proposals_only_consider_age_restricted_channels_and_never_the_mod
     ctx = Ctx(guild=guild)                      # ctx.channel is channel 99 (the room discover runs in)
     await cb("redditfeed_discover")(cog, ctx, "feet", None)
     assert ctx.channel.sent[1].view.channel_id is None
+
+
+# ---------------------------------------------------------------- RedGifs
+
+RG_POST = {"id": "r1", "url": "https://www.redgifs.com/watch/fantasticroundpuma", "permalink": "/r/feet/comments/r1/t/"}
+
+
+def rg_items():
+    return engine.extract_media_items(RG_POST)
+
+
+async def test_redgifs_is_uploaded_as_a_video_file_with_the_x_button():
+    cog = make()
+    await cog._post_media_items(FEET_CH, RG_POST, rg_items(), "feet")
+    msg = FEET_CH.sent[0]
+    assert msg.content is None and msg.file.filename == "fantasticroundpuma.mp4" and msg.view is not None
+    assert cog._last_stats["redgifs_uploaded"] == 1
+    assert cog.redgifs.calls and cog.redgifs.calls[0][0] == RG_POST["url"]
+
+
+async def test_redgifs_failure_falls_back_to_the_plain_link():
+    from redditfeed.redgifs import RedgifsError
+    cog = make()
+    cog.redgifs = FakeRedgifs(RedgifsError("HTTP 403"))
+    await cog._post_media_items(FEET_CH, RG_POST, rg_items(), "feet")
+    assert [m.content for m in FEET_CH.sent] == [RG_POST["url"]] and FEET_CH.sent[0].file is None
+    assert cog._last_stats["redgifs_link_fallback"] == 1
+
+
+async def test_redgifs_too_big_for_the_server_falls_back_to_the_link():
+    from redditfeed.redgifs import RedgifsTooLarge
+    cog = make()
+    cog.redgifs = FakeRedgifs(RedgifsTooLarge("60MB"))
+    await cog._post_media_items(FEET_CH, RG_POST, rg_items(), "feet")
+    assert FEET_CH.sent[0].content == RG_POST["url"]
+
+
+async def test_redgifs_upload_rejected_by_discord_falls_back_to_the_link():
+    import discord
+    cog = make()
+    FEET_CH.reject_files = discord.HTTPException("413 too large")
+    await cog._post_media_items(FEET_CH, RG_POST, rg_items(), "feet")
+    assert [m.content for m in FEET_CH.sent] == [RG_POST["url"]]
+
+
+async def test_redgifs_missing_permission_stops_posting():
+    import discord
+    cog = make()
+    FEET_CH.reject_files = discord.Forbidden("no")
+    await cog._post_media_items(FEET_CH, RG_POST, rg_items(), "feet")
+    assert FEET_CH.sent == []
+
+
+async def test_redgifs_link_mode_never_downloads():
+    cog = make(redgifs_mode="link")
+    await cog._post_media_items(FEET_CH, RG_POST, rg_items(), "feet")
+    assert cog.redgifs.calls == [] and FEET_CH.sent[0].content == RG_POST["url"]
+
+
+async def test_other_video_links_are_never_uploaded():
+    cog = make()
+    items = engine.extract_media_items({"id": "v", "is_video": True, "permalink": "/r/feet/comments/v/t/"})
+    await cog._post_media_items(FEET_CH, {"id": "v"}, items, "feet")
+    assert cog.redgifs.calls == [] and FEET_CH.sent[0].file is None
+
+
+class RgCtx:
+    def __init__(self):
+        self.sent = []
+
+    async def send(self, text=None, **kw):
+        self.sent.append(text)
+
+
+async def test_redgifs_command_shows_and_sets_the_mode():
+    cog = make()
+    ctx = RgCtx()
+    cb = RedditFeed.redditfeed_redgifs
+    cb = getattr(cb, "callback", None) or cb.func
+    await cb(cog, ctx, "")
+    assert "upload" in ctx.sent[-1]
+    await cb(cog, ctx, "LINK")
+    assert await cog.config.redgifs_mode() == "link"
+    await cb(cog, ctx, "nope")
+    assert await cog.config.redgifs_mode() == "link" and "upload" in ctx.sent[-1]

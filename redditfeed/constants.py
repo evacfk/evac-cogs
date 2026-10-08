@@ -36,6 +36,8 @@ MEDIA_KIND_REDGIFS_LINK = "redgifs_link"
 IMAGE_URL_EXTENSIONS = (".jpg", ".jpeg", ".png", ".gif", ".webp")
 
 REDGIFS_DOMAINS = ("redgifs.com", "www.redgifs.com")
+REDGIFS_UPLOAD = "upload"   # download the clip and attach it so Discord plays it
+REDGIFS_LINK = "link"       # post the bare link (Discord shows no preview for these)
 
 IMAGE_HOST_DOMAINS = ("i.redd.it", "i.imgur.com", "imgur.com")
 

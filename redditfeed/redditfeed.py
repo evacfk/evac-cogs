@@ -8,6 +8,7 @@ rolling TTL, per-mapping keyword filter + pause toggle, no backfill.
 from __future__ import annotations
 
 import asyncio
+import io
 import logging
 import time
 from typing import Optional
@@ -16,7 +17,7 @@ import discord
 from redbot.core import Config, commands
 from redbot.core.bot import Red
 
-from . import constants, discovery, discovery_ui, embeds, engine, queue_ui
+from . import constants, discovery, discovery_ui, embeds, engine, queue_ui, redgifs
 from .arctic_shift import ArcticShiftSource, RedditSource, RedditSourceError
 from .dashboard_integration import DashboardIntegration, dashboard_page
 from .dashboard_view import PAGE_TEMPLATE
@@ -50,8 +51,11 @@ class RedditFeed(DashboardIntegration, commands.Cog):
             learned_topics={},       # topic word -> channel id, learned from approvals in `discover`
             new_channel_category_id=None,   # where `discover` may create channels (unset = never create)
             new_channel_prefix="",   # e.g. "🔞・"
+            redgifs_mode=constants.REDGIFS_UPLOAD,   # upload the clip so it plays inline, or post the bare link
         )
         self.source: RedditSource = ArcticShiftSource()
+        self.redgifs = redgifs.RedgifsResolver()
+        self._redgifs_sem = asyncio.Semaphore(2)   # at most two clips downloading at once
         self._poll_task: Optional[asyncio.Task] = None
         self._cycle_lock = asyncio.Lock()
         self._discover_lock = asyncio.Lock()   # one discovery run at a time (politeness to Arctic Shift)
@@ -215,9 +219,41 @@ class RedditFeed(DashboardIntegration, commands.Cog):
                 await asyncio.sleep(0.5)
 
         for item in link_items:
-            if not await self._send_text(channel, embeds.build_link_message(post, item), track, view):
+            if item.kind == constants.MEDIA_KIND_REDGIFS_LINK and await self.config.redgifs_mode() == constants.REDGIFS_UPLOAD:
+                ok = await self._send_redgifs(channel, post, item, track, view)
+            else:
+                ok = await self._send_text(channel, embeds.build_link_message(post, item), track, view)
+            if not ok:
                 return
             await asyncio.sleep(0.5)
+
+    async def _send_redgifs(self, channel, post: dict, item, track, view) -> bool:
+        """RedGifs pages don't unfurl in Discord, so upload the clip itself. Any
+        problem (RedGifs refusing, clip too big for this server, upload rejected)
+        falls back to the plain link, so a post is never lost over this."""
+        limit = redgifs.upload_limit(getattr(getattr(channel, "guild", None), "filesize_limit", None))
+        try:
+            async with self._redgifs_sem:
+                filename, data = await self.redgifs.fetch(item.url, limit)
+        except redgifs.RedgifsError as exc:
+            log.info("redditfeed: RedGifs upload skipped for %s: %s", item.url, exc)
+            self._bump("redgifs_link_fallback")
+            return await self._send_text(channel, embeds.build_link_message(post, item), track, view)
+        kwargs = {"file": discord.File(io.BytesIO(data), filename=filename)}
+        if view is not None:
+            kwargs["view"] = view
+        try:
+            message = await channel.send(**kwargs)
+            self._note_posted(message, channel, track)
+        except discord.Forbidden:
+            log.warning("redditfeed: missing permission to post in channel %s", channel.id)
+            return False
+        except discord.HTTPException as exc:
+            log.warning("redditfeed: RedGifs upload rejected in channel %s: %s", channel.id, exc)
+            self._bump("redgifs_link_fallback")
+            return await self._send_text(channel, embeds.build_link_message(post, item), track, view)
+        self._bump("redgifs_uploaded")
+        return True
 
     async def _x_view(self):
         if not await self.config.x_button():
@@ -495,7 +531,7 @@ class RedditFeed(DashboardIntegration, commands.Cog):
     @redditfeed.command(name="version")
     async def redditfeed_version(self, ctx: commands.Context) -> None:
         """Version-probe command -- confirms a deploy actually took."""
-        await ctx.send("redditfeed build: approval-v1 (mod queue, X button, discover proposes channels)")
+        await ctx.send("redditfeed build: redgifs-v1 (RedGifs clips upload as video, mod queue, X button)")
 
     async def _map_subreddit(self, name: str, channel_id: int) -> bool:
         """The one place a subreddit gets mapped to a channel -- `add` and the
@@ -758,6 +794,19 @@ class RedditFeed(DashboardIntegration, commands.Cog):
             return
         await self.config.x_button.set(value == "on")
         await ctx.send(f"X button is now {value} for new posts.")
+
+    @redditfeed.command(name="redgifs")
+    async def redditfeed_redgifs(self, ctx: commands.Context, mode: str = "") -> None:
+        """`upload` (default): post RedGifs clips as a playable video file. `link`: post the bare link (Discord won't embed it)."""
+        value = mode.strip().lower()
+        if not value:
+            await ctx.send(f"RedGifs mode: **{await self.config.redgifs_mode()}**. Use `upload` or `link`.")
+            return
+        if value not in (constants.REDGIFS_UPLOAD, constants.REDGIFS_LINK):
+            await ctx.send("Use `upload` or `link`.")
+            return
+        await self.config.redgifs_mode.set(value)
+        await ctx.send(f"RedGifs posts will now use **{value}**.")
 
     @redditfeed.command(name="logchannel")
     async def redditfeed_logchannel(self, ctx: commands.Context, channel: discord.TextChannel) -> None:
