@@ -1,6 +1,6 @@
 """Dataclasses with to_dict()/from_dict() at the Config boundary."""
-from dataclasses import dataclass
-from typing import Optional
+from dataclasses import dataclass, field
+from typing import List, Optional
 
 
 @dataclass
@@ -11,8 +11,16 @@ class Interest:
     key: str
     name: str
     emoji: str
-    channel_id: int
+    channel_id: int                      # the first channel (kept as-is for old saved data)
     role_id: Optional[int] = None
+    extra_channel_ids: List[int] = field(default_factory=list)   # any further channels
+
+    @property
+    def channel_ids(self) -> List[int]:
+        """Every channel this interest opens, first one first, no duplicates."""
+        out = [self.channel_id]
+        out += [c for c in self.extra_channel_ids if c not in out]
+        return out
 
     def to_dict(self) -> dict:
         return {
@@ -21,6 +29,7 @@ class Interest:
             "emoji": self.emoji,
             "channel_id": self.channel_id,
             "role_id": self.role_id,
+            "extra_channel_ids": list(self.extra_channel_ids),
         }
 
     @classmethod
@@ -32,6 +41,7 @@ class Interest:
             emoji=str(data.get("emoji") or ""),
             channel_id=int(data["channel_id"]),
             role_id=int(role) if role else None,
+            extra_channel_ids=[int(c) for c in (data.get("extra_channel_ids") or [])],
         )
 
 

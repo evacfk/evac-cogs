@@ -133,6 +133,10 @@ class FakeGuild:
         self.channels[cid] = FakeChannel(cid, name)
         return self.channels[cid]
 
+    @property
+    def text_channels(self):
+        return list(self.channels.values())
+
     def get_role(self, rid):
         return self.roles.get(rid)
 
@@ -1060,11 +1064,11 @@ async def test_post_command_sends_then_edits_same_message(w):
 async def test_interest_add_validates_and_registers_view(w):
     ctx = FakeCtx(w.guild, w.member("admin"))
     chan = w.feet
-    await w.cog.interest_add.func(w.cog, ctx, "Feet!", chan, w.feet_role, "x", name="Feet")
+    await w.cog.interest_add.func(w.cog, ctx, "Feet!", rest=f"<#{chan.id}> <@&{FEET_ROLE}> x Feet")
     cfg = await w.cog.config.guild(w.guild).all()
     assert list(cfg["interests"]) == ["feet"] and cfg["interests"]["feet"]["role_id"] == FEET_ROLE
     assert w.guild.id in w.cog._interest_views
-    await w.cog.interest_add.func(w.cog, ctx, "!!!", chan, None, "")
+    await w.cog.interest_add.func(w.cog, ctx, "!!!", rest=f"<#{chan.id}>")
     assert "usable" in ctx.sent[-1]
 
 
@@ -1119,7 +1123,7 @@ async def test_default_access_mode_is_per_user_overwrites(w):
 
 async def test_interest_add_with_a_word_in_the_emoji_slot_keeps_the_panel_valid(w):
     ctx = FakeCtx(w.guild, w.member("admin"))
-    await w.cog.interest_add.func(w.cog, ctx, "feet", w.feet, None, "Feet", name="")
+    await w.cog.interest_add.func(w.cog, ctx, "feet", rest=f"<#{w.feet.id}> Feet")
     cfg = await w.cog.config.guild(w.guild).all()
     assert cfg["interests"]["feet"]["emoji"] == "" and cfg["interests"]["feet"]["name"] == "Feet"
     assert "No valid emoji" in ctx.sent[-1]
@@ -1186,3 +1190,141 @@ async def test_revokeinterest_removes_access_without_recording_a_lapse(w):
     await w.cog.afterdark_revokeinterest.func(w.cog, ctx, m, "feet")
     assert m not in w.feet.overwrites
     assert not engine.lapsed_has(await w.cog.config.guild(w.guild).lapsed(), "feet", m.id)
+
+
+# ------------------------------------------------- interests with several channels
+
+async def add_two_feet_channels(w):
+    w.feet2 = w.guild.add_channel(900001, "user-feet")
+    w.feet3 = w.guild.add_channel(900002, "anime-feet")
+    await set_cfg(w, access_mode="overwrites", interests={"feet": {
+        "key": "feet", "name": "Feet", "emoji": "x", "channel_id": FEET_CHANNEL, "role_id": None,
+        "extra_channel_ids": [900001, 900002]}})
+
+
+async def test_old_saved_interest_without_extras_still_loads():
+    from afterdark.models import Interest
+    i = Interest.from_dict({"key": "feet", "name": "Feet", "emoji": "", "channel_id": 5, "role_id": None})
+    assert i.channel_ids == [5] and i.extra_channel_ids == []
+
+
+async def test_add_lists_many_channels_in_one_command_by_mention_and_name(w):
+    w.guild.add_channel(900001, "user-feet")
+    w.guild.add_channel(900002, "anime-feet")
+    ctx = FakeCtx(w.guild, w.member("admin"))
+    await w.cog.interest_add.func(w.cog, ctx, "feet", rest=f"<#{FEET_CHANNEL}> #user-feet 900002 \U0001F9B6 Feet toes")
+    i = (await w.cog.config.guild(w.guild).interests())["feet"]
+    assert [i["channel_id"]] + i["extra_channel_ids"] == [FEET_CHANNEL, 900001, 900002]
+    assert i["emoji"] == "\U0001F9B6" and i["name"] == "Feet toes"
+
+
+async def test_add_same_key_appends_and_keeps_button_details(w):
+    await add_feet(w, mode="overwrites")
+    w.guild.add_channel(900001, "user-feet")
+    ctx = FakeCtx(w.guild, w.member("admin"))
+    await w.cog.interest_add.func(w.cog, ctx, "feet", rest="<#900001>")
+    i = (await w.cog.config.guild(w.guild).interests())["feet"]
+    assert i["extra_channel_ids"] == [900001] and i["name"] == "Feet" and i["emoji"] == "x" and i["role_id"] == FEET_ROLE
+    await w.cog.interest_add.func(w.cog, ctx, "feet", rest="<#900001>")       # repeat: no duplicate
+    i = (await w.cog.config.guild(w.guild).interests())["feet"]
+    assert i["extra_channel_ids"] == [900001] and "already on it" in ctx.sent[-1]
+
+
+async def test_add_with_unknown_channel_changes_nothing(w):
+    ctx = FakeCtx(w.guild, w.member("admin"))
+    await w.cog.interest_add.func(w.cog, ctx, "feet", rest=f"<#{FEET_CHANNEL}> #nope")
+    assert "#nope" in ctx.sent[-1] and not await w.cog.config.guild(w.guild).interests()
+    await w.cog.interest_add.func(w.cog, ctx, "feet", rest="")
+    assert "at least one channel" in ctx.sent[-1]
+
+
+async def test_button_opens_every_channel_and_leaving_closes_every_channel(w):
+    await add_two_feet_channels(w)
+    m = w.member()
+    m.roles.append(w.rabbit)
+    await w.cog.handle_interest_toggle(FakeInteraction(m, w.guild), "feet")
+    assert m in w.feet.overwrites and m in w.feet2.overwrites and m in w.feet3.overwrites
+    await w.cog.handle_interest_toggle(FakeInteraction(m, w.guild), "feet")
+    assert not (w.feet.overwrites or w.feet2.overwrites or w.feet3.overwrites)
+
+
+async def test_member_who_joined_before_a_channel_was_added_is_completed_by_the_next_click(w):
+    await add_two_feet_channels(w)
+    m = w.member()
+    m.roles.append(w.rabbit)
+    w.feet.overwrites[m] = object()                       # joined back when feet had one channel
+    state = await w.cog._get_state(w.guild)
+    state["feet"] = {str(m.id): {"since": 5.0, "last": 5.0, "warned": 0.0}}
+    inter = FakeInteraction(m, w.guild)
+    await w.cog.handle_interest_toggle(inter, "feet")
+    assert m in w.feet.overwrites and m in w.feet2.overwrites and m in w.feet3.overwrites
+    assert "You're in" in inter.replies[0] and state["feet"][str(m.id)]["since"] == 5.0
+
+
+async def test_join_is_all_or_nothing_when_one_channel_refuses(w):
+    await add_two_feet_channels(w)
+    for _ in range(C.OVERWRITE_SOFT_CAP):
+        w.feet3.overwrites[object()] = None
+    m = w.member()
+    m.roles.append(w.rabbit)
+    inter = FakeInteraction(m, w.guild)
+    await w.cog.handle_interest_toggle(inter, "feet")
+    assert m not in w.feet.overwrites and m not in w.feet2.overwrites and m not in w.feet3.overwrites
+    assert "went wrong" in inter.replies[0] and "anime-feet" in log_text(w)
+
+
+async def test_activity_in_any_of_the_channels_counts(w):
+    await add_two_feet_channels(w)
+    m = w.member()
+    state = await w.cog._get_state(w.guild)
+    state["feet"] = {str(m.id): {"since": 1.0, "last": 1.0, "warned": 3.0}}
+    await w.cog._touch(w.guild, m.id, 900002)
+    assert state["feet"][str(m.id)]["last"] == NOW and state["feet"][str(m.id)]["warned"] == 0.0
+
+
+async def test_revoke_all_clears_every_channel(w):
+    await add_two_feet_channels(w)
+    m = w.member()
+    m.roles.append(w.rabbit)
+    await w.cog.handle_interest_toggle(FakeInteraction(m, w.guild), "feet")
+    await w.cog._revoke_all(m, reason="test")
+    assert not (w.feet.overwrites or w.feet2.overwrites or w.feet3.overwrites)
+
+
+async def test_remove_one_channel_then_the_whole_interest(w):
+    await add_two_feet_channels(w)
+    ctx = FakeCtx(w.guild, w.member("admin"))
+    await w.cog.interest_remove.func(w.cog, ctx, "feet", channels="<#900001>")
+    i = (await w.cog.config.guild(w.guild).interests())["feet"]
+    assert i["channel_id"] == FEET_CHANNEL and i["extra_channel_ids"] == [900002]
+    await w.cog.interest_remove.func(w.cog, ctx, "feet", channels="<#900001>")      # not on it any more
+    assert "Not on that interest" in ctx.sent[-1]
+    await w.cog.interest_remove.func(w.cog, ctx, "feet", channels=f"<#{FEET_CHANNEL}>")
+    i = (await w.cog.config.guild(w.guild).interests())["feet"]
+    assert i["channel_id"] == 900002 and i["extra_channel_ids"] == []                   # first slot passes on
+    await w.cog.interest_remove.func(w.cog, ctx, "feet", channels="<#900002>")
+    assert "feet" not in await w.cog.config.guild(w.guild).interests() and "last channel" in ctx.sent[-1]
+
+
+async def test_remove_with_only_the_key_drops_the_interest(w):
+    await add_two_feet_channels(w)
+    ctx = FakeCtx(w.guild, w.member("admin"))
+    await w.cog.interest_remove.func(w.cog, ctx, "feet")
+    assert not await w.cog.config.guild(w.guild).interests()
+
+
+async def test_list_shows_every_channel(w):
+    await add_two_feet_channels(w)
+    ctx = FakeCtx(w.guild, w.member("admin"))
+    await w.cog.interest_list.func(w.cog, ctx)
+    assert all(f"<#{c}>" in ctx.sent[-1] for c in (FEET_CHANNEL, 900001, 900002))
+
+
+async def test_grantinterest_completes_a_partial_join(w):
+    await add_two_feet_channels(w)
+    m = w.member()
+    m.roles.append(w.rabbit)
+    w.feet.overwrites[m] = object()
+    ctx = FakeCtx(w.guild, w.member("admin"))
+    await w.cog.afterdark_grantinterest.func(w.cog, ctx, m, "feet")
+    assert m in w.feet2.overwrites and m in w.feet3.overwrites

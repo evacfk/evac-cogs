@@ -208,10 +208,26 @@ class AfterDark(commands.Cog):
     def _has_overwrite(self, member, channel) -> bool:
         return channel is not None and member in channel.overwrites
 
+    def _interest_channels(self, guild, interest: Interest) -> list:
+        """The interest's channels that still exist."""
+        return [c for c in (guild.get_channel(cid) for cid in interest.channel_ids) if c is not None]
+
+    def _has_any_overwrite(self, member, interest: Interest) -> bool:
+        return any(self._has_overwrite(member, c) for c in self._interest_channels(member.guild, interest))
+
     def _has_access(self, member, interest: Interest) -> bool:
+        """Any access at all (role, or an overwrite on at least one of its channels)."""
         if interest.role_id and any(r.id == interest.role_id for r in member.roles):
             return True
-        return self._has_overwrite(member, member.guild.get_channel(interest.channel_id))
+        return self._has_any_overwrite(member, interest)
+
+    def _has_full_access(self, member, interest: Interest) -> bool:
+        """Access to EVERY channel. A member who joined before a channel was added
+        has access but not full access; clicking the button again completes it."""
+        if interest.role_id and any(r.id == interest.role_id for r in member.roles):
+            return True
+        channels = self._interest_channels(member.guild, interest)
+        return bool(channels) and all(self._has_overwrite(member, c) for c in channels)
 
     async def _grant_interest_access(self, member, interest: Interest, cfg: dict) -> Tuple[bool, str]:
         guild = member.guild
@@ -226,21 +242,35 @@ class AfterDark(commands.Cog):
             except (discord.Forbidden, discord.HTTPException) as exc:
                 return False, f"Discord refused the role change ({exc})"
             return True, ""
-        channel = guild.get_channel(interest.channel_id)
-        if channel is None:
+        channels = self._interest_channels(guild, interest)
+        if not channels:
             return False, "the interest channel no longer exists"
-        if len(channel.overwrites) >= C.OVERWRITE_SOFT_CAP:
-            return False, f"{channel.name} is near Discord's 100-overwrite limit"
-        try:
-            await channel.set_permissions(
-                member,
-                overwrite=discord.PermissionOverwrite(
-                    view_channel=True, read_message_history=True, add_reactions=True
-                ),
-                reason=f"AfterDark: joined {interest.key}",
-            )
-        except (discord.Forbidden, discord.HTTPException) as exc:
-            return False, f"Discord refused the permission change ({exc})"
+        added = []
+        for channel in channels:
+            if self._has_overwrite(member, channel):
+                continue
+            if len(channel.overwrites) >= C.OVERWRITE_SOFT_CAP:
+                why = f"{channel.name} is near Discord's 100-overwrite limit"
+            else:
+                try:
+                    await channel.set_permissions(
+                        member,
+                        overwrite=discord.PermissionOverwrite(
+                            view_channel=True, read_message_history=True, add_reactions=True
+                        ),
+                        reason=f"AfterDark: joined {interest.key}",
+                    )
+                    added.append(channel)
+                    continue
+                except (discord.Forbidden, discord.HTTPException) as exc:
+                    why = f"Discord refused the permission change in {channel.name} ({exc})"
+            # All or nothing: undo what this call added so access never ends up half-done.
+            for done in added:
+                try:
+                    await done.set_permissions(member, overwrite=None, reason="AfterDark: rolling back")
+                except (discord.Forbidden, discord.HTTPException):
+                    log.warning("afterdark: rollback failed in %s for %s", done.id, member.id)
+            return False, why
         return True, ""
 
     async def _strip_interest_unlocked(self, member, interest: Interest, state: dict) -> List[str]:
@@ -254,13 +284,14 @@ class AfterDark(commands.Cog):
                 removed.append(f"{interest.key} role")
             except (discord.Forbidden, discord.HTTPException):
                 log.warning("afterdark: could not remove %s role from %s", interest.key, member.id)
-        channel = guild.get_channel(interest.channel_id)
-        if channel is not None and member in channel.overwrites:
-            try:
-                await channel.set_permissions(member, overwrite=None, reason="AfterDark: access removed")
-                removed.append(f"{interest.key} overwrite")
-            except (discord.Forbidden, discord.HTTPException):
-                log.warning("afterdark: could not clear %s overwrite for %s", interest.key, member.id)
+        for channel in self._interest_channels(guild, interest):
+            if member in channel.overwrites:
+                try:
+                    await channel.set_permissions(member, overwrite=None, reason="AfterDark: access removed")
+                    removed.append(f"{interest.key} overwrite ({channel.name})")
+                except (discord.Forbidden, discord.HTTPException):
+                    log.warning("afterdark: could not clear %s overwrite in %s for %s",
+                                interest.key, channel.id, member.id)
         if state.get(interest.key, {}).pop(str(member.id), None) is not None:
             self._mark_dirty(guild.id)
         return removed
@@ -374,7 +405,7 @@ class AfterDark(commands.Cog):
             )
         state = await self._get_state(guild)
         async with self._lock(member):
-            if self._has_access(member, interest):
+            if self._has_full_access(member, interest):
                 await self._strip_interest_unlocked(member, interest, state)
                 await self._flush_state(guild.id)
                 return await self._reply(interaction, f"You left {interest.name}.")
@@ -382,8 +413,9 @@ class AfterDark(commands.Cog):
             if not ok:
                 await self._log(guild, f"⚠️ Interest join failed ({interest.key}) for {self._label(member)}: {why}")
                 return await self._reply(interaction, "Something went wrong. Ask a moderator.")
-            state.setdefault(key, {})[str(member.id)] = engine.new_membership(self._clock())
-            self._mark_dirty(guild.id)
+            if str(member.id) not in state.get(key, {}):     # completing a partial join keeps the old clock
+                state.setdefault(key, {})[str(member.id)] = engine.new_membership(self._clock())
+                self._mark_dirty(guild.id)
             await self._flush_state(guild.id)
         await self._reply(interaction, f"You're in {interest.name}.")
 
@@ -494,7 +526,7 @@ class AfterDark(commands.Cog):
 
     def _interest_for_channel(self, cfg_interests: Dict[str, Interest], channel_id: int) -> Optional[Interest]:
         for interest in cfg_interests.values():
-            if interest.channel_id == channel_id:
+            if channel_id in interest.channel_ids:
                 return interest
         return None
 
@@ -589,9 +621,7 @@ class AfterDark(commands.Cog):
                 if member.id in revoke_ids:
                     continue
                 if self._is_paused(member, lurker_rid, cfg):
-                    if cfg["access_mode"] == "overwrites" and self._has_overwrite(
-                        member, guild.get_channel(interest.channel_id)
-                    ):
+                    if cfg["access_mode"] == "overwrites" and self._has_any_overwrite(member, interest):
                         # A per-user allow beats the Lurker role's deny, so lurkers
                         # must not keep one. They re-pick after they return.
                         plan_remove.append((member, interest, "lurker"))
@@ -1005,15 +1035,16 @@ class AfterDark(commands.Cog):
             return await ctx.send(f"Refused ({code}).")
         state = await self._get_state(ctx.guild)
         async with self._lock(member):
-            if self._has_access(member, interest):
+            if self._has_full_access(member, interest):
                 return await ctx.send(f"{member.display_name} already has {interest.name}.")
             ok, why = await self._grant_interest_access(member, interest, cfg)
             if not ok:
                 return await ctx.send(f"Failed: {why}")
             lapsed = engine.lapsed_remove(cfg["lapsed"], key, member.id)
             await self.config.guild(ctx.guild).lapsed.set(lapsed)
-            state.setdefault(key, {})[str(member.id)] = engine.new_membership(self._clock())
-            self._mark_dirty(ctx.guild.id)
+            if str(member.id) not in state.get(key, {}):
+                state.setdefault(key, {})[str(member.id)] = engine.new_membership(self._clock())
+                self._mark_dirty(ctx.guild.id)
             await self._flush_state(ctx.guild.id)
         await self._log(ctx.guild, f"\u2795 {ctx.author.display_name} gave {self._label(member)} access to {interest.name}.")
         await ctx.send(f"{member.display_name} now has {interest.name}.")
@@ -1193,43 +1224,137 @@ class AfterDark(commands.Cog):
         """Manage interest channels."""
         await ctx.send_help()
 
+    @staticmethod
+    def _parse_channel(guild, token: str):
+        """`<#id>`, a bare id, or an exact channel name (leading # optional)."""
+        raw = token.strip()
+        digits = raw[2:-1] if raw.startswith("<#") and raw.endswith(">") else raw
+        if digits.isdigit():
+            return guild.get_channel(int(digits))
+        name = raw.lstrip("#").lower()
+        for channel in getattr(guild, "text_channels", []):
+            if channel.name.lower() == name:
+                return channel
+        return None
+
     @afterdark_interest.command(name="add")
-    async def interest_add(self, ctx, key: str, channel: discord.TextChannel, role: Optional[discord.Role] = None,
-                           emoji: str = "", *, name: str = ""):
-        """`.afterdark interest add feet #feet \U0001F9B6 Feet`. A role is only needed in `roles` mode."""
+    async def interest_add(self, ctx, key: str, *, rest: str = ""):
+        """Create an interest, or add channels to one that exists.
+
+        `.afterdark interest add feet #feet #user-feet #anime-feet \U0001F9B6 Feet`
+        List as many channels as you like. Use the same key again later to add
+        more; the button, emoji and name are kept unless you give new ones.
+        A role (`@Role`) is only needed in `roles` mode.
+        """
         key = engine.normalize_key(key)
         if not key:
             return await ctx.send("That key isn't usable (letters, digits, dashes).")
+        tokens = rest.split()
+        channels, unknown = [], []
+        while tokens:
+            channel = self._parse_channel(ctx.guild, tokens[0])
+            if channel is None:
+                # Anything that looks like a channel mention but isn't one is a mistake, not an emoji.
+                if tokens[0].startswith("<#") or tokens[0].startswith("#"):
+                    unknown.append(tokens[0])
+                    tokens.pop(0)
+                    continue
+                break
+            tokens.pop(0)
+            if channel.id not in [c.id for c in channels]:
+                channels.append(channel)
+        if unknown:
+            return await ctx.send("I couldn't find: " + ", ".join(unknown) + ". Nothing was changed.")
+        role_id = None
+        if tokens and tokens[0].startswith("<@&") and tokens[0].endswith(">") and tokens[0][3:-1].isdigit():
+            role_id = int(tokens.pop(0)[3:-1])
+        emoji = tokens.pop(0) if tokens else ""
+        name_text = " ".join(tokens)
+
         interests = dict(await self.config.guild(ctx.guild).interests())
-        if key not in interests and len(interests) >= InterestView.MAX_BUTTONS:
+        existing = Interest.from_dict(interests[key]) if key in interests else None
+        if existing is None and not channels:
+            return await ctx.send("Give at least one channel: `.afterdark interest add feet #feet #more-feet \U0001F9B6 Feet`.")
+        if existing is None and len(interests) >= InterestView.MAX_BUTTONS:
             return await ctx.send("That's the maximum number of interests.")
         # A word typed where the emoji goes ("Feet") becomes part of the name,
         # because Discord rejects the whole panel on an invalid button emoji.
-        emoji, name = engine.split_emoji_and_name(emoji, name)
-        interest = Interest(key=key, name=name or key.title(), emoji=emoji,
-                            channel_id=channel.id, role_id=role.id if role else None)
+        emoji, name = engine.split_emoji_and_name(emoji, name_text)
+        if existing is None:
+            interest = Interest(key=key, name=name or key.title(), emoji=emoji, channel_id=channels[0].id,
+                                role_id=role_id, extra_channel_ids=[c.id for c in channels[1:]])
+            added = channels
+        else:
+            interest = existing
+            added = [c for c in channels if c.id not in interest.channel_ids]
+            interest.extra_channel_ids = interest.extra_channel_ids + [c.id for c in added]
+            if emoji:
+                interest.emoji = emoji
+            if name:
+                interest.name = name
+            if role_id:
+                interest.role_id = role_id
         interests[key] = interest.to_dict()
         await self.config.guild(ctx.guild).interests.set(interests)
         await self._register_interest_view(ctx.guild)
         mode = await self.config.guild(ctx.guild).access_mode()
         notes = ""
-        if mode == "roles" and role is None:
+        if mode == "roles" and not interest.role_id:
             notes += " Warning: mode is `roles` but no role was given, so joins will fail until you add one."
-        if not emoji:
+        if not engine.valid_emoji(interest.emoji):
             notes += " (No valid emoji, so the button has none.)"
-        await ctx.send(f"Interest `{key}` saved -> {channel.mention}, button \"{interest.name}\". "
-                       f"Re-run `.afterdark panel` to refresh the buttons.{notes}")
+        if existing is not None and not added:
+            notes += " (Those channels were already on it.)"
+        if existing is not None and added:
+            notes += " Members who already joined get the new channels when they click the button again, or you can use `.afterdark grantinterest`."
+        listing = ", ".join(f"<#{c}>" for c in interest.channel_ids)
+        await ctx.send(f"Interest `{key}` now opens {listing} (button \"{interest.name}\"). "
+                       f"Re-run `.afterdark panel` to refresh the buttons.{notes}",
+                       allowed_mentions=discord.AllowedMentions.none())
 
     @afterdark_interest.command(name="remove")
-    async def interest_remove(self, ctx, key: str):
-        """Remove an interest (existing access is left alone; revoke manually if needed)."""
+    async def interest_remove(self, ctx, key: str, *, channels: str = ""):
+        """Remove a whole interest, or only some of its channels.
+
+        `.afterdark interest remove feet` removes the interest.
+        `.afterdark interest remove feet #user-feet` removes just that channel
+        (the interest goes away if it was the last one). Existing access is
+        left alone; use `.afterdark revokeinterest` to take it back.
+        """
         key = engine.normalize_key(key)
         interests = dict(await self.config.guild(ctx.guild).interests())
-        if interests.pop(key, None) is None:
+        if key not in interests:
             return await ctx.send("No such interest.")
+        tokens = channels.split()
+        if not tokens:
+            interests.pop(key)
+            await self.config.guild(ctx.guild).interests.set(interests)
+            await self._register_interest_view(ctx.guild)
+            return await ctx.send(f"Interest `{key}` removed. Re-run `.afterdark panel` to refresh the buttons.")
+        interest = Interest.from_dict(interests[key])
+        drop, unknown = [], []
+        for token in tokens:
+            channel = self._parse_channel(ctx.guild, token)
+            cid = channel.id if channel is not None else (int(token[2:-1]) if token.startswith("<#") and token[2:-1].isdigit() else None)
+            if cid is None or cid not in interest.channel_ids:
+                unknown.append(token)
+            elif cid not in drop:
+                drop.append(cid)
+        if unknown:
+            return await ctx.send("Not on that interest: " + ", ".join(unknown) + ". Nothing was changed.",
+                                  allowed_mentions=discord.AllowedMentions.none())
+        remaining = [c for c in interest.channel_ids if c not in drop]
+        if not remaining:
+            interests.pop(key)
+            msg = f"That was the last channel, so interest `{key}` is removed."
+        else:
+            interest.channel_id, interest.extra_channel_ids = remaining[0], remaining[1:]
+            interests[key] = interest.to_dict()
+            msg = f"Interest `{key}` now opens " + ", ".join(f"<#{c}>" for c in remaining) + "."
         await self.config.guild(ctx.guild).interests.set(interests)
         await self._register_interest_view(ctx.guild)
-        await ctx.send(f"Interest `{key}` removed. Re-run `.afterdark panel` to refresh the buttons.")
+        await ctx.send(msg + " Existing access is left alone. Re-run `.afterdark panel` if the button changed.",
+                       allowed_mentions=discord.AllowedMentions.none())
 
     @afterdark_interest.command(name="list")
     async def interest_list(self, ctx):
@@ -1240,8 +1365,9 @@ class AfterDark(commands.Cog):
             return await ctx.send("No interests yet.")
         state = await self._get_state(ctx.guild)
         lines = [
-            f"{i.emoji if engine.valid_emoji(i.emoji) else ''} `{k}` -> <#{i.channel_id}>"
-            f"{f' role <@&{i.role_id}>' if i.role_id else ''} ({len(state.get(k, {}))} tracked)"
+            f"{i.emoji if engine.valid_emoji(i.emoji) else ''} `{k}` -> "
+            + ", ".join(f"<#{c}>" for c in i.channel_ids)
+            + f"{f' role <@&{i.role_id}>' if i.role_id else ''} ({len(state.get(k, {}))} tracked)"
             for k, i in interests.items()
         ]
         await ctx.send("\n".join(lines), allowed_mentions=discord.AllowedMentions.none())
