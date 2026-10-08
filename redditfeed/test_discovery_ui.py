@@ -95,12 +95,14 @@ class FakeCog:
         self.approved, self.denied = [], []
         self.fail_approve = fail_approve
 
-    async def _approve_suggestion(self, name, channel_id):
+    async def _approve_suggestion(self, name, channel_id=None, new_name=None, guild=None, display_name=""):
         await asyncio.sleep(0)          # yield, so concurrent clicks can interleave
         if self.fail_approve:
             raise RuntimeError("disk full")
+        if channel_id is None:
+            channel_id = 4242           # what creating the proposed channel would return
         self.approved.append((name, channel_id))
-        return True
+        return True, channel_id
 
     async def _deny_suggestion(self, name):
         await asyncio.sleep(0)

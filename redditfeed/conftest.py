@@ -14,3 +14,6 @@ if _discord is not None:
     for _name in ("Forbidden", "HTTPException"):
         if not hasattr(_discord, _name):
             setattr(_discord, _name, type(_name, (Exception,), {}))
+    if not hasattr(_discord, "AllowedMentions"):
+        import types as _types
+        _discord.AllowedMentions = _types.SimpleNamespace(none=lambda: None)

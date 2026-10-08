@@ -220,3 +220,98 @@ def format_summary(
     for failure in failures:
         lines.append(f"\u26a0\ufe0f Search failed for {failure}")
     return "\n".join(lines)
+
+
+# -- Destination proposal ------------------------------------------------------------
+
+class DestinationError(Exception):
+    """A destination couldn't be resolved or created; the message is safe to show a mod."""
+
+
+@dataclass
+class Destination:
+    """Where an approved subreddit would post. Exactly one of channel_id (an
+    existing channel) / new_name (a channel to create) is set, or neither when
+    nothing sensible could be proposed."""
+
+    channel_id: Optional[int] = None
+    new_name: Optional[str] = None
+    reason: str = ""
+
+
+_WORD_RE = re.compile(r"[23][dD](?![a-z])|[A-Z]+(?![a-z])|[A-Z]?[a-z]+|\d+")
+
+
+def topic_tokens(display_name: str) -> list[str]:
+    """`FeetInYourFace` -> [feet, in, your, face]; `foot_fetish` -> [foot, fetish]."""
+    out = []
+    for chunk in re.split(r"[^A-Za-z0-9]+", display_name or ""):
+        out.extend(t.lower() for t in _WORD_RE.findall(chunk))
+    return out
+
+
+def canonical(token: str) -> str:
+    return constants.TOPIC_ALIASES.get(token, token)
+
+
+def topic_of(display_name: str) -> Optional[str]:
+    """The subreddit's main topic word: its first meaningful token, canonicalised.
+    None when nothing usable is left (all noise / too short)."""
+    for token in topic_tokens(display_name):
+        if token in constants.TOPIC_NOISE:
+            continue
+        canon = canonical(token)
+        if len(canon) >= 3 or canon in ("2d", "3d"):
+            return canon
+    return None
+
+
+def channel_tokens(channel_name: str) -> list[str]:
+    """`🦶・feet` / `feet-pics` -> [feet] / [feet, pics]. Symbols and emoji are dropped."""
+    return [canonical(t) for t in re.split(r"[^a-z0-9]+", (channel_name or "").lower()) if t]
+
+
+def new_channel_name(topic: str, prefix: str = "") -> str:
+    base = re.sub(r"[^a-z0-9]+", "-", topic.lower()).strip("-")[:60]
+    return f"{prefix}{base}" if base else ""
+
+
+def propose_destination(
+    display_name: str,
+    channels: list,                       # [(channel_id, channel_name)] -- age-restricted text channels only
+    learned: Optional[dict] = None,       # topic word -> channel_id, learned from earlier approvals
+    can_create: bool = False,
+    prefix: str = "",
+) -> Destination:
+    """Best channel for a subreddit: a channel the mods already approved this
+    topic into, else a channel whose name matches the topic, else (only if a
+    category is configured) a new channel named after the topic."""
+    topic = topic_of(display_name)
+    if topic is None:
+        return Destination(reason="couldn't work out a topic from the name")
+
+    live = {cid for cid, _ in channels}
+    learned_id = (learned or {}).get(topic)
+    if learned_id is not None and int(learned_id) in live:
+        return Destination(channel_id=int(learned_id), reason=f"you approved '{topic}' feeds here before")
+
+    best = None
+    for cid, name in channels:
+        tokens = channel_tokens(name)
+        if topic in tokens:
+            score = 3
+        elif any(len(t) >= 3 and len(topic) >= 3 and (t.startswith(topic) or topic.startswith(t)) for t in tokens):
+            score = 2
+        else:
+            continue
+        key = (score, -len(name))
+        if best is None or key > best[0]:
+            best = (key, cid)
+    if best is not None:
+        return Destination(channel_id=best[1], reason=f"channel name matches '{topic}'")
+
+    if can_create:
+        name = new_channel_name(topic, prefix)
+        if name:
+            return Destination(new_name=name, reason=f"no channel for '{topic}' yet")
+    return Destination(reason=f"no channel matches '{topic}' (pick one below, or set a category so I can create it)")

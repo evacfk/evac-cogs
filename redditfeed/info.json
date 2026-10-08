@@ -1,12 +1,19 @@
 {
-    "author": ["evac"],
+    "author": [
+        "evac"
+    ],
     "min_bot_version": "3.5.0",
-    "description": "Config-driven subreddit-to-channel image feed replacing Reddit RSS/API-based posting (both discontinued). Many subreddits can map to one channel. Posts images, gallery images, and links for video/RedGIFs posts. Per-mapping keyword filters and pause toggle, shared poll loop with configurable interval/stagger, dedup by channel+post-id with a rolling TTL, a `.redditfeed status` command, and `.redditfeed discover` to find new subreddits by name prefix with a preview and mod Approve/Deny buttons. Data source (Arctic Shift) is swappable behind a fetch interface.",
+    "description": "Config-driven subreddit-to-channel image feed replacing Reddit RSS/API-based posting (both discontinued). Many subreddits can map to one channel. Posts images, gallery images, and links for video/RedGIFs posts. Per-mapping keyword filters and pause toggle, shared poll loop with configurable interval/stagger, dedup by channel+post-id with a rolling TTL, a `.redditfeed status` command, and `.redditfeed discover` to find new subreddits by name prefix with a preview and mod Approve/Deny buttons. Data source (Arctic Shift) is swappable behind a fetch interface. Manual approval by default: each post waits in a mod-only queue (Approve / Reject / Pause sub), undecided items are discarded after 24h. A mod-only X button under every feed post removes it and logs it. `discover` proposes a destination channel (existing, or a new one in a configured category) with a dropdown to change it.",
     "hidden": false,
-    "install_msg": "Thanks for installing redditfeed!\n\nMap a subreddit to a channel: `.redditfeed add <subreddit> #channel`\nMultiple subreddits can point at the same channel (e.g. `feet` and `feetish` both into `#feet`).\nFind new subreddits: `.redditfeed discover feet,foot #feet` (run in an age-restricted channel) suggests NSFW subreddits with a preview; Approve maps it, Deny hides it for good (`.redditfeed denied` / `undeny`).\nCheck it's working: `.redditfeed status`\nPause/resume a mapping without losing it: `.redditfeed pause <subreddit>` / `.redditfeed resume <subreddit>`\nTune the shared poll loop: `.redditfeed interval <seconds>` (default 120) and `.redditfeed stagger <seconds>` (default 1.5)\n\nNo backfill -- only posts made after a mapping is added will show up. Target channels should be marked NSFW in Discord yourself; this cog doesn't change channel settings.",
+    "install_msg": "Thanks for installing redditfeed!\n\nSetup:\n1. `.redditfeed queue channel #mod-queue` (age-restricted, mods only): posts wait there for Approve / Reject.\n2. `.redditfeed category <category>` and optionally `.redditfeed prefix 🔞・`: lets `discover` create channels.\n3. `.redditfeed discover feet,foot` (run in an age-restricted channel): each card proposes a channel; Approve maps it.\nMap by hand: `.redditfeed add <sub> #channel` or `.redditfeed addmany #channel sub1 sub2`.\nModes: `.redditfeed mode <sub> manual|auto`, `.redditfeed modeall manual|auto`. Queue tuning: `.redditfeed queue`, `queue minscore`, `queue minage`, `queue max`.\nMods get an X under every feed post (`.redditfeed xbutton off` to disable); removals are logged (`.redditfeed logchannel`).\nWipe everything: `.redditfeed resetall yes`. Check it: `.redditfeed status`.\n\nNo backfill: only posts made after a mapping is added show up.",
     "name": "RedditFeed",
     "short": "Config-driven subreddit-to-channel image feed (Arctic Shift-backed, swappable source).",
     "end_user_data_statement": "This cog stores no end-user data. It stores guild-level configuration (subreddit-to-channel mappings, keyword filters, poll settings) and a rolling dedup cache of recently-posted Reddit post IDs.",
-    "tags": ["reddit", "feed", "images", "automation"],
+    "tags": [
+        "reddit",
+        "feed",
+        "images",
+        "automation"
+    ],
     "type": "COG"
 }

@@ -94,7 +94,10 @@ except ImportError:
     discord_stub.TextChannel = object
     discord_stub.Interaction = object
     discord_stub.ButtonStyle = types.SimpleNamespace(success="success", primary="primary", secondary="secondary", danger="danger")
-    discord_stub.ui = types.SimpleNamespace(View=_View, Button=object, button=_button_decorator)
+    discord_stub.ChannelType = types.SimpleNamespace(text="text")
+    discord_stub.ui = types.SimpleNamespace(
+        View=_View, Button=object, button=_button_decorator, select=_button_decorator, ChannelSelect=object
+    )
     sys.modules["discord"] = discord_stub
 
 try:

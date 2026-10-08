@@ -247,6 +247,7 @@ def build_dashboard_rows(
             {
                 "subreddit": mapping.subreddit,
                 "state": "paused" if mapping.paused else "active",
+                "approval": mapping.approval,
                 "channels": names,
                 "last_poll": format_age(mapping.last_poll_ts, now_ts),
                 "last_post": format_age(mapping.last_post_found_ts, now_ts),
@@ -256,3 +257,84 @@ def build_dashboard_rows(
             }
         )
     return rows
+
+
+# -- Approval queue (pure) ---------------------------------------------------------
+
+def parse_approval(text: str) -> Optional[str]:
+    value = (text or "").strip().lower()
+    return value if value in constants.APPROVAL_MODES else None
+
+
+def trim_post(post: dict, subreddit: str) -> dict:
+    """The few fields the queue needs (kept small: it lives in Config)."""
+    title = (post.get("title") or "").strip()
+    return {
+        "id": str(post.get("id", "")),
+        "title": title[:250],
+        "score": int(post.get("score") or 0),
+        "permalink": post.get("permalink") or "",
+        "created_utc": post.get("created_utc"),
+        "subreddit": subreddit,
+    }
+
+
+def queue_skip_reason(
+    post: dict, now_ts: float, added_ts: Optional[float], min_age_seconds: float, min_score: int
+) -> Optional[str]:
+    """None when the post may be queued now, else why not yet / not at all.
+    'too_new' and 'low_score' are retried next cycle until the lookback window
+    passes; 'before_added' is permanent (no backfill)."""
+    created = post.get("created_utc")
+    if created is None:
+        return "no_timestamp"
+    created = float(created)
+    if added_ts is not None and created < added_ts:
+        return "before_added"
+    if now_ts - created < min_age_seconds:
+        return "too_new"
+    if int(post.get("score") or 0) < min_score:
+        return "low_score"
+    return None
+
+
+def queue_fetch_after(now_ts: float, added_ts: Optional[float],
+                      lookback_hours: float = constants.QUEUE_LOOKBACK_HOURS) -> float:
+    after = now_ts - lookback_hours * 3600
+    if added_ts is not None:
+        after = max(after, added_ts)
+    return after
+
+
+def pending_ids(queue: dict) -> list:
+    return [mid for mid, raw in queue.items() if raw.get("status") == constants.QUEUE_PENDING]
+
+
+def expired_pending_ids(queue: dict, now_ts: float, ttl_hours: float = constants.QUEUE_TTL_HOURS) -> list:
+    ttl = ttl_hours * 3600
+    return [
+        mid for mid, raw in queue.items()
+        if raw.get("status") == constants.QUEUE_PENDING and now_ts - float(raw.get("created_ts", 0)) >= ttl
+    ]
+
+
+def prune_queue(queue: dict, now_ts: float, keep_hours: float = constants.QUEUE_KEEP_RESOLVED_HOURS) -> dict:
+    """Drop decided items older than keep_hours; pending ones are never dropped here."""
+    keep = keep_hours * 3600
+    out = {}
+    for mid, raw in queue.items():
+        if raw.get("status") == constants.QUEUE_PENDING:
+            out[mid] = raw
+        elif now_ts - float(raw.get("resolved_ts") or raw.get("created_ts") or 0) < keep:
+            out[mid] = raw
+    return out
+
+
+def prune_posted_map(posted: dict, now_ts: float, ttl_days: float = constants.POSTED_MAP_TTL_DAYS,
+                     max_entries: int = constants.POSTED_MAP_MAX) -> dict:
+    ttl = ttl_days * 86400
+    fresh = {k: v for k, v in posted.items() if now_ts - float(v.get("ts", 0)) < ttl}
+    if len(fresh) > max_entries:
+        newest = sorted(fresh.items(), key=lambda kv: float(kv[1].get("ts", 0)), reverse=True)[:max_entries]
+        fresh = dict(newest)
+    return fresh

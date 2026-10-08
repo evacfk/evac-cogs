@@ -43,7 +43,7 @@ def build_status_lines(mappings: list[SubredditMapping]) -> list[str]:
     """
     lines = []
     for mapping in sorted(mappings, key=lambda m: m.subreddit):
-        state = "paused" if mapping.paused else "active"
+        state = ("paused" if mapping.paused else "active") + f", {mapping.approval}"
         channels = ", ".join(f"<#{cid}>" for cid in mapping.channel_ids) or "(no channels)"
         last_poll = _format_ts(mapping.last_poll_ts)
         last_post = _format_ts(mapping.last_post_found_ts)

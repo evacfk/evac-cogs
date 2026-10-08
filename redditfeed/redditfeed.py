@@ -16,11 +16,11 @@ import discord
 from redbot.core import Config, commands
 from redbot.core.bot import Red
 
-from . import constants, discovery, discovery_ui, embeds, engine
+from . import constants, discovery, discovery_ui, embeds, engine, queue_ui
 from .arctic_shift import ArcticShiftSource, RedditSource, RedditSourceError
 from .dashboard_integration import DashboardIntegration, dashboard_page
 from .dashboard_view import PAGE_TEMPLATE
-from .models import SubredditMapping
+from .models import QueueEntry, SubredditMapping
 
 log = logging.getLogger("red.redditfeed")
 
@@ -39,13 +39,31 @@ class RedditFeed(DashboardIntegration, commands.Cog):
             dedup_store={},
             dedup_ttl_days=constants.DEFAULT_DEDUP_TTL_DAYS,
             denied_subreddits=[],   # rejected in `discover`; never suggested again
+            queue={},                # queue message id -> QueueEntry.to_dict()
+            queue_channel_id=None,   # mod-only channel where manual-mode posts wait
+            queue_min_score=constants.DEFAULT_QUEUE_MIN_SCORE,
+            queue_min_age_minutes=constants.DEFAULT_QUEUE_MIN_AGE_MINUTES,
+            queue_max_pending=constants.DEFAULT_QUEUE_MAX_PENDING,
+            x_button=True,           # mod-only X under every feed post
+            log_channel_id=constants.DEFAULT_LOG_CHANNEL_ID,
+            posted_map={},           # feed message id -> {sub, pid, ch, ts}, for the X log line
+            learned_topics={},       # topic word -> channel id, learned from approvals in `discover`
+            new_channel_category_id=None,   # where `discover` may create channels (unset = never create)
+            new_channel_prefix="",   # e.g. "🔞・"
         )
         self.source: RedditSource = ArcticShiftSource()
         self._poll_task: Optional[asyncio.Task] = None
         self._cycle_lock = asyncio.Lock()
         self._discover_lock = asyncio.Lock()   # one discovery run at a time (politeness to Arctic Shift)
+        self._queue_locks: dict = {}
+        self._posted_buf: dict = {}
+        self._last_stats: dict = {}
+        self._channel_lock = asyncio.Lock()    # serialises "create the channel if it's missing" in discovery
 
     async def cog_load(self) -> None:
+        # Fixed custom_ids: these keep working on old messages after a restart.
+        self.bot.add_view(queue_ui.QueueView(self))
+        self.bot.add_view(queue_ui.FeedPostView(self))
         self._poll_task = self.bot.loop.create_task(self._poll_loop())
 
     def cog_unload(self) -> None:
@@ -79,6 +97,8 @@ class RedditFeed(DashboardIntegration, commands.Cog):
         now = time.time()
 
         dedup_store = engine.prune_dedup_store(dedup_store, now, ttl_days)
+        qcfg = await self._queue_settings()
+        self._last_stats = {}
 
         first = True
         for key, raw in list(mappings_raw.items()):
@@ -92,9 +112,12 @@ class RedditFeed(DashboardIntegration, commands.Cog):
 
             poll_started = time.time()
             advance_cursor = True
+            mapping.last_error = None
             try:
-                dedup_store = await self._poll_one_subreddit(mapping, fetch_limit, dedup_store, now)
-                mapping.last_error = None
+                if mapping.approval == constants.APPROVAL_AUTO:
+                    dedup_store = await self._poll_one_subreddit(mapping, fetch_limit, dedup_store, now)
+                else:
+                    dedup_store = await self._queue_one_subreddit(mapping, dedup_store, now, qcfg)
             except RedditSourceError as exc:
                 mapping.last_error = str(exc)
                 # Fetch failed, nothing was processed: keep the cursor where it was so
@@ -112,8 +135,27 @@ class RedditFeed(DashboardIntegration, commands.Cog):
                 mapping.last_poll_ts = poll_started
             mappings_raw[key] = mapping.to_dict()
 
-        await self.config.mappings.set(mappings_raw)
+        # Merge instead of overwriting: a mod may have changed mappings (mode, pause,
+        # add/remove) while this cycle was awaiting the network.
+        async with self.config.mappings() as live:
+            for key, raw in mappings_raw.items():
+                if key in live:
+                    live[key] = self._merge_poll_state(live[key], raw)
         await self.config.dedup_store.set(dedup_store)
+        await self._flush_posted()
+        try:
+            await self._expire_queue(time.time())
+        except Exception:  # noqa: BLE001
+            log.exception("redditfeed: queue expiry failed")
+
+    @staticmethod
+    def _merge_poll_state(live: dict, polled: dict) -> dict:
+        """Only the poll-owned fields come from the cycle; everything a mod may
+        have edited meanwhile (channels, keywords, paused, approval) stays as live."""
+        merged = dict(live)
+        for field_name in ("last_poll_ts", "last_post_found_ts", "last_post_id", "last_error"):
+            merged[field_name] = polled.get(field_name)
+        return merged
 
     async def _poll_one_subreddit(
         self, mapping: SubredditMapping, fetch_limit: int, dedup_store: dict, now: float
@@ -138,7 +180,7 @@ class RedditFeed(DashboardIntegration, commands.Cog):
                 channel = self.bot.get_channel(channel_id)
                 if channel is None:
                     continue
-                await self._post_media_items(channel, post, media_items)
+                await self._post_media_items(channel, post, media_items, mapping.subreddit)
                 dedup_store[dedup_key] = now
 
             newest_post = post
@@ -149,7 +191,7 @@ class RedditFeed(DashboardIntegration, commands.Cog):
 
         return dedup_store
 
-    async def _post_media_items(self, channel, post: dict, media_items: list) -> None:
+    async def _post_media_items(self, channel, post: dict, media_items: list, subreddit: str = "") -> None:
         """Image-only, no text, no embed title/author/footer/link anywhere.
 
         A single direct image posts as a bare URL (Discord unfurls it inline).
@@ -157,29 +199,55 @@ class RedditFeed(DashboardIntegration, commands.Cog):
         as multiple image-only embeds sharing a grouping url -- Discord tiles
         those into a single gallery message instead of N separate ones.
         Video/RedGIFs links can't be embedded as an image and always post
-        individually as a bare URL.
+        individually as a bare URL. Each message carries the mod-only X button
+        (if enabled) and is remembered so a removal can be logged with its source.
         """
+        track = (str(post.get("id", "")), subreddit)
+        view = await self._x_view()
         image_items, link_items = engine.partition_media_items(media_items)
 
         if len(image_items) == 1:
-            await self._send_text(channel, embeds.build_link_message(post, image_items[0]))
+            await self._send_text(channel, embeds.build_link_message(post, image_items[0]), track, view)
         elif len(image_items) > 1:
             for batch in engine.chunk_items(image_items, constants.MAX_EMBEDS_PER_MESSAGE):
-                if not await self._send_embeds(channel, embeds.build_gallery_embeds(post, batch)):
+                if not await self._send_embeds(channel, embeds.build_gallery_embeds(post, batch), track, view):
                     return  # no permission -- don't bother with the rest of this post
                 await asyncio.sleep(0.5)
 
         for item in link_items:
-            if not await self._send_text(channel, embeds.build_link_message(post, item)):
+            if not await self._send_text(channel, embeds.build_link_message(post, item), track, view):
                 return
             await asyncio.sleep(0.5)
 
-    async def _send_text(self, channel, content: str) -> bool:
+    async def _x_view(self):
+        if not await self.config.x_button():
+            return None
+        return queue_ui.FeedPostView(self)
+
+    def _note_posted(self, message, channel, track) -> None:
+        if message is None or not track or getattr(message, "id", None) is None:
+            return
+        self._posted_buf[str(message.id)] = {
+            "sub": track[1], "pid": track[0], "ch": getattr(channel, "id", None), "ts": time.time(),
+        }
+
+    async def _flush_posted(self) -> None:
+        if not self._posted_buf:
+            return
+        pending, self._posted_buf = self._posted_buf, {}
+        async with self.config.posted_map() as posted:
+            posted.update(pending)
+            kept = engine.prune_posted_map(posted, time.time())
+            posted.clear()
+            posted.update(kept)
+
+    async def _send_text(self, channel, content: str, track=None, view=None) -> bool:
         """Returns False on a permission failure (caller should stop posting
         further items to this channel for this post); True otherwise.
         """
         try:
-            await channel.send(content)
+            message = await (channel.send(content, view=view) if view is not None else channel.send(content))
+            self._note_posted(message, channel, track)
         except discord.Forbidden:
             log.warning("redditfeed: missing permission to post in channel %s", channel.id)
             return False
@@ -187,15 +255,233 @@ class RedditFeed(DashboardIntegration, commands.Cog):
             log.warning("redditfeed: failed to post to channel %s: %s", channel.id, exc)
         return True
 
-    async def _send_embeds(self, channel, embed_list: list) -> bool:
+    async def _send_embeds(self, channel, embed_list: list, track=None, view=None) -> bool:
         try:
-            await channel.send(embeds=embed_list)
+            message = await (channel.send(embeds=embed_list, view=view) if view is not None
+                             else channel.send(embeds=embed_list))
+            self._note_posted(message, channel, track)
         except discord.Forbidden:
             log.warning("redditfeed: missing permission to post in channel %s", channel.id)
             return False
         except discord.HTTPException as exc:
             log.warning("redditfeed: failed to post gallery to channel %s: %s", channel.id, exc)
         return True
+
+    # -- Approval queue -------------------------------------------------------------
+
+    async def _queue_settings(self) -> dict:
+        queue = await self.config.queue()
+        return {
+            "channel_id": await self.config.queue_channel_id(),
+            "min_score": await self.config.queue_min_score(),
+            "min_age": await self.config.queue_min_age_minutes() * 60,
+            "max_pending": await self.config.queue_max_pending(),
+            "pending": len(engine.pending_ids(queue)),
+        }
+
+    def _bump(self, key: str, n: int = 1) -> None:
+        self._last_stats[key] = self._last_stats.get(key, 0) + n
+
+    async def _queue_one_subreddit(self, mapping: SubredditMapping, dedup_store: dict, now: float, qcfg: dict) -> dict:
+        """Manual mode: find posts that have settled (old enough, enough score),
+        and put them in the mod queue instead of the public channel. Posts that
+        aren't ready yet are simply looked at again next cycle until they age
+        out of the lookback window."""
+        queue_channel = self.bot.get_channel(qcfg["channel_id"]) if qcfg["channel_id"] else None
+        if queue_channel is None:
+            mapping.last_error = "manual approval is on but no queue channel is set (.redditfeed queue channel #mod-queue)"
+            self._bump("no_queue_channel")
+            return dedup_store
+
+        after = engine.queue_fetch_after(time.time(), mapping.added_ts)
+        posts = await self.source.fetch_new_posts(mapping.subreddit, after, constants.QUEUE_FETCH_LIMIT)
+        posts = engine.sort_posts_oldest_first(posts)
+
+        queued = 0
+        newest_post = None
+        for post in posts:
+            if not engine.passes_keyword_filter(post, mapping.require_keywords, mapping.block_keywords):
+                self._bump("keyword_filtered")
+                continue
+            media_items = engine.extract_media_items(post)
+            if not media_items:
+                continue
+            fresh = [c for c in mapping.channel_ids if engine.build_dedup_key(c, post["id"]) not in dedup_store]
+            if not fresh:
+                continue
+            reason = engine.queue_skip_reason(post, time.time(), mapping.added_ts, qcfg["min_age"], qcfg["min_score"])
+            if reason is not None:
+                self._bump(reason)
+                continue
+            if qcfg["pending"] >= qcfg["max_pending"]:
+                self._bump("queue_full")
+                break
+            if queued >= constants.QUEUE_MAX_PER_SUB_PER_CYCLE:
+                self._bump("per_sub_cap")
+                break
+
+            entry = QueueEntry(
+                subreddit=mapping.subreddit,
+                post=engine.trim_post(post, mapping.subreddit),
+                media=[m.to_dict() for m in media_items],
+                channel_ids=fresh,
+                created_ts=time.time(),
+                queue_channel_id=queue_channel.id,
+            )
+            content, card_embeds = queue_ui.build_queue_message(entry)
+            try:
+                message = await queue_channel.send(content, embeds=card_embeds, view=queue_ui.QueueView(self))
+            except discord.Forbidden:
+                mapping.last_error = "I can't post in the queue channel (need Send Messages, Embed Links)"
+                return dedup_store
+            except discord.HTTPException as exc:
+                log.warning("redditfeed: could not queue a post from r/%s: %s", mapping.subreddit, exc)
+                continue
+            async with self.config.queue() as stored:
+                stored[str(message.id)] = entry.to_dict()
+            for c in fresh:
+                dedup_store[engine.build_dedup_key(c, post["id"])] = now
+            qcfg["pending"] += 1
+            queued += 1
+            self._bump("queued")
+            newest_post = post
+            await asyncio.sleep(constants.QUEUE_POST_DELAY_SECONDS)
+
+        if newest_post is not None:
+            mapping.last_post_found_ts = newest_post.get("created_utc")
+            mapping.last_post_id = newest_post.get("id")
+        return dedup_store
+
+    async def _is_moderator(self, user) -> bool:
+        perms = getattr(user, "guild_permissions", None)
+        if perms is not None and perms.manage_guild:
+            return True
+        try:
+            return bool(await self.bot.is_mod(user))
+        except Exception:  # noqa: BLE001 -- unknown means not allowed
+            return False
+
+    async def _log(self, text: str) -> None:
+        channel_id = await self.config.log_channel_id()
+        channel = self.bot.get_channel(channel_id) if channel_id else None
+        if channel is None:
+            return
+        try:
+            await channel.send(text, allowed_mentions=discord.AllowedMentions.none())
+        except (discord.Forbidden, discord.HTTPException):
+            log.warning("redditfeed: could not write to the log channel")
+
+    async def _deliver(self, entry: QueueEntry) -> int:
+        """Post an approved item to its destination channel(s). Returns how many
+        channels were reachable."""
+        reached = 0
+        items = entry.media_items()
+        for channel_id in entry.channel_ids:
+            channel = self.bot.get_channel(channel_id)
+            if channel is None:
+                continue
+            await self._post_media_items(channel, {"id": entry.post.get("id", "")}, items, entry.subreddit)
+            reached += 1
+        return reached
+
+    async def handle_queue_action(self, interaction, action: str) -> None:
+        """Approve / Reject / Pause on a queue card. Safe against double clicks
+        and works on cards from before a restart (state is in Config)."""
+        if not await self._is_moderator(interaction.user):
+            await interaction.response.send_message("Only moderators can use these buttons.", ephemeral=True)
+            return
+        message_id = str(interaction.message.id)
+        lock = self._queue_locks.setdefault(message_id, asyncio.Lock())
+        async with lock:
+            raw = (await self.config.queue()).get(message_id)
+            if raw is None:
+                await interaction.response.send_message("That item isn't in the queue any more.", ephemeral=True)
+                return
+            entry = QueueEntry.from_dict(raw)
+            if entry.status != constants.QUEUE_PENDING:
+                await interaction.response.send_message(f"Someone already decided this one ({entry.status}).", ephemeral=True)
+                return
+            await interaction.response.defer()
+
+            who = interaction.user.mention
+            if action == "approve":
+                try:
+                    reached = await self._deliver(entry)
+                except Exception:  # noqa: BLE001 -- leave it pending so a mod can retry
+                    log.exception("redditfeed: delivering a queued post failed")
+                    await interaction.followup.send("Something went wrong posting that. It's still in the queue.", ephemeral=True)
+                    return
+                if reached == 0:
+                    await interaction.followup.send("I couldn't reach the destination channel(s). It's still in the queue.", ephemeral=True)
+                    return
+                entry.status = constants.QUEUE_APPROVED
+                result = f"\u2705 Approved by {who}: posted to {' '.join(f'<#{c}>' for c in entry.channel_ids)}"
+            else:
+                entry.status = constants.QUEUE_REJECTED
+                result = f"\u274c Rejected by {who}."
+                if action == "pause":
+                    await self._apply_paused(entry.subreddit, True)
+                    result = f"\u23f8\ufe0f Rejected by {who}, and r/{entry.subreddit} is paused (`.redditfeed resume {entry.subreddit}` to undo)."
+                    await self._log(f"\u23f8\ufe0f {interaction.user.display_name} paused r/{entry.subreddit} from the approval queue.")
+            entry.resolved_ts = time.time()
+            entry.resolved_by = interaction.user.id
+            async with self.config.queue() as stored:
+                stored[message_id] = entry.to_dict()
+            await self._flush_posted()
+
+            try:
+                await interaction.message.edit(
+                    content=None, embeds=queue_ui.resolved_embeds(list(interaction.message.embeds), result), view=None
+                )
+            except discord.HTTPException as exc:
+                log.warning("redditfeed: could not update a queue card: %s", exc)
+        self._queue_locks.pop(message_id, None)
+
+    async def handle_feed_x(self, interaction) -> None:
+        """Mod-only delete under a feed post; logs who removed what to the log channel."""
+        if not await self._is_moderator(interaction.user):
+            await interaction.response.send_message("Only moderators can remove feed posts.", ephemeral=True)
+            return
+        info = (await self.config.posted_map()).get(str(interaction.message.id)) or {}
+        try:
+            await interaction.message.delete()
+        except discord.NotFound:
+            pass
+        except (discord.Forbidden, discord.HTTPException) as exc:
+            await interaction.response.send_message(f"I couldn't delete it: {exc}", ephemeral=True)
+            return
+        await interaction.response.send_message("Removed.", ephemeral=True)
+        source = f"r/{info['sub']}, https://redd.it/{info['pid']}" if info.get("sub") and info.get("pid") else "source unknown"
+        where = f"<#{info['ch']}>" if info.get("ch") else "a feed channel"
+        await self._log(f"\u2716\ufe0f {interaction.user.display_name} removed a feed post in {where} ({source}).")
+
+    async def _expire_queue(self, now: float) -> None:
+        """Discard undecided items after the TTL (their cards are marked, buttons
+        removed) and prune old decided records."""
+        expired: list = []
+        async with self.config.queue() as stored:
+            for message_id in engine.expired_pending_ids(stored, now):
+                entry = QueueEntry.from_dict(stored[message_id])
+                entry.status = constants.QUEUE_EXPIRED
+                entry.resolved_ts = now
+                stored[message_id] = entry.to_dict()
+                expired.append((message_id, entry.queue_channel_id))
+            kept = engine.prune_queue(stored, now)
+            for key in [k for k in stored if k not in kept]:
+                del stored[key]
+        for message_id, channel_id in expired:
+            channel = self.bot.get_channel(channel_id) if channel_id else None
+            if channel is None:
+                continue
+            try:
+                message = await channel.fetch_message(int(message_id))
+                await message.edit(
+                    content=None,
+                    embeds=queue_ui.resolved_embeds(list(message.embeds), "\u23f3 Expired: nobody decided in 24 hours, discarded."),
+                    view=None,
+                )
+            except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+                pass
 
     # -- Command tree -------------------------------------------------------------
 
@@ -209,7 +495,7 @@ class RedditFeed(DashboardIntegration, commands.Cog):
     @redditfeed.command(name="version")
     async def redditfeed_version(self, ctx: commands.Context) -> None:
         """Version-probe command -- confirms a deploy actually took."""
-        await ctx.send("redditfeed build: discover-v1 (Arctic Shift source)")
+        await ctx.send("redditfeed build: approval-v1 (mod queue, X button, discover proposes channels)")
 
     async def _map_subreddit(self, name: str, channel_id: int) -> bool:
         """The one place a subreddit gets mapped to a channel -- `add` and the
@@ -223,6 +509,7 @@ class RedditFeed(DashboardIntegration, commands.Cog):
                 mapping.channel_ids.append(channel_id)
             if raw is None:
                 mapping.last_poll_ts = time.time()  # no backfill: starts polling from now
+                mapping.added_ts = mapping.last_poll_ts
             mappings[name] = mapping.to_dict()
         return raw is None
 
@@ -235,7 +522,83 @@ class RedditFeed(DashboardIntegration, commands.Cog):
         """
         name = engine.normalize_subreddit(subreddit)
         await self._map_subreddit(name, channel.id)
-        await ctx.send(f"r/{name} -> {channel.mention}")
+        await ctx.send(f"r/{name} -> {channel.mention} ({await self._mode_of(name)} approval)")
+
+    async def _mode_of(self, name: str) -> str:
+        raw = (await self.config.mappings()).get(name) or {}
+        return SubredditMapping.from_dict(raw).approval if raw else constants.DEFAULT_APPROVAL
+
+    @redditfeed.command(name="addmany")
+    async def redditfeed_addmany(self, ctx: commands.Context, channel: discord.TextChannel, *subreddits: str) -> None:
+        """Map several subreddits to one channel at once.
+        `.redditfeed addmany #feet feet footfetish soles`"""
+        names = []
+        for raw in subreddits:
+            name = engine.normalize_subreddit(raw)
+            if name and name not in names:
+                names.append(name)
+        if not names:
+            await ctx.send("Give me at least one subreddit after the channel.")
+            return
+        if not channel.is_nsfw():
+            await ctx.send(f"{channel.mention} isn't age-restricted. Fix that first; these feeds are NSFW.")
+            return
+        for name in names:
+            await self._map_subreddit(name, channel.id)
+        await ctx.send(f"Mapped {len(names)} subreddit(s) -> {channel.mention}: " + ", ".join(f"r/{n}" for n in names)
+                       + f"\nNew mappings use **{constants.DEFAULT_APPROVAL}** approval (posts wait in the queue).")
+
+    @redditfeed.command(name="resetall")
+    async def redditfeed_resetall(self, ctx: commands.Context, confirm: str = "") -> None:
+        """Remove EVERY subreddit mapping and forget what was already posted.
+        Settings, the denied list and learned topics are kept. `.redditfeed resetall yes`"""
+        if confirm.lower() != "yes":
+            count = len(await self.config.mappings())
+            await ctx.send(f"This removes all {count} mapping(s). Run `.redditfeed resetall yes` to confirm.")
+            return
+        async with self.config.mappings() as mappings:
+            removed = len(mappings)
+            mappings.clear()
+        await self.config.dedup_store.set({})
+        async with self.config.queue() as stored:
+            now = time.time()
+            for message_id in engine.pending_ids(stored):
+                stored[message_id]["status"] = constants.QUEUE_EXPIRED
+                stored[message_id]["resolved_ts"] = now
+        await ctx.send(f"Removed {removed} mapping(s) and cleared the dedup memory. Pending queue items were discarded.")
+
+    @redditfeed.command(name="mode")
+    async def redditfeed_mode(self, ctx: commands.Context, subreddit: str, mode: str) -> None:
+        """`manual` = posts wait in the mod queue; `auto` = posts go straight to the channel."""
+        parsed = engine.parse_approval(mode)
+        name = engine.normalize_subreddit(subreddit)
+        if parsed is None:
+            await ctx.send("Mode must be `manual` or `auto`.")
+            return
+        async with self.config.mappings() as mappings:
+            raw = mappings.get(name)
+            if not raw:
+                await ctx.send(f"r/{name} isn't mapped.")
+                return
+            mapping = SubredditMapping.from_dict(raw)
+            mapping.approval = parsed
+            mappings[name] = mapping.to_dict()
+        await ctx.send(f"r/{name} is now **{parsed}**.")
+
+    @redditfeed.command(name="modeall")
+    async def redditfeed_modeall(self, ctx: commands.Context, mode: str) -> None:
+        """Set every mapped subreddit to `manual` or `auto` at once."""
+        parsed = engine.parse_approval(mode)
+        if parsed is None:
+            await ctx.send("Mode must be `manual` or `auto`.")
+            return
+        async with self.config.mappings() as mappings:
+            for name, raw in list(mappings.items()):
+                mapping = SubredditMapping.from_dict(raw)
+                mapping.approval = parsed
+                mappings[name] = mapping.to_dict()
+            count = len(mappings)
+        await ctx.send(f"{count} subreddit(s) are now **{parsed}**.")
 
     @redditfeed.command(name="remove")
     async def redditfeed_remove(self, ctx: commands.Context, subreddit: str) -> None:
@@ -333,14 +696,134 @@ class RedditFeed(DashboardIntegration, commands.Cog):
         for chunk_start in range(0, len(text), 1900):
             await ctx.send(text[chunk_start : chunk_start + 1900])
 
+    # -- Queue + feed settings ---------------------------------------------------------
+
+    @redditfeed.group(name="queue", invoke_without_command=True)
+    async def redditfeed_queue(self, ctx: commands.Context) -> None:
+        """Show the approval queue: where it is, what's waiting, and what the last cycle did."""
+        stored = await self.config.queue()
+        pending = engine.pending_ids(stored)
+        channel_id = await self.config.queue_channel_id()
+        mappings = [SubredditMapping.from_dict(r) for r in (await self.config.mappings()).values()]
+        manual = sum(1 for m in mappings if m.approval == constants.APPROVAL_MANUAL)
+        stats = self._last_stats or {}
+        lines = [
+            f"Queue channel: {f'<#{channel_id}>' if channel_id else '**not set** (`.redditfeed queue channel #mod-queue`)'}",
+            f"Waiting for a decision: **{len(pending)}** (cap {await self.config.queue_max_pending()})",
+            f"Queued only when a post is at least **{await self.config.queue_min_age_minutes()} min** old "
+            f"and has **{await self.config.queue_min_score()}+** score",
+            f"Subreddits: {manual} manual, {len(mappings) - manual} auto. X button: "
+            f"{'on' if await self.config.x_button() else 'off'}. Log: <#{await self.config.log_channel_id()}>",
+        ]
+        if stats:
+            lines.append("Last cycle: " + ", ".join(f"{k.replace('_', ' ')} {v}" for k, v in sorted(stats.items())))
+        await ctx.send("\n".join(lines))
+
+    @redditfeed_queue.command(name="channel")
+    async def redditfeed_queue_channel(self, ctx: commands.Context, channel: discord.TextChannel) -> None:
+        """Set the mod-only channel where manual-approval posts wait."""
+        if not channel.is_nsfw():
+            await ctx.send(f"{channel.mention} must be age-restricted (the previews are explicit).")
+            return
+        if channel.permissions_for(channel.guild.default_role).view_channel:
+            await ctx.send(f"{channel.mention} is visible to @everyone. Make it mods-only first.")
+            return
+        await self.config.queue_channel_id.set(channel.id)
+        await ctx.send(f"Queue channel set to {channel.mention}. Manual-approval posts will appear there.")
+
+    @redditfeed_queue.command(name="minscore")
+    async def redditfeed_queue_minscore(self, ctx: commands.Context, score: int) -> None:
+        """Only queue posts with at least this score (0 = no minimum)."""
+        await self.config.queue_min_score.set(max(0, score))
+        await ctx.send(f"Minimum score: {max(0, score)}.")
+
+    @redditfeed_queue.command(name="minage")
+    async def redditfeed_queue_minage(self, ctx: commands.Context, minutes: int) -> None:
+        """Only queue posts at least this many minutes old (lets scores settle)."""
+        await self.config.queue_min_age_minutes.set(max(0, minutes))
+        await ctx.send(f"Minimum age: {max(0, minutes)} minutes.")
+
+    @redditfeed_queue.command(name="max")
+    async def redditfeed_queue_max(self, ctx: commands.Context, count: int) -> None:
+        """Stop adding to the queue once this many items are waiting."""
+        await self.config.queue_max_pending.set(max(1, count))
+        await ctx.send(f"Queue cap: {max(1, count)} waiting items.")
+
+    @redditfeed.command(name="xbutton")
+    async def redditfeed_xbutton(self, ctx: commands.Context, state: str) -> None:
+        """`on`/`off`: the mod-only X under new feed posts (existing posts keep theirs)."""
+        value = state.strip().lower()
+        if value not in ("on", "off"):
+            await ctx.send("Use `on` or `off`.")
+            return
+        await self.config.x_button.set(value == "on")
+        await ctx.send(f"X button is now {value} for new posts.")
+
+    @redditfeed.command(name="logchannel")
+    async def redditfeed_logchannel(self, ctx: commands.Context, channel: discord.TextChannel) -> None:
+        """Where X removals and queue pauses are logged (default: #mod-commands)."""
+        await self.config.log_channel_id.set(channel.id)
+        await ctx.send(f"Logging to {channel.mention}.")
+
+    @redditfeed.command(name="category")
+    async def redditfeed_category(self, ctx: commands.Context, category: discord.CategoryChannel) -> None:
+        """Category where `discover` may create new channels. New channels inherit its
+        permissions and are age-restricted. Until this is set, discover never creates one."""
+        await self.config.new_channel_category_id.set(category.id)
+        await ctx.send(f"`discover` may create new channels in **{category.name}**.")
+
+    @redditfeed.command(name="prefix")
+    async def redditfeed_prefix(self, ctx: commands.Context, *, prefix: str) -> None:
+        """Text put in front of new channel names, e.g. `.redditfeed prefix 🔞・`. `off` clears it."""
+        value = "" if prefix.strip().lower() == "off" else prefix.strip()
+        await self.config.new_channel_prefix.set(value)
+        await ctx.send(f"New channel names will start with `{value}`." if value else "New channel names get no prefix.")
+
     # -- Discovery: suggest subreddits, mods approve/deny with a preview ---------------
 
-    async def _approve_suggestion(self, name: str, channel_id: int) -> bool:
+    async def _approve_suggestion(self, name: str, channel_id=None, new_name=None, guild=None, display_name: str = ""):
+        """Map an approved subreddit. Creates the destination channel first when the
+        proposal was a new one. Returns (created_new_mapping, channel_id)."""
+        if channel_id is None:
+            channel_id = await self._ensure_channel(guild, new_name)
         created = await self._map_subreddit(name, channel_id)
         async with self.config.denied_subreddits() as denied:
             if name in denied:
                 denied.remove(name)
-        return created
+        topic = discovery.topic_of(display_name or name)
+        if topic:
+            async with self.config.learned_topics() as learned:
+                learned[topic] = channel_id     # next time this topic is proposed straight into the same channel
+        return created, channel_id
+
+    async def _ensure_channel(self, guild, new_name):
+        """Reuse a channel with this name if one exists (an earlier approval in the
+        same run may have just made it), else create it in the configured category."""
+        if guild is None or not new_name:
+            raise discovery.DestinationError("No destination channel to create.")
+        async with self._channel_lock:
+            wanted = new_name.lower()
+            for channel in guild.text_channels:
+                if channel.name.lower() == wanted:
+                    if not channel.is_nsfw():
+                        raise discovery.DestinationError(f"{channel.mention} exists but isn't age-restricted. Fix that, then approve again.")
+                    return channel.id
+            category_id = await self.config.new_channel_category_id()
+            category = guild.get_channel(category_id) if category_id else None
+            if category is None:
+                raise discovery.DestinationError(
+                    "I'm not allowed to create channels yet. Set a category with `.redditfeed category <category>`, "
+                    "or pick an existing channel from the dropdown."
+                )
+            try:
+                channel = await guild.create_text_channel(
+                    new_name, category=category, nsfw=True, reason="redditfeed discover: approved subreddit"
+                )
+            except discord.Forbidden:
+                raise discovery.DestinationError("I need Manage Channels to create that channel.")
+            except discord.HTTPException as exc:
+                raise discovery.DestinationError(f"Discord refused to create the channel: {exc}")
+            return channel.id
 
     async def _deny_suggestion(self, name: str) -> None:
         async with self.config.denied_subreddits() as denied:
@@ -352,17 +835,21 @@ class RedditFeed(DashboardIntegration, commands.Cog):
         self,
         ctx: commands.Context,
         prefixes: str,
-        channel: discord.TextChannel,
+        channel: Optional[discord.TextChannel] = None,
         min_subscribers: int = constants.DISCOVER_DEFAULT_MIN_SUBSCRIBERS,
     ) -> None:
         """Suggest NSFW subreddits whose NAME STARTS WITH a prefix, each with a
-        link, a preview of recent top posts, and Approve/Deny buttons.
+        link, a preview of recent top posts, a PROPOSED destination channel and
+        Approve/Deny buttons.
 
-        Several prefixes: `feet,foot,sole` (max 5). Approved ones are mapped to
-        CHANNEL. Run it in an age-restricted channel (previews are explicit).
-        Example: `.redditfeed discover feet,foot #feet 5000`
+        Several prefixes: `feet,foot,sole` (max 5). Leave the channel out and each
+        card proposes one (an existing channel that matches, or a new one if a
+        category is set with `.redditfeed category`); a dropdown on the card changes
+        it. Give a channel to force every card to it. Run it in an age-restricted
+        channel (previews are explicit). Examples:
+        `.redditfeed discover feet,foot`   `.redditfeed discover feet #feet 5000`
         """
-        if not ctx.channel.is_nsfw() or not channel.is_nsfw():
+        if not ctx.channel.is_nsfw() or (channel is not None and not channel.is_nsfw()):
             await ctx.send(
                 "Both this channel and the target channel must be age-restricted. "
                 "Previews are explicit, and approved feeds post there."
@@ -383,9 +870,27 @@ class RedditFeed(DashboardIntegration, commands.Cog):
                 log.exception("redditfeed: discovery run crashed")
                 await ctx.send("Discovery hit an unexpected error. Check the bot logs.")
 
+    async def _destination_inputs(self, ctx: commands.Context) -> dict:
+        """What the proposal needs from the server: age-restricted channels to match
+        against, topics learned from earlier approvals, and whether creating is allowed."""
+        guild = getattr(ctx, "guild", None)
+        skip = {ctx.channel.id, await self.config.queue_channel_id()}
+        channels = [
+            (c.id, c.name) for c in (guild.text_channels if guild is not None else [])
+            if c.is_nsfw() and c.id not in skip
+        ]
+        category_id = await self.config.new_channel_category_id()
+        return {
+            "channels": channels,
+            "learned": await self.config.learned_topics(),
+            "can_create": bool(guild is not None and category_id and guild.get_channel(category_id) is not None),
+            "prefix": await self.config.new_channel_prefix(),
+        }
+
     async def _run_discovery(
-        self, ctx: commands.Context, prefixes: list[str], channel: discord.TextChannel, min_subscribers: int
+        self, ctx: commands.Context, prefixes: list[str], channel, min_subscribers: int
     ) -> None:
+        dest_inputs = await self._destination_inputs(ctx) if channel is None else None
         raw_results: list[dict] = []
         failures: list[str] = []
         async with ctx.typing():
@@ -417,10 +922,18 @@ class RedditFeed(DashboardIntegration, commands.Cog):
                 except RedditSourceError:
                     posts, preview_failed = [], True
                 preview = discovery.pick_preview(posts)
+                if channel is not None:
+                    dest = discovery.Destination(channel_id=channel.id, reason="the channel you chose")
+                else:
+                    dest = discovery.propose_destination(candidate.display_name or candidate.name, **dest_inputs)
                 suggestion_embeds = discovery_ui.build_suggestion_embeds(
-                    candidate, preview, channel.id, preview_failed=preview_failed
+                    candidate, preview, dest.channel_id or 0, preview_failed=preview_failed, destination=dest
                 )
-                view = discovery_ui.SuggestionView(self, candidate.name, channel.id, suggestion_embeds, ctx.author.id)
+                view = discovery_ui.SuggestionView(
+                    self, candidate.name, dest.channel_id, suggestion_embeds, ctx.author.id,
+                    new_name=dest.new_name, guild=getattr(ctx, "guild", None),
+                    display_name=candidate.display_name or candidate.name,
+                )
                 try:
                     view.message = await ctx.channel.send(embeds=suggestion_embeds, view=view)
                 except discord.Forbidden:

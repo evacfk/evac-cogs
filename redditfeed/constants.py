@@ -78,3 +78,54 @@ SAFETY_BLOCKED_TERMS = (
     "highschool", "high school", "toddler", "baby", "barely legal", "student",
     "cheerleader", "daughter", "niece", "little girl", "little boy",
 )
+
+
+# -- Approval queue (manual mode) ---------------------------------------------------
+
+APPROVAL_MANUAL = "manual"     # posts wait in the mod queue for Approve / Reject
+APPROVAL_AUTO = "auto"         # posts go straight to the destination channel
+APPROVAL_MODES = (APPROVAL_MANUAL, APPROVAL_AUTO)
+DEFAULT_APPROVAL = APPROVAL_MANUAL
+
+QUEUE_TTL_HOURS = 24           # an undecided item is discarded after this
+QUEUE_KEEP_RESOLVED_HOURS = 48 # decided items stay in Config this long (then pruned)
+DEFAULT_QUEUE_MAX_PENDING = 40 # stop queueing when this many are waiting
+DEFAULT_QUEUE_MIN_SCORE = 3    # queue a post only once it has at least this score...
+DEFAULT_QUEUE_MIN_AGE_MINUTES = 60   # ...and is at least this old (scores need time to settle)
+QUEUE_LOOKBACK_HOURS = 12      # manual mappings look at posts from this far back
+QUEUE_FETCH_LIMIT = 100
+QUEUE_MAX_PER_SUB_PER_CYCLE = 5
+QUEUE_MAX_PREVIEW_IMAGES = 4
+QUEUE_POST_DELAY_SECONDS = 1.0
+
+QUEUE_APPROVE_ID = "redditfeed:q:approve"
+QUEUE_REJECT_ID = "redditfeed:q:reject"
+QUEUE_PAUSE_ID = "redditfeed:q:pause"
+FEED_X_ID = "redditfeed:x"
+
+QUEUE_PENDING = "pending"
+QUEUE_APPROVED = "approved"
+QUEUE_REJECTED = "rejected"
+QUEUE_EXPIRED = "expired"
+
+DEFAULT_LOG_CHANNEL_ID = 416660303741452299   # #mod-commands
+POSTED_MAP_TTL_DAYS = 7
+POSTED_MAP_MAX = 5000
+
+# -- Destination proposals for `discover` -------------------------------------------
+
+# Words that say nothing about the topic; skipped when deriving a topic from a
+# subreddit name. Deliberately NOT here: fetish, hentai, bdsm (those are topics).
+TOPIC_NOISE = frozenset({
+    "pics", "pic", "pictures", "porn", "nsfw", "gonewild", "gw", "xxx", "sex", "sexy",
+    "hot", "gifs", "gif", "only", "real", "amateur", "best", "the", "and", "for", "nude",
+    "nudes", "adult", "hd", "girls", "girl", "women", "woman", "babes", "club", "lovers",
+    "love", "porno", "content", "daily", "place", "paradise", "heaven", "gone", "wild",
+    "amateurs", "my", "your", "our", "in", "of", "on",
+})
+# Same topic, different spelling -> one canonical word to compare channel names with.
+TOPIC_ALIASES = {
+    "foot": "feet", "soles": "feet", "sole": "feet", "toes": "feet", "toe": "feet",
+    "feetish": "feet", "footfetish": "feet", "feetpics": "feet",
+    "anime": "2d", "ecchi": "2d", "hentai": "2d", "manga": "2d",
+}

@@ -103,7 +103,10 @@ def make_cog(source=None, mapped=None, denied=None):
     cog.config = SimpleNamespace(
         mappings=_Value(mapped if mapped is not None else {}),
         denied_subreddits=_Value(denied if denied is not None else []),
+        learned_topics=_Value({}),
+        new_channel_category_id=_Value(None),
     )
+    cog._channel_lock = asyncio.Lock()
     cog._discover_lock = asyncio.Lock()
     return cog
 
@@ -139,7 +142,7 @@ async def test_map_subreddit_creates_then_only_adds_channels():
 
 async def test_approve_maps_and_clears_an_old_denial():
     cog = make_cog(denied=["feet", "other"])
-    assert await cog._approve_suggestion("feet", 10) is True
+    assert await cog._approve_suggestion("feet", 10) == (True, 10)
     assert "feet" in cog.config.mappings.data
     assert cog.config.denied_subreddits.data == ["other"]
 

@@ -293,6 +293,7 @@ class TestBuildDashboardRows:
             {
                 "subreddit": "feet",
                 "state": "paused",
+                "approval": "manual",
                 "channels": ["#one", "#two", "+1 in other servers"],
                 "last_poll": "1m ago",
                 "last_post": "never",
