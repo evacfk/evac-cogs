@@ -14,6 +14,7 @@ class Interest:
     channel_id: int                      # the first channel (kept as-is for old saved data)
     role_id: Optional[int] = None
     extra_channel_ids: List[int] = field(default_factory=list)   # any further channels
+    join_message: str = ""              # shown (only to them) when they join; empty = the default
 
     @property
     def channel_ids(self) -> List[int]:
@@ -30,6 +31,7 @@ class Interest:
             "channel_id": self.channel_id,
             "role_id": self.role_id,
             "extra_channel_ids": list(self.extra_channel_ids),
+            "join_message": self.join_message,
         }
 
     @classmethod
@@ -42,6 +44,7 @@ class Interest:
             channel_id=int(data["channel_id"]),
             role_id=int(role) if role else None,
             extra_channel_ids=[int(c) for c in (data.get("extra_channel_ids") or [])],
+            join_message=str(data.get("join_message") or ""),
         )
 
 

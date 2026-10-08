@@ -417,7 +417,7 @@ class AfterDark(commands.Cog):
                 state.setdefault(key, {})[str(member.id)] = engine.new_membership(self._clock())
                 self._mark_dirty(guild.id)
             await self._flush_state(guild.id)
-        await self._reply(interaction, f"You're in {interest.name}.")
+        await self._reply(interaction, (interest.join_message or "").strip()[:2000] or f"You're in {interest.name}.")
 
     async def _find_invite_guild(self, user_id: int):
         for guild in self.bot.guilds:
@@ -1355,6 +1355,21 @@ class AfterDark(commands.Cog):
         await self._register_interest_view(ctx.guild)
         await ctx.send(msg + " Existing access is left alone. Re-run `.afterdark panel` if the button changed.",
                        allowed_mentions=discord.AllowedMentions.none())
+
+    @afterdark_interest.command(name="joinmessage")
+    async def interest_joinmessage(self, ctx, key: str, *, text: str = ""):
+        """Set what the button says to the member (only they see it) when they join.
+        `.afterdark interest joinmessage feet Your text here`. Leave the text empty to go back to the default."""
+        key = engine.normalize_key(key)
+        interests = dict(await self.config.guild(ctx.guild).interests())
+        if key not in interests:
+            return await ctx.send("No such interest.")
+        interest = Interest.from_dict(interests[key])
+        interest.join_message = text.strip()[:2000]
+        interests[key] = interest.to_dict()
+        await self.config.guild(ctx.guild).interests.set(interests)
+        await ctx.send(f"Join message for `{key}` set." if interest.join_message
+                       else f"Join message for `{key}` reset to the default.")
 
     @afterdark_interest.command(name="list")
     async def interest_list(self, ctx):

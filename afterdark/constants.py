@@ -1,7 +1,7 @@
 """All defaults and lookup tables for afterdark -- no discord/redbot imports."""
 
-VERSION = "1.3.1"
-BUILD = "afterdark build: multi-v1 (interests open several channels, rules in panel)"
+VERSION = "1.3.2"
+BUILD = "afterdark build: multi-v1 (per-interest join message)"
 
 CONFIG_IDENTIFIER = 7316482950
 DAY = 86400

@@ -1336,3 +1336,32 @@ def test_shipped_rules_fit_the_panel_and_render_white_with_the_how_to_section():
     emb = embeds.panel_embed([], 7, 14)
     assert emb.title.endswith("Rabbit Hole rules") and emb.description.startswith("**Welcome to the Rabbit Hole.**")
     assert any(f.name == "Pick your rabbit holes" and "14 days" in f.value for f in emb.fields)
+
+
+async def test_join_message_is_per_interest_and_defaults_when_empty(w):
+    await add_feet(w, mode="overwrites")
+    ctx = FakeCtx(w.guild, w.member("admin"))
+    await w.cog.interest_joinmessage.func(w.cog, ctx, "feet", text="You clicked feet? Now everyone knows.")
+    m = w.member()
+    m.roles.append(w.rabbit)
+    inter = FakeInteraction(m, w.guild)
+    await w.cog.handle_interest_toggle(inter, "feet")
+    assert inter.replies[0] == "You clicked feet? Now everyone knows."
+    inter = FakeInteraction(m, w.guild)
+    await w.cog.handle_interest_toggle(inter, "feet")           # leaving keeps its own wording
+    assert inter.replies[0] == "You left Feet."
+    await w.cog.interest_joinmessage.func(w.cog, ctx, "feet", text="")
+    inter = FakeInteraction(m, w.guild)
+    await w.cog.handle_interest_toggle(inter, "feet")
+    assert inter.replies[0] == "You're in Feet."
+    await w.cog.interest_joinmessage.func(w.cog, ctx, "nope", text="x")
+    assert "No such interest" in ctx.sent[-1]
+
+
+async def test_join_message_survives_adding_channels(w):
+    await add_feet(w, mode="overwrites")
+    ctx = FakeCtx(w.guild, w.member("admin"))
+    await w.cog.interest_joinmessage.func(w.cog, ctx, "feet", text="hi")
+    w.guild.add_channel(900001, "more")
+    await w.cog.interest_add.func(w.cog, ctx, "feet", rest="<#900001>")
+    assert (await w.cog.config.guild(w.guild).interests())["feet"]["join_message"] == "hi"
