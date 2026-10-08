@@ -41,5 +41,5 @@ def test_heavy_image_work_is_offloaded_at_each_site():
 
 def test_version_probe_matches_class_version():
     src = SRC.read_text()
-    assert '__version__ = "1.6.0"' in src
+    assert '__version__ = "1.6.1"' in src
     assert 'name="version"' in src and 'f"puzzle v{self.__version__}"' in src

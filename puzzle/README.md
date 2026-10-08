@@ -142,9 +142,10 @@ Everything is under `[p]puzzle`. "Admin" means admin or Manage Server.
   channel for it. The background loop checks its timers every 5 minutes, so
   posts can land up to about that much after their exact due time.
 - **Claiming (default)**: first reaction with the claim emoji from someone who
-  still needs that piece wins that copy of it, permanently. Reactions from
-  people who already own that position are ignored, so they can't burn a
-  piece for everyone else. Everyone builds their own
+  still needs that piece wins that copy of it, permanently. If someone who
+  already owns that position reacts, the bot removes their reaction (needs
+  Manage Messages in the puzzle channel) and leaves the piece open, so they
+  can't burn it for everyone else. Everyone builds their own
   collection independently — claiming a piece doesn't take it away from
   anyone else's future chances, since the same position can be posted again.
 - **Claiming (shared mode)**: with `[p]puzzle setsharedmode on`, everyone who

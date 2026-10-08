@@ -54,7 +54,7 @@ class Puzzle(commands.Cog):
     per person across every round.
     """
 
-    __version__ = "1.6.0"
+    __version__ = "1.6.1"
 
     def __init__(self, bot: Red):
         self.bot = bot
@@ -1104,7 +1104,18 @@ class Puzzle(commands.Cog):
                 # an exclusive piece is single-use, so only someone who still
                 # needs this position can claim it -- otherwise a player who
                 # already owns it could burn the piece for everyone else.
-                # Leave it open for the next reactor.
+                # Leave it open for the next reactor, and take their reaction
+                # back off so they can see it didn't count. Needs Manage
+                # Messages in the puzzle channel; without it the reaction just
+                # stays, still ignored.
+                react_channel = guild.get_channel(payload.channel_id)
+                if react_channel is not None:
+                    try:
+                        await react_channel.get_partial_message(payload.message_id).remove_reaction(
+                            payload.emoji, payload.member
+                        )
+                    except discord.HTTPException:
+                        pass
                 return
 
             if shared:
