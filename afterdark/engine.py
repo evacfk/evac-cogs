@@ -165,6 +165,36 @@ def normalize_key(text: str) -> str:
     return key[:32]
 
 
+_CUSTOM_EMOJI_RE = re.compile(r"^<a?:\w{2,32}:\d{15,25}>$")
+
+
+def valid_emoji(token: str) -> bool:
+    """Would Discord accept this as a button emoji?
+
+    discord.py passes any string through as a "unicode emoji" and Discord then
+    rejects it with 'Invalid emoji'. Real emoji are non-ASCII and contain no
+    letters/digits; a word ("Feet"), a shortcode (":foot:") or a typo is not.
+    Custom emoji must be in the <:name:id> form.
+    """
+    token = (token or "").strip()
+    if not token:
+        return False
+    if _CUSTOM_EMOJI_RE.match(token):
+        return True
+    return (not token.isascii()) and not any(ch.isalnum() for ch in token)
+
+
+def split_emoji_and_name(emoji: str, name: str) -> tuple:
+    """If the 'emoji' argument is really the first word of the name, move it.
+    Returns (emoji, name) with an emoji that is either valid or empty."""
+    emoji = (emoji or "").strip()
+    name = (name or "").strip()
+    if emoji and not valid_emoji(emoji):
+        name = f"{emoji} {name}".strip()
+        emoji = ""
+    return emoji, name
+
+
 def parse_toggle(text: str) -> Optional[bool]:
     value = text.strip().lower()
     if value in ("on", "true", "yes", "enable", "enabled", "1"):

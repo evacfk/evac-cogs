@@ -4,6 +4,7 @@ from typing import Iterable, List
 import discord
 
 from . import constants as C
+from . import engine
 from .models import Interest
 
 
@@ -35,7 +36,7 @@ def panel_embed(interests: Iterable[Interest], warn_days: float, remove_days: fl
         color=discord.Color.dark_grey(),
     )
     if interests:
-        lines = [f"{i.emoji} **{i.name}**".strip() for i in interests]
+        lines = [f"{i.emoji if engine.valid_emoji(i.emoji) else ''} **{i.name}**".strip() for i in interests]
         embed.add_field(name="Open now", value="\n".join(lines), inline=False)
     else:
         embed.add_field(name="Open now", value="Nothing yet.", inline=False)

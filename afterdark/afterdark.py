@@ -851,6 +851,51 @@ class AfterDark(commands.Cog):
         await self._log(ctx.guild, f"\U0001F6AB {ctx.author.display_name} revoked {self._label(member)}: {reason}.")
         await ctx.send(f"Removed: {', '.join(removed)}." if removed else "They had nothing to remove.")
 
+    @afterdark.command(name="grantinterest")
+    async def afterdark_grantinterest(self, ctx, member: discord.Member, key: str):
+        """Manually give one member access to one interest channel (per-user, no role needed).
+        They must already be in Rabbit Hole. Also clears a lapse for that interest."""
+        key = engine.normalize_key(key)
+        cfg = await self.config.guild(ctx.guild).all()
+        interest = self._interests(cfg).get(key)
+        if interest is None:
+            return await ctx.send("No such interest. See `.afterdark interest list`.")
+        rabbit = ctx.guild.get_role(cfg["rabbit_role_id"])
+        if rabbit is None or rabbit not in member.roles:
+            return await ctx.send("They aren't in Rabbit Hole yet. `.afterdark grant` first.")
+        code = await self._eligibility(member, cfg, check_level=False)
+        if code != engine.OK:
+            return await ctx.send(f"Refused ({code}).")
+        state = await self._get_state(ctx.guild)
+        async with self._lock(member):
+            if self._has_access(member, interest):
+                return await ctx.send(f"{member.display_name} already has {interest.name}.")
+            ok, why = await self._grant_interest_access(member, interest, cfg)
+            if not ok:
+                return await ctx.send(f"Failed: {why}")
+            lapsed = engine.lapsed_remove(cfg["lapsed"], key, member.id)
+            await self.config.guild(ctx.guild).lapsed.set(lapsed)
+            state.setdefault(key, {})[str(member.id)] = engine.new_membership(self._clock())
+            self._mark_dirty(ctx.guild.id)
+            await self._flush_state(ctx.guild.id)
+        await self._log(ctx.guild, f"\u2795 {ctx.author.display_name} gave {self._label(member)} access to {interest.name}.")
+        await ctx.send(f"{member.display_name} now has {interest.name}.")
+
+    @afterdark.command(name="revokeinterest")
+    async def afterdark_revokeinterest(self, ctx, member: discord.Member, key: str):
+        """Take one interest away from one member (not recorded as a lapse)."""
+        key = engine.normalize_key(key)
+        cfg = await self.config.guild(ctx.guild).all()
+        interest = self._interests(cfg).get(key)
+        if interest is None:
+            return await ctx.send("No such interest. See `.afterdark interest list`.")
+        state = await self._get_state(ctx.guild)
+        async with self._lock(member):
+            removed = await self._strip_interest_unlocked(member, interest, state)
+            await self._flush_state(ctx.guild.id)
+        await self._log(ctx.guild, f"\u2796 {ctx.author.display_name} removed {self._label(member)} from {interest.name}.")
+        await ctx.send(f"Removed: {', '.join(removed)}." if removed else "They didn't have it.")
+
     @afterdark.command(name="exclude")
     async def afterdark_exclude(self, ctx, member: discord.Member, *, reason: str = "no reason given"):
         """Block a member from every route AND revoke existing access immediately."""
@@ -935,7 +980,11 @@ class AfterDark(commands.Cog):
             ("Adult Chat role", adult.name if adult else "MISSING"),
             ("Min level", cfg["min_level"]),
             ("LevelUp readable", "yes" if level is not None else "NO (admissions fail closed)"),
-            ("Lurker cog", f"role id {lurker}" if lurker else "not found (lurker members not protected)"),
+            # Read-only: afterdark never assigns the Lurker role. It only leaves anyone who
+            # holds it alone, because the Lurker cog strips every role (Adult Chat and the
+            # rabbit included) and restores them on return, which must not read as a revocation.
+            ("Lurker protection", f"members holding Lurker role {lurker} are skipped" if lurker
+             else "OFF: Lurker cog not found, its role-stripping could be mistaken for a revocation"),
             ("Access mode", cfg["access_mode"]),
             ("Inactivity", f"warn {cfg['warn_days']}d / remove {cfg['remove_days']}d"),
             ("Sweep", f"{'DRY-RUN' if cfg['dry_run'] else 'LIVE'}, every {cfg['sweep_interval_minutes']}m, max {cfg['sweep_max']} actions"),
@@ -988,7 +1037,11 @@ class AfterDark(commands.Cog):
         await self._register_interest_view(ctx.guild)
         view = self._interest_views.get(ctx.guild.id) or InterestView(self, interests.values())
         embed = embeds.panel_embed(interests.values(), cfg["warn_days"], cfg["remove_days"])
-        message = await self._post_or_edit(ctx.guild, channel, cfg["panel_post"], embed=embed, view=view)
+        try:
+            message = await self._post_or_edit(ctx.guild, channel, cfg["panel_post"], embed=embed, view=view)
+        except (discord.Forbidden, discord.HTTPException) as exc:
+            log.warning("afterdark: panel post failed", exc_info=True)
+            return await ctx.send(f"Discord refused the panel: {exc}")
         await self.config.guild(ctx.guild).panel_post.set({"channel_id": channel.id, "message_id": message.id})
         await ctx.send(f"Panel posted in {channel.mention}.")
 
@@ -1001,23 +1054,29 @@ class AfterDark(commands.Cog):
     @afterdark_interest.command(name="add")
     async def interest_add(self, ctx, key: str, channel: discord.TextChannel, role: Optional[discord.Role] = None,
                            emoji: str = "", *, name: str = ""):
-        """`.afterdark interest add feet #feet @role \U0001F9B6 Feet` (role optional in overwrites mode)."""
+        """`.afterdark interest add feet #feet \U0001F9B6 Feet`. A role is only needed in `roles` mode."""
         key = engine.normalize_key(key)
         if not key:
             return await ctx.send("That key isn't usable (letters, digits, dashes).")
         interests = dict(await self.config.guild(ctx.guild).interests())
         if key not in interests and len(interests) >= InterestView.MAX_BUTTONS:
             return await ctx.send("That's the maximum number of interests.")
-        interest = Interest(key=key, name=name.strip() or key.title(), emoji=emoji,
+        # A word typed where the emoji goes ("Feet") becomes part of the name,
+        # because Discord rejects the whole panel on an invalid button emoji.
+        emoji, name = engine.split_emoji_and_name(emoji, name)
+        interest = Interest(key=key, name=name or key.title(), emoji=emoji,
                             channel_id=channel.id, role_id=role.id if role else None)
         interests[key] = interest.to_dict()
         await self.config.guild(ctx.guild).interests.set(interests)
         await self._register_interest_view(ctx.guild)
         mode = await self.config.guild(ctx.guild).access_mode()
-        warn = ""
+        notes = ""
         if mode == "roles" and role is None:
-            warn = " Warning: mode is `roles` but no role was given, so joins will fail until you add one."
-        await ctx.send(f"Interest `{key}` saved -> {channel.mention}. Re-run `.afterdark panel` to refresh the buttons.{warn}")
+            notes += " Warning: mode is `roles` but no role was given, so joins will fail until you add one."
+        if not emoji:
+            notes += " (No valid emoji, so the button has none.)"
+        await ctx.send(f"Interest `{key}` saved -> {channel.mention}, button \"{interest.name}\". "
+                       f"Re-run `.afterdark panel` to refresh the buttons.{notes}")
 
     @afterdark_interest.command(name="remove")
     async def interest_remove(self, ctx, key: str):
@@ -1039,7 +1098,7 @@ class AfterDark(commands.Cog):
             return await ctx.send("No interests yet.")
         state = await self._get_state(ctx.guild)
         lines = [
-            f"{i.emoji} `{k}` -> <#{i.channel_id}>"
+            f"{i.emoji if engine.valid_emoji(i.emoji) else ''} `{k}` -> <#{i.channel_id}>"
             f"{f' role <@&{i.role_id}>' if i.role_id else ''} ({len(state.get(k, {}))} tracked)"
             for k, i in interests.items()
         ]

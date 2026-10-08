@@ -924,7 +924,84 @@ async def test_defaults_match_the_agreed_design(w):
     assert cfg["min_level"] == 3 and cfg["warn_days"] == 7 and cfg["remove_days"] == 14
     assert cfg["dry_run"] is True and cfg["invites_enabled"] is False
     assert (cfg["invite_min"], cfg["invite_max"], cfg["invite_ttl_days"]) == (3, 4, 30)
-    assert cfg["access_mode"] == "roles"
+    assert cfg["access_mode"] == "overwrites"
     assert cfg["rabbit_role_id"] == 1557705475091472445
     assert cfg["adult_role_id"] == 1400989955794276452
     assert 554841909412102169 in cfg["adult_age_role_ids"]  # 30+ role included
+
+
+# ------------------------------------------------ v1.1.0: emoji guard + manual interest access
+
+def test_valid_emoji_accepts_real_and_rejects_words():
+    assert engine.valid_emoji("\U0001F9B6")
+    assert engine.valid_emoji("<:foot:123456789012345678>")
+    assert engine.valid_emoji("<a:wave:123456789012345678>")
+    for bad in ("", "Feet", "x", ":foot:", "feet1", "<:foot:12>", "  "):
+        assert not engine.valid_emoji(bad)
+
+
+def test_split_emoji_and_name_moves_a_word_into_the_name():
+    assert engine.split_emoji_and_name("Feet", "Lovers") == ("", "Feet Lovers")
+    assert engine.split_emoji_and_name("\U0001F9B6", "Feet") == ("\U0001F9B6", "Feet")
+    assert engine.split_emoji_and_name("", "Feet") == ("", "Feet")
+
+
+async def test_default_access_mode_is_per_user_overwrites(w):
+    assert await w.cog.config.guild(w.guild).access_mode() == "overwrites"
+
+
+async def test_interest_add_with_a_word_in_the_emoji_slot_keeps_the_panel_valid(w):
+    ctx = FakeCtx(w.guild, w.member("admin"))
+    await w.cog.interest_add.func(w.cog, ctx, "feet", w.feet, None, "Feet", name="")
+    cfg = await w.cog.config.guild(w.guild).all()
+    assert cfg["interests"]["feet"]["emoji"] == "" and cfg["interests"]["feet"]["name"] == "Feet"
+    assert "No valid emoji" in ctx.sent[-1]
+
+
+def test_interest_view_drops_an_invalid_stored_emoji(w):
+    from .models import Interest
+    view = ad.InterestView(w.cog, [Interest(key="feet", name="Feet", emoji="Feet", channel_id=1, role_id=None)])
+    assert view.children[0].emoji is None
+
+
+def test_panel_embed_hides_an_invalid_stored_emoji():
+    from . import embeds
+    from .models import Interest
+    emb = embeds.panel_embed([Interest(key="feet", name="Feet", emoji="Feet", channel_id=1, role_id=None)], 7, 14)
+    assert "Feet Feet" not in str(emb.fields[0].value)
+
+
+async def test_grantinterest_gives_a_per_user_overwrite_and_clears_a_lapse(w):
+    await add_feet(w, mode="overwrites")
+    m = w.member()
+    await set_cfg(w, lapsed={"feet": [m.id]})
+    m.roles.append(w.rabbit)
+    ctx = FakeCtx(w.guild, w.member("mod"))
+    await w.cog.afterdark_grantinterest.func(w.cog, ctx, m, "feet")
+    assert m in w.feet.overwrites and w.feet_role not in m.roles
+    assert not engine.lapsed_has(await w.cog.config.guild(w.guild).lapsed(), "feet", m.id)
+    assert str(m.id) in (await w.cog._get_state(w.guild))["feet"]
+
+
+async def test_grantinterest_requires_rabbit_hole_and_not_excluded(w):
+    await add_feet(w, mode="overwrites")
+    ctx = FakeCtx(w.guild, w.member("mod"))
+    m = w.member()
+    await w.cog.afterdark_grantinterest.func(w.cog, ctx, m, "feet")
+    assert m not in w.feet.overwrites and "Rabbit Hole" in ctx.sent[-1]
+    m.roles.append(w.rabbit)
+    await set_cfg(w, excluded={str(m.id): {"by": 1, "reason": "x", "ts": 0}})
+    await w.cog.afterdark_grantinterest.func(w.cog, ctx, m, "feet")
+    assert m not in w.feet.overwrites and "Refused" in ctx.sent[-1]
+
+
+async def test_revokeinterest_removes_access_without_recording_a_lapse(w):
+    await add_feet(w, mode="overwrites")
+    m = w.member()
+    m.roles.append(w.rabbit)
+    await w.cog.handle_interest_toggle(FakeInteraction(m, w.guild), "feet")
+    assert m in w.feet.overwrites
+    ctx = FakeCtx(w.guild, w.member("mod"))
+    await w.cog.afterdark_revokeinterest.func(w.cog, ctx, m, "feet")
+    assert m not in w.feet.overwrites
+    assert not engine.lapsed_has(await w.cog.config.guild(w.guild).lapsed(), "feet", m.id)

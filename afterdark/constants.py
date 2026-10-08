@@ -1,7 +1,7 @@
 """All defaults and lookup tables for afterdark -- no discord/redbot imports."""
 
-VERSION = "1.0.0"
-BUILD = "afterdark build: lean-v1 (Rabbit Hole button + invitations + interests)"
+VERSION = "1.1.0"
+BUILD = "afterdark build: lean-v2 (per-user interest access, emoji guard, mod interest grant)"
 
 CONFIG_IDENTIFIER = 7316482950
 DAY = 86400
@@ -46,7 +46,7 @@ GUILD_DEFAULTS = dict(
     clue_channel_id=DEFAULT_CLUE_CHANNEL_ID,
     log_channel_id=DEFAULT_LOG_CHANNEL_ID,
     min_level=3,
-    access_mode="roles",         # "roles" | "overwrites" -- how interest access is granted
+    access_mode="overwrites",    # "overwrites" (per-user, no role) | "roles" -- how interest access is granted
     interests={},                # key -> Interest.to_dict()
     # ---- inactivity (interest channels only) ----
     warn_days=7,
