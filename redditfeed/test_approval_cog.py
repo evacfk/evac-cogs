@@ -86,6 +86,9 @@ class Chan:
         return m
 
     async def fetch_message(self, mid):
+        if mid not in self.messages:
+            import discord
+            raise discord.NotFound("gone")
         return self.messages[mid]
 
 
@@ -893,3 +896,65 @@ async def test_deciding_a_card_removes_the_clip_from_the_queue_channel():
     await cog.handle_queue_action(click, "approve")
     assert card.file is None and card.edits[-1]["attachments"] == []
     assert FEET_CH.sent and FEET_CH.sent[0].file is not None          # and the feed got its own copy
+
+
+# ---------------------------------------------------------------- queue clear
+
+async def test_queue_clear_needs_confirmation_and_changes_nothing_without_it():
+    cog = make({"feet": [post("a"), post("b")]})
+    await cog._run_poll_cycle()
+    ctx = RgCtx()
+    ctx.author = SimpleNamespace(id=7, mention="<@7>", display_name="mod")
+    cb = RedditFeed.redditfeed_queue_clear
+    cb = getattr(cb, "callback", None) or cb.func
+    await cb(cog, ctx, "")
+    assert "2" in ctx.sent[-1] and "confirm" in ctx.sent[-1]
+    assert len(engine.pending_ids(await cog.config.queue())) == 2
+
+
+async def test_queue_clear_rejects_everything_waiting_and_nothing_posts():
+    cog = make({"feet": [post("a"), post("b")]})
+    await cog._run_poll_cycle()
+    cards = list(QUEUE_CH.sent)
+    ctx = RgCtx()
+    ctx.author = SimpleNamespace(id=7, mention="<@7>", display_name="mod")
+    cb = RedditFeed.redditfeed_queue_clear
+    cb = getattr(cb, "callback", None) or cb.func
+    await cb(cog, ctx, "YES")
+    stored = await cog.config.queue()
+    assert engine.pending_ids(stored) == [] and all(r["status"] == "rejected" and r["resolved_by"] == 7 for r in stored.values())
+    assert FEET_CH.sent == []
+    assert all(c.edits and c.edits[-1]["view"] is None and c.edits[-1]["attachments"] == [] for c in cards)
+    assert "Rejected 2" in ctx.sent[-1] and any("cleared the redditfeed queue" in (m.content or "") for m in LOG_CH.sent)
+
+
+async def test_cleared_posts_do_not_come_back_and_new_ones_can_queue():
+    cog = make({"feet": [post("a")]})
+    await cog._run_poll_cycle()
+    ctx = RgCtx()
+    ctx.author = SimpleNamespace(id=7, mention="<@7>", display_name="mod")
+    cb = RedditFeed.redditfeed_queue_clear
+    cb = getattr(cb, "callback", None) or cb.func
+    await cb(cog, ctx, "yes")
+    n = len(QUEUE_CH.sent)
+    await cog._run_poll_cycle()
+    assert len(QUEUE_CH.sent) == n                       # "a" is deduped, not re-queued
+    cog.source.posts["feet"] = [post("a"), post("c")]
+    await cog._run_poll_cycle()
+    assert len(QUEUE_CH.sent) == n + 1
+
+
+async def test_queue_clear_with_nothing_waiting_and_with_a_deleted_card():
+    cog = make()
+    ctx = RgCtx()
+    ctx.author = SimpleNamespace(id=7, mention="<@7>", display_name="mod")
+    cb = RedditFeed.redditfeed_queue_clear
+    cb = getattr(cb, "callback", None) or cb.func
+    await cb(cog, ctx, "yes")
+    assert ctx.sent[-1] == "Nothing is waiting."
+    cog = make({"feet": [post("a")]})
+    await cog._run_poll_cycle()
+    QUEUE_CH.messages.clear()                            # the card was deleted by hand
+    await cb(cog, ctx, "yes")
+    assert "1 card(s) couldn't be edited" in ctx.sent[-1]
+    assert engine.pending_ids(await cog.config.queue()) == []

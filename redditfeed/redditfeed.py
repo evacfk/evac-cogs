@@ -572,7 +572,7 @@ class RedditFeed(DashboardIntegration, commands.Cog):
     @redditfeed.command(name="version")
     async def redditfeed_version(self, ctx: commands.Context) -> None:
         """Version-probe command -- confirms a deploy actually took."""
-        await ctx.send("redditfeed build: redgifs-v2 (RedGifs clips play in the queue and the feed)")
+        await ctx.send("redditfeed build: redgifs-v3 (queue clear, RedGifs clips play in the queue and the feed)")
 
     async def _map_subreddit(self, name: str, channel_id: int) -> bool:
         """The one place a subreddit gets mapped to a channel -- `add` and the
@@ -825,6 +825,44 @@ class RedditFeed(DashboardIntegration, commands.Cog):
         """Stop adding to the queue once this many items are waiting."""
         await self.config.queue_max_pending.set(max(1, count))
         await ctx.send(f"Queue cap: {max(1, count)} waiting items.")
+
+    @redditfeed_queue.command(name="clear")
+    async def redditfeed_queue_clear(self, ctx: commands.Context, confirm: str = "") -> None:
+        """Reject everything waiting in the queue: `.redditfeed queue clear yes`.
+        Nothing is posted, and those posts never come back (they stay deduped).
+        Settings, subreddits and anything already decided are untouched."""
+        stored = await self.config.queue()
+        pending = engine.pending_ids(stored)
+        if confirm.strip().lower() != "yes":
+            await ctx.send(f"This rejects all **{len(pending)}** waiting item(s) without posting them. "
+                           "Run `.redditfeed queue clear yes` to confirm.")
+            return
+        if not pending:
+            await ctx.send("Nothing is waiting.")
+            return
+        now = time.time()
+        cleared: list = []
+        async with self.config.queue() as live:
+            for message_id in engine.pending_ids(live):
+                entry = QueueEntry.from_dict(live[message_id])
+                entry.status = constants.QUEUE_REJECTED
+                entry.resolved_ts, entry.resolved_by = now, ctx.author.id
+                live[message_id] = entry.to_dict()
+                cleared.append((message_id, entry.queue_channel_id))
+        result = f"\u274c Cleared by {ctx.author.mention} (queue cleared, nothing posted)."
+        failed = 0
+        for message_id, channel_id in cleared:
+            channel = self.bot.get_channel(channel_id) if channel_id else None
+            try:
+                message = await channel.fetch_message(int(message_id))
+                await message.edit(content=None, embeds=queue_ui.resolved_embeds(list(message.embeds), result),
+                                   attachments=[], view=None)
+            except (AttributeError, discord.NotFound, discord.Forbidden, discord.HTTPException):
+                failed += 1       # card gone or unreachable: the record is already closed either way
+            await asyncio.sleep(0.3)
+        await self._log(f"\U0001F9F9 {ctx.author.display_name} cleared the redditfeed queue ({len(cleared)} item(s) rejected).")
+        note = f" ({failed} card(s) couldn't be edited, usually because they were already deleted.)" if failed else ""
+        await ctx.send(f"Rejected {len(cleared)} waiting item(s). Nothing was posted.{note}")
 
     @redditfeed.command(name="xbutton")
     async def redditfeed_xbutton(self, ctx: commands.Context, state: str) -> None:
