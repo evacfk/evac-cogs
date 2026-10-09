@@ -413,3 +413,53 @@ async def test_results_with_no_history_and_unknown_number(env):
     ctx2 = Ctx(env, Member(env.g, 1))
     await cmd(env, "verdict_results")(env.cog, ctx2, number=7)
     assert "isn't one of them" in ctx2.sent[0]
+
+
+async def test_question_embed_explains_the_two_taps_scoring_and_public_results(env):
+    await env.cog.post_daily(env.g, ts(2026, 10, 5))
+    fields = {f.name: f.value for f in env.chan.sent[0].embed.fields}
+    how = fields["How to play (2 taps)"]
+    assert "your own answer" in how and "most people" in how and "Tap any answer again" in how
+    assert "Mind Reader" in fields["Scoring"] and "streak" in fields["Scoring"]
+    assert "who picked what" in fields["Results"] and "10am" in fields["Results"]
+
+
+async def test_step_two_prompt_says_how_the_guess_scores(env):
+    await env.cog.post_daily(env.g, ts(2026, 10, 5))
+    first, _ = await play(env, Member(env.g, 10), 0, 1)
+    assert "Step 2 of 2" in first.out[0][1] and "matches the winning answer" in first.out[0][1]
+
+
+async def test_final_post_lists_who_voted_for_each_option(env):
+    async with env.conf.queue() as q:
+        q.append({"question": "Cats or dogs?", "options": ["Cats", "Dogs"], "submitter_id": None})
+    await env.cog.post_daily(env.g, ts(2026, 10, 5))
+    first_msg = env.chan.sent[0]
+    for uid, a, p in ((101, 0, 0), (102, 0, 1), (103, 1, 0), (104, 0, 0)):
+        await play(env, Member(env.g, uid), a, p)
+    dropout = Member(env.g, 200)
+    cur = await env.conf.current()
+    await env.cog.on_interaction(Click(env.g, dropout, f"verdict:a:{cur['qid']}:1"))  # answered, never guessed
+    await env.cog.post_daily(env.g, ts(2026, 10, 6))
+    desc = first_msg.embed.description
+    cats, dogs = desc.split("**B.**")
+    assert "<@101>\N{BRAIN}" in cats and "<@102>" in cats and "<@102>\N{BRAIN}" not in cats  # 101 guessed Cats (won), 102 guessed Dogs
+    assert "<@103>" in dogs and "<@200>" in dogs and "<@101>" not in dogs
+    assert "<@200>\N{BRAIN}" not in dogs  # no guess, no brain
+    assert "guessed the winning answer" in first_msg.embed.footer.text and "lone wolf" in first_msg.embed.footer.text
+
+
+async def test_final_post_with_a_big_crowd_stays_inside_embed_limits(env):
+    emb = importlib.import_module("verdict.embeds")
+    cur = {"seq": 1, "question": "q" * 200, "options": ["o" * 40] * 4}
+    votes = {str(10**17 + i): i % 4 for i in range(400)}
+    e = emb.closed_embed(cur, [100, 100, 100, 100], {0, 1, 2, 3}, ["x" * 1024], votes=votes, readers=set(votes))
+    assert len(e.description) <= 4096 and "more" in e.description
+    assert len(e.title) + len(e.description) + sum(len(f.name) + len(f.value) for f in e.fields) + len(e.footer.text) <= 6000
+
+
+async def test_final_post_with_no_votes_has_no_voter_lines(env):
+    emb = importlib.import_module("verdict.embeds")
+    cur = {"seq": 1, "question": "Q?", "options": ["a", "b"]}
+    e = emb.closed_embed(cur, [0, 0], set(), [], votes={})
+    assert "<@" not in e.description

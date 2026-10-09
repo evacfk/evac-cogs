@@ -1,8 +1,8 @@
 {
     "name": "Verdict",
     "short": "A daily crowd question: pick your answer, then guess what everyone else picks.",
-    "description": "Posts one question a day with 2-4 buttons. Members tap their own answer, then guess what most people will pick. The next post carries yesterday's result, who read the crowd and the lone wolves. Keeps streaks, awards a monthly Mind Reader role, and lets members suggest questions that wait for the owner's tick or cross in a private channel.",
-    "end_user_data_statement": "This cog stores each member's answers and guesses to the open question, their streak and counts, and monthly scores. Suggested questions are stored with the submitter's user ID until reviewed. It is deleted on a Red data-deletion request.",
+    "description": "Posts one question a day with 2-4 buttons. Members tap their own answer, then guess what most people will pick. The next post carries yesterday's result, and the old post becomes a final tally showing who picked what, who read the crowd and the lone wolves. Keeps streaks, awards a monthly Mind Reader role, and lets members suggest questions that wait for the owner's tick or cross in a private channel.",
+    "end_user_data_statement": "This cog stores each member's answers and guesses to the open question (answers are shown by name in the final result post), their streak and counts, and monthly scores. Suggested questions are stored with the submitter's user ID until reviewed. It is deleted on a Red data-deletion request.",
     "install_msg": "Set up with `.verdict channel #cuddle`, `.verdict reviewchannel #private-channel`, optionally `.verdict mindreaderrole @role`, then `.verdict enable`. Test with `.verdict post`.",
     "author": ["evacfk"],
     "requirements": [],

@@ -2,7 +2,7 @@
 
 - posts one question a day in the chat channel (default 10am Pacific) with 2-4 buttons;
 - each member taps their own answer, then guesses what most people will pick;
-- the next day's post carries yesterday's result, who read the crowd and the lone wolves;
+- the next day's post carries yesterday's result, and the old post becomes the final tally listing who picked what;
 - streaks, a monthly Mind Reader role, member-submitted questions that wait for the owner's
   tick or cross in a private channel.
 """
@@ -218,7 +218,7 @@ class Verdict(commands.Cog):
         if channel is not None and cur.get("message_id"):
             try:
                 await channel.get_partial_message(cur["message_id"]).edit(
-                    embed=embeds.closed_embed(cur, counts, win, extra), view=None)
+                    embed=embeds.closed_embed(cur, counts, win, extra, votes=answers, readers=readers), view=None)
             except _DISCORD_ERRORS:
                 log.warning("verdict: could not close the old post for #%s", cur["seq"])
         total = sum(counts)
@@ -305,7 +305,8 @@ class Verdict(commands.Cog):
                 if uid in preds:
                     await reply(f"\N{LOCK} Locked in. You: **{mine}** · your guess: **{options[preds[uid]]}**.", ephemeral=True)
                     return
-                await reply(f"You picked **{mine}**.\nNow guess: what will **most people** pick?",
+                await reply(f"You picked **{mine}**.\n**Step 2 of 2.** Now guess: what will **most people** pick? "
+                            "You score if your guess matches the winning answer.",
                             view=build_view("p", qid, options), ephemeral=True)
                 return
             if kind != "p":
@@ -328,7 +329,7 @@ class Verdict(commands.Cog):
         flame = f"\N{FIRE} Streak: {streak} day{'s' if streak != 1 else ''}"
         await interaction.response.edit_message(
             content=(f"\N{LOCK} Locked in. You: **{options[answers[uid]]}** · your guess: **{options[idx]}**.\n"
-                     f"{flame}. The result comes with tomorrow's question."), view=None)
+                     f"{flame}. Results, with everyone's picks, post tomorrow."), view=None)
 
     # -- submissions ------------------------------------------------------
 
