@@ -71,5 +71,4 @@ TRANSCODE_TIMEOUT_SECONDS = 900
 POSTED_RETENTION_DAYS = 180                # how long the Discord->Telegram takedown map is kept
 FEED_X_ID = "tgfeed:x"
 DEFAULT_LOG_CHANNEL_ID = 416660303741452299      # #mod-commands
-DEFAULT_VIEW_ROLE_ID = 426696709780013066        # Mod role: sees the auto-created channels
 CHANNEL_NAME_MAX = 90

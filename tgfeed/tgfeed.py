@@ -50,9 +50,9 @@ class TGFeed(commands.Cog):
             pause_reason=None,
             x_button=True,
             log_channel_id=constants.DEFAULT_LOG_CHANNEL_ID,
-            category_id=None,               # where `mapall` creates channels
+            category_id=None,               # where `map` creates a channel when none is given
             name_prefix="",
-            view_role_ids=[constants.DEFAULT_VIEW_ROLE_ID],   # roles that can see created channels
+            view_role_ids=[],               # extra roles that can see channels `map` creates (default: nobody but the creator)
             rate_log=[],                    # download timestamps, last 24h
             flood_events=[],                # FloodWait timestamps, last 24h
             cooldown_until=0.0,
@@ -370,7 +370,7 @@ class TGFeed(commands.Cog):
             topics = await source.list_topics(info)
         except SourceError:
             topics = []
-        await ctx.send(f"Group set: **{info.title}**, {len(topics)} topics. Next: `.tgfeed category <category>`, `.tgfeed topics`, `.tgfeed mapall`.")
+        await ctx.send(f"Group set: **{info.title}**, {len(topics)} topics. Next: `.tgfeed category <category>`, `.tgfeed topics`, then `.tgfeed map <topic>` for each one you want.")
 
     @tgfeed.command(name="topics")
     async def tgfeed_topics(self, ctx: commands.Context) -> None:
@@ -397,9 +397,37 @@ class TGFeed(commands.Cog):
         for chunk in engine.chunk_lines(lines or ["No topics found."]):
             await ctx.send(chunk, allowed_mentions=discord.AllowedMentions.none())
 
+    async def _create_topic_channel(self, ctx, topic):
+        """A new text channel for one topic, visible only to the person running the
+        command (plus the bot, and any roles added with `viewrole`)."""
+        category_id = await self.config.category_id()
+        category = ctx.guild.get_channel(category_id) if category_id else None
+        if category is None:
+            await ctx.send("Set a category first (`.tgfeed category <category>`), or give me an existing channel: `.tgfeed map <topic> #channel`.")
+            return None
+        prefix = await self.config.name_prefix()
+        name = engine.slugify_channel_name(topic.title, prefix, topic.id)
+        overwrites = {
+            ctx.guild.default_role: discord.PermissionOverwrite(view_channel=False),
+            ctx.guild.me: discord.PermissionOverwrite(view_channel=True, send_messages=True, attach_files=True, read_message_history=True),
+            ctx.author: discord.PermissionOverwrite(view_channel=True, read_message_history=True),
+        }
+        for role_id in await self.config.view_role_ids():
+            role = ctx.guild.get_role(role_id)
+            if role is not None:
+                overwrites[role] = discord.PermissionOverwrite(view_channel=True, read_message_history=True)
+        try:
+            return await ctx.guild.create_text_channel(
+                name, category=category, overwrites=overwrites, reason=f"tgfeed: Telegram topic {topic.id}",
+            )
+        except (discord.Forbidden, discord.HTTPException) as exc:
+            await ctx.send(f"I couldn't create the channel: {exc}")
+            return None
+
     @tgfeed.command(name="map")
-    async def tgfeed_map(self, ctx: commands.Context, topic: str, channel: discord.TextChannel) -> None:
-        """Map one topic (id or exact title, quote titles with spaces) to an existing channel."""
+    async def tgfeed_map(self, ctx: commands.Context, topic: str, channel: Optional[discord.TextChannel] = None) -> None:
+        """Map ONE topic (id or exact title; quote titles with spaces). Give a channel to use an
+        existing one, or leave it out and I create a new channel in the `category`, visible only to you."""
         group = await self._group_or_say(ctx)
         source = await self._connected_source(ctx) if group else None
         if source is None:
@@ -410,10 +438,15 @@ class TGFeed(commands.Cog):
             if found is None:
                 await ctx.send(reason)
                 return
-            for raw in (await self.config.mappings()).values():
-                if raw["channel_id"] == channel.id and raw["topic_id"] != found.id:
-                    await ctx.send(f"{channel.mention} already receives another topic. One topic per channel.")
-                    return
+            maps = await self.config.mappings()
+            if str(found.id) in maps:
+                await ctx.send(f"**{found.title}** is already mapped to <#{maps[str(found.id)]['channel_id']}>. `.tgfeed unmap` it first to change that.")
+                return
+            if channel is not None:
+                for raw in maps.values():
+                    if raw["channel_id"] == channel.id:
+                        await ctx.send(f"{channel.mention} already receives another topic. One topic per channel.")
+                        return
             cursor = await source.latest_id(group)
         except SourceFlood as flood:
             await self._handle_flood(flood.seconds)
@@ -422,77 +455,14 @@ class TGFeed(commands.Cog):
         except SourceError as exc:
             await ctx.send(str(exc))
             return
+        if channel is None:
+            channel = await self._create_topic_channel(ctx, found)
+            if channel is None:
+                return
         mapping = TopicMapping(topic_id=found.id, title=found.title, channel_id=channel.id, cursor=cursor, added_ts=time.time())
         async with self.config.mappings() as stored:
             stored[str(found.id)] = mapping.to_dict()
-        await ctx.send(f"Mapped **{found.title}** → {channel.mention}. Only new posts from now on.")
-
-    @tgfeed.command(name="mapall")
-    async def tgfeed_mapall(self, ctx: commands.Context, confirm: str = "") -> None:
-        """Create one hidden channel per unmapped topic. Without `yes` it only shows the plan."""
-        group = await self._group_or_say(ctx)
-        source = await self._connected_source(ctx) if group else None
-        if source is None:
-            return
-        category_id = await self.config.category_id()
-        category = ctx.guild.get_channel(category_id) if category_id else None
-        if category is None:
-            await ctx.send("Set the category first: `.tgfeed category <category>`.")
-            return
-        try:
-            topics = await source.list_topics(group)
-        except SourceFlood as flood:
-            await self._handle_flood(flood.seconds)
-            await ctx.send(f"Telegram asked us to wait {flood.seconds}s. Try again later.")
-            return
-        except SourceError as exc:
-            await ctx.send(str(exc))
-            return
-        maps = await self.config.mappings()
-        todo = [t for t in topics if str(t.id) not in maps]
-        if not todo:
-            await ctx.send("Every topic is already mapped.")
-            return
-        prefix = await self.config.name_prefix()
-        plan = [(t, engine.slugify_channel_name(t.title, prefix, t.id)) for t in todo]
-        if confirm.lower() != "yes":
-            lines = [f"`{t.id}` {t.title} → #{name}" for t, name in plan]
-            lines.append(f"\nThis would create {len(plan)} channels in **{category.name}**, hidden from @everyone. Run `.tgfeed mapall yes` to do it.")
-            for chunk in engine.chunk_lines(lines):
-                await ctx.send(chunk, allowed_mentions=discord.AllowedMentions.none())
-            return
-        if len(plan) > 50:
-            await ctx.send(f"That's {len(plan)} channels; I'll do the first 50 now. Run it again for the rest.")
-            plan = plan[:50]
-        try:
-            cursor = await source.latest_id(group)
-        except SourceError as exc:
-            await ctx.send(str(exc))
-            return
-        overwrites = {
-            ctx.guild.default_role: discord.PermissionOverwrite(view_channel=False),
-            ctx.guild.me: discord.PermissionOverwrite(view_channel=True, send_messages=True, attach_files=True, read_message_history=True),
-        }
-        for role_id in await self.config.view_role_ids():
-            role = ctx.guild.get_role(role_id)
-            if role is not None:
-                overwrites[role] = discord.PermissionOverwrite(view_channel=True, read_message_history=True)
-        created = 0
-        async with ctx.typing():
-            for topic, name in plan:
-                try:
-                    channel = await ctx.guild.create_text_channel(
-                        name, category=category, overwrites=overwrites, reason=f"tgfeed: Telegram topic {topic.id}",
-                    )
-                except (discord.Forbidden, discord.HTTPException) as exc:
-                    await ctx.send(f"Stopped at **{topic.title}**: I couldn't create the channel ({exc}). Created {created} so far.")
-                    break
-                mapping = TopicMapping(topic_id=topic.id, title=topic.title, channel_id=channel.id, cursor=cursor, added_ts=time.time())
-                async with self.config.mappings() as stored:
-                    stored[str(topic.id)] = mapping.to_dict()
-                created += 1
-                await asyncio.sleep(2)
-        await ctx.send(f"Created and mapped {created} channel(s). They're hidden from @everyone; only new posts will appear.")
+        await ctx.send(f"Mapped **{found.title}** \u2192 {channel.mention}. Only new posts from now on.")
 
     @tgfeed.command(name="unmap")
     async def tgfeed_unmap(self, ctx: commands.Context, topic: str) -> None:
@@ -658,23 +628,23 @@ class TGFeed(commands.Cog):
 
     @tgfeed.command(name="category")
     async def tgfeed_category(self, ctx: commands.Context, category: discord.CategoryChannel) -> None:
-        """Category where `mapall` creates channels."""
+        """Category where `map` creates channels."""
         await self.config.category_id.set(category.id)
-        await ctx.send(f"`mapall` will create channels in **{category.name}**.")
+        await ctx.send(f"`map` will create channels in **{category.name}**.")
 
     @tgfeed.command(name="prefix")
     async def tgfeed_prefix(self, ctx: commands.Context, *, prefix: str = "") -> None:
-        """Text put in front of channel names `mapall` creates (empty clears it)."""
+        """Text put in front of channel names `map` creates (empty clears it)."""
         await self.config.name_prefix.set(prefix.strip())
         await ctx.send(f"Prefix: `{prefix.strip()}`" if prefix.strip() else "Prefix cleared.")
 
     @tgfeed.command(name="viewrole")
     async def tgfeed_viewrole(self, ctx: commands.Context, *roles: discord.Role) -> None:
-        """Roles that can see channels `mapall` creates (replaces the list). Default: the Mod role."""
+        """Extra roles that can see channels `map` creates from now on (replaces the list; none = just you). Existing channels: change their permissions in Discord."""
         if roles:
             await self.config.view_role_ids.set([r.id for r in roles])
         current = await self.config.view_role_ids()
-        await ctx.send("Created channels are visible to: " + (", ".join(f"<@&{i}>" for i in current) or "nobody but admins"),
+        await ctx.send("Created channels are visible to: " + (", ".join(f"<@&{i}>" for i in current) or "nobody but the person who mapped them (and admins)"),
                        allowed_mentions=discord.AllowedMentions.none())
 
     @tgfeed.command(name="trace")
