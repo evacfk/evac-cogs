@@ -149,7 +149,8 @@ def random_gap(low: float, high: float, rng) -> float:
 
 def slugify_channel_name(title: str, prefix: str = "", topic_id: int = 0) -> str:
     """A Discord-safe text channel name from a topic title."""
-    text = re.sub(r"\s+", "-", (title or "").strip().lower())
+    text = re.sub(r"[/\\|+]", " ", (title or "").lower())     # slashes and pipes read as word breaks, not as nothing
+    text = re.sub(r"\s+", "-", text.strip())
     text = re.sub(r"[^\w-]", "", text, flags=re.UNICODE)
     text = re.sub(r"-{2,}", "-", text).strip("-_")
     if not text:

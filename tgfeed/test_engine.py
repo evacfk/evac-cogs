@@ -127,6 +127,11 @@ class TestNamesAndTopics:
     def test_slug_basic_and_prefix(self):
         assert engine.slugify_channel_name("Cute Pets & Friends!", "tg-") == "tg-cute-pets-friends"
 
+    def test_slash_and_pipe_become_word_breaks(self):
+        assert engine.slugify_channel_name("Cats/Dogs") == "cats-dogs"
+        assert engine.slugify_channel_name("a \\ b | c + d") == "a-b-c-d"
+        assert engine.slugify_channel_name("Photos / Videos") == "photos-videos"
+
     def test_slug_unicode_kept(self):
         assert engine.slugify_channel_name("Café  Pics") == "café-pics"
 

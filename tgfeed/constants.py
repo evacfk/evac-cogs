@@ -1,6 +1,6 @@
 """Config defaults and lookup tables for tgfeed. No discord/redbot/telethon imports."""
 
-BUILD = "tg-v2 (one-by-one map, creator-only channels, no takedown list)"
+BUILD = "tg-v3 (slash-safe channel names)"
 
 # -- Environment / files ---------------------------------------------------------
 ENV_API_ID = "TG_API_ID"

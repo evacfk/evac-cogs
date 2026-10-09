@@ -492,4 +492,4 @@ async def test_version_probe_text():
     ctx = Ctx()
     cmd = TGFeed.tgfeed_version
     await (getattr(cmd, "callback", None) or cmd.func)(object.__new__(TGFeed), ctx)
-    assert ctx.sent == ["tgfeed build: tg-v2 (one-by-one map, creator-only channels, no takedown list)"]
+    assert ctx.sent == ["tgfeed build: tg-v3 (slash-safe channel names)"]
