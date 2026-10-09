@@ -31,7 +31,6 @@ class Deps:
     now: Callable[[], float]
     reserve: Callable[[int], bool]                       # take n download slots, False if no room
     send_batch: Callable[[int, list], Awaitable[int]]    # (topic_id, [PreparedFile]) -> discord message id
-    record: Callable[[int, int, list], Awaitable[None]]  # (discord msg id, topic_id, [tg ids])
     shrink: Callable[[str, str, MediaItem, int], Awaitable[Optional[int]]]   # -> final size or None
     fails: dict = field(default_factory=dict)
     _downloads: int = 0
@@ -87,16 +86,13 @@ async def deliver_unit(unit: list, deps: Deps, stats: TopicStats) -> int:
     posted = 0
     try:
         files: list = []
-        owners: list = []   # which telegram message each prepared file came from
         for index, item in enumerate(unit, start=1):
             prepared = await _prepare(item, index, deps, stats, temp_paths)
             if prepared is not None:
                 files.append(prepared)
-                owners.append(item.msg_id)
         for batch in engine.pack_batches([f.size for f in files], deps.limit_bytes):
             batch_files = [files[i] for i in batch]
-            discord_id = await deps.send_batch(topic_id, batch_files)
-            await deps.record(discord_id, topic_id, [owners[i] for i in batch])
+            await deps.send_batch(topic_id, batch_files)
             stats.posted_messages += 1
             stats.posted_files += len(batch_files)
             posted += len(batch_files)

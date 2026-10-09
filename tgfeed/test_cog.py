@@ -1,5 +1,5 @@
 """The cog's glue against fakes: one full poll cycle, the flood / auth safety paths,
-the X button, trace/takedown, and an import smoke test. Proves wiring and state
+the X button, and an import smoke test. Proves wiring and state
 handling; it does NOT prove real Telegram, real Discord rendering or button clicks."""
 import asyncio
 import copy
@@ -11,7 +11,6 @@ import pytest
 from tgfeed import tgfeed as tg_module
 from tgfeed.models import MediaItem, TopicMapping
 from tgfeed.source import SourceAuthError, SourceFlood
-from tgfeed.store import PostedStore
 from tgfeed.tgfeed import TGFeed
 
 NOW = time.time()
@@ -109,7 +108,7 @@ def make(tmp_path, items=None, scan_max=0, mapping_cursor=5, paused=False, sourc
     cog = object.__new__(TGFeed)
     cog.bot = Bot([CH, LOG], mods={1})
     cog._data_dir = str(tmp_path)
-    cog._store = PostedStore(str(tmp_path / "posted.db"))
+    cog._storage_ok = True
     cog._source = source or FakeSource(items or [], scan_max)
     cog._source_factory = None
     cog._cycle_lock = asyncio.Lock()
@@ -144,7 +143,7 @@ async def stored_mapping(cog, tid=7):
 
 # -- a full cycle ---------------------------------------------------------------------------
 
-async def test_cycle_posts_media_only_with_x_button_and_records_origin(tmp_path):
+async def test_cycle_posts_media_only_with_x_button(tmp_path):
     cog = make(tmp_path, items=[photo(11)], scan_max=15)
     await cog._run_cycle()
     assert len(CH.sent) == 1
@@ -153,7 +152,6 @@ async def test_cycle_posts_media_only_with_x_button_and_records_origin(tmp_path)
     assert set(sent.kw) <= {"content", "files", "view", "allowed_mentions"}
     assert len(sent.kw["files"]) == 1 and sent.kw["files"][0].filename == "file-1.jpg"
     assert sent.kw["view"] is not None
-    assert cog._store.get(sent.id)["tg_ids"] == [11]
     m = await stored_mapping(cog)
     assert m["cursor"] == 15 and m["posted_total"] == 1 and m["last_post_ts"] > 0
     assert len(await cog.config.rate_log()) == 1
@@ -298,7 +296,7 @@ async def test_missing_credentials_pause_with_a_clear_reason(tmp_path, monkeypat
     assert await cog.config.paused() is True and "TG_API_ID" in (await cog.config.pause_reason())
 
 
-# -- X button, trace, takedown ------------------------------------------------------------------------
+# -- X button -----------------------------------------------------------------------------------------------
 
 class Interaction:
     def __init__(self, message, user):
@@ -322,43 +320,25 @@ async def posted_message(cog):
 async def test_x_button_refuses_non_mods_and_keeps_the_post(tmp_path):
     cog = make(tmp_path)
     msg = await posted_message(cog)
+    msg.channel = CH
     it = Interaction(msg, user(2))
     await cog.handle_feed_x(it)
     assert not msg.deleted and "Only moderators" in it.said[0][0]
 
 
-async def test_x_button_deletes_and_logs_the_telegram_origin_privately(tmp_path):
+async def test_x_button_deletes_and_logs_the_removal_without_any_telegram_details(tmp_path):
     cog = make(tmp_path)
     msg = await posted_message(cog)
     LOG.sent.clear()
     await cog.handle_feed_x(Interaction(msg, user(1)))
     assert msg.deleted
     text = LOG.sent[0].kw["content"]
-    assert "https://t.me/c/777/7/11" in text and "<#100>" in text
+    assert "<#100>" in text and "removed a feed post" in text and "t.me" not in text
 
 
-async def test_trace_and_takedown_use_the_stored_map(tmp_path):
-    cog = make(tmp_path)
-    msg = await posted_message(cog)
-
-    class Ctx:
-        def __init__(self): self.sent, self.author = [], user(1)
-        async def send(self, content=None, **kw): self.sent.append(content)
-
-    def cb(name):
-        cmd = getattr(TGFeed, name)
-        return getattr(cmd, "callback", None) or cmd.func
-
-    ctx = Ctx()
-    await cb("tgfeed_trace")(cog, ctx, msg)
-    assert "https://t.me/c/777/7/11" in ctx.sent[0]
-    other = Msg(CH)
-    ctx2 = Ctx()
-    await cb("tgfeed_takedown")(cog, ctx2, other)
-    assert not other.deleted and "isn't in the takedown map" in ctx2.sent[0]
-    ctx3 = Ctx()
-    await cb("tgfeed_takedown")(cog, ctx3, msg)
-    assert msg.deleted and cog._store.get(msg.id) is None and ctx3.sent == ["Removed."]
+def test_no_takedown_map_or_trace_commands_remain():
+    for name in ("tgfeed_trace", "tgfeed_takedown"):
+        assert not hasattr(TGFeed, name)
 
 
 # -- import smoke ------------------------------------------------------------------------------------------
@@ -370,8 +350,7 @@ def test_module_imports_and_defines_the_cog_and_commands():
     for name in ("tgfeed_version", "tgfeed_group", "tgfeed_topics", "tgfeed_map", "tgfeed_unmap",
                  "tgfeed_pausetopic", "tgfeed_resumetopic", "tgfeed_pause", "tgfeed_resume", "tgfeed_list",
                  "tgfeed_status", "tgfeed_interval", "tgfeed_gap", "tgfeed_limits", "tgfeed_xbutton",
-                 "tgfeed_logchannel", "tgfeed_category", "tgfeed_prefix", "tgfeed_viewrole", "tgfeed_trace",
-                 "tgfeed_takedown"):
+                 "tgfeed_logchannel", "tgfeed_category", "tgfeed_prefix", "tgfeed_viewrole"):
         assert hasattr(TGFeed, name), name
 
 
@@ -513,4 +492,4 @@ async def test_version_probe_text():
     ctx = Ctx()
     cmd = TGFeed.tgfeed_version
     await (getattr(cmd, "callback", None) or cmd.func)(object.__new__(TGFeed), ctx)
-    assert ctx.sent == ["tgfeed build: tg-v1 (public forum media mirror)"]
+    assert ctx.sent == ["tgfeed build: tg-v2 (one-by-one map, creator-only channels, no takedown list)"]

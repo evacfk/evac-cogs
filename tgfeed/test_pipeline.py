@@ -41,7 +41,7 @@ class Harness:
     def __init__(self, tmp_path, source=None, slots=1000, shrink_to=None, send_fails=0):
         self.tmp = str(tmp_path)
         self.source = source or FakeSource()
-        self.sent, self.recorded, self.sleeps, self.slots = [], [], [], slots
+        self.sent, self.sleeps, self.slots = [], [], slots
         self.shrink_to, self.send_fails, self.shrinks = shrink_to, send_fails, []
         self.seen_paths = []
 
@@ -63,9 +63,6 @@ class Harness:
             self.sent.append((topic_id, [(f.name, f.size, f.data is not None) for f in files]))
             return 5000 + len(self.sent)
 
-        async def record(did, topic_id, tg_ids):
-            self.recorded.append((did, topic_id, list(tg_ids)))
-
         async def shrink(src, dst, item, limit):
             self.shrinks.append((src, dst))
             if self.shrink_to is None:
@@ -77,7 +74,7 @@ class Harness:
         return pipeline.Deps(
             source=self.source, group=None, limit_bytes=LIMIT, tmpdir=self.tmp, gap=(5, 12),
             rng=__import__("random").Random(1), sleep=sleep, now=lambda: NOW, reserve=reserve,
-            send_batch=send_batch, record=record, shrink=shrink, fails={},
+            send_batch=send_batch, shrink=shrink, fails={},
         )
 
     def leftovers(self):
@@ -108,7 +105,7 @@ async def test_single_photo_posted_and_cursor_advances(tmp_path):
     h = Harness(tmp_path)
     m, stats, stop, _ = await run(h, [photo(11)], scan_max=15)
     assert h.sent == [(7, [("file-1.jpg", 100, True)])]
-    assert h.recorded == [(5001, 7, [11])]
+    assert h.source.downloads == [11]
     assert m.cursor == 15 and stats.posted_files == 1 and stop is None
 
 
@@ -116,14 +113,14 @@ async def test_album_stays_together_in_one_message(tmp_path):
     h = Harness(tmp_path)
     await run(h, [photo(11, gid=1), photo(12, gid=1), photo(13, gid=1)])
     assert len(h.sent) == 1 and len(h.sent[0][1]) == 3
-    assert h.recorded == [(5001, 7, [11, 12, 13])]
+    assert h.source.downloads == [11, 12, 13]
 
 
 async def test_big_album_splits_by_size_but_keeps_order(tmp_path):
     h = Harness(tmp_path, FakeSource({11: 600, 12: 600, 13: 600}))
     await run(h, [photo(11, gid=1), photo(12, gid=1), photo(13, gid=1)])
     assert [len(files) for _, files in h.sent] == [1, 1, 1]
-    assert [r[2] for r in h.recorded] == [[11], [12], [13]]
+    assert h.source.downloads == [11, 12, 13]
 
 
 async def test_filenames_are_neutral(tmp_path):
@@ -202,34 +199,34 @@ async def test_poisoned_unit_is_skipped_after_three_tries(tmp_path):
         await pipeline.process_topic(m, [photo(11), photo(12)], 12, deps, TopicStats())
     # third failure skips 11 and carries on to 12 in the same pass
     assert h.sent == [(7, [("file-1.jpg", 100, True)])] and m.cursor == 12
-    assert h.recorded[0][2] == [12]
+    assert h.source.downloads.count(11) == constants.MAX_UNIT_RETRIES and h.source.downloads[-1] == 12
 
 
 async def test_fresh_album_is_held_back_and_cursor_stops_before_it(tmp_path):
     h = Harness(tmp_path)
     fresh = [photo(21, gid=9, date=NOW - 3), photo(22, gid=9, date=NOW - 2)]
     m, _, stop, _ = await run(h, [photo(20)] + fresh, cursor=10, scan_max=22)
-    assert [r[2] for r in h.recorded] == [[20]] and m.cursor == 20 and stop is None
+    assert h.source.downloads == [20] and len(h.sent) == 1 and m.cursor == 20 and stop is None
     # next cycle, album now settled
     h2 = Harness(tmp_path)
     old = [photo(21, gid=9, date=NOW - 100), photo(22, gid=9, date=NOW - 90)]
     m2, *_ = await run(h2, old, cursor=m.cursor, scan_max=22, m=m)
-    assert [r[2] for r in h2.recorded] == [[21, 22]] and m.cursor == 22
+    assert h2.source.downloads == [21, 22] and len(h2.sent) == 1 and len(h2.sent[0][1]) == 2 and m.cursor == 22
 
 
 async def test_items_at_or_below_cursor_are_never_reposted(tmp_path):
     h = Harness(tmp_path)
     await run(h, [photo(10), photo(11)], cursor=10, scan_max=11)
-    assert [r[2] for r in h.recorded] == [[11]]
+    assert h.source.downloads == [11]
 
 
 async def test_rate_cap_stops_cleanly_and_resumes_later(tmp_path):
     h = Harness(tmp_path, slots=1)
     m, stats, stop, _ = await run(h, [photo(11), photo(12)], scan_max=12)
-    assert stop == "rate_cap" and [r[2] for r in h.recorded] == [[11]] and m.cursor == 11
+    assert stop == "rate_cap" and h.source.downloads == [11] and m.cursor == 11
     h.slots = 10
     await run(h, [photo(11), photo(12)], scan_max=12, m=m)
-    assert [r[2] for r in h.recorded] == [[11], [12]] and m.cursor == 12
+    assert h.source.downloads == [11, 12] and len(h.sent) == 2 and m.cursor == 12
 
 
 async def test_downloads_are_spaced_with_random_gaps(tmp_path):
@@ -243,7 +240,7 @@ async def test_flood_propagates_but_keeps_progress(tmp_path):
     m = mapping()
     with pytest.raises(SourceFlood):
         await pipeline.process_topic(m, [photo(11), photo(12)], 12, h.deps(), TopicStats())
-    assert m.cursor == 11 and [r[2] for r in h.recorded] == [[11]]
+    assert m.cursor == 11 and len(h.sent) == 1
 
 
 async def test_nothing_new_still_advances_past_text_only_messages(tmp_path):

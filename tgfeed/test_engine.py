@@ -154,17 +154,6 @@ class TestNamesAndTopics:
         assert engine.resolve_topic("", self.TOPICS)[0] is None
 
 
-class TestLinks:
-    def test_private_group_topic_link(self):
-        assert engine.message_link(None, 123, 7, 55) == "https://t.me/c/123/7/55"
-
-    def test_public_group_link(self):
-        assert engine.message_link("mygroup", 123, 7, 55) == "https://t.me/mygroup/7/55"
-
-    def test_general_has_no_topic_segment(self):
-        assert engine.message_link(None, 123, 1, 55) == "https://t.me/c/123/55"
-
-
 def test_chunk_lines_respects_limit():
     lines = ["x" * 100] * 50
     chunks = engine.chunk_lines(lines, limit=1000)

@@ -3,7 +3,7 @@
         "evac"
     ],
     "min_bot_version": "3.5.0",
-    "description": "Mirrors the photos and videos of a Telegram forum group you belong to into Discord, one channel per Telegram topic you choose to map, one at a time. Media only: no text, captions, usernames or file names ever reach Discord. Reads through your own Telegram user session (Telethon), strictly read-only and heavily throttled (jittered polling, spaced downloads, hourly and daily caps, automatic pause on Telegram flood limits). Videos are downloaded to a temp folder, over-limit clips are shrunk with ffmpeg, then everything is posted and the temp files are deleted. Albums stay together. A mod-only X under every post removes it and logs the Telegram origin to the mod log; `.tgfeed trace` / `.tgfeed takedown` find or remove a post by its Discord link.",
+    "description": "Mirrors the photos and videos of a Telegram forum group you belong to into Discord, one channel per Telegram topic you choose to map, one at a time. Media only: no text, captions, usernames or file names ever reach Discord. Reads through your own Telegram user session (Telethon), strictly read-only and heavily throttled (jittered polling, spaced downloads, hourly and daily caps, automatic pause on Telegram flood limits). Videos are downloaded to a temp folder, over-limit clips are shrunk with ffmpeg, then everything is posted and the temp files are deleted. Albums stay together. A mod-only X under every post removes it and logs the removal to the mod log.",
     "hidden": false,
     "install_msg": "Thanks for installing tgfeed!\n\nOne-time setup:\n1. Get an api_id / api_hash at my.telegram.org -> API development tools. Put them in the red service's environment in docker-compose.yml as TG_API_ID and TG_API_HASH, then recreate the container (`docker compose up -d`). Never paste them in Discord.\n2. Log in once, in a terminal on the host: `docker exec -it red python /data/cogs/CogManager/cogs/tgfeed/login.py` (phone number, the code Telegram sends you, your 2FA password if set).\n3. In Discord: `.tgfeed group <invite link of the group you are in>`, then `.tgfeed category <category>`, `.tgfeed topics`, then `.tgfeed map <topic>` for each topic you want (creates a channel visible only to you; or `.tgfeed map <topic> #channel` for an existing one).\n\nOnly new posts are mirrored; there is no backfill. `.tgfeed status` shows the caps and the last cycle.",
     "name": "TGFeed",
@@ -11,7 +11,7 @@
     "requirements": [
         "telethon"
     ],
-    "end_user_data_statement": "This cog stores no end-user data. It stores guild-level configuration (the Telegram group, topic-to-channel mappings, throttle settings), a private map from each posted Discord message to its Telegram message id (kept 180 days, for takedowns), and a Telegram session file on the host. No message text, usernames or captions are read into storage.",
+    "end_user_data_statement": "This cog stores no end-user data. It stores guild-level configuration (the Telegram group, topic-to-channel mappings, throttle settings), and a Telegram session file on the host. No message text, usernames or captions are read into storage.",
     "tags": [
         "telegram",
         "feed",

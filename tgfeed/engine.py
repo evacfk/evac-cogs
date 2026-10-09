@@ -176,14 +176,6 @@ def resolve_topic(arg: str, topics: Sequence[TopicInfo]):
     return None, "More than one topic has that title; use its id instead."
 
 
-def message_link(group_username: Optional[str], group_id: int, topic_id: int, msg_id: int) -> str:
-    """Link to the original Telegram message, for the mod-only removal log."""
-    base = f"https://t.me/{group_username}" if group_username else f"https://t.me/c/{group_id}"
-    if topic_id and topic_id != constants.GENERAL_TOPIC_ID:
-        return f"{base}/{topic_id}/{msg_id}"
-    return f"{base}/{msg_id}"
-
-
 def chunk_lines(lines: Sequence[str], limit: int = 1900) -> list:
     """Join lines into messages that each fit under Discord's length limit."""
     chunks: list = []

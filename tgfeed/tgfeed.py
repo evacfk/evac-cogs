@@ -26,7 +26,6 @@ from redbot.core.bot import Red
 from . import constants, engine, pipeline, transcode
 from .models import GroupInfo, TopicMapping, TopicStats
 from .source import SourceAuthError, SourceError, SourceFlood, TelethonSource
-from .store import PostedStore
 from .views import FeedPostView
 
 log = logging.getLogger("red.tgfeed")
@@ -59,7 +58,7 @@ class TGFeed(commands.Cog):
         )
         self._source_factory = source_factory
         self._source = None
-        self._store: Optional[PostedStore] = None
+        self._storage_ok = False
         self._poll_task: Optional[asyncio.Task] = None
         self._cycle_lock = asyncio.Lock()
         self._fails: dict = {}
@@ -79,8 +78,7 @@ class TGFeed(commands.Cog):
                     os.remove(os.path.join(tmp, name))
                 except OSError:
                     pass
-            self._store = PostedStore(os.path.join(self._data_dir, constants.POSTED_DB_NAME))
-            await asyncio.to_thread(self._store.prune, time.time() - constants.POSTED_RETENTION_DAYS * 86400)
+            self._storage_ok = True
         except OSError:
             log.exception("tgfeed: cannot use the data dir %s; the feed cannot run", self._data_dir)
         self.bot.add_view(FeedPostView(self))
@@ -127,7 +125,7 @@ class TGFeed(commands.Cog):
 
     async def _run_cycle(self) -> None:
         now = time.time()
-        if await self.config.paused() or await self.config.cooldown_until() > now or self._store is None:
+        if await self.config.paused() or await self.config.cooldown_until() > now or not self._storage_ok:
             return
         group_raw = await self.config.group()
         if not group_raw:
@@ -203,15 +201,12 @@ class TGFeed(commands.Cog):
             )
             return message.id
 
-        async def record(discord_id: int, topic_id: int, tg_ids: list) -> None:
-            await asyncio.to_thread(self._store.add, discord_id, channel.id, topic_id, tg_ids)
-
         async def shrink(src: str, dst: str, item, limit_bytes: int):
             return await transcode.shrink(src, dst, item.duration, item.height, limit_bytes)
 
         return pipeline.Deps(
             source=source, group=group, limit_bytes=limit, tmpdir=self._tmpdir, gap=gap, rng=random,
-            sleep=asyncio.sleep, now=time.time, reserve=reserve, send_batch=send_batch, record=record,
+            sleep=asyncio.sleep, now=time.time, reserve=reserve, send_batch=send_batch,
             shrink=shrink, fails=self._fails,
         )
 
@@ -273,17 +268,14 @@ class TGFeed(commands.Cog):
         except Exception:  # noqa: BLE001 -- unknown means not allowed
             return False
 
-    def _link_for(self, group_raw: dict, topic_id: int, msg_id: int) -> str:
-        return engine.message_link(group_raw.get("username"), int(group_raw.get("id") or 0), topic_id, msg_id)
-
     # -- X button --------------------------------------------------------------------------------
 
     async def handle_feed_x(self, interaction) -> None:
-        """Mod-only delete under a mirrored post; the Telegram origin goes to the mod log only."""
+        """Mod-only delete under a mirrored post; the removal is logged to the log channel."""
         if not await self._is_moderator(interaction.user):
             await interaction.response.send_message("Only moderators can remove feed posts.", ephemeral=True)
             return
-        info = await asyncio.to_thread(self._store.get, interaction.message.id) if self._store else None
+        channel_id = interaction.message.channel.id
         try:
             await interaction.message.delete()
         except discord.NotFound:
@@ -292,14 +284,7 @@ class TGFeed(commands.Cog):
             await interaction.response.send_message(f"I couldn't delete it: {exc}", ephemeral=True)
             return
         await interaction.response.send_message("Removed.", ephemeral=True)
-        await self._log_removal(interaction.user.display_name, interaction.message.channel.id, info)
-
-    async def _log_removal(self, who: str, channel_id: int, info: Optional[dict]) -> None:
-        origin = "origin unknown"
-        if info:
-            group_raw = await self.config.group()
-            origin = " ".join(self._link_for(group_raw, info["topic_id"], i) for i in info["tg_ids"][:3])
-        await self._log(f"✖️ {who} removed a feed post in <#{channel_id}> ({origin}).")
+        await self._log(f"\u2716\ufe0f {interaction.user.display_name} removed a feed post in <#{channel_id}>.")
 
     # -- Command helpers ---------------------------------------------------------------------------
 
@@ -568,7 +553,7 @@ class TGFeed(commands.Cog):
             f"Group: {group.get('title') if group else '(not set)'}",
             f"State: {'PAUSED (' + str(await self.config.pause_reason()) + ')' if await self.config.paused() else 'running'}"
             + (f", cooling down until <t:{int(cooldown)}:R>" if cooldown > now else ""),
-            f"Storage: {'ok' if self._store is not None else 'NOT USABLE (check the data dir)'}",
+            f"Storage: {'ok' if self._storage_ok else 'NOT USABLE (check the data dir)'}",
             f"Credentials in env: {'yes' if env_ok else 'NO'} | session file: {'yes' if session else 'NO (run login.py)'} | ffmpeg: {'yes' if shutil.which('ffmpeg') else 'NO'}",
             f"Poll every ~{await self.config.poll_interval_seconds()}s (±{int(constants.POLL_JITTER_FRACTION * 100)}%), file gap {await self.config.file_gap_min()}-{await self.config.file_gap_max()}s",
             f"Downloads: {used_h}/{per_hour} this hour, {used_d}/{per_day} today",
@@ -646,30 +631,3 @@ class TGFeed(commands.Cog):
         current = await self.config.view_role_ids()
         await ctx.send("Created channels are visible to: " + (", ".join(f"<@&{i}>" for i in current) or "nobody but the person who mapped them (and admins)"),
                        allowed_mentions=discord.AllowedMentions.none())
-
-    @tgfeed.command(name="trace")
-    async def tgfeed_trace(self, ctx: commands.Context, message: discord.Message) -> None:
-        """Show where a mirrored post came from (Telegram link). Mod-only, nothing is posted publicly."""
-        info = await asyncio.to_thread(self._store.get, message.id) if self._store else None
-        if info is None:
-            await ctx.send("That message isn't in the takedown map (not a tgfeed post, or older than 180 days).")
-            return
-        group_raw = await self.config.group()
-        links = " ".join(self._link_for(group_raw, info["topic_id"], i) for i in info["tg_ids"][:5])
-        await ctx.send(f"Topic `{info['topic_id']}`, posted <t:{int(info['ts'])}:R>: {links}")
-
-    @tgfeed.command(name="takedown")
-    async def tgfeed_takedown(self, ctx: commands.Context, message: discord.Message) -> None:
-        """Delete a mirrored post by its Discord link (for when someone asks for it to come down)."""
-        info = await asyncio.to_thread(self._store.get, message.id) if self._store else None
-        if info is None:
-            await ctx.send("That message isn't in the takedown map, so I won't delete it.")
-            return
-        try:
-            await message.delete()
-        except (discord.Forbidden, discord.HTTPException) as exc:
-            await ctx.send(f"I couldn't delete it: {exc}")
-            return
-        await asyncio.to_thread(self._store.delete, message.id)
-        await ctx.send("Removed.")
-        await self._log_removal(ctx.author.display_name, info["channel_id"], info)

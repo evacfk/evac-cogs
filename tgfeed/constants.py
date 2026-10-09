@@ -1,6 +1,6 @@
 """Config defaults and lookup tables for tgfeed. No discord/redbot/telethon imports."""
 
-BUILD = "tg-v1 (public forum media mirror)"
+BUILD = "tg-v2 (one-by-one map, creator-only channels, no takedown list)"
 
 # -- Environment / files ---------------------------------------------------------
 ENV_API_ID = "TG_API_ID"
@@ -8,7 +8,6 @@ ENV_API_HASH = "TG_API_HASH"
 ENV_DATA_DIR = "TG_DATA_DIR"
 DEFAULT_DATA_DIR = "/data/tgfeed"          # inside the red container; /data is the host bind mount
 SESSION_BASENAME = "tgfeed"                # Telethon appends .session
-POSTED_DB_NAME = "posted.db"
 TMP_DIR_NAME = "tmp"
 
 # -- Polling and Telegram-account safety -----------------------------------------
@@ -68,7 +67,6 @@ SIZE_SAFETY_FACTORS = (0.88, 0.65)         # first attempt, then one tighter ret
 TRANSCODE_TIMEOUT_SECONDS = 900
 
 # -- Retention / UI ------------------------------------------------------------------
-POSTED_RETENTION_DAYS = 180                # how long the Discord->Telegram takedown map is kept
 FEED_X_ID = "tgfeed:x"
 DEFAULT_LOG_CHANNEL_ID = 416660303741452299      # #mod-commands
 CHANNEL_NAME_MAX = 90
