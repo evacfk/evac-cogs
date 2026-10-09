@@ -17,6 +17,27 @@ import os
 import sys
 
 
+LIB_DIRS = ("/data/cogs/Downloader/lib",)   # where Red's Downloader puts cog requirements
+
+
+def ensure_module(name: str, extra_dirs=LIB_DIRS) -> bool:
+    """Red installs cog requirements into its own lib dir and only adds it to sys.path
+    inside the bot process, so a script run by `docker exec` has to look there itself."""
+    import importlib
+    import importlib.util
+
+    if importlib.util.find_spec(name) is not None:
+        return True
+    extra = [os.environ.get("TG_LIB_DIR", "")] + list(extra_dirs)
+    for directory in extra:
+        if directory and os.path.isdir(directory) and directory not in sys.path:
+            sys.path.append(directory)
+            importlib.invalidate_caches()
+            if importlib.util.find_spec(name) is not None:
+                return True
+    return importlib.util.find_spec(name) is not None
+
+
 async def main() -> int:
     api_id = os.environ.get("TG_API_ID", "").strip()
     api_hash = os.environ.get("TG_API_HASH", "").strip()
@@ -27,6 +48,10 @@ async def main() -> int:
     os.makedirs(data_dir, mode=0o700, exist_ok=True)
     session = os.path.join(data_dir, "tgfeed")
 
+    if not ensure_module("telethon"):
+        print("telethon isn't installed in this container yet. In Discord run `.cog install evac-cogs tgfeed` first "
+              "(it installs telethon), or set TG_LIB_DIR to the folder that holds it.")
+        return 1
     from telethon import TelegramClient
     from telethon.errors import PhoneCodeExpiredError, PhoneCodeInvalidError, SessionPasswordNeededError
 
