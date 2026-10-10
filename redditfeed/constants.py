@@ -55,6 +55,17 @@ ARCTIC_SHIFT_MAX_RETRIES = 2
 ARCTIC_SHIFT_RETRY_BACKOFF_SECONDS = 2.0
 ARCTIC_SHIFT_SUBREDDIT_SEARCH_URL = "https://arctic-shift.photon-reddit.com/api/subreddits/search"
 
+# -- Fallback sources (used when Arctic Shift is down) ------------------------
+
+REDDIT_JSON_BASE_URL = "https://www.reddit.com"
+PULLPUSH_BASE_URL = "https://api.pullpush.io/reddit/search/submission/"
+FALLBACK_USER_AGENT = "linux:evac-redditfeed:1.0 (Discord feed bot; read-only listing fetch)"
+FALLBACK_TIMEOUT_SECONDS = 20
+FALLBACK_MAX_RETRIES = 1
+FALLBACK_RETRY_BACKOFF_SECONDS = 3.0
+REDDIT_JSON_MIN_GAP_SECONDS = 7.0       # unauthenticated Reddit allows ~10 requests/minute
+PRIMARY_COOLDOWN_SECONDS = 300          # after repeated primary failures, skip it this long
+
 # -- Subreddit discovery (`.redditfeed discover`) ----------------------------
 
 DISCOVER_DEFAULT_MIN_SUBSCRIBERS = 5000

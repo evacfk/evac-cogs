@@ -92,12 +92,12 @@ class ArcticShiftSource(RedditSource):
                 last_error = exc
                 log.warning(
                     "Arctic Shift fetch failed for %s (attempt %d/%d): %s",
-                    what, attempt + 1, self._max_retries + 1, exc,
+                    what, attempt + 1, self._max_retries + 1, describe_error(exc),
                 )
                 if attempt < self._max_retries:
                     await asyncio.sleep(constants.ARCTIC_SHIFT_RETRY_BACKOFF_SECONDS * (attempt + 1))
 
-        raise RedditSourceError(f"Arctic Shift fetch failed for {what}: {last_error}")
+        raise RedditSourceError(f"Arctic Shift fetch failed for {what}: {describe_error(last_error)}")
 
     async def fetch_new_posts(
         self, subreddit: str, after_ts: Optional[float], limit: int
@@ -123,6 +123,20 @@ class ArcticShiftSource(RedditSource):
     ) -> list[dict]:
         url = self._build_subreddit_search_url(prefix, min_subscribers, limit)
         return await self._get_data(url, f"subreddit search '{prefix}'")
+
+
+def describe_error(exc: Optional[BaseException]) -> str:
+    """Readable text for any exception. A bare `str(exc)` is empty for timeouts
+    (asyncio.TimeoutError), which is why outages used to log a blank reason."""
+    if exc is None:
+        return "unknown error"
+    text = str(exc).strip()
+    if isinstance(exc, RedditSourceError) and text:
+        return text
+    name = type(exc).__name__
+    if isinstance(exc, (asyncio.TimeoutError, TimeoutError)) and not text:
+        return f"{name} (no response within {constants.ARCTIC_SHIFT_TIMEOUT_SECONDS}s)"
+    return f"{name}: {text}" if text else name
 
 
 def format_http_error(status: int, body: str) -> str:

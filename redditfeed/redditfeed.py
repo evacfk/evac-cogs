@@ -19,6 +19,7 @@ from redbot.core.bot import Red
 
 from . import constants, discovery, discovery_ui, embeds, engine, queue_ui, redgifs
 from .arctic_shift import ArcticShiftSource, RedditSource, RedditSourceError
+from .fallback_sources import FallbackSource, PullPushSource, RedditJsonSource
 from .dashboard_integration import DashboardIntegration, dashboard_page
 from .dashboard_view import PAGE_TEMPLATE
 from .models import QueueEntry, SubredditMapping
@@ -53,7 +54,11 @@ class RedditFeed(DashboardIntegration, commands.Cog):
             new_channel_prefix="",   # e.g. "🔞・"
             redgifs_mode=constants.REDGIFS_UPLOAD,   # upload the clip so it plays inline, or post the bare link
         )
-        self.source: RedditSource = ArcticShiftSource()
+        self.source: RedditSource = FallbackSource(
+            [ArcticShiftSource(), RedditJsonSource(), PullPushSource()],
+            names=["arctic-shift", "reddit", "pullpush"],
+        )
+        self._announced_source: Optional[str] = None
         self.redgifs = redgifs.RedgifsResolver()
         self._redgifs_sem = asyncio.Semaphore(2)   # at most two clips downloading at once
         self._poll_task: Optional[asyncio.Task] = None
@@ -151,6 +156,22 @@ class RedditFeed(DashboardIntegration, commands.Cog):
             await self._expire_queue(time.time())
         except Exception:  # noqa: BLE001
             log.exception("redditfeed: queue expiry failed")
+        await self._announce_source_change()
+
+    async def _announce_source_change(self) -> None:
+        """Tell the log channel when the feed switches between data sources."""
+        active = getattr(self.source, "active_name", None)
+        if active is None or active == self._announced_source:
+            return
+        previous, self._announced_source = self._announced_source, active
+        primary = getattr(self.source, "primary_name", active)
+        if previous is None and active == primary:
+            return                                   # normal startup, nothing to say
+        if active == primary:
+            await self._log(f"\u2705 redditfeed: back on {primary}.")
+        else:
+            await self._log(f"\u26A0\uFE0F redditfeed: {primary} is failing, using **{active}** as a backup "
+                            "(coverage may be thinner until it recovers).")
 
     @staticmethod
     def _merge_poll_state(live: dict, polled: dict) -> dict:
@@ -572,7 +593,7 @@ class RedditFeed(DashboardIntegration, commands.Cog):
     @redditfeed.command(name="version")
     async def redditfeed_version(self, ctx: commands.Context) -> None:
         """Version-probe command -- confirms a deploy actually took."""
-        await ctx.send("redditfeed build: redgifs-v3 (queue clear, RedGifs clips play in the queue and the feed)")
+        await ctx.send("redditfeed build: source-v1 (backup sources when Arctic Shift is down, readable fetch errors)")
 
     async def _map_subreddit(self, name: str, channel_id: int) -> bool:
         """The one place a subreddit gets mapped to a channel -- `add` and the
@@ -772,6 +793,19 @@ class RedditFeed(DashboardIntegration, commands.Cog):
         text = "\n\n".join(lines)
         for chunk_start in range(0, len(text), 1900):
             await ctx.send(text[chunk_start : chunk_start + 1900])
+
+    @redditfeed.command(name="source")
+    async def redditfeed_source(self, ctx: commands.Context) -> None:
+        """Which data source is serving the feed, and any recent source errors."""
+        src = self.source
+        if not hasattr(src, "active_name"):
+            await ctx.send("Single data source (no fallback configured).")
+            return
+        lines = [f"Serving from: **{src.active_name or 'nothing yet'}** (primary: {src.primary_name}"
+                 f"{', skipped for now after repeated failures' if src.primary_skipped else ''})"]
+        for name, err in sorted(src.last_errors.items()):
+            lines.append(f"{name}: {err[:300]}")
+        await ctx.send("\n".join(lines))
 
     # -- Queue + feed settings ---------------------------------------------------------
 
