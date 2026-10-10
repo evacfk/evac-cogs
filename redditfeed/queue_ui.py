@@ -26,7 +26,7 @@ def build_queue_message(entry: QueueEntry, ttl_hours: float = constants.QUEUE_TT
     embed = discord.Embed(title=(post.get("title") or "(untitled)")[:250], color=discord.Color.gold())
     embed.url = link
     embed.add_field(name="Subreddit", value=f"[r/{entry.subreddit}]({REDDIT}/r/{entry.subreddit})", inline=True)
-    embed.add_field(name="Score", value=str(post.get("score", 0)), inline=True)
+    embed.add_field(name="Score", value=(str(post["score"]) if post.get("score") is not None else "n/a"), inline=True)
     embed.add_field(name="Posts to", value=" ".join(f"<#{c}>" for c in entry.channel_ids) or "(no channel)", inline=True)
     if post.get("created_utc"):
         embed.add_field(name="Posted", value=f"<t:{int(post['created_utc'])}:R>", inline=True)

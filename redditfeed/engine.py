@@ -272,7 +272,7 @@ def trim_post(post: dict, subreddit: str) -> dict:
     return {
         "id": str(post.get("id", "")),
         "title": title[:250],
-        "score": int(post.get("score") or 0),
+        "score": int(post["score"]) if post.get("score") is not None else None,   # None = source has no score
         "permalink": post.get("permalink") or "",
         "created_utc": post.get("created_utc"),
         "subreddit": subreddit,
@@ -293,7 +293,8 @@ def queue_skip_reason(
         return "before_added"
     if now_ts - created < min_age_seconds:
         return "too_new"
-    if int(post.get("score") or 0) < min_score:
+    score = post.get("score")
+    if score is not None and int(score) < min_score:      # unknown score (RSS backup) can't be gated
         return "low_score"
     return None
 

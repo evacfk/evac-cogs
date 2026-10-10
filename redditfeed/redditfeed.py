@@ -19,7 +19,7 @@ from redbot.core.bot import Red
 
 from . import constants, discovery, discovery_ui, embeds, engine, queue_ui, redgifs
 from .arctic_shift import ArcticShiftSource, RedditSource, RedditSourceError
-from .fallback_sources import FallbackSource, PullPushSource, RedditJsonSource
+from .fallback_sources import FallbackSource, PullPushSource, RedditRssSource
 from .dashboard_integration import DashboardIntegration, dashboard_page
 from .dashboard_view import PAGE_TEMPLATE
 from .models import QueueEntry, SubredditMapping
@@ -55,8 +55,8 @@ class RedditFeed(DashboardIntegration, commands.Cog):
             redgifs_mode=constants.REDGIFS_UPLOAD,   # upload the clip so it plays inline, or post the bare link
         )
         self.source: RedditSource = FallbackSource(
-            [ArcticShiftSource(), RedditJsonSource(), PullPushSource()],
-            names=["arctic-shift", "reddit", "pullpush"],
+            [ArcticShiftSource(), RedditRssSource(), PullPushSource()],
+            names=["arctic-shift", "reddit-rss", "pullpush"],
         )
         self._announced_source: Optional[str] = None
         self.redgifs = redgifs.RedgifsResolver()
@@ -593,7 +593,7 @@ class RedditFeed(DashboardIntegration, commands.Cog):
     @redditfeed.command(name="version")
     async def redditfeed_version(self, ctx: commands.Context) -> None:
         """Version-probe command -- confirms a deploy actually took."""
-        await ctx.send("redditfeed build: source-v1 (backup sources when Arctic Shift is down, readable fetch errors)")
+        await ctx.send("redditfeed build: source-v2 (Reddit RSS + PullPush backups when Arctic Shift is down)")
 
     async def _map_subreddit(self, name: str, channel_id: int) -> bool:
         """The one place a subreddit gets mapped to a channel -- `add` and the

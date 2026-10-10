@@ -1,14 +1,17 @@
 """Backup Reddit data sources, plus the wrapper that fails over between them.
 
 Arctic Shift is the primary source. When it is down (it returned HTTP 522 for
-hours on 2026-10-09) FallbackSource tries Reddit's own public listing and then
-PullPush instead. All three return Reddit's post JSON shape, so nothing
+hours on 2026-10-09) FallbackSource tries Reddit's public RSS feed and then
+PullPush instead. Both are mapped to Reddit's post JSON shape, so nothing
 downstream changes; dedup by post id absorbs any overlap between sources.
 
-Neither backup is as good as Arctic Shift: Reddit's unauthenticated listing is
-rate-limited and often refused from datacenter IPs, and PullPush is a community
-archive that can lag or be down itself. They exist so a primary outage degrades
-the feed instead of stopping it. Discovery (subreddit search) stays primary-only.
+Why RSS and not Reddit's .json listing: from the evacOVH datacenter IP the
+.json endpoint answers 403 while the .rss feed answers 200 (checked 2026-10-09).
+
+The backups are thinner than Arctic Shift. RSS has no score, no gallery image
+list and no NSFW flag; PullPush is a community archive that rate-limits and can
+lag or be down itself. They exist so a primary outage degrades the feed instead
+of stopping it. Discovery (subreddit search) stays primary-only.
 
 aiohttp is imported inside methods so this module stays importable under the
 dev test stub.
@@ -16,8 +19,12 @@ dev test stub.
 from __future__ import annotations
 
 import asyncio
+import html
 import logging
+import re
 import time
+import xml.etree.ElementTree as ET
+from datetime import datetime, timezone
 from typing import Awaitable, Callable, Optional
 
 from . import constants
@@ -73,22 +80,32 @@ def _newer_than(posts: list[dict], after_ts: Optional[float]) -> list[dict]:
     return [p for p in posts if (p.get("created_utc") or 0) > after_ts]
 
 
-class RedditJsonSource(_JsonSource):
-    """Reddit's public `/r/<sub>/new.json` listing. Unauthenticated Reddit allows
+class RedditRssSource(_JsonSource):
+    """Reddit's public `/r/<sub>/new.rss` Atom feed. Unauthenticated Reddit allows
     roughly 10 requests a minute, so requests are spaced by a minimum gap."""
 
-    name = "reddit"
+    name = "reddit-rss"
 
     def __init__(self, request_fn=None, max_retries: int = constants.FALLBACK_MAX_RETRIES,
-                 min_gap_seconds: float = constants.REDDIT_JSON_MIN_GAP_SECONDS):
+                 min_gap_seconds: float = constants.REDDIT_RSS_MIN_GAP_SECONDS):
         super().__init__(request_fn, max_retries)
         self._min_gap = min_gap_seconds
         self._last_request = 0.0
         self._gap_lock = asyncio.Lock()
 
+    async def _default_request(self, url: str):
+        import aiohttp  # local import -- not available under the dev test stub
+
+        timeout = aiohttp.ClientTimeout(total=constants.FALLBACK_TIMEOUT_SECONDS)
+        headers = {"User-Agent": constants.FALLBACK_USER_AGENT}
+        async with aiohttp.ClientSession(timeout=timeout, headers=headers) as session:
+            async with session.get(url) as resp:
+                if resp.status >= 400:
+                    raise RedditSourceError(format_http_error(resp.status, await resp.text()))
+                return await resp.text()
+
     def _build_url(self, subreddit: str, limit: int) -> str:
-        return (f"{constants.REDDIT_JSON_BASE_URL}/r/{subreddit}/new.json"
-                f"?limit={max(1, min(int(limit), 100))}&raw_json=1")
+        return f"{constants.REDDIT_RSS_BASE_URL}/r/{subreddit}/new.rss?limit={max(1, min(int(limit), 100))}"
 
     async def fetch_new_posts(self, subreddit: str, after_ts: Optional[float], limit: int) -> list[dict]:
         async with self._gap_lock:
@@ -96,8 +113,8 @@ class RedditJsonSource(_JsonSource):
             if wait > 0:
                 await asyncio.sleep(wait)
             self._last_request = time.monotonic()
-        payload = await self._get(self._build_url(subreddit, limit), f"r/{subreddit}")
-        return _newer_than(parse_reddit_listing(payload), after_ts)
+        body = await self._get(self._build_url(subreddit, limit), f"r/{subreddit}")
+        return _newer_than(parse_reddit_rss(body), after_ts)
 
 
 class PullPushSource(_JsonSource):
@@ -119,13 +136,58 @@ class PullPushSource(_JsonSource):
         return _newer_than(data, after_ts)
 
 
-def parse_reddit_listing(payload) -> list[dict]:
-    """`{"data": {"children": [{"data": {...post...}}]}}` -> list of post dicts."""
+_ATOM = "{http://www.w3.org/2005/Atom}"
+_LINK_RE = re.compile(r'<a href="([^"]+)">\[link\]</a>')
+
+
+def _parse_iso(text: str) -> Optional[float]:
     try:
-        children = payload["data"]["children"]
-    except (KeyError, TypeError):
-        raise RedditSourceError("reddit listing had an unexpected shape") from None
-    return [c["data"] for c in children if isinstance(c, dict) and isinstance(c.get("data"), dict)]
+        parsed = datetime.fromisoformat((text or "").strip().replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.timestamp()
+
+
+def parse_reddit_rss(body) -> list[dict]:
+    """Reddit Atom feed -> post dicts in the shape Arctic Shift returns.
+
+    What RSS can't tell us is left out rather than invented: no `score` key (the
+    queue's score gate skips unknown scores), no gallery image list, no NSFW flag.
+    Galleries and Reddit-hosted video can't be resolved to files from RSS, so they
+    are marked `is_video` and post as a plain permalink instead of being dropped.
+    """
+    try:
+        root = ET.fromstring(body)
+    except ET.ParseError as exc:
+        raise RedditSourceError(f"reddit RSS was not valid XML ({exc})") from None
+    posts = []
+    for entry in root.iter(f"{_ATOM}entry"):
+        raw_id = (entry.findtext(f"{_ATOM}id") or "").strip()
+        post_id = raw_id[3:] if raw_id.startswith("t3_") else raw_id
+        link_el = entry.find(f"{_ATOM}link")
+        permalink_url = link_el.get("href", "") if link_el is not None else ""
+        created = _parse_iso(entry.findtext(f"{_ATOM}published") or entry.findtext(f"{_ATOM}updated") or "")
+        if not post_id or created is None:
+            continue
+        content = entry.findtext(f"{_ATOM}content") or ""
+        match = _LINK_RE.search(content)
+        url = html.unescape(match.group(1)) if match else permalink_url
+        permalink = re.sub(r"^https?://[^/]+", "", permalink_url)
+        lowered = url.lower()
+        post = {
+            "id": post_id,
+            "title": (entry.findtext(f"{_ATOM}title") or "").strip(),
+            "selftext": "",
+            "url": url,
+            "permalink": permalink,
+            "created_utc": created,
+        }
+        if "reddit.com/gallery/" in lowered or "v.redd.it/" in lowered:
+            post["is_video"] = True
+        posts.append(post)
+    return posts
 
 
 class FallbackSource(RedditSource):

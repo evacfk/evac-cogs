@@ -86,7 +86,19 @@ def test_posted_map_prunes_by_age_and_size():
 
 def test_trim_post_keeps_only_what_the_queue_needs():
     t = engine.trim_post({"id": 1, "title": " hi ", "score": None, "permalink": "/r/x/1", "author": "secret"}, "x")
-    assert t == {"id": "1", "title": "hi", "score": 0, "permalink": "/r/x/1", "created_utc": None, "subreddit": "x"}
+    assert t == {"id": "1", "title": "hi", "score": None, "permalink": "/r/x/1", "created_utc": None, "subreddit": "x"}
+
+
+def test_trim_post_keeps_a_real_zero_score_distinct_from_unknown():
+    assert engine.trim_post({"id": 1, "score": 0}, "x")["score"] == 0
+    assert engine.trim_post({"id": 1}, "x")["score"] is None
+
+
+def test_unknown_score_is_not_gated_but_a_known_low_score_still_is():
+    """The RSS backup source has no score; treating that as 0 would hold every post forever."""
+    skip = lambda p: engine.queue_skip_reason(p, NOW, None, 3600, 3)
+    assert skip({"id": "a", "created_utc": NOW - 7200}) is None
+    assert skip(post(120, 1)) == "low_score"
 
 
 # -- destination proposals ------------------------------------------------------------------------

@@ -43,42 +43,78 @@ class TestDescribeError:
         assert describe_error(RedditSourceError("HTTP 522")) == "HTTP 522"
 
 
-class TestParsing:
-    def test_reddit_listing(self):
-        payload = {"data": {"children": [{"data": {"id": "a"}}, {"data": {"id": "b"}}]}}
-        assert fb.parse_reddit_listing(payload) == [{"id": "a"}, {"id": "b"}]
+ATOM = """<?xml version="1.0" encoding="UTF-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom" xmlns:media="http://search.yahoo.com/mrss/">
+<entry><author><name>/u/someone</name></author><category term="feet" label="r/feet"/>
+<content type="html">&lt;table&gt;&lt;tr&gt;&lt;td&gt;&lt;a href="https://www.reddit.com/r/feet/comments/img1/pic/"&gt;&lt;img src="https://b.thumbs.redditmedia.com/t.jpg"/&gt;&lt;/a&gt; &lt;/td&gt;&lt;td&gt;&amp;#32; submitted by &amp;#32; &lt;a href="https://www.reddit.com/user/someone"&gt; /u/someone &lt;/a&gt; &lt;br/&gt; &lt;span&gt;&lt;a href="https://i.redd.it/abc123.jpg?width=1&amp;amp;s=x"&gt;[link]&lt;/a&gt;&lt;/span&gt; &lt;span&gt;&lt;a href="https://www.reddit.com/r/feet/comments/img1/pic/"&gt;[comments]&lt;/a&gt;&lt;/span&gt;&lt;/td&gt;&lt;/tr&gt;&lt;/table&gt;</content>
+<id>t3_img1</id><media:thumbnail url="https://b.thumbs.redditmedia.com/t.jpg"/>
+<link href="https://www.reddit.com/r/feet/comments/img1/pic/"/><updated>2026-10-09T20:00:00+00:00</updated><published>2026-10-09T19:59:00+00:00</published><title>A pic</title></entry>
+<entry><content type="html">&lt;a href="https://www.reddit.com/gallery/gal1"&gt;[link]&lt;/a&gt;</content>
+<id>t3_gal1</id><link href="https://www.reddit.com/r/feet/comments/gal1/set/"/><updated>2026-10-09T21:00:00Z</updated><title>A set</title></entry>
+<entry><content type="html">&lt;a href="https://v.redd.it/vid1"&gt;[link]&lt;/a&gt;</content>
+<id>t3_vid1</id><link href="https://www.reddit.com/r/feet/comments/vid1/clip/"/><updated>2026-10-09T21:05:00Z</updated><title>A clip</title></entry>
+<entry><content type="html">self text</content><id>t3_txt1</id><link href="https://www.reddit.com/r/feet/comments/txt1/words/"/><updated>2026-10-09T21:10:00Z</updated><title>Words</title></entry>
+<entry><content type="html">x</content><id>t3_nodate</id><link href="https://www.reddit.com/r/feet/comments/nodate/x/"/><title>No date</title></entry>
+</feed>"""
 
-    def test_reddit_listing_bad_shape_raises(self):
+
+class TestParseRss:
+    def test_image_post_maps_to_arctic_shape(self):
+        posts = {p["id"]: p for p in fb.parse_reddit_rss(ATOM)}
+        img = posts["img1"]
+        assert img["url"] == "https://i.redd.it/abc123.jpg?width=1&s=x"      # entity-decoded
+        assert img["permalink"] == "/r/feet/comments/img1/pic/"
+        assert img["title"] == "A pic"
+        assert img["created_utc"] == 1791575940.0                           # published beats updated
+        assert "score" not in img                                           # RSS has none: never invented
+
+    def test_gallery_and_reddit_video_become_permalink_links(self):
+        posts = {p["id"]: p for p in fb.parse_reddit_rss(ATOM)}
+        assert posts["gal1"]["is_video"] is True
+        assert posts["vid1"]["is_video"] is True
+        assert "is_video" not in posts["img1"]
+
+    def test_entry_without_a_date_is_skipped(self):
+        assert "nodate" not in {p["id"] for p in fb.parse_reddit_rss(ATOM)}
+
+    def test_invalid_xml_raises_source_error(self):
         with pytest.raises(RedditSourceError):
-            fb.parse_reddit_listing({"error": 403})
+            fb.parse_reddit_rss("<html>blocked</html")
+
+    def test_downstream_classification_works_on_rss_posts(self):
+        from redditfeed import constants, engine
+        posts = {p["id"]: p for p in fb.parse_reddit_rss(ATOM)}
+        img_items = engine.extract_media_items(posts["img1"])
+        assert [i.kind for i in img_items] == [constants.MEDIA_KIND_IMAGE]
+        vid_items = engine.extract_media_items(posts["vid1"])
+        assert vid_items[0].is_link_only and vid_items[0].url.endswith("/r/feet/comments/vid1/clip/")
+        assert engine.extract_media_items(posts["txt1"]) == []
 
 
-class TestRedditJsonSource:
-    async def test_filters_to_posts_after_cursor(self):
-        payload = {"data": {"children": [{"data": {"id": "old", "created_utc": 100}},
-                                         {"data": {"id": "new", "created_utc": 300}}]}}
+class TestRedditRssSource:
+    async def test_filters_to_posts_after_cursor_and_builds_url(self):
         urls = []
 
         async def req(url):
             urls.append(url)
-            return payload
+            return ATOM
 
-        src = fb.RedditJsonSource(request_fn=req, min_gap_seconds=0)
-        posts = await src.fetch_new_posts("feet", 200, 25)
-        assert [p["id"] for p in posts] == ["new"]
-        assert "/r/feet/new.json" in urls[0] and "limit=25" in urls[0] and "raw_json=1" in urls[0]
+        src = fb.RedditRssSource(request_fn=req, min_gap_seconds=0)
+        posts = await src.fetch_new_posts("feet", 1791576000.0, 25)       # after 2026-10-09T20:00Z
+        assert {p["id"] for p in posts} == {"gal1", "vid1", "txt1"}
+        assert "/r/feet/new.rss" in urls[0] and "limit=25" in urls[0]
 
-    async def test_error_after_retries(self):
+    async def test_error_after_retries_names_the_exception(self):
         async def req(url):
             raise asyncio.TimeoutError()
 
-        src = fb.RedditJsonSource(request_fn=req, max_retries=1, min_gap_seconds=0)
+        src = fb.RedditRssSource(request_fn=req, max_retries=1, min_gap_seconds=0)
         with pytest.raises(RedditSourceError, match="TimeoutError"):
             await src.fetch_new_posts("feet", None, 10)
 
     async def test_search_unsupported(self):
         with pytest.raises(RedditSourceError):
-            await fb.RedditJsonSource(request_fn=None, min_gap_seconds=0).search_subreddits("a", 1, 1)
+            await fb.RedditRssSource(min_gap_seconds=0).search_subreddits("a", 1, 1)
 
 
 class TestPullPushSource:
