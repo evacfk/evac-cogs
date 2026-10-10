@@ -1,6 +1,6 @@
 """Defaults and tuning values for rejoinwatch."""
 
-VERSION = "1.0.0"
+VERSION = "1.0.1"
 
 # #mod-chat: the same channel serverpulse and lurker post to.
 DEFAULT_MOD_CHANNEL_ID = 912520841613418596
@@ -31,7 +31,7 @@ DEFAULT_WARNING = (
 GUILD_DEFAULTS = {
     "enabled": True,
     "mod_channel_id": DEFAULT_MOD_CHANNEL_ID,
-    "cuddle_channel_id": None,      # set once with `.rejoinwatch cuddle #cuddle`
+    "cuddle_channel_id": None,      # set once with `.rejoinwatch fallback #cuddle`
     "mod_role_id": DEFAULT_MOD_ROLE_ID,
     "retention_days": DEFAULT_RETENTION_DAYS,
     "warning_text": DEFAULT_WARNING,

@@ -366,7 +366,7 @@ class RejoinWatch(commands.Cog):
         mod_text = "<#%s>" % mod_ch if self._channel(guild, mod_ch) else "NOT FOUND, alerts are dropped"
         cuddle_text = (
             "<#%s>" % cuddle_ch if self._channel(guild, cuddle_ch)
-            else "NOT SET, use `.rejoinwatch cuddle #cuddle`"
+            else "NOT SET, use `.rejoinwatch fallback #cuddle`"
         )
         role_text = "<@&%s>" % mod_role if mod_role else "none"
         audit_text = (
@@ -437,9 +437,9 @@ class RejoinWatch(commands.Cog):
         await cfg.mod_channel_id.set(channel.id)
         await ctx.send(f"Alerts will go to {channel.mention}.")
 
-    @rejoinwatch.command(name="cuddle")
+    @rejoinwatch.command(name="fallback")
     @commands.admin_or_permissions(manage_guild=True)
-    async def rw_cuddle(self, ctx, channel: Optional[discord.TextChannel] = None):
+    async def rw_fallback(self, ctx, channel: Optional[discord.TextChannel] = None):
         """Set the fallback channel for warnings when DMs are closed (#cuddle). No channel shows the current one."""
         cfg = self.config.guild(ctx.guild)
         if channel is None:

@@ -736,7 +736,7 @@ async def test_toggle_and_channel_setters(env):
     await env.cog.rw_toggle.callback(env.cog, ctx)
     assert cfg_val(env, "enabled").current() is True
     new = env.guild.add_channel(777, "other")
-    await env.cog.rw_cuddle.callback(env.cog, ctx, new)
+    await env.cog.rw_fallback.callback(env.cog, ctx, new)
     await env.cog.rw_modchannel.callback(env.cog, ctx, new)
     assert cfg_val(env, "cuddle_channel_id").current() == 777
     assert cfg_val(env, "mod_channel_id").current() == 777
@@ -765,6 +765,9 @@ async def test_settings_reports_setup_problems(env):
     out = ctx.sent[-1]
     assert "v" + env.constants.VERSION in out
     assert "NOT SET" in out and "NO, kicks" in out and "leaves on record: 1" in out
+    # the hint must name a command that actually exists
+    assert "`.rejoinwatch fallback #cuddle`" in out
+    assert env.cog.rw_fallback.kw["name"] == "fallback"
 
 
 async def test_group_with_no_subcommand_shows_help(env):
