@@ -958,3 +958,15 @@ async def test_queue_clear_with_nothing_waiting_and_with_a_deleted_card():
     await cb(cog, ctx, "yes")
     assert "1 card(s) couldn't be edited" in ctx.sent[-1]
     assert engine.pending_ids(await cog.config.queue()) == []
+
+
+async def test_least_recently_polled_subreddit_is_fetched_first():
+    """A slow or rate-limited source cuts cycles short; without this the subreddits at the end
+    of the list were starved every time (two sat 13 hours stale)."""
+    def m(name, last):
+        return SubredditMapping(subreddit=name, channel_ids=[20], added_ts=NOW - 86400, last_poll_ts=last).to_dict()
+
+    mappings = {"fresh": m("fresh", NOW - 60), "stale": m("stale", NOW - 40000), "middle": m("middle", NOW - 3000)}
+    cog = make({}, mappings=mappings)
+    await cog._run_poll_cycle()
+    assert [f[0] for f in cog.source.fetches] == ["stale", "middle", "fresh"]

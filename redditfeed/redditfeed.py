@@ -19,7 +19,7 @@ from redbot.core.bot import Red
 
 from . import constants, discovery, discovery_ui, embeds, engine, queue_ui, redgifs
 from .arctic_shift import ArcticShiftSource, RedditSource, RedditSourceError
-from .fallback_sources import FallbackSource, PullPushSource, RedditRssSource
+from .fallback_sources import FallbackSource, RedditRssSource
 from .dashboard_integration import DashboardIntegration, dashboard_page
 from .dashboard_view import PAGE_TEMPLATE
 from .models import QueueEntry, SubredditMapping
@@ -55,8 +55,8 @@ class RedditFeed(DashboardIntegration, commands.Cog):
             redgifs_mode=constants.REDGIFS_UPLOAD,   # upload the clip so it plays inline, or post the bare link
         )
         self.source: RedditSource = FallbackSource(
-            [ArcticShiftSource(), RedditRssSource(), PullPushSource()],
-            names=["arctic-shift", "reddit-rss", "pullpush"],
+            [ArcticShiftSource(), RedditRssSource()],
+            names=["arctic-shift", "reddit-rss"],
         )
         self._announced_source: Optional[str] = None
         self.redgifs = redgifs.RedgifsResolver()
@@ -110,7 +110,10 @@ class RedditFeed(DashboardIntegration, commands.Cog):
         self._last_stats = {}
 
         first = True
-        for key, raw in list(mappings_raw.items()):
+        # Least-recently-polled first, so when a slow or rate-limited source cuts a cycle
+        # short the same tail subreddits don't starve every time.
+        ordered = sorted(mappings_raw.items(), key=lambda kv: (kv[1].get("last_poll_ts") or 0))
+        for key, raw in ordered:
             mapping = SubredditMapping.from_dict(raw)
             if mapping.paused or not mapping.channel_ids:
                 continue
@@ -593,7 +596,7 @@ class RedditFeed(DashboardIntegration, commands.Cog):
     @redditfeed.command(name="version")
     async def redditfeed_version(self, ctx: commands.Context) -> None:
         """Version-probe command -- confirms a deploy actually took."""
-        await ctx.send("redditfeed build: source-v2 (Reddit RSS + PullPush backups when Arctic Shift is down)")
+        await ctx.send("redditfeed build: source-v3 (Reddit RSS backup with 429 hold-off, least-recently-polled first)")
 
     async def _map_subreddit(self, name: str, channel_id: int) -> bool:
         """The one place a subreddit gets mapped to a channel -- `add` and the

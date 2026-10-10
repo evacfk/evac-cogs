@@ -117,24 +117,64 @@ class TestRedditRssSource:
             await fb.RedditRssSource(min_gap_seconds=0).search_subreddits("a", 1, 1)
 
 
-class TestPullPushSource:
-    async def test_builds_url_and_filters(self):
-        urls = []
+class TestRssRateLimit:
+    async def test_429_puts_the_source_on_hold_without_more_requests(self):
+        now = {"t": 1000.0}
+        calls = []
 
         async def req(url):
-            urls.append(url)
-            return {"data": [{"id": "x", "created_utc": 500}, {"id": "y", "created_utc": 50}]}
+            calls.append(url)
+            raise fb.SourceRateLimited("HTTP 429", 90)
 
-        posts = await fb.PullPushSource(request_fn=req).fetch_new_posts("feet", 100, 10)
-        assert [p["id"] for p in posts] == ["x"]
-        assert "subreddit=feet" in urls[0] and "after=100" in urls[0] and "size=10" in urls[0]
+        src = fb.RedditRssSource(request_fn=req, min_gap_seconds=0, clock=lambda: now["t"])
+        with pytest.raises(RedditSourceError, match="429"):
+            await src.fetch_new_posts("feet", None, 10)
+        assert len(calls) == 1                           # a 429 is never retried
+        assert 80 < src.blocked_for <= 90
+        with pytest.raises(RedditSourceError, match="holding off"):
+            await src.fetch_new_posts("pics", None, 10)
+        assert len(calls) == 1                           # held: no network call at all
 
-    async def test_missing_data_raises(self):
+    async def test_hold_expires(self):
+        now = {"t": 1000.0}
+        state = {"limited": True, "calls": 0}
+
         async def req(url):
-            return {}
+            state["calls"] += 1
+            if state["limited"]:
+                raise fb.SourceRateLimited("HTTP 429", 90)
+            return ATOM
 
+        src = fb.RedditRssSource(request_fn=req, min_gap_seconds=0, clock=lambda: now["t"])
         with pytest.raises(RedditSourceError):
-            await fb.PullPushSource(request_fn=req, max_retries=0).fetch_new_posts("feet", None, 10)
+            await src.fetch_new_posts("feet", None, 10)
+        now["t"] += 91
+        state["limited"] = False
+        assert await src.fetch_new_posts("feet", None, 10)
+        assert src.blocked_for == 0
+
+    async def test_gap_between_requests_is_enforced(self, monkeypatch):
+        slept = []
+
+        async def record_sleep(seconds):
+            slept.append(seconds)
+
+        monkeypatch.setattr(fb.asyncio, "sleep", record_sleep)
+
+        async def req(url):
+            return ATOM
+
+        src = fb.RedditRssSource(request_fn=req, min_gap_seconds=15)
+        await src.fetch_new_posts("a", None, 10)
+        await src.fetch_new_posts("b", None, 10)
+        assert slept and 10 < slept[-1] <= 15
+
+    def test_retry_after_parsing(self):
+        assert fb.parse_retry_after("60") == 60
+        assert fb.parse_retry_after("1") == 10                       # floor
+        assert fb.parse_retry_after("99999") == 600                  # ceiling
+        assert fb.parse_retry_after(None) == 120
+        assert fb.parse_retry_after("soon") == 120
 
 
 class TestFallbackSource:

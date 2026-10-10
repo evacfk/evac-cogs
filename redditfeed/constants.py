@@ -58,14 +58,14 @@ ARCTIC_SHIFT_SUBREDDIT_SEARCH_URL = "https://arctic-shift.photon-reddit.com/api/
 # -- Fallback sources (used when Arctic Shift is down) ------------------------
 
 REDDIT_RSS_BASE_URL = "https://www.reddit.com"
-PULLPUSH_BASE_URL = "https://api.pullpush.io/reddit/search/submission/"
-# Browser-style on purpose: from the evacOVH datacenter IP, PullPush answers 403 to a custom
-# bot UA and 429 (reachable) to this one, and Reddit RSS was only verified with this one.
+# Browser-style on purpose: Reddit RSS was verified from the evacOVH datacenter IP with this one.
 FALLBACK_USER_AGENT = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0 Safari/537.36"
 FALLBACK_TIMEOUT_SECONDS = 20
 FALLBACK_MAX_RETRIES = 1
 FALLBACK_RETRY_BACKOFF_SECONDS = 3.0
-REDDIT_RSS_MIN_GAP_SECONDS = 7.0       # unauthenticated Reddit allows ~10 requests/minute
+REDDIT_RSS_MIN_GAP_SECONDS = 15.0      # 429s came back at 7s spacing from the evacOVH IP
+RATE_LIMIT_DEFAULT_WAIT_SECONDS = 120  # hold-off after a 429 with no Retry-After header
+RATE_LIMIT_MAX_WAIT_SECONDS = 600
 PRIMARY_COOLDOWN_SECONDS = 300          # after repeated primary failures, skip it this long
 
 # -- Subreddit discovery (`.redditfeed discover`) ----------------------------

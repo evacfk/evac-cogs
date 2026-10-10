@@ -1,17 +1,18 @@
 """Backup Reddit data sources, plus the wrapper that fails over between them.
 
 Arctic Shift is the primary source. When it is down (it returned HTTP 522 for
-hours on 2026-10-09) FallbackSource tries Reddit's public RSS feed and then
-PullPush instead. Both are mapped to Reddit's post JSON shape, so nothing
-downstream changes; dedup by post id absorbs any overlap between sources.
+hours on 2026-10-09) FallbackSource tries Reddit's public RSS feed instead. It is
+mapped to Reddit's post JSON shape, so nothing downstream changes; dedup by post
+id absorbs any overlap between sources.
 
 Why RSS and not Reddit's .json listing: from the evacOVH datacenter IP the
 .json endpoint answers 403 while the .rss feed answers 200 (checked 2026-10-09).
 
-The backups are thinner than Arctic Shift. RSS has no score, no gallery image
-list and no NSFW flag; PullPush is a community archive that rate-limits and can
-lag or be down itself. They exist so a primary outage degrades the feed instead
-of stopping it. Discovery (subreddit search) stays primary-only.
+RSS is thinner than Arctic Shift: no score, no gallery image list, no NSFW flag,
+and Reddit rate-limits it hard from datacenter IPs (HTTP 429). PullPush was tried
+and dropped: it sits behind a Cloudflare challenge that answers 403 to this host.
+The backup exists so a primary outage degrades the feed instead of stopping it.
+Discovery (subreddit search) stays primary-only.
 
 aiohttp is imported inside methods so this module stays importable under the
 dev test stub.
@@ -31,6 +32,23 @@ from . import constants
 from .arctic_shift import RedditSource, RedditSourceError, describe_error, format_http_error
 
 log = logging.getLogger("red.redditfeed.fallback")
+
+
+class SourceRateLimited(RedditSourceError):
+    """HTTP 429. Carries how long the server asked us to stay away."""
+
+    def __init__(self, message: str, retry_after: float):
+        super().__init__(message)
+        self.retry_after = retry_after
+
+
+def parse_retry_after(value) -> float:
+    """Retry-After header (seconds) -> a sane wait, defaulting when absent/odd."""
+    try:
+        seconds = float(value)
+    except (TypeError, ValueError):
+        return constants.RATE_LIMIT_DEFAULT_WAIT_SECONDS
+    return min(max(seconds, 10.0), constants.RATE_LIMIT_MAX_WAIT_SECONDS)
 
 
 async def _http_get_json(url: str, headers: Optional[dict] = None):
@@ -81,17 +99,30 @@ def _newer_than(posts: list[dict], after_ts: Optional[float]) -> list[dict]:
 
 
 class RedditRssSource(_JsonSource):
-    """Reddit's public `/r/<sub>/new.rss` Atom feed. Unauthenticated Reddit allows
-    roughly 10 requests a minute, so requests are spaced by a minimum gap."""
+    """Reddit's public `/r/<sub>/new.rss` Atom feed.
+
+    Reddit rate-limits anonymous datacenter traffic hard, so requests are spaced
+    by a minimum gap, and a 429 puts the whole source on hold (no retries, no
+    network calls) until the server's Retry-After passes. Hammering a 429 only
+    extends it.
+    """
 
     name = "reddit-rss"
 
     def __init__(self, request_fn=None, max_retries: int = constants.FALLBACK_MAX_RETRIES,
-                 min_gap_seconds: float = constants.REDDIT_RSS_MIN_GAP_SECONDS):
+                 min_gap_seconds: float = constants.REDDIT_RSS_MIN_GAP_SECONDS,
+                 clock=time.monotonic):
         super().__init__(request_fn, max_retries)
         self._min_gap = min_gap_seconds
+        self._clock = clock
         self._last_request = 0.0
+        self._blocked_until = 0.0
         self._gap_lock = asyncio.Lock()
+
+    @property
+    def blocked_for(self) -> float:
+        """Seconds left on a rate-limit hold (0 when clear)."""
+        return max(0.0, self._blocked_until - self._clock())
 
     async def _default_request(self, url: str):
         import aiohttp  # local import -- not available under the dev test stub
@@ -100,6 +131,8 @@ class RedditRssSource(_JsonSource):
         headers = {"User-Agent": constants.FALLBACK_USER_AGENT}
         async with aiohttp.ClientSession(timeout=timeout, headers=headers) as session:
             async with session.get(url) as resp:
+                if resp.status == 429:
+                    raise SourceRateLimited("HTTP 429 (rate limited)", parse_retry_after(resp.headers.get("Retry-After")))
                 if resp.status >= 400:
                     raise RedditSourceError(format_http_error(resp.status, await resp.text()))
                 return await resp.text()
@@ -108,32 +141,34 @@ class RedditRssSource(_JsonSource):
         return f"{constants.REDDIT_RSS_BASE_URL}/r/{subreddit}/new.rss?limit={max(1, min(int(limit), 100))}"
 
     async def fetch_new_posts(self, subreddit: str, after_ts: Optional[float], limit: int) -> list[dict]:
+        if self.blocked_for > 0:
+            raise RedditSourceError(f"reddit-rss is rate limited, holding off {int(self.blocked_for)}s more")
         async with self._gap_lock:
-            wait = self._last_request + self._min_gap - time.monotonic()
+            wait = self._last_request + self._min_gap - self._clock()
             if wait > 0:
                 await asyncio.sleep(wait)
-            self._last_request = time.monotonic()
-        body = await self._get(self._build_url(subreddit, limit), f"r/{subreddit}")
+            self._last_request = self._clock()
+        url = self._build_url(subreddit, limit)
+        try:
+            body = await self._request_fn(url)
+        except SourceRateLimited as exc:
+            self._blocked_until = self._clock() + exc.retry_after
+            log.warning("reddit-rss rate limited (429); holding off %ds", int(exc.retry_after))
+            raise RedditSourceError(f"reddit-rss fetch failed for r/{subreddit}: HTTP 429, holding off {int(exc.retry_after)}s") from None
+        except Exception as exc:  # noqa: BLE001 -- one retry for transient errors
+            log.warning("reddit-rss fetch failed for r/%s: %s", subreddit, describe_error(exc))
+            if self._max_retries < 1:
+                raise RedditSourceError(f"reddit-rss fetch failed for r/{subreddit}: {describe_error(exc)}") from None
+            await asyncio.sleep(constants.FALLBACK_RETRY_BACKOFF_SECONDS)
+            self._last_request = self._clock()
+            try:
+                body = await self._request_fn(url)
+            except SourceRateLimited as exc2:
+                self._blocked_until = self._clock() + exc2.retry_after
+                raise RedditSourceError(f"reddit-rss fetch failed for r/{subreddit}: HTTP 429, holding off {int(exc2.retry_after)}s") from None
+            except Exception as exc2:  # noqa: BLE001
+                raise RedditSourceError(f"reddit-rss fetch failed for r/{subreddit}: {describe_error(exc2)}") from None
         return _newer_than(parse_reddit_rss(body), after_ts)
-
-
-class PullPushSource(_JsonSource):
-    """PullPush.io, a community Reddit archive with an Arctic-Shift-like API."""
-
-    name = "pullpush"
-
-    def _build_url(self, subreddit: str, after_ts: Optional[float], limit: int) -> str:
-        params = [f"subreddit={subreddit}", f"size={max(1, min(int(limit), 100))}", "sort=desc", "sort_type=created_utc"]
-        if after_ts is not None:
-            params.append(f"after={int(after_ts)}")
-        return f"{constants.PULLPUSH_BASE_URL}?{'&'.join(params)}"
-
-    async def fetch_new_posts(self, subreddit: str, after_ts: Optional[float], limit: int) -> list[dict]:
-        payload = await self._get(self._build_url(subreddit, after_ts, limit), f"r/{subreddit}")
-        data = payload.get("data") if isinstance(payload, dict) else None
-        if data is None:
-            raise RedditSourceError("pullpush returned no data")
-        return _newer_than(data, after_ts)
 
 
 _ATOM = "{http://www.w3.org/2005/Atom}"
