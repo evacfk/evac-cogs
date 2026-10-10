@@ -1,0 +1,14 @@
+{
+    "name": "RejoinWatch",
+    "short": "Tracks voluntary leaves; warns rejoiners and flags repeat leavers to mods with a ban button.",
+    "description": "Remembers who leaves the server on their own (kicks, bans and prunes are ignored). When someone rejoins after leaving once, they are DMed a warning that leaving again may get them banned, with a fallback ping in the fallback channel if their DMs are closed, and mods get a note in the mod channel. From the second leave on, nothing more is sent to the user: mods get an alert with Yes / No ban buttons when they leave again, and a note when they rejoin. Leaves are forgotten after the retention window (default 180 days).",
+    "end_user_data_statement": "This cog stores, per member, the timestamps of the times they left the server within the retention window (default 180 days; older ones are deleted automatically). It stores no message content. It is deleted on a Red data-deletion request.",
+    "install_msg": "Set the fallback channel once with `.rejoinwatch cuddle #cuddle`. #mod-chat and the Mod role are preset; change them with `.rejoinwatch modchannel` and `.rejoinwatch modrole`. See `.rejoinwatch settings`. The bot needs Ban Members, View Audit Log (so kicks and bans are not counted as leaves), Send Messages and Embed Links, plus the Server Members intent.",
+    "author": ["evacfk"],
+    "requirements": [],
+    "tags": ["moderation", "automation", "leave", "join"],
+    "min_bot_version": "3.5.0",
+    "hidden": false,
+    "disabled": false,
+    "type": "COG"
+}
