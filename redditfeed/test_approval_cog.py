@@ -970,3 +970,29 @@ async def test_least_recently_polled_subreddit_is_fetched_first():
     cog = make({}, mappings=mappings)
     await cog._run_poll_cycle()
     assert [f[0] for f in cog.source.fetches] == ["stale", "middle", "fresh"]
+
+
+async def test_map_command_lists_unmapped_channels_in_the_configured_category():
+    cat_channels = [Chan(20, name="feet"), Chan(21, name="2d"), Chan(22, name="3d")]
+    cat = SimpleNamespace(id=900, name="After Dark", text_channels=cat_channels)
+    guild = Guild(cat_channels + [Chan(77, name="general")], category=cat)
+    maps = {
+        "feet": SubredditMapping(subreddit="feet", channel_ids=[20]).to_dict(),
+        "hentai": SubredditMapping(subreddit="hentai", channel_ids=[21], approval="auto").to_dict(),
+        "lonely": SubredditMapping(subreddit="lonely", channel_ids=[77]).to_dict(),
+    }
+    cog = make({}, mappings=maps, new_channel_category_id=900)
+    ctx = Ctx(guild=guild)
+    await cb("redditfeed_map")(cog, ctx, None)
+    out = "\n".join(ctx.sent)
+    assert "<#20> ← r/feet" in out and "<#21> ← r/hentai (auto)" in out
+    assert "NOT mapped** (1)" in out and "<#22>" in out.split("NOT mapped")[1]
+    assert "Mapped, outside After Dark" in out and "<#77> ← r/lonely" in out
+
+
+async def test_map_command_with_no_category_still_works():
+    guild = Guild([FEET_CH])
+    cog = make({})
+    ctx = Ctx(guild=guild)
+    await cb("redditfeed_map")(cog, ctx, None)
+    assert "<#20> ← r/feet" in ctx.sent[0] and ".redditfeed map <category>" in ctx.sent[0]

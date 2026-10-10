@@ -596,7 +596,7 @@ class RedditFeed(DashboardIntegration, commands.Cog):
     @redditfeed.command(name="version")
     async def redditfeed_version(self, ctx: commands.Context) -> None:
         """Version-probe command -- confirms a deploy actually took."""
-        await ctx.send("redditfeed build: source-v3 (Reddit RSS backup with 429 hold-off, least-recently-polled first)")
+        await ctx.send("redditfeed build: source-v4 (.redditfeed map overview)")
 
     async def _map_subreddit(self, name: str, channel_id: int) -> bool:
         """The one place a subreddit gets mapped to a channel -- `add` and the
@@ -936,6 +936,25 @@ class RedditFeed(DashboardIntegration, commands.Cog):
         permissions and are age-restricted. Until this is set, discover never creates one."""
         await self.config.new_channel_category_id.set(category.id)
         await ctx.send(f"`discover` may create new channels in **{category.name}**.")
+
+    @redditfeed.command(name="map")
+    async def redditfeed_map(self, ctx: commands.Context, category: Optional[discord.CategoryChannel] = None) -> None:
+        """Show what maps where, and which channels in a category aren't mapped.
+        Uses the category from `.redditfeed category` unless you name one."""
+        guild = ctx.guild
+        if category is None:
+            category_id = await self.config.new_channel_category_id()
+            found = guild.get_channel(category_id) if category_id else None
+            category = found if hasattr(found, "text_channels") else None
+        mappings = [SubredditMapping.from_dict(raw) for raw in (await self.config.mappings()).values()]
+        if not mappings:
+            await ctx.send("No subreddits mapped yet. `.redditfeed add <subreddit> #channel`")
+            return
+        category_channels = {c.id: c.name for c in category.text_channels} if category else {}
+        lines = embeds.build_mapping_overview(
+            mappings, category_channels, category.name if category else None, {c.id for c in guild.text_channels})
+        for page in embeds.paginate_lines(lines):
+            await ctx.send(page)
 
     @redditfeed.command(name="prefix")
     async def redditfeed_prefix(self, ctx: commands.Context, *, prefix: str) -> None:

@@ -61,3 +61,88 @@ def _format_ts(ts) -> str:
     if ts is None:
         return "never"
     return f"<t:{int(ts)}:R>"
+
+
+def _sub_label(mapping: SubredditMapping) -> str:
+    tags = []
+    if mapping.paused:
+        tags.append("paused")
+    if mapping.approval == "auto":
+        tags.append("auto")
+    return f"r/{mapping.subreddit}" + (f" ({', '.join(tags)})" if tags else "")
+
+
+def build_mapping_overview(
+    mappings: list[SubredditMapping],
+    category_channels: dict,
+    category_name: str | None,
+    existing_channel_ids: set,
+) -> list[str]:
+    """Lines for `.redditfeed map`: which subreddits feed which channel, and which
+    channels in the category have nothing mapped. `category_channels` is
+    {channel_id: name} in display order (empty when no category is known).
+    Subreddits are shown plain when manual and not paused; `auto` / `paused` are
+    called out because those are the exceptions.
+    """
+    by_channel: dict = {}
+    no_channel = []
+    for mapping in sorted(mappings, key=lambda m: m.subreddit):
+        if not mapping.channel_ids:
+            no_channel.append(mapping)
+            continue
+        for channel_id in mapping.channel_ids:
+            by_channel.setdefault(channel_id, []).append(mapping)
+
+    def channel_line(channel_id) -> str:
+        return f"<#{channel_id}> ← " + ", ".join(_sub_label(m) for m in by_channel[channel_id])
+
+    have_category = bool(category_name)
+    in_category = [cid for cid in category_channels if cid in by_channel]
+    outside = sorted(cid for cid in by_channel if cid not in category_channels and cid in existing_channel_ids)
+    gone = sorted(cid for cid in by_channel if cid not in existing_channel_ids)
+
+    lines = [f"**{len(mappings)} subreddit(s) -> {len(by_channel)} channel(s)**  "
+             "(manual approval unless marked `auto`)"]
+    if have_category:
+        lines += ["", f"**Mapped, in {category_name}** ({len(in_category)})"]
+        lines += [channel_line(cid) for cid in in_category] or ["(none)"]
+        unmapped = [cid for cid in category_channels if cid not in by_channel]
+        lines += ["", f"**In {category_name} but NOT mapped** ({len(unmapped)})"]
+        lines += [f"<#{cid}>" for cid in unmapped] or ["(every channel in the category is mapped)"]
+        if outside:
+            lines += ["", f"**Mapped, outside {category_name}** ({len(outside)})"]
+            lines += [channel_line(cid) for cid in outside]
+    else:
+        everything = sorted(cid for cid in by_channel if cid in existing_channel_ids)
+        lines += ["", f"**Mapped channels** ({len(everything)})"]
+        lines += [channel_line(cid) for cid in everything] or ["(none)"]
+        lines += ["", "_Add a category to also list unmapped channels:_ `.redditfeed map <category>`"]
+    if gone:
+        lines += ["", f"**Mapped to a channel that no longer exists** ({len(gone)})"]
+        lines += [f"{channel_id}: " + ", ".join(_sub_label(m) for m in by_channel[channel_id]) for channel_id in gone]
+    if no_channel:
+        lines += ["", f"**Subreddits with no channel** ({len(no_channel)})"]
+        lines += [_sub_label(m) for m in no_channel]
+    return lines
+
+
+def paginate_lines(lines: list[str], limit: int = 1900) -> list[str]:
+    """Join lines into messages of at most `limit` characters, splitting only
+    between lines (a single over-long line is hard-cut)."""
+    pages, current = [], ""
+    for line in lines:
+        while len(line) > limit:
+            if current:
+                pages.append(current)
+                current = ""
+            pages.append(line[:limit])
+            line = line[limit:]
+        candidate = f"{current}\n{line}" if current else line
+        if len(candidate) > limit:
+            pages.append(current)
+            current = line
+        else:
+            current = candidate
+    if current:
+        pages.append(current)
+    return pages
