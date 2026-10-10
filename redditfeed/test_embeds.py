@@ -102,3 +102,23 @@ class TestPaginateLines:
 
     def test_empty(self):
         assert embeds.paginate_lines([]) == []
+
+
+class TestOverviewWithTelegram:
+    CAT = {10: "2d", 11: "tg-cats", 12: "empty"}
+
+    def test_telegram_channels_are_not_reported_as_unmapped(self):
+        tg = {11: 'TG topic "Cats"'}
+        text = "\n".join(embeds.build_mapping_overview([_m("a", [10])], self.CAT, "Feeds", {10, 11, 12}, telegram=tg))
+        unmapped = text.split("NOT mapped**")[1].split("**Fed by Telegram")[0]
+        assert "<#12>" in unmapped and "<#11>" not in unmapped
+        assert '<#11> ← TG topic "Cats"' in text and "1 Telegram topic channel(s)" in text
+
+    def test_deleted_telegram_channel_and_clash_are_flagged(self):
+        tg = {10: 'TG topic "A"', 99: 'TG topic "B"'}
+        text = "\n".join(embeds.build_mapping_overview([_m("a", [10])], self.CAT, "Feeds", {10, 11, 12}, telegram=tg))
+        assert "also has a subreddit mapped" in text and "<#99>" in text and "no longer exists" in text
+
+    def test_no_telegram_section_when_none(self):
+        text = "\n".join(embeds.build_mapping_overview([_m("a", [10])], self.CAT, "Feeds", {10, 11, 12}))
+        assert "Telegram" not in text

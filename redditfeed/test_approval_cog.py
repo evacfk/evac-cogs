@@ -95,7 +95,10 @@ class Chan:
 class Bot:
     def __init__(self, channels, mods=()):
         self.channels = {c.id: c for c in channels}
-        self.mods, self.views = set(mods), []
+        self.mods, self.views, self.cogs = set(mods), [], {}
+
+    def get_cog(self, name):
+        return self.cogs.get(name)
 
     def get_channel(self, cid):
         return self.channels.get(cid)
@@ -996,3 +999,34 @@ async def test_map_command_with_no_category_still_works():
     ctx = Ctx(guild=guild)
     await cb("redditfeed_map")(cog, ctx, None)
     assert "<#20> ← r/feet" in ctx.sent[0] and ".redditfeed map <category>" in ctx.sent[0]
+
+
+async def test_map_command_treats_tgfeed_channels_as_mapped_not_unmapped():
+    cat_channels = [Chan(20, name="feet"), Chan(22, name="tg-cats"), Chan(23, name="empty")]
+    cat = SimpleNamespace(id=900, name="After Dark", text_channels=cat_channels)
+    guild = Guild(cat_channels, category=cat)
+    cog = make({}, new_channel_category_id=900)
+
+    async def tg_mappings():
+        return {"5": {"topic_id": 5, "title": "Cats", "channel_id": 22, "paused": True}}
+
+    cog.bot.cogs["TGFeed"] = SimpleNamespace(config=SimpleNamespace(mappings=tg_mappings))
+    ctx = Ctx(guild=guild)
+    await cb("redditfeed_map")(cog, ctx, None)
+    out = "\n".join(ctx.sent)
+    unmapped = out.split("NOT mapped")[1].split("Fed by Telegram")[0]
+    assert "<#23>" in unmapped and "<#22>" not in unmapped
+    assert '<#22> \u2190 TG topic "Cats" (paused)' in out
+
+
+async def test_map_command_survives_a_broken_tgfeed():
+    guild = Guild([FEET_CH])
+    cog = make({})
+
+    async def boom():
+        raise RuntimeError("tg config exploded")
+
+    cog.bot.cogs["TGFeed"] = SimpleNamespace(config=SimpleNamespace(mappings=boom))
+    ctx = Ctx(guild=guild)
+    await cb("redditfeed_map")(cog, ctx, None)
+    assert "<#20> \u2190 r/feet" in ctx.sent[0]

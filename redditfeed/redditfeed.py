@@ -596,7 +596,7 @@ class RedditFeed(DashboardIntegration, commands.Cog):
     @redditfeed.command(name="version")
     async def redditfeed_version(self, ctx: commands.Context) -> None:
         """Version-probe command -- confirms a deploy actually took."""
-        await ctx.send("redditfeed build: source-v4 (.redditfeed map overview)")
+        await ctx.send("redditfeed build: source-v5 (.redditfeed map also shows tgfeed channels)")
 
     async def _map_subreddit(self, name: str, channel_id: int) -> bool:
         """The one place a subreddit gets mapped to a channel -- `add` and the
@@ -952,9 +952,28 @@ class RedditFeed(DashboardIntegration, commands.Cog):
             return
         category_channels = {c.id: c.name for c in category.text_channels} if category else {}
         lines = embeds.build_mapping_overview(
-            mappings, category_channels, category.name if category else None, {c.id for c in guild.text_channels})
+            mappings, category_channels, category.name if category else None,
+            {c.id for c in guild.text_channels}, telegram=await self._telegram_channels())
         for page in embeds.paginate_lines(lines):
             await ctx.send(page)
+
+    async def _telegram_channels(self) -> dict:
+        """{channel_id: label} for channels the tgfeed cog feeds, so `map` doesn't
+        call them unmapped. Empty when tgfeed isn't loaded."""
+        tg = self.bot.get_cog("TGFeed")
+        if tg is None:
+            return {}
+        try:
+            raw = await tg.config.mappings()
+        except Exception:  # noqa: BLE001 -- a broken neighbour cog must not break this command
+            log.exception("redditfeed: could not read tgfeed mappings")
+            return {}
+        out = {}
+        for item in sorted(raw.values(), key=lambda r: (r.get("title") or "").lower()):
+            channel_id = int(item.get("channel_id") or 0)
+            if channel_id:
+                out[channel_id] = f"TG topic \"{(item.get('title') or item.get('topic_id'))}\"" + (" (paused)" if item.get("paused") else "")
+        return out
 
     @redditfeed.command(name="prefix")
     async def redditfeed_prefix(self, ctx: commands.Context, *, prefix: str) -> None:
