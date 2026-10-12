@@ -492,7 +492,7 @@ class AfterDark(commands.Cog):
         try:
             await interaction.response.send_message(
                 "Leave the Rabbit Hole? This removes the role and **every** channel you joined. "
-                "You can try to get back in later, but you'd need to qualify again.",
+                "**You will not be let back in.**",
                 view=LeaveConfirmView(self, member), ephemeral=True,
             )
         except (discord.HTTPException, discord.NotFound):
@@ -501,8 +501,15 @@ class AfterDark(commands.Cog):
     async def handle_rabbit_leave_confirm(self, interaction, member):
         if interaction.user.id != member.id:
             return await self._reply(interaction, "That's not yours.")
+        # Leaving is final: record it like an exclusion so no route (button, drop, invite) lets them back in.
+        excluded = dict(await self.config.guild(member.guild).excluded())
+        excluded[str(member.id)] = ExcludeEntry(by=member.id, reason="left by choice", ts=self._clock()).to_dict()
+        await self.config.guild(member.guild).excluded.set(excluded)
+        invites = dict(await self.config.guild(member.guild).invites())
+        if invites.pop(str(member.id), None) is not None:
+            await self.config.guild(member.guild).invites.set(invites)
         removed = await self._revoke_all(member, reason="left by choice")
-        await self._log(member.guild, f"\U0001F6AA {self._label(member)} left the Rabbit Hole"
+        await self._log(member.guild, f"\U0001F6AA {self._label(member)} left the Rabbit Hole for good (`.afterdark unexclude` to let them back)"
                         + (f" ({', '.join(removed)})." if removed else "."))
         try:
             await interaction.response.edit_message(

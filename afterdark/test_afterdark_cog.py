@@ -1657,13 +1657,18 @@ async def test_leave_button_asks_first_then_removes_everything(w):
     await w.cog.handle_interest_toggle(FakeInteraction(m, w.guild), "feet")
     inter = FakeInteraction(m, w.guild)
     await w.cog.handle_rabbit_leave(inter)
-    assert w.rabbit in m.roles and "Leave the Rabbit Hole" in inter.replies[0]      # nothing removed yet
+    assert w.rabbit in m.roles and "will not be let back in" in inter.replies[0]      # nothing removed yet
     confirm = FakeInteraction(m, w.guild)
     await w.cog.handle_rabbit_leave_confirm(confirm, m)
     assert w.rabbit not in m.roles and w.feet_role not in m.roles
     assert confirm.edits and "out" in confirm.edits[0]["content"]
     state = await w.cog._get_state(w.guild)
     assert str(m.id) not in state.get("feet", {})
+    # Final: the button, the drops and mod grants all refuse them afterwards.
+    again = FakeInteraction(m, w.guild)
+    await w.cog.handle_rabbit_claim(again)
+    assert w.rabbit not in m.roles and again.replies
+    assert (await w.cog.config.guild(w.guild).excluded())[str(m.id)]["reason"] == "left by choice"
 
 
 async def test_leave_button_for_a_non_member_and_for_someone_elses_confirm(w):
@@ -1676,3 +1681,9 @@ async def test_leave_button_for_a_non_member_and_for_someone_elses_confirm(w):
     thief = FakeInteraction(outsider, w.guild)
     await w.cog.handle_rabbit_leave_confirm(thief, insider)
     assert w.rabbit in insider.roles and "not yours" in thief.replies[0]
+
+
+def test_panel_says_leaving_is_final():
+    from . import embeds
+    emb = embeds.panel_embed([], 7, 14, rules="x")
+    assert "will not be let back in" in emb.fields[0].value
