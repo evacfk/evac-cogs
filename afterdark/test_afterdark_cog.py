@@ -1683,7 +1683,7 @@ async def test_leave_button_for_a_non_member_and_for_someone_elses_confirm(w):
     assert w.rabbit in insider.roles and "not yours" in thief.replies[0]
 
 
-def test_panel_says_leaving_is_final():
+def test_panel_mentions_leave_button_but_the_final_warning_lives_in_the_confirm_prompt():
     from . import embeds
     emb = embeds.panel_embed([], 7, 14, rules="x")
-    assert "will not be let back in" in emb.fields[0].value
+    assert "Leave Rabbit Hole" in emb.fields[0].value and "let back in" not in emb.fields[0].value
