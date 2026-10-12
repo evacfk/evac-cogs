@@ -24,7 +24,7 @@ from redbot.core import Config, commands
 from . import constants as C
 from . import embeds, engine
 from .models import ExcludeEntry, Interest, Invite
-from .views import InterestView, InviteView, RabbitView, ReviewView
+from .views import InterestView, InviteView, LeaveConfirmView, RabbitView, ReviewView
 
 log = logging.getLogger("red.evac-cogs.afterdark")
 
@@ -481,6 +481,34 @@ class AfterDark(commands.Cog):
             return False
         await self._reply(interaction, self._welcome_text(cfg))
         return True
+
+    async def handle_rabbit_leave(self, interaction):
+        guild, member = interaction.guild, interaction.user
+        if guild is None or not hasattr(member, "roles"):
+            return await self._reply(interaction, "This only works inside the server.")
+        role = guild.get_role(await self.config.guild(guild).rabbit_role_id())
+        if role is None or role not in member.roles:
+            return await self._reply(interaction, "You're not in the Rabbit Hole.")
+        try:
+            await interaction.response.send_message(
+                "Leave the Rabbit Hole? This removes the role and **every** channel you joined. "
+                "You can try to get back in later, but you'd need to qualify again.",
+                view=LeaveConfirmView(self, member), ephemeral=True,
+            )
+        except (discord.HTTPException, discord.NotFound):
+            log.warning("afterdark: could not show the leave confirmation")
+
+    async def handle_rabbit_leave_confirm(self, interaction, member):
+        if interaction.user.id != member.id:
+            return await self._reply(interaction, "That's not yours.")
+        removed = await self._revoke_all(member, reason="left by choice")
+        await self._log(member.guild, f"\U0001F6AA {self._label(member)} left the Rabbit Hole"
+                        + (f" ({', '.join(removed)})." if removed else "."))
+        try:
+            await interaction.response.edit_message(
+                content="You're out. \U0001F407" if removed else "You were already out.", view=None)
+        except (discord.HTTPException, discord.NotFound):
+            pass
 
     @staticmethod
     def _deny_text(code: str, cfg: dict) -> str:
@@ -1608,6 +1636,45 @@ class AfterDark(commands.Cog):
             for k, i in interests.items()
         ]
         await ctx.send("\n".join(lines), allowed_mentions=discord.AllowedMentions.none())
+
+    @afterdark_interest.command(name="members")
+    async def interest_members(self, ctx, key: Optional[str] = None):
+        """Who is in each interest, busiest first. Pass a key for just one.
+        Counts come from the join records, so they show what is actually getting opted into."""
+        cfg = await self.config.guild(ctx.guild).all()
+        interests = self._interests(cfg)
+        if key is not None:
+            key = engine.normalize_key(key)
+            if key not in interests:
+                return await ctx.send("No such interest. See `.afterdark interest list`.")
+            interests = {key: interests[key]}
+        if not interests:
+            return await ctx.send("No interests yet.")
+        state = await self._get_state(ctx.guild)
+        rows = []
+        for k, interest in interests.items():
+            names = []
+            for uid in state.get(k, {}):
+                member = ctx.guild.get_member(int(uid))
+                names.append(member.display_name if member else f"left server ({uid})")
+            rows.append((len(names), interest, sorted(names, key=str.lower)))
+        rows.sort(key=lambda r: (-r[0], r[1].name.lower()))
+        lines = []
+        if key is None:
+            rabbit = ctx.guild.get_role(cfg["rabbit_role_id"])
+            holders = len(rabbit.members) if rabbit is not None else 0
+            lines.append(f"**Rabbit Hole holders: {holders}**")
+            lines.append("**Summary:** " + ", ".join(f"{i.name} {n}" for n, i, _ in rows))
+            empty = [i.name for n, i, _ in rows if n == 0]
+            if empty:
+                lines.append("**Nobody yet:** " + ", ".join(empty))
+            lines.append("")
+        for n, interest, names in rows:
+            if n == 0 and key is None:
+                continue
+            lines.append(f"**{interest.name}** ({n}): " + (", ".join(names) if names else "nobody"))
+        for page in engine.chunk_text(lines):
+            await ctx.send(page, allowed_mentions=discord.AllowedMentions.none())
 
     @afterdark.group(name="invite", invoke_without_command=True)
     @commands.admin_or_permissions(manage_guild=True)

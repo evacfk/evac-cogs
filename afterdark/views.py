@@ -56,9 +56,10 @@ class ReviewView(discord.ui.View):
 
 
 class InterestView(discord.ui.View):
-    """One toggle button per configured interest (max 25 -- Discord's limit)."""
+    """One toggle button per configured interest, plus a Leave Rabbit Hole button.
+    Discord allows 25 buttons per message, so interests are capped at 24."""
 
-    MAX_BUTTONS = 25
+    MAX_BUTTONS = 24
 
     def __init__(self, cog, interests: Iterable[Interest]):
         super().__init__(timeout=None)
@@ -73,9 +74,39 @@ class InterestView(discord.ui.View):
             )
             button.callback = self._make_callback(interest.key)
             self.add_item(button)
+        leave = discord.ui.Button(
+            label="Leave Rabbit Hole", style=discord.ButtonStyle.danger, custom_id=C.LEAVE_ID,
+        )
+        leave.callback = self._leave_callback
+        self.add_item(leave)
+
+    async def _leave_callback(self, interaction):
+        await self.cog.handle_rabbit_leave(interaction)
 
     def _make_callback(self, key: str):
         async def callback(interaction):
             await self.cog.handle_interest_toggle(interaction, key)
 
         return callback
+
+
+class LeaveConfirmView(discord.ui.View):
+    """Ephemeral "are you sure" shown after Leave Rabbit Hole. Not persistent on purpose:
+    if the bot restarts, the member just taps Leave again."""
+
+    def __init__(self, cog, member):
+        super().__init__(timeout=60)
+        self.cog, self.member = cog, member
+
+    @discord.ui.button(label="Yes, leave", style=discord.ButtonStyle.danger)
+    async def confirm(self, interaction, button):
+        await self.cog.handle_rabbit_leave_confirm(interaction, self.member)
+        self.stop()
+
+    @discord.ui.button(label="Stay", style=discord.ButtonStyle.secondary)
+    async def cancel(self, interaction, button):
+        try:
+            await interaction.response.edit_message(content="Still in. \U0001F407", view=None)
+        except (discord.HTTPException, discord.NotFound):
+            pass
+        self.stop()

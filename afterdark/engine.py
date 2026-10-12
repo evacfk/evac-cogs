@@ -299,3 +299,24 @@ def validate_drop_timing(lo: int, hi: int, life: int, max_gap: int = 24 * 60) ->
     if hi > max_gap:
         return f"The longest gap can't be more than {max_gap} minutes."
     return None
+
+
+def chunk_text(lines: Sequence[str], limit: int = 1900) -> List[str]:
+    """Pack lines into messages no longer than `limit`; a single over-long line is split."""
+    out: List[str] = []
+    cur = ""
+    for line in lines:
+        while len(line) > limit:
+            if cur:
+                out.append(cur)
+                cur = ""
+            out.append(line[:limit])
+            line = line[limit:]
+        if cur and len(cur) + 1 + len(line) > limit:
+            out.append(cur)
+            cur = line
+        else:
+            cur = f"{cur}\n{line}" if cur else line
+    if cur:
+        out.append(cur)
+    return out

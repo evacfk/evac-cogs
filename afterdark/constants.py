@@ -1,7 +1,7 @@
 """All defaults and lookup tables for afterdark -- no discord/redbot imports."""
 
-VERSION = "1.4.0"
-BUILD = "afterdark build: multi-v1 (random rabbit drops, 4 slots)"
+VERSION = "1.5.0"
+BUILD = "afterdark build: multi-v1 (random rabbit drops, 4 slots, members report, leave button)"
 
 CONFIG_IDENTIFIER = 7316482950
 DAY = 86400
@@ -33,6 +33,7 @@ INVITE_DECLINE_ID = "afterdark:invite:decline"
 REVIEW_YES_ID = "afterdark:review:yes"
 REVIEW_NO_ID = "afterdark:review:no"
 INTEREST_ID_PREFIX = "afterdark:interest:"
+LEAVE_ID = "afterdark:rabbit:leave"
 
 # ---- Wonderland IDs (pre-filled so setup is just interests + posting) ----
 DEFAULT_ADULT_ROLE_ID = 1400989955794276452   # "Adult Chat" (the old NSFW role)

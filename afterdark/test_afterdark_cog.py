@@ -233,8 +233,9 @@ class FakeInteraction:
         self.replies, self.edits = [], []
         self.response = SimpleNamespace(send_message=self._send, edit_message=self._edit)
 
-    async def _send(self, text, ephemeral=False):
+    async def _send(self, text, ephemeral=False, **kwargs):
         self.replies.append(text)
+        self.reply_kwargs = kwargs
 
     async def _edit(self, **kwargs):
         self.edits.append(kwargs)
@@ -1602,3 +1603,76 @@ async def test_slots_command_and_unlimited_and_permanent_message_is_uncapped(w):
         await w.cog.handle_rabbit_claim(inter)
         assert w.rabbit in m.roles
     assert len(fight.messages) == 1
+
+
+# ------------------------------------------------- members report + leave button
+
+async def test_members_report_lists_each_interest_busiest_first_and_flags_empty_ones(w):
+    await add_feet(w)
+    ctx = FakeCtx(w.guild, w.member("admin"))
+    await w.cog.interest_add.func(w.cog, ctx, "ears", rest=f"<#{w.feet.id}> Ears")
+    a, b = w.member("Zed"), w.member("amy")
+    for m in (a, b):
+        m.roles.append(w.rabbit)
+        await w.cog.handle_interest_toggle(FakeInteraction(m, w.guild), "feet")
+    ctx = FakeCtx(w.guild, w.member("admin"))
+    await w.cog.interest_members.func(w.cog, ctx, None)
+    text = "\n".join(ctx.sent)
+    assert "Feet 2" in text and "Ears 0" in text and "Nobody yet:** Ears" in text
+    assert text.index("amy") < text.index("Zed")             # sorted by name, case-insensitive
+    one = FakeCtx(w.guild, w.member("admin"))
+    await w.cog.interest_members.func(w.cog, one, "nope")
+    assert "No such interest" in one.sent[-1]
+
+
+async def test_members_report_marks_people_who_left_the_server_and_pages_long_output(w):
+    await add_feet(w)
+    state = await w.cog._get_state(w.guild)
+    for i in range(400):
+        state.setdefault("feet", {})[str(900000 + i)] = {"since": NOW, "last_active": NOW}
+    ctx = FakeCtx(w.guild, w.member("admin"))
+    await w.cog.interest_members.func(w.cog, ctx, "feet")
+    assert len(ctx.sent) > 1 and all(len(p) <= 2000 for p in ctx.sent)
+    assert "left server (900000)" in "\n".join(ctx.sent)
+
+
+def test_chunk_text_never_exceeds_the_limit():
+    from . import engine
+    pages = engine.chunk_text(["a" * 50, "b" * 5000, "c" * 10], limit=100)
+    assert all(len(p) <= 100 for p in pages) and "".join(pages).replace("\n", "").count("b") == 5000
+
+
+def test_panel_view_has_a_leave_button_and_interests_are_capped_at_24():
+    from .models import Interest
+    items = [Interest(key=f"k{i}", name=f"N{i}", emoji="", channel_id=1, role_id=None) for i in range(30)]
+    view = ad.InterestView(object(), items)
+    ids = [c.custom_id for c in view.children]
+    assert len(ids) == 25 and ids[-1] == C.LEAVE_ID and len(set(ids)) == 25
+
+
+async def test_leave_button_asks_first_then_removes_everything(w):
+    await add_feet(w)
+    m = w.member()
+    m.roles.append(w.rabbit)
+    await w.cog.handle_interest_toggle(FakeInteraction(m, w.guild), "feet")
+    inter = FakeInteraction(m, w.guild)
+    await w.cog.handle_rabbit_leave(inter)
+    assert w.rabbit in m.roles and "Leave the Rabbit Hole" in inter.replies[0]      # nothing removed yet
+    confirm = FakeInteraction(m, w.guild)
+    await w.cog.handle_rabbit_leave_confirm(confirm, m)
+    assert w.rabbit not in m.roles and w.feet_role not in m.roles
+    assert confirm.edits and "out" in confirm.edits[0]["content"]
+    state = await w.cog._get_state(w.guild)
+    assert str(m.id) not in state.get("feet", {})
+
+
+async def test_leave_button_for_a_non_member_and_for_someone_elses_confirm(w):
+    outsider = w.member()
+    inter = FakeInteraction(outsider, w.guild)
+    await w.cog.handle_rabbit_leave(inter)
+    assert "not in the Rabbit Hole" in inter.replies[0]
+    insider = w.member()
+    insider.roles.append(w.rabbit)
+    thief = FakeInteraction(outsider, w.guild)
+    await w.cog.handle_rabbit_leave_confirm(thief, insider)
+    assert w.rabbit in insider.roles and "not yours" in thief.replies[0]

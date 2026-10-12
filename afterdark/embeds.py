@@ -24,7 +24,8 @@ def panel_embed(interests: Iterable[Interest], warn_days: float, remove_days: fl
     (The buttons themselves sit under the message, so channels aren't listed twice.)"""
     rules = C.RULES_TEXT if rules is None else rules
     how = (
-        "Tap a button below to join a channel. Tap it again to leave.\n\n"
+        "Tap a button below to join a channel. Tap it again to leave it. "
+        "**Leave Rabbit Hole** removes you from everything.\n\n"
         f"Stay active there: post or react at least once every {int(remove_days)} days "
         f"(you'll get a nudge after {int(warn_days)}) or access is removed. "
         f"To come back after that, {C.CONTACT_TEXT[0].lower()}{C.CONTACT_TEXT[1:]}"
