@@ -1,5 +1,5 @@
 """Discord-facing text and embed builders. No Cog logic here."""
-from typing import Iterable, List
+from typing import Iterable, List, Optional
 
 import discord
 
@@ -8,18 +8,13 @@ from . import engine
 from .models import Interest
 
 
-def rabbit_embed() -> "discord.Embed":
-    """The cryptic message pinned in Pillow Talk. Deliberately says very little."""
-    embed = discord.Embed(
-        title="\U0001F407",
-        description=(
-            "*I'm late, I'm late.*\n\n"
-            "There is a door that only regulars ever find. "
-            "Tap the rabbit and see whether it opens for you."
-        ),
-        color=discord.Color.dark_grey(),
-    )
-    embed.set_footer(text="Curiouser and curiouser.")
+def rabbit_embed(variant: Optional[int] = None) -> "discord.Embed":
+    """The cryptic rabbit message. Deliberately says very little. `variant`
+    picks one of C.DROP_VARIANTS (random drops); None is the original text."""
+    index = 0 if variant is None else int(variant) % len(C.DROP_VARIANTS)
+    description, footer = C.DROP_VARIANTS[index]
+    embed = discord.Embed(title="\U0001F407", description=description, color=discord.Color.dark_grey())
+    embed.set_footer(text=footer)
     return embed
 
 

@@ -1,7 +1,7 @@
 """All defaults and lookup tables for afterdark -- no discord/redbot imports."""
 
-VERSION = "1.3.2"
-BUILD = "afterdark build: multi-v1 (per-interest join message)"
+VERSION = "1.4.0"
+BUILD = "afterdark build: multi-v1 (random rabbit drops, 4 slots)"
 
 CONFIG_IDENTIFIER = 7316482950
 DAY = 86400
@@ -10,6 +10,24 @@ LA_TZ = "America/Los_Angeles"
 # Custom IDs of persistent components. Never change these once messages with
 # the buttons exist, or the old buttons stop working.
 RABBIT_CLAIM_ID = "afterdark:rabbit:claim"
+DROP_TICK_SECONDS = 30
+DROP_MAX_GAP_MINUTES = 24 * 60
+# (description, footer) for each rabbit drop. The first is the original clue.
+DROP_VARIANTS = (
+    ("*I'm late, I'm late.*\n\nThere is a door that only regulars ever find. Tap the rabbit and see whether it opens for you.",
+     "Curiouser and curiouser."),
+    ("*Follow the white rabbit.*\n\nIt won't wait long. Tap it if you dare.", "It never stays for long."),
+    ("The rabbit just ran past with a pocket watch.\n\nNo time to explain. Tap and find out if it was for you.", "Late, late, late."),
+    ("*Down the hole we go.*\n\nSomeone left the door ajar. It might open for you.", "Mind the fall."),
+    ("A white blur, a flash of a waistcoat.\n\nOnly a few ever catch it. Tap the rabbit.", "Quick now."),
+    ("*Oh my ears and whiskers!*\n\nThe rabbit has a door to show someone. Maybe you.", "Not everyone gets in."),
+    ("There's a keyhole the size of a mouse and a rabbit with the key.\n\nTap it and see.", "Drink me. Or tap me."),
+    ("*Who are you?* said the caterpillar.\n\nTap the rabbit and let the door decide.", "Off with their heads. Or not."),
+    ("The rabbit paused. Just for a moment.\n\nIf you've been around long enough, it might let you through.", "Tick, tock."),
+    ("*Curiouser.*\n\nA little white door appeared where there wasn't one. Tap the rabbit to try the handle.", "Handle with care."),
+    ("You weren't supposed to see this.\n\nBut since you did, tap the rabbit.", "Shh."),
+    ("*Every rabbit hole starts somewhere.*\n\nThis one starts here, for a few minutes only.", "Gone soon."),
+)
 INVITE_ACCEPT_ID = "afterdark:invite:accept"
 INVITE_DECLINE_ID = "afterdark:invite:decline"
 REVIEW_YES_ID = "afterdark:review:yes"
@@ -72,6 +90,14 @@ GUILD_DEFAULTS = dict(
     exempt_role_ids=list(DEFAULT_EXEMPT_ROLE_IDS),
     skip_role_ids=[],            # extra "paused" roles; members holding one are never touched
     clue_channel_id=DEFAULT_CLUE_CHANNEL_ID,
+    # ---- random rabbit drops (replace the permanent clue message) ----
+    drop_enabled=False,
+    drop_channel_id=0,           # 0 = use clue_channel_id
+    drop_min_minutes=60,         # gap between drops, picked at random in [min, max]
+    drop_max_minutes=180,
+    drop_max_claims=4,           # people who can get in per drop (0 = unlimited)
+    drop_life_minutes=10,        # how long a drop stays before the bot deletes it
+    drop_state={},               # {"next_ts","message_id","channel_id","delete_ts","last_variant","claims"}
     log_channel_id=DEFAULT_LOG_CHANNEL_ID,
     min_level=3,
     access_mode="overwrites",    # "overwrites" (per-user, no role) | "roles" -- how interest access is granted
