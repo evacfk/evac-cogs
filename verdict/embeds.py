@@ -16,7 +16,8 @@ def _clip(text: str, limit: int) -> str:
     return text if len(text) <= limit else text[: limit - 1] + "…"
 
 
-def question_embed(cur: dict, *, yesterday: str | None = None, award: str | None = None, post_hour: int = 10) -> discord.Embed:
+def question_embed(cur: dict, *, yesterday: str | None = None, award: str | None = None, post_hour: int = 10,
+                   yesterday_thread_id: int | None = None) -> discord.Embed:
     when = f"~{post_hour % 12 or 12}{'am' if post_hour < 12 else 'pm'} Pacific"
     e = discord.Embed(title=f"\N{BALLOT BOX WITH BALLOT} Daily Verdict #{cur['seq']}", description=f"**{cur['question']}**",
                       color=discord.Color(COLOR_OPEN))
@@ -30,13 +31,27 @@ def question_embed(cur: dict, *, yesterday: str | None = None, award: str | None
         "\N{FIRE} Play every day to build a streak."), inline=False)
     e.add_field(name="Results", value=f"This post turns into the results at {when} tomorrow and shows **who picked what**.",
                 inline=False)
+    if cur.get("thread_id"):
+        e.add_field(name="\N{SPEECH BALLOON} Discussion thread", value=(
+            f"<#{cur['thread_id']}> opens for you once both taps are in. It's voters-only while voting is open, so it can't "
+            "spoil your guess. When voting closes, the discussion is copied to a public thread for everyone."),
+            inline=False)
     if cur.get("submitter_id"):
         e.add_field(name="Question by", value=f"<@{cur['submitter_id']}>", inline=True)
     if yesterday:
-        e.add_field(name="\N{CALENDAR} Yesterday", value=_clip(yesterday, 1024), inline=False)
+        link = f"\n\N{SPEECH BALLOON} Yesterday's discussion: <#{yesterday_thread_id}>" if yesterday_thread_id else ""
+        e.add_field(name="\N{CALENDAR} Yesterday", value=_clip(yesterday, 1024 - len(link)) + link, inline=False)
     if award:
         e.add_field(name="\N{CROWN} Mind Reader", value=_clip(award, 1024), inline=False)
     return e
+
+
+def thread_intro(cur: dict) -> str:
+    """First message in the private discussion thread: the question and its options (no buttons; voting happens in the channel)."""
+    opts = "\n".join(f"**{LETTERS[i]}.** {o}" for i, o in enumerate(cur["options"]))
+    return (f"**Daily Verdict #{cur['seq']}: {cur['question']}**\n{opts}\n\n"
+            "Everyone in here has already locked in, so talk freely. Results post with tomorrow's question, and then this "
+            "discussion is copied to a public thread for everyone to read.")
 
 
 def _mentions(uids: list[str], readers: frozenset | set, budget: int) -> str:

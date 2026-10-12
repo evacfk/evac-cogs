@@ -7,7 +7,7 @@ from typing import Iterable, Optional, Sequence
 
 from .constants import (
     BAR_WIDTH, HOME_TZ, LONE_WOLF_MAX_SHARE, LONE_WOLF_MIN_VOTES, MAX_OPTION_LEN, MAX_OPTIONS,
-    MAX_QUESTION_LEN, MIN_OPTIONS, MIND_READER_MIN_PLAYED, STREAK_MILESTONES,
+    MAX_QUESTION_LEN, MIN_OPTIONS, MIND_READER_MIN_PLAYED, STREAK_MILESTONES, THREAD_NAME_LIMIT,
 )
 
 
@@ -31,6 +31,34 @@ def parse_question(text: str) -> tuple[str, list[str]]:
     if len({o.casefold() for o in options}) != len(options):
         raise QuestionError("Options must be different from each other.")
     return question, options
+
+
+def thread_name(seq: int, question: str, limit: int = THREAD_NAME_LIMIT) -> str:
+    """'Verdict #7: Is a hot dog a sandwich?', clipped to Discord's thread-name limit."""
+    name = f"Verdict #{seq}: {' '.join(question.split())}"
+    return name if len(name) <= limit else name[: limit - 1].rstrip() + "…"
+
+
+def transcript_pages(lines: list, limit: int = 1900, max_pages: int = 30) -> list:
+    """Pack discussion lines into message-sized pages; one huge line is split, a huge thread is capped."""
+    pages, cur = [], ""
+    for line in lines:
+        while len(line) > limit:
+            if cur:
+                pages.append(cur)
+                cur = ""
+            pages.append(line[:limit])
+            line = line[limit:]
+        if cur and len(cur) + 1 + len(line) > limit:
+            pages.append(cur)
+            cur = line
+        else:
+            cur = f"{cur}\n{line}" if cur else line
+    if cur:
+        pages.append(cur)
+    if len(pages) > max_pages:
+        pages = pages[:max_pages] + [f"(…{len(pages) - max_pages} more pages of discussion were not copied.)"]
+    return pages
 
 
 def tally(answers: dict, n_options: int) -> list[int]:

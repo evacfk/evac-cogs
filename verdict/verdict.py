@@ -3,6 +3,9 @@
 - posts one question a day in the chat channel (default 10am Pacific) with 2-4 buttons;
 - each member taps their own answer, then guesses what most people will pick;
 - the next day's post carries yesterday's result, and the old post becomes the final tally listing who picked what;
+- each question gets a private discussion thread; the bot adds a member to it only once both their taps are in,
+  so reading it can't spoil a guess. The next post locks and archives it and copies the discussion into a public thread
+  (Discord cannot turn a private thread public);
 - streaks, a monthly Mind Reader role, member-submitted questions that wait for the owner's
   tick or cross in a private channel.
 """
@@ -19,7 +22,8 @@ from redbot.core import Config, commands
 from . import embeds, engine
 from .constants import (
     COG_VERSION, CONFIG_IDENTIFIER, CROSS, DEFAULT_GUILD, DEFAULT_MEMBER, KEEP_HISTORY, KEEP_MONTHS, MAX_PENDING_PER_USER,
-    STAFF_ROLE_IDS, STREAK_MILESTONES, SUGGEST_COOLDOWN_SECONDS, TICK, TICK_SECONDS, EARLY_MANUAL_HOURS,
+    STAFF_ROLE_IDS, STREAK_MILESTONES, SUGGEST_COOLDOWN_SECONDS, THREAD_ARCHIVE_MINUTES, TICK, TICK_SECONDS,
+    EARLY_MANUAL_HOURS,
 )
 from .seeds import SEED_QUESTIONS
 
@@ -147,29 +151,44 @@ class Verdict(commands.Cog):
             yesterday = None
             if cur:
                 yesterday = await self._close(guild, cur, now_ts)
+            public_thread_id = await self._close_threads(guild, cur or {})
             award = await self._maybe_award(guild, now_ts)
             q, queue, used = self._next_question(await conf.queue(), await conf.used_seeds())
             seq = await conf.seq() + 1
+            thread = None
+            if await conf.threads_enabled():
+                thread = await self._open_thread(channel, seq, q["question"])
             new = {"qid": f"{seq}x{int(now_ts)}", "seq": seq, "question": q["question"], "options": q["options"],
                    "submitter_id": q.get("submitter_id"), "message_id": None, "channel_id": channel.id,
-                   "posted_ts": now_ts, "answers": {}, "predictions": {}}
+                   "thread_id": thread.id if thread else None, "posted_ts": now_ts, "answers": {}, "predictions": {}}
             hour = await conf.post_hour()
             role = guild.get_role(await conf.ping_role_id() or 0)
             view = build_view("a", new["qid"], new["options"])
             try:
                 msg = await channel.send(
                     content=role.mention if role else None,
-                    embed=embeds.question_embed(new, yesterday=yesterday, award=award, post_hour=hour), view=view,
+                    embed=embeds.question_embed(new, yesterday=yesterday, award=award, post_hour=hour,
+                                                yesterday_thread_id=public_thread_id), view=view,
                     allowed_mentions=discord.AllowedMentions(roles=[role] if role else False, users=False, everyone=False),
                 )
             except _DISCORD_ERRORS:
                 log.warning("verdict: could not post in channel %s", channel.id)
+                if thread is not None:
+                    try:
+                        await thread.delete()
+                    except _DISCORD_ERRORS:
+                        pass
                 return f"I couldn't post in {channel.mention}."
             try:
                 view.stop()  # clicks are handled by on_interaction, so nothing needs to stay in memory
             except Exception:
                 pass
             new["message_id"] = msg.id
+            if thread is not None:
+                try:
+                    await thread.send(embeds.thread_intro(new), allowed_mentions=discord.AllowedMentions.none())
+                except _DISCORD_ERRORS:
+                    log.warning("verdict: could not write the opening message in thread %s", thread.id)
             await conf.current.set(new)
             await conf.queue.set(queue)
             await conf.used_seeds.set(used)
@@ -177,6 +196,132 @@ class Verdict(commands.Cog):
             if engine.uses_up_day(now_ts, hour, EARLY_MANUAL_HOURS):
                 await conf.last_post_date.set(engine.pt_date(now_ts))
             return f"Posted Daily Verdict #{seq}."
+
+    # -- discussion threads -----------------------------------------------
+
+    async def _open_thread(self, channel, seq: int, question: str):
+        """A private, voters-only thread. Never lets a thread problem stop the daily post."""
+        try:
+            return await channel.create_thread(
+                name=engine.thread_name(seq, question), type=discord.ChannelType.private_thread, invitable=False,
+                auto_archive_duration=THREAD_ARCHIVE_MINUTES, reason="Daily Verdict discussion")
+        except _DISCORD_ERRORS:
+            log.warning("verdict: could not create the discussion thread in %s (needs Create Private Threads)", channel.id)
+        except Exception:
+            log.exception("verdict: thread creation failed")
+        return None
+
+    async def _get_thread(self, guild, thread_id: int):
+        thread = guild.get_thread(thread_id) if hasattr(guild, "get_thread") else None
+        return thread if thread is not None else await guild.fetch_channel(thread_id)
+
+    async def _lock_thread(self, guild, thread_id: int, results_url: str | None = None):
+        """Say goodbye (when we have the results link), then lock and archive.
+        Returns (done, thread): done is True when locked or already gone."""
+        thread = None
+        try:
+            thread = await self._get_thread(guild, thread_id)
+            if results_url:
+                try:
+                    await thread.send(f"\N{LOCK} Voting is closed. Final results: {results_url}\n"
+                                      "This thread is now locked and its discussion is being copied to a public thread.",
+                                      allowed_mentions=discord.AllowedMentions.none())
+                except _DISCORD_ERRORS:
+                    pass
+            await thread.edit(archived=True, locked=True, reason="Daily Verdict closed")
+            return True, thread
+        except discord.NotFound:
+            return True, None
+        except _DISCORD_ERRORS:
+            log.warning("verdict: could not lock thread %s (needs Manage Threads)", thread_id)
+        except Exception:
+            log.exception("verdict: locking thread %s failed", thread_id)
+        return False, thread
+
+    async def _publish_thread(self, guild, cur: dict, thread):
+        """Threads cannot switch from private to public, so copy the finished discussion into a public, locked thread
+        under the results post. Returns (public_thread_id or None, locked_ok); None when there was nothing to copy."""
+        pub = None
+        try:
+            lines = []
+            async for m in thread.history(limit=1000, oldest_first=True):
+                if getattr(m.author, "bot", False) or m.is_system():
+                    continue
+                text = (m.clean_content or "").strip()
+                files = " ".join(a.url for a in m.attachments)
+                body = " ".join(p for p in (text, files) if p)
+                if body:
+                    lines.append(f"**{m.author.display_name}:** {body}")
+            channel = guild.get_channel(cur.get("channel_id") or 0)
+            if not lines or channel is None or not cur.get("message_id"):
+                return None, True
+            none = discord.AllowedMentions.none()
+            pub = await channel.get_partial_message(cur["message_id"]).create_thread(
+                name=engine.thread_name(cur["seq"], cur["question"]), auto_archive_duration=THREAD_ARCHIVE_MINUTES,
+                reason="Daily Verdict discussion, now public")
+            await pub.send("\N{SPEECH BALLOON} Discussion copied from the voters-only thread now that voting is closed.",
+                           allowed_mentions=none)
+            for page in engine.transcript_pages(lines):
+                await pub.send(page, allowed_mentions=none)
+        except _DISCORD_ERRORS:
+            log.warning("verdict: could not copy the discussion to a public thread (needs Create Public Threads)")
+        except Exception:
+            log.exception("verdict: publishing the discussion failed")
+        if pub is None:
+            return None, True
+        try:
+            await pub.edit(archived=True, locked=True, reason="Daily Verdict closed")
+            return pub.id, True
+        except Exception:
+            log.warning("verdict: could not lock public thread %s", pub.id)
+            return pub.id, False
+
+    async def _close_threads(self, guild, cur: dict):
+        """Lock and archive the finished question's thread (retrying any earlier failures), then publish its discussion.
+        Returns the public thread id, or None."""
+        conf = self.config.guild(guild)
+        leftovers = [t for t in await conf.thread_cleanup() if t != cur.get("thread_id")]
+        left = [t for t in leftovers if not (await self._lock_thread(guild, t))[0]]
+        public_id = None
+        tid = cur.get("thread_id")
+        if tid:
+            url = (f"https://discord.com/channels/{guild.id}/{cur['channel_id']}/{cur['message_id']}"
+                   if cur.get("channel_id") and cur.get("message_id") else None)
+            done, thread = await self._lock_thread(guild, tid, url)
+            if not done:
+                left.append(tid)
+            elif thread is not None:
+                public_id, locked = await self._publish_thread(guild, cur, thread)
+                if public_id and not locked:
+                    left.append(public_id)
+        await conf.thread_cleanup.set(left[-10:])
+        return public_id
+
+    async def _grant_thread(self, guild, cur: dict, user) -> bool | None:
+        """Add a member who has locked in to the open thread. None: no thread today. False: it failed."""
+        tid = cur.get("thread_id")
+        if not tid:
+            return None
+        try:
+            thread = await self._get_thread(guild, tid)
+            await thread.add_user(user)
+            return True
+        except _DISCORD_ERRORS:
+            log.warning("verdict: could not add %s to thread %s", getattr(user, "id", "?"), tid)
+        except Exception:
+            log.exception("verdict: adding a voter to the thread failed")
+        return False
+
+    async def _ensure_in_thread(self, interaction, guild, cur: dict) -> None:
+        if await self._grant_thread(guild, cur, interaction.user) is False:
+            try:
+                await interaction.followup.send("I couldn't add you to the discussion thread. Tell a mod.", ephemeral=True)
+            except Exception:
+                pass
+
+    @staticmethod
+    def _thread_line(cur: dict) -> str:
+        return f"\n\N{SPEECH BALLOON} Discussion thread: <#{cur['thread_id']}>" if cur.get("thread_id") else ""
 
     async def _close(self, guild, cur: dict, now_ts: float) -> str:
         """Settle the open question: scores, final embed on the old post. Returns yesterday's summary."""
@@ -303,7 +448,9 @@ class Verdict(commands.Cog):
                 await conf.current.set(cur)
                 mine = options[answers[uid]]
                 if uid in preds:
-                    await reply(f"\N{LOCK} Locked in. You: **{mine}** · your guess: **{options[preds[uid]]}**.", ephemeral=True)
+                    await reply(f"\N{LOCK} Locked in. You: **{mine}** · your guess: **{options[preds[uid]]}**."
+                                + self._thread_line(cur), ephemeral=True)
+                    await self._ensure_in_thread(interaction, guild, cur)
                     return
                 await reply(f"You picked **{mine}**.\n**Step 2 of 2.** Now guess: what will **most people** pick? "
                             "You score if your guess matches the winning answer.",
@@ -316,7 +463,9 @@ class Verdict(commands.Cog):
                 return
             if uid in preds:
                 await interaction.response.edit_message(
-                    content=f"\N{LOCK} Already locked in. You: **{options[answers[uid]]}** · your guess: **{options[preds[uid]]}**.", view=None)
+                    content=(f"\N{LOCK} Already locked in. You: **{options[answers[uid]]}** · your guess: **{options[preds[uid]]}**."
+                             + self._thread_line(cur)), view=None)
+                await self._ensure_in_thread(interaction, guild, cur)
                 return
             preds[uid] = idx
             await conf.current.set(cur)
@@ -329,7 +478,8 @@ class Verdict(commands.Cog):
         flame = f"\N{FIRE} Streak: {streak} day{'s' if streak != 1 else ''}"
         await interaction.response.edit_message(
             content=(f"\N{LOCK} Locked in. You: **{options[answers[uid]]}** · your guess: **{options[idx]}**.\n"
-                     f"{flame}. Results, with everyone's picks, post tomorrow."), view=None)
+                     f"{flame}. Results, with everyone's picks, post tomorrow." + self._thread_line(cur)), view=None)
+        await self._ensure_in_thread(interaction, guild, cur)
 
     # -- submissions ------------------------------------------------------
 
@@ -554,6 +704,20 @@ class Verdict(commands.Cog):
         await ctx.send(f"Mind Reader role: {role.name}." if role else "No Mind Reader role.",
                        allowed_mentions=discord.AllowedMentions.none())
 
+    @verdict.command(name="threads")
+    @commands.admin_or_permissions(manage_guild=True)
+    async def verdict_threads(self, ctx: commands.Context, setting: str = None):
+        """Voters-only discussion thread per question: `.verdict threads on` or `off` (no argument shows the state)."""
+        conf = self.config.guild(ctx.guild).threads_enabled
+        if setting is None:
+            await ctx.send(f"Discussion threads are {'on' if await conf() else 'off'}.")
+            return
+        if setting.lower() not in ("on", "off"):
+            await ctx.send("Use `on` or `off`.")
+            return
+        await conf.set(setting.lower() == "on")
+        await ctx.send(f"Discussion threads {setting.lower()} from the next question. An open thread still locks at the next post.")
+
     @verdict.command(name="enable")
     @commands.admin_or_permissions(manage_guild=True)
     async def verdict_enable(self, ctx: commands.Context):
@@ -581,5 +745,6 @@ class Verdict(commands.Cog):
         await ctx.send(
             f"**Daily Verdict v{COG_VERSION}** {'(on)' if s['enabled'] else '(off)'}\n"
             f"Channel: {ch(s['channel_id'])} · Review: {ch(s['review_channel_id'])} · Hour: {s['post_hour']}:00 PT\n"
-            f"Queued: {len(s['queue'])} · Waiting approval: {len(s['pending'])} · Posted so far: {s['seq']}",
+            f"Queued: {len(s['queue'])} · Waiting approval: {len(s['pending'])} · Posted so far: {s['seq']}\n"
+            f"Discussion threads: {'on' if s['threads_enabled'] else 'off'}",
             allowed_mentions=discord.AllowedMentions.none())

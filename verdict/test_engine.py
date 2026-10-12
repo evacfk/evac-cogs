@@ -115,3 +115,21 @@ def test_results_pages_for_a_question_nobody_answered_is_just_the_header():
     entry = {"seq": 1, "question": "Q?", "options": ["a", "b"], "counts": [0, 0], "winners": [],
              "players": [], "readers": [], "wolves": []}
     assert len(engine.results_pages(entry)) == 1
+
+
+def test_thread_name_is_clipped_to_discords_limit():
+    assert engine.thread_name(3, "Is a hot dog a sandwich?") == "Verdict #3: Is a hot dog a sandwich?"
+    assert engine.thread_name(1, "a   b\n c") == "Verdict #1: a b c"
+    long = engine.thread_name(12, "x" * 300)
+    assert len(long) == 100 and long.endswith("…")
+
+
+def test_transcript_pages_pack_split_and_cap():
+    assert engine.transcript_pages(["a", "b", "c"]) == ["a\nb\nc"]
+    pages = engine.transcript_pages(["x" * 1000, "y" * 1000, "z" * 10])
+    assert pages == ["x" * 1000, "y" * 1000 + "\n" + "z" * 10]
+    assert all(len(p) <= 1900 for p in pages)
+    huge = engine.transcript_pages(["q" * 5000])
+    assert [len(p) for p in huge] == [1900, 1900, 1200]
+    capped = engine.transcript_pages(["m" * 1900] * 40, max_pages=30)
+    assert len(capped) == 31 and "10 more pages" in capped[-1]

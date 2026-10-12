@@ -61,6 +61,13 @@ class Click:
                 outer.out.append(("edit", kw.get("content"), kw))
 
         self.response = Resp()
+        self.followups = []
+
+        class Follow:
+            async def send(self, content=None, **kw):
+                outer.followups.append(content)
+
+        self.followup = Follow()
 
 
 @pytest.fixture
@@ -463,3 +470,145 @@ async def test_final_post_with_no_votes_has_no_voter_lines(env):
     cur = {"seq": 1, "question": "Q?", "options": ["a", "b"]}
     e = emb.closed_embed(cur, [0, 0], set(), [], votes={})
     assert "<@" not in e.description
+
+
+# -- private discussion threads ------------------------------------------------
+
+async def test_thread_is_private_voters_only_and_linked_in_the_post(env):
+    import discord
+    await env.cog.post_daily(env.g, ts(2026, 10, 13))
+    [t] = env.chan.threads
+    assert t.kw["type"] == discord.ChannelType.private_thread and t.kw["invitable"] is False
+    assert t.kw["auto_archive_duration"] == 10080 and t.name.startswith("Verdict #1: ")
+    assert (await env.conf.current())["thread_id"] == t.id
+    field = next(f for f in env.chan.sent[0].embed.fields if "thread" in f.name.lower())
+    assert f"<#{t.id}>" in field.value and "voters-only" in field.value and "public thread" in field.value
+    assert "Verdict #1" in t.sent[0].content and "already locked in" in t.sent[0].content
+    assert t.members == []
+
+
+async def test_members_are_added_only_after_both_taps(env):
+    await env.cog.post_daily(env.g, ts(2026, 10, 13))
+    t, cur = env.chan.threads[0], await env.conf.current()
+    a, b = Member(env.g, 10), Member(env.g, 11)
+    first = Click(env.g, a, f"verdict:a:{cur['qid']}:0")
+    await env.cog.on_interaction(first)
+    assert t.members == [] and f"<#{t.id}>" not in first.out[0][1]   # answered, has not guessed yet
+    second = Click(env.g, a, f"verdict:p:{cur['qid']}:1")
+    await env.cog.on_interaction(second)
+    assert t.members == [a] and f"<#{t.id}>" in second.out[0][1] and b not in t.members
+
+
+async def test_failed_add_is_reported_and_a_retap_repairs_it(env):
+    await env.cog.post_daily(env.g, ts(2026, 10, 13))
+    t, u = env.chan.threads[0], Member(env.g, 10)
+    t.fail_add = True
+    _, second = await play(env, u, 0, 1)
+    assert t.members == [] and "couldn't add you" in second.followups[0]
+    t.fail_add = False
+    cur = await env.conf.current()
+    again = Click(env.g, u, f"verdict:a:{cur['qid']}:0")
+    await env.cog.on_interaction(again)
+    assert t.members == [u] and f"<#{t.id}>" in again.out[0][1]
+
+
+async def test_next_post_locks_and_archives_the_old_thread_and_opens_a_new_one(env):
+    await env.cog.post_daily(env.g, ts(2026, 10, 13))
+    old, first_msg = env.chan.threads[0], env.chan.sent[0]
+    await env.cog.post_daily(env.g, ts(2026, 10, 14))
+    new = env.chan.threads[-1]
+    assert old.archived and old.locked and not new.archived and not new.locked
+    assert "Voting is closed" in old.sent[-1].content and str(first_msg.id) in old.sent[-1].content
+    assert [t for t in env.chan.threads if not t.locked] == [new]
+    yest = next(f for f in env.chan.sent[1].embed.fields if f.name.endswith("Yesterday"))
+    assert "<#" not in yest.value   # nobody talked, so there is no public copy to link
+
+
+async def test_threads_off_posts_without_a_thread_but_still_closes_the_open_one(env):
+    await env.cog.post_daily(env.g, ts(2026, 10, 13))
+    old = env.chan.threads[0]
+    ctx = Ctx(env, Member(env.g, 1))
+    await cmd(env, "verdict_threads")(env.cog, ctx, setting="off")
+    assert "off" in ctx.sent[-1]
+    await env.cog.post_daily(env.g, ts(2026, 10, 14))
+    assert len(env.chan.threads) == 1 and old.locked and (await env.conf.current())["thread_id"] is None
+    assert not any("thread" in f.name.lower() for f in env.chan.sent[1].embed.fields if "Yesterday" not in f.name)
+    await cmd(env, "verdict_threads")(env.cog, ctx)
+    assert "off" in ctx.sent[-1]
+
+
+async def test_a_failed_thread_does_not_stop_the_post_or_the_voting(env):
+    env.chan.fail_create = True
+    out = await env.cog.post_daily(env.g, ts(2026, 10, 13))
+    assert "Posted" in out and (await env.conf.current())["thread_id"] is None
+    assert not any("thread" in f.name.lower() for f in env.chan.sent[0].embed.fields)
+    _, second = await play(env, Member(env.g, 10), 0, 1)
+    assert "Locked in" in second.out[0][1] and "Discussion thread" not in second.out[0][1] and second.followups == []
+
+
+async def test_a_thread_that_will_not_lock_is_retried_on_the_next_post(env):
+    await env.cog.post_daily(env.g, ts(2026, 10, 13))
+    old = env.chan.threads[0]
+    old.fail_edit = True
+    await env.cog.post_daily(env.g, ts(2026, 10, 14))
+    assert not old.locked and await env.conf.thread_cleanup() == [old.id]
+    old.fail_edit = False
+    await env.cog.post_daily(env.g, ts(2026, 10, 15))
+    assert old.locked and old.archived and await env.conf.thread_cleanup() == []
+    assert [t for t in env.chan.threads if not t.locked] == [env.chan.threads[-1]]
+
+
+async def test_thread_is_removed_when_the_post_itself_fails(env):
+    from verdict import _testkit
+
+    async def boom(*a, **k):
+        raise _testkit.http_error("Forbidden")
+    env.chan.send = boom
+    out = await env.cog.post_daily(env.g, ts(2026, 10, 13))
+    assert "couldn't post" in out and env.chan.threads[0].deleted
+
+
+async def test_discussion_is_copied_to_a_public_locked_thread_under_the_results(env):
+    await env.cog.post_daily(env.g, ts(2026, 10, 13))
+    old, results = env.chan.threads[0], env.chan.sent[0]
+    ann, bo = Member(env.g, 10), Member(env.g, 11)
+    old.say(ann, "obviously a sandwich")
+    old.say(bo, "nope\nnot even close", attachments=("https://cdn/x.png",))
+    old.say(ann, "", system=True)                      # system lines and bot posts are not copied
+    old.say(env.cog.bot.user, "hello", bot=True)
+    old.say(bo, "")                                    # empty message with no attachment
+    await env.cog.post_daily(env.g, ts(2026, 10, 14))
+    pub = next(t for t in env.chan.threads if t.kw.get("public"))
+    text = "\n".join(m.content for m in pub.sent)
+    assert "user10:** obviously a sandwich" in text and "user11:** nope\nnot even close https://cdn/x.png" in text
+    assert "hello" not in text and text.count("user10") == 1
+    assert pub.archived and pub.locked and pub.name == old.name
+    assert pub.parent is results.channel and pub.kw["auto_archive_duration"] == 10080
+    assert [t for t in env.chan.threads if not t.locked] == [env.chan.threads[-1]] and not env.chan.threads[-1].kw.get("public")
+    yest = next(f for f in env.chan.sent[1].embed.fields if f.name.endswith("Yesterday"))
+    assert f"<#{pub.id}>" in yest.value and "discussion" in yest.value
+    assert all(m.kw["allowed_mentions"].users is False for m in pub.sent)
+
+
+async def test_a_failed_public_copy_leaves_the_private_thread_locked_and_the_post_fine(env):
+    await env.cog.post_daily(env.g, ts(2026, 10, 13))
+    old = env.chan.threads[0]
+    old.say(Member(env.g, 10), "hi")
+    env.chan.fail_public = True
+    out = await env.cog.post_daily(env.g, ts(2026, 10, 14))
+    assert "Posted" in out and old.locked and old.archived
+    assert not any(t.kw.get("public") for t in env.chan.threads)
+    yest = next(f for f in env.chan.sent[1].embed.fields if f.name.endswith("Yesterday"))
+    assert "<#" not in yest.value
+
+
+async def test_a_public_copy_that_will_not_lock_is_retried(env):
+    await env.cog.post_daily(env.g, ts(2026, 10, 13))
+    env.chan.threads[0].say(Member(env.g, 10), "hi")
+    env.chan.new_public_fail_edit = True
+    await env.cog.post_daily(env.g, ts(2026, 10, 14))
+    pub = next(t for t in env.chan.threads if t.kw.get("public"))
+    assert not pub.locked and await env.conf.thread_cleanup() == [pub.id]
+    pub.fail_edit = False
+    await env.cog.post_daily(env.g, ts(2026, 10, 15))
+    assert pub.locked and pub.archived and await env.conf.thread_cleanup() == []

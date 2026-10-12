@@ -160,9 +160,69 @@ class FakeMessage:
     async def clear_reactions(self):
         self.reactions = []
 
+    async def create_thread(self, *, name, **kw):
+        ch = self.channel
+        if getattr(ch, "fail_public", False):
+            raise http_error("Forbidden")
+        thread = FakeThread(ch, next(_ids), name, public=True, **kw)
+        thread.fail_edit = getattr(ch, "new_public_fail_edit", False)
+        ch.threads.append(thread)
+        ch.guild.threads[thread.id] = thread
+        return thread
+
     async def edit(self, **kw):
         for k, v in kw.items():
             setattr(self, k, v)
+
+
+def http_error(kind: str):
+    """A discord.Forbidden / NotFound / HTTPException that constructs under both real discord.py and the stub."""
+    import discord
+    status = {"Forbidden": 403, "NotFound": 404}.get(kind, 500)
+    return getattr(discord, kind)(types.SimpleNamespace(status=status, reason=kind), kind)
+
+
+class FakeThread:
+    def __init__(self, parent, tid, name, **kw):
+        self.parent, self.guild, self.id, self.name, self.kw = parent, parent.guild, tid, name, kw
+        self.sent, self.members, self.posts = [], [], []
+        self.archived = self.locked = self.deleted = False
+        self.fail_add = self.fail_edit = False
+
+    @property
+    def mention(self):
+        return f"<#{self.id}>"
+
+    async def send(self, content=None, **kw):
+        msg = FakeMessage(self, content=content, **kw)
+        self.sent.append(msg)
+        return msg
+
+    async def add_user(self, user):
+        if self.fail_add:
+            raise http_error("Forbidden")
+        if user not in self.members:
+            self.members.append(user)
+
+    async def edit(self, **kw):
+        if self.fail_edit:
+            raise http_error("Forbidden")
+        self.archived = kw.get("archived", self.archived)
+        self.locked = kw.get("locked", self.locked)
+
+    async def delete(self):
+        self.deleted = True
+
+    def say(self, author, text="", attachments=(), bot=False, system=False):
+        """A member message inside the thread (what Verdict reads back when it copies the discussion)."""
+        name = getattr(author, "display_name", f"user{getattr(author, 'id', '?')}")
+        self.posts.append(types.SimpleNamespace(
+            author=types.SimpleNamespace(display_name=name, bot=bot), clean_content=text,
+            attachments=[types.SimpleNamespace(url=u) for u in attachments], is_system=lambda: system))
+
+    async def history(self, limit=None, oldest_first=False):
+        for post in list(self.posts)[:limit]:
+            yield post
 
 
 class FakeChannel:
@@ -170,6 +230,16 @@ class FakeChannel:
         self.guild, self.id, self.name = guild, cid, name
         self.sent = []
         self.members = []
+        self.threads = []
+        self.fail_create = False
+
+    async def create_thread(self, *, name, **kw):
+        if self.fail_create:
+            raise http_error("Forbidden")
+        thread = FakeThread(self, next(_ids), name, **kw)
+        self.threads.append(thread)
+        self.guild.threads[thread.id] = thread
+        return thread
 
     @property
     def mention(self):
@@ -222,6 +292,7 @@ class FakeGuild:
     def __init__(self, gid=1):
         self.id = gid
         self.members, self.roles, self.channels = [], [], {}
+        self.threads = {}
         self.default_role = FakeRole(self, gid, "@everyone", 0)
         self.me = types.SimpleNamespace(top_role=FakeRole(self, 999, "Bot", 100))
         self.name = "Wonderland"
@@ -256,6 +327,14 @@ class FakeGuild:
         return self.channels.get(cid)
 
     get_channel_or_thread = get_channel
+
+    def get_thread(self, tid):
+        return self.threads.get(tid)
+
+    async def fetch_channel(self, tid):
+        if tid in self.threads:
+            return self.threads[tid]
+        raise http_error("NotFound")
 
 
 class FakeBot:
@@ -344,6 +423,8 @@ def install(monkeypatch, bank=None):
     for name in ("Member", "Guild", "Role", "TextChannel", "VoiceChannel", "Message", "Interaction"):
         if not hasattr(discord, name):
             monkeypatch.setattr(discord, name, type(name, (), {}), raising=False)
+    if not hasattr(discord, "ChannelType"):
+        monkeypatch.setattr(discord, "ChannelType", types.SimpleNamespace(private_thread="private_thread"), raising=False)
     if not hasattr(discord, "AllowedMentions"):
         monkeypatch.setattr(discord, "AllowedMentions", _AllowedMentions, raising=False)
     if not hasattr(discord, "Colour"):

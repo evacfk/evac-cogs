@@ -1,7 +1,7 @@
 """Config defaults and fixed values for verdict (Daily Verdict)."""
 from zoneinfo import ZoneInfo
 
-COG_VERSION = "1.2.0"
+COG_VERSION = "1.3.0"
 CONFIG_IDENTIFIER = 0x7E4D1C70
 HOME_TZ = ZoneInfo("America/Los_Angeles")
 
@@ -25,6 +25,8 @@ STREAK_MILESTONES = (7, 30, 100, 365)
 KEEP_MONTHS = 3
 KEEP_HISTORY = 60             # closed questions whose participant lists are kept
 BAR_WIDTH = 10
+THREAD_ARCHIVE_MINUTES = 10080   # 7 days: Discord must never archive a thread before we lock it ourselves
+THREAD_NAME_LIMIT = 100
 
 TICK, CROSS = "\N{WHITE HEAVY CHECK MARK}", "\N{CROSS MARK}"
 
@@ -46,6 +48,8 @@ DEFAULT_GUILD = {
     "months": {},                 # "YYYY-MM" -> {uid: [correct, played]}
     "last_award_month": "",
     "mind_reader_holder": None,
+    "threads_enabled": True,      # a voters-only private discussion thread per question
+    "thread_cleanup": [],         # thread ids we failed to lock; retried on the next post
     "history": [],                # closed questions, newest last: who played, who read the crowd, lone wolves
 }
 
