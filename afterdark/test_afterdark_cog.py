@@ -1687,3 +1687,24 @@ def test_panel_mentions_leave_button_but_the_final_warning_lives_in_the_confirm_
     from . import embeds
     emb = embeds.panel_embed([], 7, 14, rules="x")
     assert "Leave Rabbit Hole" in emb.fields[0].value and "let back in" not in emb.fields[0].value
+
+
+async def test_drop_next_sets_an_exact_time_and_status_shows_minutes(w):
+    fight = await drop_world(w)
+    ctx = FakeCtx(w.guild, w.member("admin"))
+    await w.cog.drop_next.func(w.cog, ctx, 25)
+    assert (await w.cog.config.guild(w.guild).drop_state())["next_ts"] == NOW + 25 * 60
+    await w.cog.drop_status.func(w.cog, ctx)
+    assert "25 min" in ctx.sent[-1]
+    await w.cog.drop_next.func(w.cog, ctx, 0)
+    assert "Pick 1 to" in ctx.sent[-1]
+    w.clock[0] = NOW + 25 * 60 + 1
+    await w.cog._drop_tick(w.guild)
+    assert len(fight.messages) == 1
+
+
+async def test_drop_next_refuses_while_drops_are_off(w):
+    await drop_world(w, enabled=False)
+    ctx = FakeCtx(w.guild, w.member("admin"))
+    await w.cog.drop_next.func(w.cog, ctx, 10)
+    assert "off" in ctx.sent[-1] and "next_ts" not in await w.cog.config.guild(w.guild).drop_state()

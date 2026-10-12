@@ -1,7 +1,7 @@
 """All defaults and lookup tables for afterdark -- no discord/redbot imports."""
 
 VERSION = "1.5.0"
-BUILD = "afterdark build: multi-v1 (random rabbit drops, 4 slots, members report, leave button, final)"
+BUILD = "afterdark build: multi-v1 (random rabbit drops, 4 slots, members report, leave button, final, drop next)"
 
 CONFIG_IDENTIFIER = 7316482950
 DAY = 86400

@@ -1364,7 +1364,8 @@ class AfterDark(commands.Cog):
             f"Slots per drop: {cfg.get('drop_max_claims') or 'unlimited'}.",
         ]
         if cfg["drop_enabled"] and state.get("next_ts"):
-            lines.append(f"Next drop: <t:{int(state['next_ts'])}:R>")
+            mins = max(0, int(round((state["next_ts"] - self._clock()) / 60)))
+            lines.append(f"Next drop: in about **{mins} min** (<t:{int(state['next_ts'])}:t>), then another random {cfg['drop_min_minutes']}-{cfg['drop_max_minutes']} min after that.")
         if state.get("message_id"):
             lines.append(f"Live now, deleted <t:{int(state['delete_ts'])}:R>.")
         await ctx.send("\n".join(lines))
@@ -1446,6 +1447,19 @@ class AfterDark(commands.Cog):
             return await ctx.send(error)
         await self.config.guild(ctx.guild).drop_life_minutes.set(minutes)
         await ctx.send(f"Drops stay for {minutes} minutes (applies from the next one).")
+
+    @afterdark_drop.command(name="next")
+    async def drop_next(self, ctx, minutes: int):
+        """Set exactly when the next drop happens: in this many minutes. Later gaps stay random."""
+        if not 1 <= minutes <= C.DROP_MAX_GAP_MINUTES:
+            return await ctx.send(f"Pick 1 to {C.DROP_MAX_GAP_MINUTES} minutes.")
+        if not await self.config.guild(ctx.guild).drop_enabled():
+            return await ctx.send("Drops are off. Turn them on first: `.afterdark drop on`.")
+        async with self._drop_lock(ctx.guild):
+            state = dict(await self.config.guild(ctx.guild).drop_state())
+            state["next_ts"] = self._clock() + minutes * 60
+            await self.config.guild(ctx.guild).drop_state.set(state)
+        await ctx.send(f"Next drop in {minutes} minutes (<t:{int(state['next_ts'])}:t>).")
 
     @afterdark_drop.command(name="slots")
     async def drop_slots(self, ctx, count: int):
