@@ -118,10 +118,16 @@ def http_error(kind: str):
 class FakeRole:
     def __init__(self, guild, rid, name):
         self.guild, self.id, self.name = guild, rid, name
+        self.edits, self.fail_edit = [], False
 
     @property
     def mention(self):
         return f"<@&{self.id}>"
+
+    async def edit(self, **kw):
+        if self.fail_edit:
+            raise http_error("Forbidden")
+        self.edits.append(kw)
 
     def __eq__(self, o):
         return getattr(o, "id", None) == self.id
@@ -139,17 +145,42 @@ class FakeMessage:
         self.pinned = self.deleted = False
         self.removed = []  # (emoji, member) pairs removed by the cog
         self.attachments = []
+        self.type = kw.get("type", 0)
 
     async def pin(self):
         if getattr(self.channel, "fail_pin", False):
             raise http_error("Forbidden")
         self.pinned = True
+        import discord
+        pins_add = getattr(getattr(discord, "MessageType", None), "pins_add", None)
+        if pins_add is not None:  # Discord posts "<bot> pinned a message to this channel"; so does the fake
+            self.channel.sent.append(FakeMessage(self.channel, author=types.SimpleNamespace(id=999), type=pins_add))
 
     async def delete(self):
         self.deleted = True
+        if self in getattr(self.channel, "sent", []):
+            self.channel.sent.remove(self)
 
     async def remove_reaction(self, emoji, member):
         self.removed.append((str(emoji), member.id))
+
+    async def edit(self, **kw):
+        for key in ("content", "embed"):
+            if key in kw:
+                setattr(self, key, kw[key])
+
+
+class _Partial:
+    """A message that does not exist (any more): every call on it 404s, like a real deleted message."""
+
+    def __init__(self, mid):
+        self.id, self.removed = mid, []
+
+    async def edit(self, **kw):
+        raise http_error("NotFound")
+
+    async def remove_reaction(self, emoji, member):
+        raise http_error("NotFound")
 
 
 class FakeChannel:
@@ -168,7 +199,29 @@ class FakeChannel:
         return msg
 
     def get_partial_message(self, mid):
-        return next((m for m in self.sent if m.id == mid), FakeMessage(self))
+        return next((m for m in self.sent if m.id == mid), None) or _Partial(mid)
+
+    async def history(self, limit=None):
+        for m in list(reversed(self.sent))[:limit]:
+            yield m
+
+
+class FakeThread(FakeChannel):
+    """A forum post. Like discord.py, Guild.get_channel does not return these; get_channel_or_thread does."""
+
+    def __init__(self, guild, cid, name, archived=False, locked=False):
+        super().__init__(guild, cid, name)
+        self.archived, self.locked = archived, locked
+
+    async def edit(self, **kw):
+        if self.locked:
+            raise http_error("Forbidden")
+        self.archived = kw.get("archived", self.archived)
+
+    async def send(self, content=None, **kw):
+        if self.archived:
+            raise http_error("Forbidden")  # strict: the cog has to unarchive before it posts
+        return await super().send(content, **kw)
 
 
 class FakeMember:
@@ -196,7 +249,7 @@ class FakeMember:
 class FakeGuild:
     def __init__(self, gid=1):
         self.id = gid
-        self.members, self.roles, self.channels = [], [], {}
+        self.members, self.roles, self.channels, self.threads = [], [], {}, {}
         self.name = "Wonderland"
         self.created_roles = []
 
@@ -217,6 +270,11 @@ class FakeGuild:
         self.channels[cid] = ch
         return ch
 
+    def add_thread(self, tid, name="post", **kw):
+        thread = FakeThread(self, tid, name, **kw)
+        self.threads[tid] = thread
+        return thread
+
     def get_role(self, rid):
         return next((r for r in self.roles if r.id == rid), None)
 
@@ -224,7 +282,10 @@ class FakeGuild:
         return next((m for m in self.members if m.id == uid), None)
 
     def get_channel(self, cid):
-        return self.channels.get(cid)
+        return self.channels.get(cid)  # channels only, as in discord.py
+
+    def get_channel_or_thread(self, cid):
+        return self.channels.get(cid) or self.threads.get(cid)
 
 
 class FakeBot:
@@ -301,7 +362,7 @@ def install(monkeypatch):
     for name in ("Forbidden", "NotFound", "HTTPException"):
         if not hasattr(discord, name):
             monkeypatch.setattr(discord, name, type(name, (Exception,), {}), raising=False)
-    for name in ("Member", "Guild", "Role", "TextChannel", "Message"):
+    for name in ("Member", "Guild", "Role", "TextChannel", "Thread", "Message"):
         if not hasattr(discord, name):
             monkeypatch.setattr(discord, name, type(name, (), {}), raising=False)
     if not hasattr(discord, "AllowedMentions"):
@@ -310,10 +371,7 @@ def install(monkeypatch):
         monkeypatch.setattr(discord, "Colour", lambda v=0: v, raising=False)
     if not hasattr(discord.Embed, "set_footer"):
         monkeypatch.setattr(discord.Embed, "set_footer", lambda self, text=None, **kw: self, raising=False)
-    try:
-        discord.Color.gold()
-        discord.Color.dark_grey()
-    except AttributeError:
-        monkeypatch.setattr(discord.Color, "gold", classmethod(lambda cls: cls("gold")), raising=False)
-        monkeypatch.setattr(discord.Color, "dark_grey", classmethod(lambda cls: cls("dark_grey")), raising=False)
+    for color in ("gold", "dark_grey", "green", "orange", "red"):
+        if not hasattr(discord.Color, color):
+            monkeypatch.setattr(discord.Color, color, classmethod(lambda cls, c=color: cls(c)), raising=False)
     return core

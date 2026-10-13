@@ -6,7 +6,9 @@ from zoneinfo import ZoneInfo
 import pytest
 
 from secrethunt import engine
-from secrethunt.constants import MAX_DECOY_REPLIES, MAX_DM_FAILS, MAX_WRONG_PER_DAY, POOL_MAX
+from secrethunt.constants import (
+    MAX_DECOY_REPLIES, MAX_DM_FAILS, MAX_WRONG_PER_DAY, POOL_MAX, TIER_ORDER, TIER_ROLE_NAMES,
+)
 from secrethunt.puzzles import PUZZLES
 
 LA = ZoneInfo("America/Los_Angeles")
@@ -41,11 +43,23 @@ def test_answers_cover_the_largest_pool_and_stay_out_of_the_public_poem(pid):
 @pytest.mark.parametrize("pid", list(PUZZLES))
 def test_text_templates_format_cleanly(pid):
     p = PUZZLES[pid]
-    p["riddle"].format(hint="x", n=1)
+    p["riddle"].format(hint="x", shape="1")
     p["riddle_no_hint"].format(channel="#c")
     p["final"].format(anagram="x")
     p["solved"].format(rank=" #1")
-    p["hall"].format(member="m", title="t", rank=1)
+
+
+@pytest.mark.parametrize("pid", list(PUZZLES))
+def test_every_puzzle_has_a_known_tier_and_easy_promises_no_role(pid):
+    p = PUZZLES[pid]
+    assert p["tier"] in TIER_ORDER
+    if p["tier"] == "easy":
+        assert "role" not in p["solved"].lower() and "badge" not in p["solved"].lower()
+
+
+def test_easy_never_has_a_role_and_the_ladder_starts_at_easy():
+    assert TIER_ORDER[0] == "easy" and "easy" not in TIER_ROLE_NAMES
+    assert set(TIER_ROLE_NAMES) == set(TIER_ORDER) - {"easy"}
 
 
 # ---------------------------------------------------------------- normalising and scrambling
@@ -68,11 +82,44 @@ def test_scramble_is_a_deterministic_real_anagram_never_the_word():
     assert engine.scramble("aaa", "seed") == "aaa"  # nothing to shuffle
 
 
-def test_channel_hint_uses_letters_only_and_skips_tiny_names():
-    hint = engine.channel_hint("wonder-land_chat 💬", "s")
-    assert sorted(hint) == sorted("wonderlandchat")
-    assert engine.channel_hint("ab", "s") is None
-    assert engine.channel_hint("💬│", "s") is None
+def test_title_hint_scrambles_a_single_word_title_and_reports_its_length():
+    hint, shape = engine.title_hint("Gaming", "seed")
+    assert hint != "gaming" and sorted(hint) == sorted("gaming") and shape == "6"
+    assert engine.title_hint("Gaming", "seed") == (hint, shape)  # deterministic: the riddle can be re-sent
+
+
+def test_title_hint_scrambles_each_word_separately_and_keeps_tiny_words():
+    hint, shape = engine.title_hint("Best pizza in the Bay?", "seed")
+    words = hint.split(" ")
+    assert shape == "4 + 5 + 2 + 3 + 3" and len(words) == 5
+    assert words[2] == "in"  # two letters: nothing to shuffle
+    for scrambled, original in zip(words, ["best", "pizza", "in", "the", "bay"]):
+        assert sorted(scrambled) == sorted(original)
+
+
+def test_title_hint_uses_letters_only_and_skips_tiny_titles():
+    assert engine.title_hint("wonder-land_chat \U0001f4ac", "s")[1] == "6 + 4 + 4"
+    assert engine.title_hint("Caf\u00e9", "s")[1] == "4"
+    assert engine.title_hint("ab", "s") is None
+    assert engine.title_hint("\U0001f4ac\u2502", "s") is None
+    assert engine.title_hint(None, "s") is None
+
+
+def test_escape_markdown_stops_names_restyling_the_hall():
+    assert engine.escape_markdown("a_b*c~d|e`f>g\\h") == "a\\_b\\*c\\~d\\|e\\`f\\>g\\\\h"
+    assert engine.escape_markdown("plain name") == "plain name" and engine.escape_markdown(None) == ""
+
+
+def test_hall_text_numbers_solvers_by_their_original_finishing_position():
+    assert engine.hall_text([(1, "ann"), (2, "bo"), (4, "cy")]) == ("1. ann\n2. bo\n4. cy", 0)  # #3 left: a gap, no renumbering
+    assert engine.hall_text([]) == ("", 0)
+
+
+def test_hall_text_cuts_off_at_the_budget_and_says_how_many_are_hidden():
+    entries = [(i, "x" * 10) for i in range(1, 101)]
+    text, hidden = engine.hall_text(entries, budget=200)
+    assert len(text) <= 200 and hidden == 100 - len(text.split("\n")) and hidden > 0
+    assert engine.hall_text(entries)[1] == 0 and len(engine.hall_text(entries)[0]) < 4096
 
 
 # ---------------------------------------------------------------- variants

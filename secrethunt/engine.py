@@ -12,7 +12,7 @@ import re
 from datetime import datetime, time as dtime, timedelta
 
 from .constants import (
-    DM_RETRY_SECONDS, HOME_TZ, MAX_DECOY_REPLIES, MAX_DM_FAILS, MAX_WRONG_PER_DAY, MIN_DELAY_HOURS,
+    DM_RETRY_SECONDS, HALL_BUDGET, HOME_TZ, MAX_DECOY_REPLIES, MAX_DM_FAILS, MAX_WRONG_PER_DAY, MIN_DELAY_HOURS,
     TEST_DELAY_SECONDS, UNLOCK_HOUR,
 )
 
@@ -48,12 +48,34 @@ def scramble(word: str, seed: str) -> str:
     return "".join(letters)
 
 
-def channel_hint(channel_name: str, seed: str):
-    """The channel's name with its letters shaken loose, or None when it is too short to be a puzzle."""
-    letters = "".join(c for c in (channel_name or "").lower() if c.isalpha())
-    if len(letters) < 3:
+def title_hint(name: str, seed: str):
+    """A channel or forum-post title with each word's letters shaken loose, as (hint, shape), or None when the
+    title has too few letters to make a puzzle. Words under 3 letters stay as they are; `shape` is the letter
+    count of every word, e.g. "6" or "4 + 2 + 5", so the hint is solvable."""
+    words = re.findall(r"[^\W\d_]+", (name or "").lower())
+    if sum(len(w) for w in words) < 3:
         return None
-    return scramble(letters, seed)
+    parts = [scramble(w, f"{seed}:{i}") if len(w) >= 3 else w for i, w in enumerate(words)]
+    return " ".join(parts), " + ".join(str(len(w)) for w in words)
+
+
+def escape_markdown(text: str) -> str:
+    """Backslash-escape Discord markdown so a display name cannot restyle or break the Hall post."""
+    return re.sub(r"([\\*_~`|>])", r"\\\1", text or "")
+
+
+def hall_text(entries, budget: int = HALL_BUDGET):
+    """`(rank, name)` pairs in finishing order as a numbered list, cut off at `budget` characters.
+    Returns (text, hidden_count). Ranks are the original finishing positions, so someone leaving the server
+    leaves a gap instead of renumbering everybody."""
+    lines, used = [], 0
+    for rank, name in entries:
+        line = f"{rank}. {name}"
+        if used + len(line) + 1 > budget:
+            return "\n".join(lines), len(entries) - len(lines)
+        lines.append(line)
+        used += len(line) + 1
+    return "\n".join(lines), 0
 
 
 def acrostic(lines) -> str:

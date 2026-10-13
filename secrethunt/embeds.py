@@ -18,3 +18,16 @@ def status_embed(version: str, lines: dict) -> discord.Embed:
                           color=discord.Color.gold())
     embed.set_footer(text=f"SecretHunt v{version}")
     return embed
+
+
+TIER_COLORS = {"easy": "green", "medium": "orange", "hard": "red", "expert": "gold"}
+
+
+def hall_embed(tier: str, title: str, text: str, hidden: int, total: int) -> discord.Embed:
+    color = getattr(discord.Color, TIER_COLORS.get(tier, "gold"))()
+    embed = discord.Embed(title=f"{tier.title()} \N{MIDDLE DOT} {title}", description=text or "*Nobody yet.*", color=color)
+    note = f"{total} solver{'' if total == 1 else 's'}"
+    if hidden:
+        note += f" \N{MIDDLE DOT} {hidden} more not shown"
+    embed.set_footer(text=note)
+    return embed

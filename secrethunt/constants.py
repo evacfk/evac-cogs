@@ -1,7 +1,7 @@
 """Config defaults and fixed values for secrethunt (Secrets of Wonderland)."""
 from zoneinfo import ZoneInfo
 
-COG_VERSION = "1.0.0"
+COG_VERSION = "1.1.0"
 CONFIG_IDENTIFIER = 0x5EC8E7A1
 HOME_TZ = ZoneInfo("America/Los_Angeles")
 
@@ -16,9 +16,13 @@ MAX_DM_FAILS = 72                  # ...for about three days, then waits for the
 MAX_WRONG_PER_DAY = 10
 MAX_DECOY_REPLIES = 3
 POOL_MIN, POOL_MAX = 2, 5
-DEFAULT_ROLE_NAME = "Secret Finder"
-DEFAULT_ROLE_COLOR = 0xF1C40F
 ICON_MAX_BYTES = 256 * 1024
+HALL_BUDGET = 3800                 # characters of solver names per Hall of Secrets post (embed limit is 4096)
+
+TIER_ORDER = ("easy", "medium", "hard", "expert")
+# Easy deliberately has no role or badge: solvers are only listed in the Hall of Secrets.
+TIER_ROLE_NAMES = {"medium": "Secret Finder", "hard": "Timekeeper", "expert": "Eye of Wonder"}
+TIER_ROLE_COLORS = {"medium": 0x1ABC9C, "hard": 0xF1C40F, "expert": 0x9B59B6}
 
 DEFAULT_GUILD = {
     "enabled": False,
@@ -28,8 +32,9 @@ DEFAULT_GUILD = {
     "active": "",            # newest published puzzle (shown in status)
     "objects": {},           # puzzle id -> {channel id (str): pinned object message id}
     "finishers": {},         # puzzle id -> [user ids in finishing order]
-    "role_id": None,
-    "hall_channel_id": None,
+    "roles": {},             # tier -> role id (Easy never has one)
+    "hall_channel_id": None, # the Hall of Secrets: one post per puzzle listing its solvers
+    "hall_messages": {},     # puzzle id -> that puzzle's Hall post
     "test_mode": False,
 }
 

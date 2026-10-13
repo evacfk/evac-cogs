@@ -19,7 +19,7 @@ LATE_RABBIT = {
     "riddle": (
         "\N{RABBIT FACE} *The Rabbit's ears twitch. You said the word.*\n\n"
         "I am late, I am late, and I have lost my watch. It is **held in place** in a room whose name I have "
-        "shaken loose: **{hint}** ({n} letters).\n\n"
+        "shaken loose: **{hint}** ({shape} letters).\n\n"
         "Find it, and give it a wind with \N{MANTELPIECE CLOCK}."
     ),
     "riddle_no_hint": (
@@ -45,10 +45,9 @@ LATE_RABBIT = {
     "locked": "\N{RABBIT FACE} *The Rabbit has stopped listening for today.* Come back tomorrow.",
     "solved": (
         "\N{TOP HAT} *Yes! That is it! That is exactly it!*\n\n"
-        "You caught the Late Rabbit. You are a **Secret Finder** now.{rank}"
+        "You caught the Late Rabbit. Your name is on the **Hall of Secrets** now.{rank}"
     ),
     "already": "\N{RABBIT FACE} *You have already caught the Rabbit.* He is very pleased with you.",
-    "hall": "\N{RABBIT FACE} {member} caught **{title}** and is finder **#{rank}**.",
 }
 
 PUZZLES = {LATE_RABBIT["id"]: LATE_RABBIT}

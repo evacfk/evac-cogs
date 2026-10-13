@@ -1,5 +1,5 @@
 """Behaviour tests for SecretHunt against fakes. They prove the logic and clean imports under the stub, not live
-Discord behaviour (real DMs, pins, reaction events, role icons, the pin notice)."""
+Discord behaviour (real DMs, pins, reaction events, role icons, the pin notice, archived forum posts)."""
 import asyncio
 import importlib
 import sys
@@ -16,7 +16,7 @@ from secrethunt.puzzles import PUZZLES
 
 LA = ZoneInfo("America/Los_Angeles")
 PID = "late_rabbit"
-NAMES = ["cuddle", "gaming", "artwork", "music", "memes"]
+NAMES = ["Gaming", "Music", "Memes", "Movies", "Artwork"]  # the forum posts the objects hide in
 
 
 def ts(d, h=12, mi=0):
@@ -37,21 +37,20 @@ def mod(monkeypatch):
 @pytest.fixture
 async def env(mod):
     g = tk.FakeGuild()
-    chans = [g.add_channel(100 + i, n) for i, n in enumerate(NAMES)]
-    hall = g.add_channel(200, "hall-of-finders")
+    posts = [g.add_thread(100 + i, n) for i, n in enumerate(NAMES)]
+    hall = g.add_channel(200, "hall-of-secrets")
     role = g.add_role(300, "Secret Finder")
     bot = tk.FakeBot(g)
     cog = mod.SecretHunt(bot)
     conf = cog.config.guild(g)
-    await conf.pool.set([c.id for c in chans])
+    await conf.pool.set([c.id for c in posts])
     await conf.published.set([PID])
     await conf.active.set(PID)
     await conf.salt.set("fixed-test-salt")
-    await conf.role_id.set(role.id)
     await conf.hall_channel_id.set(hall.id)
     await conf.enabled.set(True)
     await cog._setup_objects(g, PID)
-    return types.SimpleNamespace(mod=mod, cog=cog, g=g, chans=chans, hall=hall, role=role, conf=conf, bot=bot)
+    return types.SimpleNamespace(mod=mod, cog=cog, g=g, chans=posts, hall=hall, role=role, conf=conf, bot=bot)
 
 
 def member(env, uid, **kw):
@@ -59,8 +58,7 @@ def member(env, uid, **kw):
 
 
 def chat(env, author, text, channel=None):
-    ch = channel or env.chans[0]
-    msg = tk.FakeMessage(ch, content=text, author=author)
+    msg = tk.FakeMessage(channel or env.chans[0], content=text, author=author)
     msg.guild = env.g
     return msg
 
@@ -85,17 +83,15 @@ async def objects(env):
 
 
 async def own_channel(env, m):
-    st = await state(env, m)
-    return env.chans[st["variant"]]
+    return env.chans[(await state(env, m))["variant"]]
 
 
 async def wrong_channel(env, m):
-    st = await state(env, m)
-    return env.chans[(st["variant"] + 1) % len(env.chans)]
+    return env.chans[((await state(env, m))["variant"] + 1) % len(env.chans)]
 
 
-async def start(env, m, now=None):
-    await env.cog._on_guild_message(chat(env, m, ".tick"))
+async def start(env, m, channel=None):
+    await env.cog._on_guild_message(chat(env, m, ".tick", channel))
     return await state(env, m)
 
 
@@ -106,10 +102,28 @@ async def find_object(env, m, own=True):
     return ch, mid
 
 
-# ---------------------------------------------------------------- setup
+async def at_final(env, uid=11, name=None):
+    m = member(env, uid, name=name)
+    await start(env, m)
+    await find_object(env, m)
+    await env.cog._deliver_due(env.g, (await state(env, m))["due_ts"] + 1)
+    return m, PUZZLES[PID]["answers"][(await state(env, m))["variant"]]
 
 
-async def test_setup_pins_one_identical_object_per_channel_and_is_idempotent(env):
+async def solve(env, uid, name=None):
+    m, answer = await at_final(env, uid, name)
+    await env.cog._on_dm(dm(m, answer))
+    return m
+
+
+def hall_description(env):
+    return env.hall.sent[-1].embed.description
+
+
+# ---------------------------------------------------------------- setup in forum posts
+
+
+async def test_setup_pins_one_identical_object_per_post_and_is_idempotent(env):
     objs = await objects(env)
     assert set(objs) == {str(c.id) for c in env.chans}
     for c in env.chans:
@@ -120,19 +134,45 @@ async def test_setup_pins_one_identical_object_per_channel_and_is_idempotent(env
     assert all("already set up" in line for line in report) and all(len(c.sent) == 1 for c in env.chans)
 
 
+async def test_the_pinned_a_message_notice_is_deleted_so_it_cannot_point_at_the_object(env):
+    import discord
+    if not hasattr(discord, "MessageType"):
+        pytest.skip("the repo's minimal discord stub has no MessageType")
+    for c in env.chans:
+        assert len(c.sent) == 1 and c.sent[0].pinned  # the fake posted a pin notice at pin time; the cog removed it
+
+
+async def test_setup_unarchives_a_quiet_post_and_reports_a_locked_one(env):
+    await env.conf.objects.set({})
+    env.chans[1].archived = True
+    env.chans[2].archived = env.chans[2].locked = True  # the bot cannot reopen this one
+    report = await env.cog._setup_objects(env.g, PID)
+    assert not env.chans[1].archived and env.chans[1].sent[-1].pinned
+    assert any("failed" in line and env.chans[2].mention in line for line in report)
+    assert str(env.chans[2].id) not in await objects(env) and str(env.chans[1].id) in await objects(env)
+
+
 async def test_setup_reports_a_failed_pin_and_does_not_record_it(env):
     await env.conf.objects.set({})
     env.chans[1].fail_pin = True
     report = await env.cog._setup_objects(env.g, PID)
     assert any("failed" in line and env.chans[1].mention in line for line in report)
-    assert str(env.chans[1].id) not in await objects(env)
-    assert str(env.chans[0].id) in await objects(env)
+    assert str(env.chans[1].id) not in await objects(env) and str(env.chans[0].id) in await objects(env)
+
+
+async def test_setup_reports_a_deleted_post(env):
+    await env.conf.objects.set({})
+    del env.g.threads[env.chans[4].id]
+    report = await env.cog._setup_objects(env.g, PID)
+    assert any("not found" in line for line in report)
 
 
 # ---------------------------------------------------------------- the full chain
 
 
-async def test_full_chain_from_poem_to_role(env):
+async def test_full_chain_from_poem_to_the_hall_with_no_role_for_easy(env):
+    async with env.conf.roles() as roles:
+        roles["medium"] = env.role.id  # a role for ANOTHER tier must never leak into Easy
     a = member(env, 11)
     msg = chat(env, a, ".tick")
     await env.cog._on_guild_message(msg)
@@ -141,11 +181,11 @@ async def test_full_chain_from_poem_to_role(env):
     assert st["stage"] == engine.STAGE_RIDDLE
     riddle = a.dms[-1]
     ch = await own_channel(env, a)
-    hint = engine.channel_hint(ch.name, f"{PID}:{ch.id}")
-    assert hint in riddle and f"({len(hint)} letters)" in riddle and ch.name not in riddle.lower().replace(hint, "")
+    hint, shape = engine.title_hint(ch.name, f"{PID}:{ch.id}")
+    assert hint in riddle and f"({shape} letters)" in riddle and ch.name.lower() not in riddle.lower()
 
     _, mid = await find_object(env, a)
-    assert (WATCH_EMOJI, a.id) in env.g.get_channel(ch.id).get_partial_message(mid).removed
+    assert (WATCH_EMOJI, a.id) in ch.get_partial_message(mid).removed  # forum posts are not plain channels
     assert (await state(env, a))["stage"] == engine.STAGE_FOUND
     assert a.dms[-1] == PUZZLES[PID]["found"]
 
@@ -161,39 +201,42 @@ async def test_full_chain_from_poem_to_role(env):
 
     await env.cog._on_dm(dm(a, answer.upper()))
     assert (await state(env, a))["stage"] == engine.STAGE_SOLVED
-    assert env.role in a.roles
-    assert env.hall.sent[-1].content.count(a.mention) == 1 and "#1" in env.hall.sent[-1].content
-    assert "#1" in a.dms[-1]
+    assert a.roles == []  # Easy: no role, no badge
+    assert "role" not in a.dms[-1].lower() and "#1" in a.dms[-1] and "Hall of Secrets" in a.dms[-1]
+    post = env.hall.sent[-1]
+    assert post.embed.title == "Easy · The Late Rabbit" and post.embed.description == "1. user11"
+
+
+async def test_the_trigger_works_in_an_ordinary_channel_too(env):
+    a = member(env, 11)
+    await start(env, a, channel=env.hall)
+    assert (await state(env, a))["stage"] == engine.STAGE_RIDDLE
 
 
 async def test_the_answer_can_be_sent_with_the_command_prefix_too(env):
-    a = member(env, 11)
-    await start(env, a)
-    await find_object(env, a)
-    await env.cog._deliver_due(env.g, (await state(env, a))["due_ts"] + 1)
-    answer = PUZZLES[PID]["answers"][(await state(env, a))["variant"]]
+    a, answer = await at_final(env)
     await env.cog._on_dm(dm(a, f".{answer}"))
     assert (await state(env, a))["stage"] == engine.STAGE_SOLVED
-
-
-async def test_finishers_are_ranked_in_order(env):
-    solved = []
-    for uid in (21, 22):
-        m = member(env, uid)
-        await start(env, m)
-        await find_object(env, m)
-        await env.cog._deliver_due(env.g, (await state(env, m))["due_ts"] + 1)
-        await env.cog._on_dm(dm(m, PUZZLES[PID]["answers"][(await state(env, m))["variant"]]))
-        solved.append((await state(env, m))["rank"])
-    assert solved == [1, 2] and (await env.conf.finishers())[PID] == [21, 22]
 
 
 async def test_members_get_different_variants(env):
     seen = set()
     for uid in range(100, 140):
-        m = member(env, uid)
-        seen.add((await start(env, m))["variant"])
+        seen.add((await start(env, member(env, uid)))["variant"])
     assert len(seen) >= 4
+
+
+async def test_a_post_with_a_tiny_title_or_one_that_vanished_still_gets_a_clue(env):
+    for c in env.chans:
+        c.name = "ab"
+    a = member(env, 11)
+    await start(env, a)
+    assert (await own_channel(env, a)).mention in a.dms[-1]  # no scramble possible: it points straight at the post
+    b = member(env, 12)
+    await start(env, b)
+    del env.g.threads[(await own_channel(env, b)).id]
+    await env.cog._on_guild_message(chat(env, b, ".tick"))
+    assert "a room I cannot name" in b.dms[-1]
 
 
 # ---------------------------------------------------------------- objects and decoys
@@ -327,27 +370,16 @@ async def test_a_member_who_left_is_skipped_by_the_delivery_loop(env):
     await start(env, a)
     await find_object(env, a)
     env.g.members.remove(a)
-    await env.cog._deliver_due(env.g, (await state_from_config(env, a))["due_ts"] + 1)  # must not raise
-
-
-async def state_from_config(env, m):
-    return (await env.cog.config.member_from_ids(env.g.id, m.id).puzzles())[PID]
+    due = (await env.cog.config.member_from_ids(env.g.id, a.id).puzzles())[PID]["due_ts"]
+    await env.cog._deliver_due(env.g, due + 1)  # must not raise
 
 
 # ---------------------------------------------------------------- guessing
 
 
-async def at_final(env, uid=11):
-    m = member(env, uid)
-    await start(env, m)
-    await find_object(env, m)
-    await env.cog._deliver_due(env.g, (await state(env, m))["due_ts"] + 1)
-    return m, PUZZLES[PID]["answers"][(await state(env, m))["variant"]]
-
-
 async def test_wrong_answers_get_a_vague_reply_then_a_daily_lockout(env):
     a, answer = await at_final(env)
-    for i in range(MAX_WRONG_PER_DAY):
+    for _ in range(MAX_WRONG_PER_DAY):
         await env.cog._on_dm(dm(a, "teapot"))
         assert a.dms[-1] in PUZZLES[PID]["wrong"]
     await env.cog._on_dm(dm(a, answer))  # right word, but you are locked out today
@@ -365,22 +397,92 @@ async def test_dms_from_people_who_are_not_at_the_final_stage_are_ignored(env):
     assert len(a.dms) == before and (await state(env, a))["stage"] == engine.STAGE_RIDDLE
 
 
-async def test_solving_twice_does_not_double_count_or_regrant(env):
+async def test_solving_twice_does_not_double_count(env):
     a, answer = await at_final(env)
     await env.cog._on_dm(dm(a, answer))
     await env.cog._on_dm(dm(a, answer))
     assert (await env.conf.finishers())[PID] == [a.id] and len(env.hall.sent) == 1
 
 
-async def test_a_missing_role_or_hall_does_not_stop_the_solve(env):
-    await env.conf.role_id.set(None)
+async def test_a_missing_hall_channel_does_not_stop_the_solve(env):
     await env.conf.hall_channel_id.set(None)
     a, answer = await at_final(env)
     await env.cog._on_dm(dm(a, answer))
-    assert (await state(env, a))["stage"] == engine.STAGE_SOLVED and a.roles == []
+    assert (await state(env, a))["stage"] == engine.STAGE_SOLVED and env.hall.sent == []
 
 
-# ---------------------------------------------------------------- admin commands and housekeeping
+# ---------------------------------------------------------------- the Hall of Secrets
+
+
+async def test_the_hall_is_one_post_per_puzzle_edited_in_place_in_finishing_order(env):
+    await solve(env, 21)
+    await solve(env, 22)
+    assert len(env.hall.sent) == 1
+    assert hall_description(env) == "1. user21\n2. user22"
+    assert (await env.conf.hall_messages())[PID] == env.hall.sent[0].id
+    assert (await env.conf.finishers())[PID] == [21, 22]
+
+
+async def test_a_deleted_hall_post_is_rewritten_not_lost(env):
+    await solve(env, 21)
+    env.hall.sent.clear()  # a mod deleted the post
+    await solve(env, 22)
+    assert len(env.hall.sent) == 1 and hall_description(env) == "1. user21\n2. user22"
+    assert (await env.conf.hall_messages())[PID] == env.hall.sent[0].id
+
+
+async def test_people_who_left_drop_off_the_hall_but_nobody_is_renumbered(env):
+    a = await solve(env, 21)
+    await solve(env, 22)
+    await solve(env, 23)
+    env.g.members.remove(a)
+    await env.cog._refresh_hall(env.g, PID)
+    assert hall_description(env) == "2. user22\n3. user23"
+
+
+async def test_hall_names_cannot_restyle_the_post(env):
+    await solve(env, 21, name="a_b*c")
+    assert hall_description(env) == "1. a\\_b\\*c"
+
+
+async def test_a_tier_with_a_role_grants_it_and_titles_the_hall_by_tier(env, monkeypatch):
+    monkeypatch.setitem(env.mod.PUZZLES, PID, {**PUZZLES[PID], "tier": "medium"})
+    async with env.conf.roles() as roles:
+        roles["medium"] = env.role.id
+    a = await solve(env, 21)
+    assert env.role in a.roles and "Secret Finder" in a.dms[-1]
+    assert env.hall.sent[-1].embed.title.startswith("Medium ·")
+
+
+async def test_changing_the_hall_channel_starts_fresh_posts(env):
+    await solve(env, 21)
+    new_hall = env.g.add_channel(201, "new-hall")
+    ctx = Ctx(env)
+    await env.cog.secrethunt_hall.callback(env.cog, ctx, new_hall)
+    assert await env.conf.hall_messages() == {}
+    await env.cog.secrethunt_hallrefresh.callback(env.cog, ctx)
+    assert len(new_hall.sent) == 1 and new_hall.sent[0].embed.description == "1. user21"
+
+
+async def test_reset_and_data_deletion_take_people_off_the_hall(env):
+    a = await solve(env, 21)
+    b = await solve(env, 22)
+    await env.cog.secrethunt_reset.callback(env.cog, Ctx(env), a, PID)
+    assert hall_description(env) == "1. user22"  # reset removes them from the list, so it renumbers
+    await env.cog.red_delete_data_for_user(requester="user", user_id=b.id)
+    assert hall_description(env) == "*Nobody yet.*" and await state(env, b) is None
+    assert (await env.conf.finishers())[PID] == []
+
+
+# ---------------------------------------------------------------- admin commands
+
+
+class Attachment:
+    def __init__(self, size=100, data=b"png"):
+        self.size, self._data = size, data
+
+    async def read(self):
+        return self._data
 
 
 class Ctx:
@@ -397,13 +499,50 @@ class Ctx:
         self.out.append("tick")
 
 
-async def test_role_command_creates_the_default_role_hoisted(env):
-    await env.conf.role_id.set(None)
+async def test_easy_can_never_be_given_a_role_or_badge(env):
     ctx = Ctx(env)
-    await env.cog.secrethunt_role.callback(env.cog, ctx, None)
+    await env.cog.secrethunt_role.callback(env.cog, ctx, "easy", None)
+    assert "no role or badge" in ctx.out[-1] and await env.conf.roles() == {}
+    await env.cog.secrethunt_roleicon.callback(env.cog, ctx, "Easy")
+    assert "no role or badge" in ctx.out[-1]
+    await env.cog.secrethunt_rolecolor.callback(env.cog, ctx, "easy", "#fff")
+    assert "no role or badge" in ctx.out[-1]
+    await env.cog.secrethunt_role.callback(env.cog, ctx, "legendary", None)
+    assert "Tier must be one of" in ctx.out[-1]
+
+
+async def test_role_command_creates_the_tiers_default_role_hoisted(env):
+    ctx = Ctx(env)
+    await env.cog.secrethunt_role.callback(env.cog, ctx, "hard", None)
     role = env.g.created_roles[-1]
-    assert role.name == "Secret Finder" and role.kw["hoist"] is True
-    assert await env.conf.role_id() == role.id
+    assert role.name == "Timekeeper" and role.kw["hoist"] is True
+    assert (await env.conf.roles())["hard"] == role.id
+    await env.cog.secrethunt_role.callback(env.cog, ctx, "medium", env.role)  # or point it at an existing role
+    assert (await env.conf.roles())["medium"] == env.role.id
+
+
+async def test_roleicon_and_rolecolor_edit_the_right_tiers_role(env):
+    ctx = Ctx(env)
+    await env.cog.secrethunt_roleicon.callback(env.cog, ctx, "medium")
+    assert "Set the role first" in ctx.out[-1]
+    await env.cog.secrethunt_role.callback(env.cog, ctx, "medium", env.role)
+    await env.cog.secrethunt_roleicon.callback(env.cog, ctx, "medium")
+    assert "Attach" in ctx.out[-1]
+    ctx.message.attachments = [Attachment(size=300 * 1024)]
+    await env.cog.secrethunt_roleicon.callback(env.cog, ctx, "medium")
+    assert "256 KB" in ctx.out[-1] and env.role.edits == []
+    ctx.message.attachments = [Attachment()]
+    await env.cog.secrethunt_roleicon.callback(env.cog, ctx, "medium")
+    assert ctx.out[-1] == "Icon set." and env.role.edits[-1]["display_icon"] == b"png"
+    env.role.fail_edit = True
+    await env.cog.secrethunt_roleicon.callback(env.cog, ctx, "medium")
+    assert "boost level" in ctx.out[-1]
+    env.role.fail_edit = False
+    await env.cog.secrethunt_rolecolor.callback(env.cog, ctx, "medium", "nothex")
+    assert "hex colour" in ctx.out[-1]
+    await env.cog.secrethunt_rolecolor.callback(env.cog, ctx, "medium", "#1abc9c")
+    colour = env.role.edits[-1]["colour"]
+    assert getattr(colour, "value", colour) == 0x1ABC9C
 
 
 async def test_enable_refuses_until_pool_and_puzzle_exist(env):
@@ -427,24 +566,25 @@ async def test_channels_command_validates_and_resets_objects(env):
     assert await env.conf.pool() == [c.id for c in env.chans[:3]] and await env.conf.objects() == {}
 
 
-async def test_reset_wipes_progress_and_the_finisher_entry(env):
+async def test_reset_wipes_progress_and_lets_them_start_again(env):
     a, answer = await at_final(env)
     await env.cog._on_dm(dm(a, answer))
-    ctx = Ctx(env)
-    await env.cog.secrethunt_reset.callback(env.cog, ctx, a, PID)
+    await env.cog.secrethunt_reset.callback(env.cog, Ctx(env), a, PID)
     assert await state(env, a) is None and (await env.conf.finishers())[PID] == []
     await env.cog._on_guild_message(chat(env, a, ".tick"))
     assert (await state(env, a))["stage"] == engine.STAGE_RIDDLE
 
 
-async def test_status_and_version_commands_respond(env):
+async def test_status_shows_tier_roles_counts_and_flags_a_deleted_post(env):
     ctx = Ctx(env)
     await env.cog.secrethunt_version.callback(env.cog, ctx)
     assert ctx.out[-1].startswith("SecretHunt v")
-    a = member(env, 11)
-    await start(env, a)
-    embed = await env.cog._status_embed(env.g)
-    assert "1 started, 0 solved" in embed.description
+    await start(env, member(env, 11))
+    text = (await env.cog._status_embed(env.g)).description
+    assert "1 started, 0 solved" in text and "easy: none (by design)" in text and "medium: not set" in text
+    assert "MISSING" not in text
+    del env.g.threads[env.chans[3].id]
+    assert "MISSING" in (await env.cog._status_embed(env.g)).description
 
 
 async def test_preview_dms_the_admin_every_variant_with_answers(env):
@@ -454,14 +594,7 @@ async def test_preview_dms_the_admin_every_variant_with_answers(env):
     assert all(a in text for a in PUZZLES[PID]["answers"]) and text.count("Variant") == 5
 
 
-async def test_the_data_deletion_request_clears_progress_and_finisher_entries(env):
-    a, answer = await at_final(env)
-    await env.cog._on_dm(dm(a, answer))
-    await env.cog.red_delete_data_for_user(requester="user", user_id=a.id)
-    assert await state(env, a) is None and (await env.conf.finishers())[PID] == []
-
-
-async def test_the_poem_command_posts_the_acrostic(env):
+async def test_the_poem_command_posts_the_acrostic_in_any_channel_or_post(env):
     ctx = Ctx(env)
     await env.cog.secrethunt_poem.callback(env.cog, ctx, env.chans[1], "")
     poem = env.chans[1].sent[-1].embed.description
