@@ -977,7 +977,10 @@ class AfterDark(commands.Cog):
             member = guild.get_member(uid)
             if member is not None:
                 levels[uid] = await self._get_level(member) or 0
-        return engine.rank_by_level(levels, cfg["invite_snoozed"], now), levels
+        verified = guild.get_role(cfg.get("verified_role_id") or 0)
+        priority = [uid for uid in levels if verified is not None
+                    and verified in getattr(guild.get_member(uid), "roles", [])]
+        return engine.rank_by_level(levels, cfg["invite_snoozed"], now, priority=priority), levels
 
     async def _post_next_review(self, guild):
         """Put the next candidate in front of the moderators, unless a prompt is
@@ -1004,7 +1007,11 @@ class AfterDark(commands.Cog):
             member = guild.get_member(pool[0])
             try:
                 message = await channel.send(
-                    embed=embeds.review_embed(member, levels[member.id], rnd["sent"], rnd["target"]),
+                    embed=embeds.review_embed(
+                        member, levels[member.id], rnd["sent"], rnd["target"],
+                        verified=(None if not cfg.get("verified_role_id") else any(
+                            r.id == cfg["verified_role_id"] for r in member.roles)),
+                    ),
                     view=ReviewView(self),
                     allowed_mentions=discord.AllowedMentions.none(),
                 )
@@ -1021,6 +1028,31 @@ class AfterDark(commands.Cog):
             )
         except (discord.Forbidden, discord.HTTPException):
             return None
+
+    async def handle_review_stop(self, interaction):
+        """A moderator ends today's invitations from the prompt itself."""
+        guild, mod = interaction.guild, interaction.user
+        if guild is None or not hasattr(mod, "roles"):
+            return await self._reply(interaction, "This only works inside the server.")
+        cfg = await self.config.guild(guild).all()
+        if not self._is_staff(mod, cfg):
+            return await self._reply(interaction, "Only moderators can answer this.")
+        async with self._review_lock(guild):
+            rnd = dict(await self.config.guild(guild).invite_round())
+            prompt = rnd.get("prompt") or {}
+            if not prompt or prompt.get("message_id") != interaction.message.id:
+                return await self._reply(interaction, "That prompt is out of date.")
+            await self.config.guild(guild).invite_round.set(engine.stop_round(rnd))
+            result = (f"\u23f9\ufe0f Stopped by {mod.display_name}. No more invitations today "
+                      f"({rnd.get('sent', 0)} of {rnd.get('target', 0)} sent). Tomorrow's round starts as usual.")
+        old = interaction.message.embeds[0] if interaction.message.embeds else None
+        try:
+            if old is not None:
+                await interaction.response.edit_message(embed=embeds.review_result_embed(old, result), view=None)
+            else:
+                await interaction.response.edit_message(content=result, view=None)
+        except (discord.HTTPException, discord.NotFound):
+            log.warning("afterdark: could not update the review prompt after Stop")
 
     async def handle_review(self, interaction, accept: bool):
         """A moderator answers the prompt: send the invitation, or 'not now'."""
@@ -1710,6 +1742,17 @@ class AfterDark(commands.Cog):
         target = await self._start_round(ctx.guild)
         await ctx.send(f"Review round started: up to {target} invitation(s). Check <#{await self.config.guild(ctx.guild).log_channel_id()}>.")
 
+    @afterdark_invite.command(name="stop")
+    async def invite_stop(self, ctx):
+        """End today's invitations now and close any waiting prompt (a new round starts tomorrow, or run `invite now`)."""
+        async with self._review_lock(ctx.guild):
+            rnd = dict(await self.config.guild(ctx.guild).invite_round())
+            prompt = rnd.get("prompt")
+            await self.config.guild(ctx.guild).invite_round.set(engine.stop_round(rnd))
+        if prompt:
+            await self._close_prompt(ctx.guild, prompt, f"Stopped by {ctx.author.display_name}.")
+        await ctx.send("Today's invitations are stopped. A new round starts tomorrow, or run `.afterdark invite now`.")
+
     @afterdark_invite.command(name="list")
     async def invite_list(self, ctx):
         """Show outstanding invitations."""
@@ -1818,6 +1861,13 @@ class AfterDark(commands.Cog):
         """The Rabbit Hole role."""
         await self.config.guild(ctx.guild).rabbit_role_id.set(role.id)
         await ctx.send(f"Rabbit Hole role set to {role.name}.")
+
+    @afterdark_set.command(name="verifiedrole")
+    async def set_verifiedrole(self, ctx, role: Optional[discord.Role] = None):
+        """The Age Verified role: members with it are suggested for invitations first. Leave blank to turn the priority off."""
+        await self.config.guild(ctx.guild).verified_role_id.set(role.id if role else 0)
+        await ctx.send(f"Age Verified members are now invited first ({role.name})." if role
+                       else "No Age Verified priority: highest level first.")
 
     @afterdark_set.command(name="adultrole")
     async def set_adultrole(self, ctx, role: discord.Role):

@@ -39,7 +39,7 @@ def panel_embed(interests: Iterable[Interest], warn_days: float, remove_days: fl
     return embed
 
 
-def review_embed(member, level, sent: int, target: int) -> "discord.Embed":
+def review_embed(member, level, sent: int, target: int, verified: Optional[bool] = None) -> "discord.Embed":
     """The prompt a moderator answers before anyone is invited."""
     joined = getattr(member, "joined_at", None)
     embed = discord.Embed(
@@ -50,8 +50,11 @@ def review_embed(member, level, sent: int, target: int) -> "discord.Embed":
     embed.add_field(name="Level", value=str(level), inline=True)
     if joined:
         embed.add_field(name="Joined", value=f"<t:{int(joined.timestamp())}:D>", inline=True)
-    embed.set_footer(text=f"Today: {sent} of {target} invitations sent. Highest level first. "
-                          "\"Not now\" keeps them in the pool.")
+    if verified is not None:
+        embed.add_field(name="Age Verified", value="Yes \u2705" if verified else "No", inline=True)
+    order = "Age Verified first, then highest level. " if verified is not None else "Highest level first. "
+    embed.set_footer(text=f"Today: {sent} of {target} invitations sent. {order}"
+                          "\"Not now\" keeps them in the pool. \"Stop\" ends today's invitations.")
     return embed
 
 

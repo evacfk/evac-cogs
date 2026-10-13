@@ -1708,3 +1708,86 @@ async def test_drop_next_refuses_while_drops_are_off(w):
     ctx = FakeCtx(w.guild, w.member("admin"))
     await w.cog.drop_next.func(w.cog, ctx, 10)
     assert "off" in ctx.sent[-1] and "next_ts" not in await w.cog.config.guild(w.guild).drop_state()
+
+
+# --------------------------------------------- verified-first invitations + stop
+
+async def test_age_verified_members_are_suggested_before_higher_levels(w):
+    verified_role = w.guild.add_role(777, "Age Verified")
+    high = w.member("high", level=40)
+    low_verified = w.member("lowv", level=5)
+    low_verified.roles.append(verified_role)
+    await set_cfg(w, invites_enabled=True, verified_role_id=777)
+    await w.cog._start_round(w.guild)
+    assert (await w.cog.config.guild(w.guild).invite_round())["prompt"]["user_id"] == low_verified.id
+    fields = {f.name: f.value for f in prompts(w)[0].embeds[0].fields}
+    assert "Yes" in fields["Age Verified"]
+    click, _ = mod_click(w, prompts(w)[0])
+    await w.cog.handle_review(click, True)
+    assert (await w.cog.config.guild(w.guild).invite_round())["prompt"]["user_id"] == high.id
+    assert "No" == {f.name: f.value for f in prompts(w)[1].embeds[0].fields}["Age Verified"]
+
+
+async def test_without_a_verified_role_it_is_still_highest_level_first(w):
+    w.member("low", level=5)
+    high = w.member("high", level=40)
+    await set_cfg(w, invites_enabled=True)
+    await w.cog._start_round(w.guild)
+    assert (await w.cog.config.guild(w.guild).invite_round())["prompt"]["user_id"] == high.id
+    assert "Age Verified" not in {f.name for f in prompts(w)[0].embeds[0].fields}
+
+
+def test_rank_puts_priority_first_then_level_then_oldest():
+    from . import engine
+    order = engine.rank_by_level({1: 50, 2: 5, 3: 9, 4: 9}, {}, 0, priority=[3, 2])
+    assert order[:2] == [3, 2] and order[2:] == [1, 4]
+
+
+async def test_stop_button_ends_the_round_and_nothing_more_is_posted(w):
+    w.member("a", level=30), w.member("b", level=20)
+    await set_cfg(w, invites_enabled=True)
+    await w.cog._start_round(w.guild)
+    click, _ = mod_click(w, prompts(w)[0])
+    await w.cog.handle_review_stop(click)
+    rnd = await w.cog.config.guild(w.guild).invite_round()
+    assert rnd["done"] is True and rnd["prompt"] == {}
+    assert click.edits[0]["view"] is None and "Stopped" in click.edits[0]["embed"].fields[-1].value
+    await w.cog._post_next_review(w.guild)
+    await w.cog._invite_maintenance(w.guild, await w.cog.config.guild(w.guild).all(), {"expired_invites": 0})
+    assert len(prompts(w)) == 1                          # no new prompt after stopping
+    assert all(not m.dms for m in w.guild.members)       # and nobody was invited
+
+
+async def test_stop_button_is_staff_only_and_rejects_stale_prompts(w):
+    w.member("a", level=30)
+    await set_cfg(w, invites_enabled=True)
+    await w.cog._start_round(w.guild)
+    plain = FakeInteraction(w.member("plain"), w.guild)
+    plain.message = prompts(w)[0]
+    await w.cog.handle_review_stop(plain)
+    assert "Only moderators" in plain.replies[0]
+    assert (await w.cog.config.guild(w.guild).invite_round())["done"] is False
+    stale, _ = mod_click(w, FakeMessage(999, w.log))
+    await w.cog.handle_review_stop(stale)
+    assert "out of date" in stale.replies[0] and (await w.cog.config.guild(w.guild).invite_round())["done"] is False
+
+
+async def test_invite_stop_command_closes_the_waiting_prompt(w):
+    w.member("a", level=30)
+    await set_cfg(w, invites_enabled=True)
+    await w.cog._start_round(w.guild)
+    msg = prompts(w)[0]
+    ctx = FakeCtx(w.guild, w.member("admin"))
+    await w.cog.invite_stop.func(w.cog, ctx)
+    rnd = await w.cog.config.guild(w.guild).invite_round()
+    assert rnd["done"] and rnd["prompt"] == {} and "stopped" in ctx.sent[-1]
+    assert msg.edits and "Stopped" in msg.edits[-1]["embed"].fields[-1].value
+
+
+async def test_verifiedrole_setting_and_clearing(w):
+    ctx = FakeCtx(w.guild, w.member("admin"))
+    role = w.guild.add_role(888, "Age Verified")
+    await w.cog.set_verifiedrole.func(w.cog, ctx, role)
+    assert await w.cog.config.guild(w.guild).verified_role_id() == 888
+    await w.cog.set_verifiedrole.func(w.cog, ctx, None)
+    assert await w.cog.config.guild(w.guild).verified_role_id() == 0

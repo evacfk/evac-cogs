@@ -81,13 +81,15 @@ def shuffled_candidates(candidates: Iterable[int], rng: random.Random) -> List[i
 
 
 def rank_by_level(levels: Dict[int, int], snoozed: Dict[str, float], now: float,
-                  skip: Iterable[int] = ()) -> List[int]:
-    """Who to suggest next: highest level first, ties broken by the older account
-    (smaller id). Anyone snoozed ("not now") and not yet due, or in `skip`, is left out."""
+                  skip: Iterable[int] = (), priority: Iterable[int] = ()) -> List[int]:
+    """Who to suggest next: `priority` members (the Age Verified role) first, then
+    highest level first, ties broken by the older account (smaller id). Anyone snoozed
+    ("not now") and not yet due, or in `skip`, is left out."""
     skipped = {int(u) for u in skip}
+    first = {int(u) for u in priority}
     ready = [uid for uid in levels
              if uid not in skipped and float(snoozed.get(str(uid), 0)) <= now]
-    return sorted(ready, key=lambda uid: (-int(levels[uid]), uid))
+    return sorted(ready, key=lambda uid: (uid not in first, -int(levels[uid]), uid))
 
 
 def snooze_until(now: float, days: float) -> float:
@@ -319,4 +321,12 @@ def chunk_text(lines: Sequence[str], limit: int = 1900) -> List[str]:
             cur = f"{cur}\n{line}" if cur else line
     if cur:
         out.append(cur)
+    return out
+
+
+def stop_round(rnd: dict) -> dict:
+    """End today's review round early: nothing more is suggested until a new round starts."""
+    out = dict(rnd)
+    out["done"] = True
+    out["prompt"] = {}
     return out

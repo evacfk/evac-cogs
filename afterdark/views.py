@@ -54,6 +54,10 @@ class ReviewView(discord.ui.View):
     async def no(self, interaction, button):
         await self.cog.handle_review(interaction, False)
 
+    @discord.ui.button(label="Stop for today", style=discord.ButtonStyle.danger, custom_id=C.REVIEW_STOP_ID)
+    async def stop(self, interaction, button):
+        await self.cog.handle_review_stop(interaction)
+
 
 class InterestView(discord.ui.View):
     """One toggle button per configured interest, plus a Leave Rabbit Hole button.

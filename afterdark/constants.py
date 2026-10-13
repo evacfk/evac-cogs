@@ -1,7 +1,7 @@
 """All defaults and lookup tables for afterdark -- no discord/redbot imports."""
 
-VERSION = "1.5.0"
-BUILD = "afterdark build: multi-v1 (random rabbit drops, 4 slots, members report, leave button, final, drop next)"
+VERSION = "1.6.0"
+BUILD = "afterdark build: multi-v1 (random rabbit drops, 4 slots, members report, leave button, final, drop next, verified first, stop invites)"
 
 CONFIG_IDENTIFIER = 7316482950
 DAY = 86400
@@ -32,6 +32,7 @@ INVITE_ACCEPT_ID = "afterdark:invite:accept"
 INVITE_DECLINE_ID = "afterdark:invite:decline"
 REVIEW_YES_ID = "afterdark:review:yes"
 REVIEW_NO_ID = "afterdark:review:no"
+REVIEW_STOP_ID = "afterdark:review:stop"
 INTEREST_ID_PREFIX = "afterdark:interest:"
 LEAVE_ID = "afterdark:rabbit:leave"
 
@@ -85,6 +86,7 @@ OVERWRITE_SOFT_CAP = 95
 
 GUILD_DEFAULTS = dict(
     adult_role_id=DEFAULT_ADULT_ROLE_ID,
+    verified_role_id=0,          # "Age Verified": invited first when set (0 = no priority)
     rabbit_role_id=DEFAULT_RABBIT_ROLE_ID,
     underage_role_ids=list(DEFAULT_UNDERAGE_ROLE_IDS),
     adult_age_role_ids=list(DEFAULT_ADULT_AGE_ROLE_IDS),
