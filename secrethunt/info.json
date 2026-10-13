@@ -1,0 +1,14 @@
+{
+    "name": "SecretHunt",
+    "short": "WoW-style secret hunts: hidden, personalised puzzles that reward a Secret Finder role.",
+    "description": "Secrets of Wonderland. Each puzzle starts from a public poem whose first letters spell a hidden word. Saying the word starts a personal chain (every member gets their own variant, picked by a private salted hash): a riddle by DM, a pinned object to find and react to in the right channel, a morning-after jumbled word, and an answer sent back in DMs. Solving earns the Secret Finder role (with an icon on boosted servers) and a place in the Hall of Finders. New puzzles are added as data and old ones never expire.",
+    "end_user_data_statement": "This cog stores, per member, how far they have got in each hunt puzzle (stage, timestamps, their variant, wrong-guess counts) and, per puzzle, the ordered list of user IDs who solved it. It is deleted on a Red data-deletion request.",
+    "install_msg": "Set up with `.secrethunt channels #a #b #c #d #e`, `.secrethunt role`, `.secrethunt setup`, `.secrethunt start late_rabbit`, `.secrethunt poem #cuddle`, then `.secrethunt enable`. Try it first with `.secrethunt testmode on`.",
+    "author": ["evacfk"],
+    "requirements": [],
+    "tags": ["secrets", "puzzle", "community", "engagement"],
+    "min_bot_version": "3.5.0",
+    "hidden": false,
+    "disabled": false,
+    "type": "COG"
+}
