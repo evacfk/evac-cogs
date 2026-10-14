@@ -612,3 +612,11 @@ async def test_published_start_page_is_public_and_first(mod):
     await cog.wonderland.subs["publish"].callback(cog, FakeCtx(guild=guild), channel)
     first = channel.sent[0].kw["embed"]
     assert "Start here" in first.title and "<#1>" not in first.description and "**#intro**" in first.description
+
+
+async def test_retired_commands_never_appear_even_when_live(mod):
+    live = {"lottery", "selfrole", "pockypolice drop", "pockypolice status", "pockypolice calendar", "pockypolice pto"}
+    cog = make(mod, commands=live, mods={9})
+    for key in [p.key for p in mod.PAGES]:
+        text = cog.render(key, FakeGuild([]), True, member=types.SimpleNamespace(id=9)).description
+        assert ".lottery" not in text and ".selfrole" not in text and ".pp " not in text

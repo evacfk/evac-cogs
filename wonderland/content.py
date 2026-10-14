@@ -60,7 +60,6 @@ PAGES = (
         Entry(".payday", "claim your regular coins", requires=("payday",)),
         Entry(".leaderboard", "the richest members", requires=("leaderboard",)),
         Entry(".shop", "browse and buy items", requires=("shop",)),
-        Entry(".lottery", "join the lottery", requires=("lottery",)),
     )),
     Page("casino", "🎰", "Casino",
          "Games happen in {#wondercasino}. Tap **Open a Table** on its menu for your own private thread, "
@@ -114,12 +113,8 @@ PAGES = (
         Entry(".event mytz", "set your timezone for event times", requires=("event mytz",)),
         Entry(".verdict top", "this month's best crowd-readers", requires=("verdict top",)),
         Entry(".verdict suggest <question> | <a> | <b>", "suggest a daily question (2-4 options)", requires=("verdict suggest",)),
-        Entry(".pp drop", "submit today's photos (attach them)", requires=("pockypolice drop",)),
-        Entry(".pp status [@user]", "a streak, strikes and role status", requires=("pockypolice status",)),
-        Entry(".pp calendar [@user]", "month view of a photo history", requires=("pockypolice calendar",)),
         Entry(".secrets [@user]", "the secrets someone has found", requires=("secrets",)),
         Entry(".bumpreward top", "top server bumpers", requires=("bumpreward top",)),
-        Entry(".selfrole", "pick or drop a self-assignable role", requires=("selfrole",)),
         Entry(".star / .unstar", "add or remove a message from the starboard", requires=("star", "unstar")),
     )),
     Page("music", "🎵", "Music & Fun", "Voice-channel music and small time-wasters.", (
@@ -141,7 +136,6 @@ PAGES = (
         Entry(".secrethunt", "secret hunt setup and status", requires=("secrethunt",)),
         Entry(".event create <kind>", "schedule a movie or game night", requires=("event create",)),
         Entry(".lurkerset", "inactivity system settings", requires=("lurkerset",)),
-        Entry(".pp pto", "excuse a member's photo drop", requires=("pockypolice pto",)),
         Entry(".minigamehub", "minigame spawner settings", requires=("minigamehub",)),
         Entry(".wld publish #channel", "post or refresh the guide in a channel"),
         Entry(".wld version", "version probe for this cog"),
