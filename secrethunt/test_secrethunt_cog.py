@@ -823,3 +823,57 @@ async def test_a_second_puzzle_goes_below_the_first_after_the_intro(env, monkeyp
     await env.cog.secrethunt_start.callback(env.cog, ctx, "second")
     titles = [m.embed.title for m in env.hall.sent]
     assert titles[0].endswith("Secrets of Wonderland") and titles[1:] == ["Easy \u00b7 The Late Rabbit", "Easy \u00b7 The Second One"]
+
+
+# ---------------------------------------------------------------- solve announcements
+
+
+async def test_a_solve_is_announced_in_the_channel_without_pinging_anyone(env):
+    chat_ch = env.g.add_channel(400, "cuddle")
+    await env.conf.announce_channel_id.set(chat_ch.id)
+    a = await solve(env, 21)
+    assert len(chat_ch.sent) == 1
+    msg = chat_ch.sent[0]
+    assert a.mention in msg.content and "**The Late Rabbit**" in msg.content and "(Easy)" in msg.content
+    assert "finder #1" in msg.content
+    am = msg.kw["allowed_mentions"]
+    assert am.users is False and am.roles is False and am.everyone is False
+    await solve(env, 22)
+    assert len(chat_ch.sent) == 2 and "finder #2" in chat_ch.sent[1].content
+
+
+async def test_nothing_is_announced_when_no_channel_is_set_or_it_has_vanished(env):
+    await solve(env, 21)  # unset: no error, nothing sent anywhere
+    assert all("has solved" not in (m.content or "") for c in env.chans for m in c.sent)
+    await env.conf.announce_channel_id.set(98765)  # a channel that no longer exists
+    a = await solve(env, 22)
+    assert (await state(env, a))["stage"] == engine.STAGE_SOLVED
+
+
+async def test_a_failed_announcement_does_not_undo_the_solve(env):
+    chat_ch = env.g.add_channel(400, "cuddle")
+    chat_ch.fail_send = True
+    await env.conf.announce_channel_id.set(chat_ch.id)
+    a = await solve(env, 21)
+    assert (await state(env, a))["stage"] == engine.STAGE_SOLVED and hall_description(env) == "1. user21"
+
+
+async def test_a_wrong_answer_or_a_second_solve_is_not_announced(env):
+    chat_ch = env.g.add_channel(400, "cuddle")
+    await env.conf.announce_channel_id.set(chat_ch.id)
+    a, answer = await at_final(env, 21)
+    await env.cog._on_dm(dm(a, "teapot"))
+    assert chat_ch.sent == []
+    await env.cog._on_dm(dm(a, answer))
+    await env.cog._on_dm(dm(a, answer))
+    assert len(chat_ch.sent) == 1
+
+
+async def test_announce_command_sets_clears_and_shows_in_status(env):
+    chat_ch = env.g.add_channel(400, "cuddle")
+    ctx = Ctx(env)
+    await env.cog.secrethunt_announce.callback(env.cog, ctx, chat_ch)
+    assert await env.conf.announce_channel_id() == chat_ch.id and chat_ch.mention in ctx.out[-1]
+    assert chat_ch.mention in (await env.cog._status_embed(env.g)).description
+    await env.cog.secrethunt_announce.callback(env.cog, ctx, None)
+    assert await env.conf.announce_channel_id() is None and "off" in ctx.out[-1]

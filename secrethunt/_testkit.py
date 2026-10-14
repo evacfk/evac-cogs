@@ -203,6 +203,8 @@ class FakeChannel:
         return f"<#{self.id}>"
 
     async def send(self, content=None, **kw):
+        if getattr(self, "fail_send", False):
+            raise http_error("Forbidden")
         msg = FakeMessage(self, content=content, **kw)
         self.sent.append(msg)
         return msg

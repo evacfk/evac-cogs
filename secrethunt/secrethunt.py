@@ -339,6 +339,20 @@ class SecretHunt(commands.Cog):
                 " roles." if len(earned) > 1 else " role.")
         await self._dm(member, text)
         await self._refresh_hall(guild, pid)
+        await self._announce(guild, member, pid, rank)
+
+    async def _announce(self, guild, member, pid: str, rank: int) -> None:
+        """One line in the announcement channel (if set) when someone finishes a secret. Never pings."""
+        channel = self._lookup(guild, await self.config.guild(guild).announce_channel_id() or 0)
+        if channel is None:
+            return
+        puzzle = PUZZLES[pid]
+        text = (f"\N{OLD KEY} {member.mention} has solved **{puzzle['title']}** "
+                f"({puzzle['tier'].title()}) \N{MIDDLE DOT} finder #{rank}")
+        try:
+            await channel.send(text, allowed_mentions=discord.AllowedMentions.none())
+        except _DISCORD_ERRORS:
+            log.warning("secrethunt: could not announce a solve in guild %s", guild.id)
 
     async def _grant_roles(self, guild, member, pid: str) -> list:
         """The tier's role and this puzzle's own role, whichever are configured (Easy never has either)."""
@@ -508,6 +522,8 @@ class SecretHunt(commands.Cog):
                 for p, rid in (await conf.puzzle_roles()).items() if p in PUZZLES
                 for r in [guild.get_role(rid)]) or "none",
             "Hall of Secrets": hall.mention if hall else "not set (`hall`)",
+            "Solve announcements": (lambda ch: ch.mention if ch else "off (`announce`)")(
+                self._lookup(guild, await conf.announce_channel_id() or 0)),
         }
         for pid in await conf.published():
             started = sum(1 for d in members.values() if pid in d["puzzles"])
@@ -619,6 +635,12 @@ class SecretHunt(commands.Cog):
         await conf.hall_messages.set({})  # the old posts live in the old channel; new ones are written on demand
         await ctx.send(f"Hall of Secrets: {channel.mention}. Run `.secrethunt hallrefresh` to write the posts."
                        if channel else "Hall of Secrets cleared.")
+
+    @secrethunt.command(name="announce")
+    async def secrethunt_announce(self, ctx, channel: Union[discord.TextChannel, discord.Thread] = None):
+        """Set (or clear) the channel that gets a one-line "X has solved <puzzle>" for every solve. It never pings."""
+        await self.config.guild(ctx.guild).announce_channel_id.set(channel.id if channel else None)
+        await ctx.send(f"Solves will be announced in {channel.mention}." if channel else "Solve announcements are off.")
 
     @secrethunt.command(name="hallrefresh")
     async def secrethunt_hallrefresh(self, ctx):
