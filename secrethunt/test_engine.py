@@ -7,7 +7,7 @@ import pytest
 
 from secrethunt import engine
 from secrethunt.constants import (
-    MAX_DECOY_REPLIES, MAX_DM_FAILS, MAX_WRONG_PER_DAY, POOL_MAX, TIER_ORDER, TIER_ROLE_NAMES,
+    MAX_DM_FAILS, MAX_WRONG_PER_DAY, MAX_WRONG_REACTS, REACT_LOCK_HOURS, POOL_MAX, TIER_ORDER, TIER_ROLE_NAMES,
 )
 from secrethunt.puzzles import PUZZLES
 
@@ -218,11 +218,42 @@ def test_reacting_to_your_own_object_advances_and_schedules_the_next_clue():
     assert engine.react(st, True, 5001.0) == "ignore"  # already past that step
 
 
-def test_reacting_to_someone_elses_object_is_a_decoy_that_goes_quiet():
+def test_two_wrong_objects_lock_the_member_out_for_a_day():
     st = started()
-    replies = [engine.react(st, False, 1.0) for _ in range(MAX_DECOY_REPLIES + 2)]
-    assert replies == ["decoy"] * MAX_DECOY_REPLIES + ["quiet_decoy"] * 2
-    assert st["stage"] == engine.STAGE_RIDDLE
+    assert MAX_WRONG_REACTS == 2
+    assert engine.react(st, False, 1000.0) == "decoy"
+    assert engine.react(st, False, 1001.0) == "lockout"
+    assert st["locked_until"] == 1001.0 + REACT_LOCK_HOURS * 3600 and st["stage"] == engine.STAGE_RIDDLE
+    # while locked, even their own object does nothing (and nothing counts further)
+    assert engine.react(st, True, 1002.0) == "locked" and st["stage"] == engine.STAGE_RIDDLE
+    assert engine.react(st, False, 1003.0) == "locked" and st["decoys"] == 2
+
+
+def test_the_lock_ends_and_they_get_two_fresh_chances_on_the_same_riddle():
+    st = started()
+    engine.react(st, False, 1000.0)
+    engine.react(st, False, 1001.0)
+    after = st["locked_until"] + 1
+    assert engine.react(st, False, after) == "decoy" and st["decoys"] == 1 and st["locked_until"] == 0.0
+    assert engine.react(st, True, after + 1) == "found"
+
+
+def test_a_correct_first_reaction_after_one_mistake_still_works():
+    st = started()
+    assert engine.react(st, False, 1.0) == "decoy"
+    assert engine.react(st, True, 2.0) == "found"
+
+
+def test_lockout_uses_the_short_wait_in_test_mode():
+    st = started()
+    engine.react(st, False, 100.0, test_mode=True)
+    assert engine.react(st, False, 101.0, test_mode=True) == "lockout" and st["locked_until"] == 131.0
+
+
+def test_states_saved_before_the_lock_existed_still_work():
+    st = started()
+    del st["locked_until"]
+    assert engine.react(st, True, 5.0) == "found"
 
 
 def test_react_without_a_started_chain_does_nothing():

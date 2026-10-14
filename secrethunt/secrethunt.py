@@ -245,8 +245,8 @@ class SecretHunt(commands.Cog):
                     return
         if action == "found":
             await self._dm(member, puzzle["found"])
-        elif action == "decoy":
-            await self._dm(member, puzzle["decoy"])
+        elif action in ("decoy", "lockout"):  # while locked out ("locked") the reaction just vanishes
+            await self._dm(member, puzzle[action])
 
     async def _remove_reaction(self, guild, payload, member):
         channel = self._lookup(guild, payload.channel_id)
@@ -351,7 +351,7 @@ class SecretHunt(commands.Cog):
             log.warning("secrethunt: could not give %s to %s", role.id, member.id)
             return None
 
-    async def _refresh_hall(self, guild, pid: str):
+    async def _refresh_hall(self, guild, pid: str, create: bool = False):
         """Post or edit this puzzle's Hall of Secrets entry: its tier and every solver's name, in finishing order."""
         puzzle, conf = PUZZLES[pid], self.config.guild(guild)
         hall = self._lookup(guild, await conf.hall_channel_id() or 0)
@@ -365,7 +365,7 @@ class SecretHunt(commands.Cog):
                 if member is not None:  # someone who left the server drops off the list
                     entries.append((rank, engine.escape_markdown(member.display_name)))
             mid = (await conf.hall_messages()).get(pid)
-            if not entries and not mid:
+            if not entries and not mid and not create:
                 return
             text, hidden = engine.hall_text(entries)
             embed = embeds.hall_embed(puzzle["tier"], puzzle["title"], text, hidden, len(entries))
@@ -503,6 +503,7 @@ class SecretHunt(commands.Cog):
             if puzzle_id not in published:
                 published.append(puzzle_id)
         await conf.active.set(puzzle_id)
+        await self._refresh_hall(ctx.guild, puzzle_id, create=True)  # its Hall post exists from day one, in release order
         await ctx.send(f"**{PUZZLES[puzzle_id]['title']}** is live (once the hunt is enabled).")
 
     @secrethunt.command(name="poem")
@@ -557,9 +558,9 @@ class SecretHunt(commands.Cog):
     async def secrethunt_hallrefresh(self, ctx):
         """Rewrite every puzzle's Hall of Secrets post from the saved solver lists (after a deleted post, say)."""
         done = 0
-        for pid in (await self.config.guild(ctx.guild).finishers()):
+        for pid in (await self.config.guild(ctx.guild).published()):  # release order
             if pid in PUZZLES:
-                await self._refresh_hall(ctx.guild, pid)
+                await self._refresh_hall(ctx.guild, pid, create=True)
                 done += 1
         await ctx.send(f"Refreshed {done} Hall post{'s' if done != 1 else ''}.")
 

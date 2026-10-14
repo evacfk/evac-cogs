@@ -41,5 +41,7 @@ acrostic spells the trigger and that no answer appears in the public poem. Then 
 - The trigger word is not a command: it is caught by a listener, the message is deleted at once, and nothing about
   it shows in `.help`. It also works as a plain DM to the bot.
 - The bot deletes the "pinned a message" notice so it cannot point at the object.
+- Two wrong hunt objects lock a member out of the riddle for 24 hours; then they get two fresh tries on the same riddle.
+- `start` posts the puzzle's (empty) Hall entry at once, so the Hall reads in release order.
 - The jumbled-word clue arrives at the next 9:00 Pacific, at least 12 hours after the object is found.
 - Progress lives in Red's Config, so a restart loses nothing.

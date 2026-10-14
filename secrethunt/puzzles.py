@@ -36,7 +36,14 @@ LATE_RABBIT = {
         "\N{RABBIT FACE} *The Rabbit wakes, muttering one word over and over. It comes out all jumbled:*\n\n"
         "**{anagram}**\n\nSay it back to me here, in this chat."
     ),
-    "decoy": "\N{MANTELPIECE CLOCK} *Tick... tock.* It is a watch, but not the Rabbit's. Keep looking.",
+    "decoy": (
+        "\N{MANTELPIECE CLOCK} *Tick... tock.* It is a watch, but not the Rabbit's.\n\n"
+        "*The Rabbit's voice drifts over, thin and sharp:* One more wrong watch, and I will stop listening."
+    ),
+    "lockout": (
+        "\N{RABBIT FACE} *That is not my watch either.* I have stopped listening. Come back tomorrow and "
+        "look again, and mind which watch you wind."
+    ),
     "wrong": [
         "\N{RABBIT FACE} *The Rabbit tilts his head.* Not quite.",
         "\N{RABBIT FACE} *He shakes his ears.* That is not what he said.",

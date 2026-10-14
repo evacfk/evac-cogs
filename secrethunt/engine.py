@@ -12,7 +12,7 @@ import re
 from datetime import datetime, time as dtime, timedelta
 
 from .constants import (
-    DM_RETRY_SECONDS, HALL_BUDGET, HOME_TZ, MAX_DECOY_REPLIES, MAX_DM_FAILS, MAX_WRONG_PER_DAY, MIN_DELAY_HOURS,
+    DM_RETRY_SECONDS, HALL_BUDGET, HOME_TZ, MAX_DM_FAILS, MAX_WRONG_PER_DAY, MAX_WRONG_REACTS, MIN_DELAY_HOURS, REACT_LOCK_HOURS,
     TEST_DELAY_SECONDS, UNLOCK_HOUR,
 )
 
@@ -123,7 +123,7 @@ def new_state(variant: int, now: float) -> dict:
     return {
         "variant": variant, "stage": STAGE_RIDDLE, "started_ts": now, "found_ts": 0.0, "due_ts": 0.0,
         "final_ts": 0.0, "solved_ts": 0.0, "rank": 0, "decoys": 0, "dm_fails": 0,
-        "wrong_date": "", "wrong_count": 0,
+        "wrong_date": "", "wrong_count": 0, "locked_until": 0.0,
     }
 
 
@@ -140,16 +140,27 @@ def trigger(state, variant: int, now: float):
 
 
 def react(state, own_object: bool, now: float, test_mode: bool = False) -> str:
-    """The member reacted to a hunt object. Returns found / decoy / quiet_decoy / ignore."""
+    """The member reacted to a hunt object. Returns found / decoy / lockout / locked / ignore.
+
+    Two wrong objects lock the member out of the riddle for a day (`lockout` on the second, `locked` for any reaction
+    while it lasts). When the lock ends they get their two chances again, on the same riddle."""
     if not state or state["stage"] != STAGE_RIDDLE:
         return "ignore"
+    until = state.get("locked_until", 0.0)
+    if until > now:
+        return "locked"
+    if until:
+        state["locked_until"], state["decoys"] = 0.0, 0
     if own_object:
         state["stage"] = STAGE_FOUND
         state["found_ts"] = now
         state["due_ts"] = next_unlock(now, test_mode)
         return "found"
     state["decoys"] += 1
-    return "decoy" if state["decoys"] <= MAX_DECOY_REPLIES else "quiet_decoy"
+    if state["decoys"] >= MAX_WRONG_REACTS:
+        state["locked_until"] = now + (TEST_DELAY_SECONDS if test_mode else REACT_LOCK_HOURS * 3600)
+        return "lockout"
+    return "decoy"
 
 
 def is_due(state, now: float) -> bool:

@@ -242,13 +242,31 @@ async def test_a_post_with_a_tiny_title_or_one_that_vanished_still_gets_a_clue(e
 # ---------------------------------------------------------------- objects and decoys
 
 
-async def test_a_decoy_object_gets_a_decoy_reply_and_no_progress(env):
+async def test_a_decoy_object_gets_a_warning_and_no_progress(env):
     a = member(env, 11)
     await start(env, a)
     ch, mid = await find_object(env, a, own=False)
-    assert a.dms[-1] == PUZZLES[PID]["decoy"]
+    assert a.dms[-1] == PUZZLES[PID]["decoy"] and "One more wrong watch" in a.dms[-1]
     assert (await state(env, a))["stage"] == engine.STAGE_RIDDLE
     assert (WATCH_EMOJI, a.id) in ch.get_partial_message(mid).removed
+
+
+async def test_the_second_wrong_object_locks_them_out_even_from_their_own(env):
+    a = member(env, 11)
+    await start(env, a)
+    await find_object(env, a, own=False)
+    await find_object(env, a, own=False)
+    assert a.dms[-1] == PUZZLES[PID]["lockout"]
+    n = len(a.dms)
+    ch, mid = await find_object(env, a, own=True)  # their real object, but they are locked out
+    assert (await state(env, a))["stage"] == engine.STAGE_RIDDLE and len(a.dms) == n
+    assert (WATCH_EMOJI, a.id) in ch.get_partial_message(mid).removed  # still tidied away
+    st = await state(env, a)
+    st_until = st["locked_until"]
+    async with env.cog.config.member(a).puzzles() as states:
+        states[PID]["locked_until"] = 1.0  # a day later
+    await find_object(env, a, own=True)
+    assert (await state(env, a))["stage"] == engine.STAGE_FOUND and st_until > 1.0
 
 
 async def test_a_bystander_reacting_gets_nothing_but_the_reaction_vanishes(env):
@@ -412,6 +430,15 @@ async def test_a_missing_hall_channel_does_not_stop_the_solve(env):
 
 
 # ---------------------------------------------------------------- the Hall of Secrets
+
+
+async def test_starting_a_puzzle_posts_its_empty_hall_entry_so_the_order_is_release_order(env):
+    ctx = Ctx(env)
+    await env.cog.secrethunt_start.callback(env.cog, ctx, PID)
+    assert len(env.hall.sent) == 1 and hall_description(env) == "*Nobody yet.*"
+    assert env.hall.sent[0].embed.title == "Easy \u00b7 The Late Rabbit"
+    await env.cog.secrethunt_start.callback(env.cog, ctx, PID)  # starting again must not duplicate it
+    assert len(env.hall.sent) == 1
 
 
 async def test_the_hall_is_one_post_per_puzzle_edited_in_place_in_finishing_order(env):
