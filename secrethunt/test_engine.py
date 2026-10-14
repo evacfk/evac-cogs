@@ -166,14 +166,14 @@ def test_find_object_by_message_id():
 # ---------------------------------------------------------------- the daily delay
 
 
-def test_next_unlock_is_the_next_nine_am_at_least_twelve_hours_on():
+def test_next_unlock_is_the_next_nine_am_at_least_four_hours_on():
     assert local(engine.next_unlock(ts(2026, 10, 13, 16, 6))) == datetime(2026, 10, 14, 9, 0, tzinfo=LA)
-    # found just before midnight: 12h later is 11:00, so 9:00 is already past; wait for the day after
-    assert local(engine.next_unlock(ts(2026, 10, 13, 23, 0))) == datetime(2026, 10, 15, 9, 0, tzinfo=LA)
-    # found at 8am: 12h later is 8pm, next 9am is tomorrow
+    # found at 11pm: 4h later is 3am, so the same morning's 9:00 is next
+    assert local(engine.next_unlock(ts(2026, 10, 13, 23, 0))) == datetime(2026, 10, 14, 9, 0, tzinfo=LA)
+    # found at 8am: 4h later is noon, 9:00 has passed, so wait for tomorrow
     assert local(engine.next_unlock(ts(2026, 10, 13, 8, 0))) == datetime(2026, 10, 14, 9, 0, tzinfo=LA)
-    # found at 9pm: 12h later is exactly 9:00
-    assert local(engine.next_unlock(ts(2026, 10, 13, 21, 0))) == datetime(2026, 10, 14, 9, 0, tzinfo=LA)
+    # found at 5am: exactly 4h later is 9:00, which counts
+    assert local(engine.next_unlock(ts(2026, 10, 13, 5, 0))) == datetime(2026, 10, 13, 9, 0, tzinfo=LA)
 
 
 def test_next_unlock_stays_at_nine_across_a_dst_change():
@@ -328,3 +328,19 @@ def test_too_many_wrong_guesses_lock_you_out_until_tomorrow_pacific():
         assert engine.guess(st, "hatter", "nope", day1) == "wrong"
     assert engine.guess(st, "hatter", "hatter", day1 + 60) == "locked"  # even the right word waits
     assert engine.guess(st, "hatter", "hatter", ts(2026, 10, 15, 0, 5)) == "correct"
+
+
+def test_the_wait_is_at_least_four_hours_then_the_next_nine_am():
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+    la = ZoneInfo("America/Los_Angeles")
+
+    def due(h, m=0):
+        found = datetime(2026, 10, 14, h, m, tzinfo=la).timestamp()
+        got = datetime.fromtimestamp(engine.next_unlock(found), la)
+        return got.strftime("%a %H:%M"), round((got.timestamp() - found) / 3600, 1)
+
+    assert due(4, 50) == ("Wed 09:00", 4.2)    # 4h20m... just over four hours: the same morning
+    assert due(5, 30) == ("Thu 09:00", 27.5)   # four hours later is past 9:00, so the next morning
+    assert due(16, 50) == ("Thu 09:00", 16.2)
+    assert due(22, 0) == ("Thu 09:00", 11.0)   # late evening now wakes the next morning, not a day later

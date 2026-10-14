@@ -54,5 +54,5 @@ acrostic spells the trigger and that no answer appears in the public poem. Then 
 - `poem` pins the poem it posts and unpins the previous poem in that channel. `disable` silences triggers, reactions and clue delivery; `enable` resumes.
 - Two wrong hunt objects lock a member out of the riddle for 24 hours; then they get two fresh tries on the same riddle.
 - `start` posts the puzzle's (empty) Hall entry at once, so the Hall reads in release order.
-- The jumbled-word clue arrives at the next 9:00 Pacific, at least 12 hours after the object is found.
+- The jumbled-word clue arrives at the next 9:00 Pacific, at least 4 hours after the object is found.
 - Progress lives in Red's Config, so a restart loses nothing.

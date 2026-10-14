@@ -1,14 +1,14 @@
 """Config defaults and fixed values for secrethunt (Secrets of Wonderland)."""
 from zoneinfo import ZoneInfo
 
-COG_VERSION = "1.6.0"
+COG_VERSION = "1.6.1"
 CONFIG_IDENTIFIER = 0x5EC8E7A1
 HOME_TZ = ZoneInfo("America/Los_Angeles")
 
 TICK_SECONDS = 60                  # how often the delivery loop looks for clues that have come due
 WATCH_EMOJI = "\N{MANTELPIECE CLOCK}"   # the reaction that "clicks" a hunt object (compared without the VS16)
 
-MIN_DELAY_HOURS = 12               # a clue never arrives sooner than this after the previous step...
+MIN_DELAY_HOURS = 4                # a clue never arrives sooner than this after the previous step...
 UNLOCK_HOUR = 9                    # ...and always lands on the next 9:00 Pacific after that
 TEST_DELAY_SECONDS = 30            # test mode: skip the wait
 DM_RETRY_SECONDS = 3600            # a closed-DM clue is retried hourly...
