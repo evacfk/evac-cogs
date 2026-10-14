@@ -340,6 +340,11 @@ def _map_text(mod, guild, member=None, public=False):
     return cog.render(MAP_KEY, guild, False, member=member, public=public).description
 
 
+async def test_map_embed_is_titled_wonderland_channel_guide(mod):
+    cog = make(mod)
+    assert cog.render(MAP_KEY, FakeGuild([]), False).title == "🗺️ Wonderland Channel Guide"
+
+
 async def test_map_hides_channels_the_member_cannot_open(mod):
     guild = FakeGuild([FakeChannel(11, "🧸・cuddle"), FakeChannel(12, "🔢・counting", hidden_from={5}),
                        FakeChannel(13, "❓・qotd")])
@@ -558,7 +563,7 @@ async def test_publish_map_only_into_a_fresh_channel_posts_just_the_map(mod):
     channel = FakeChannel(78, "server-guide")
     await cog.wonderland.subs["publish"].callback(cog, ctx, channel, "map")
     assert len(channel.sent) == 1
-    assert "Server Map" in channel.sent[0].kw["embed"].title
+    assert "Wonderland Channel Guide" in channel.sent[0].kw["embed"].title
 
 
 async def test_version_probe(mod):

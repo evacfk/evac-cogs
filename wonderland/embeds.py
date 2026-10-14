@@ -38,7 +38,7 @@ def map_embed(resolve: Callable[[object], object], footer: str = FOOTER) -> disc
     parts = []
     for title, lines in engine.map_blocks(resolve):
         parts.append(f"**{title.upper()}**\n" + "\n".join(lines))
-    return _base("🗺️ Server Map", "\n\n".join(parts), footer)
+    return _base("🗺️ Wonderland Channel Guide", "\n\n".join(parts), footer)
 
 
 def search_embed(query: str, hits) -> discord.Embed:

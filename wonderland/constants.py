@@ -1,6 +1,6 @@
 """Fixed values for the Wonderland guide. No discord/redbot imports here."""
 
-COG_VERSION = "1.2.0"
+COG_VERSION = "1.2.1"
 CONFIG_ID = 0x574C44  # "WLD"
 
 VIEW_TIMEOUT = 120          # seconds the dropdown stays alive
