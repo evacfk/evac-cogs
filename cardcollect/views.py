@@ -101,6 +101,8 @@ class GalleryView(discord.ui.View):
     see render_gallery's showcase_pool docstring for why that distinction
     matters."""
 
+    reject_text = "Only the person who ran `.card` can page through this."
+
     def __init__(self, invoker_id: int, pages, all_entries, showcase_card_ids, quantities, whose: str):
         super().__init__(timeout=GALLERY_VIEW_TIMEOUT_SECONDS)
         self.invoker_id = invoker_id
@@ -163,9 +165,7 @@ class GalleryView(discord.ui.View):
 
     async def _reject_if_not_invoker(self, interaction: discord.Interaction) -> bool:
         if interaction.user.id != self.invoker_id:
-            await interaction.response.send_message(
-                "Only the person who ran `.card` can page through this.", ephemeral=True
-            )
+            await interaction.response.send_message(self.reject_text, ephemeral=True)
             return False
         return True
 
@@ -191,3 +191,31 @@ class GalleryView(discord.ui.View):
                 await self.message.edit(view=self)
             except discord.HTTPException:
                 log.warning("cardcollect: couldn't disable a timed-out gallery view", exc_info=True)
+
+
+class PoolSearchView(GalleryView):
+    """Prev/Next paging for `.card pool <keyword>`. Same pager as the
+    collection gallery, but `pages` holds plain Cards (not (Card, bytes)
+    pairs) and each page's art is read only when that page is shown -- a
+    broad keyword can match hundreds of cards, and loading them all up
+    front would be wasted I/O. There is no showcase row; the caption is
+    built by the cog (`caption_for(page_index, cards)`) so it can mark which
+    cards the searcher owns."""
+
+    reject_text = "Only the person who ran this search can page through it."
+
+    def __init__(self, invoker_id: int, pages, quantities, read_image, caption_for):
+        super().__init__(invoker_id, pages, [], (), quantities, "")
+        self.read_image = read_image
+        self.caption_for = caption_for
+
+    def render_current(self, page=None):
+        page = self.page if page is None else page
+        cards = self.pages[page]
+        entries = []
+        for card in cards:
+            image_bytes = self.read_image(card.card_id)
+            if image_bytes is not None:
+                entries.append((card, image_bytes))
+        gallery = imagegen.render_gallery(entries, quantities=self.quantities)
+        return gallery, self.caption_for(page, cards)

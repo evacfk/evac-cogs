@@ -2123,9 +2123,9 @@ async def test_failed_flush_keeps_counts_for_retry(cog):
     assert sum(tracking["hourly_buckets"].values()) == 4
 
 
-def test_version_is_1_4_1():
+def test_version_is_1_5_0():
     from cardcollect.constants import COG_VERSION
-    assert COG_VERSION == "1.4.1"
+    assert COG_VERSION == "1.5.0"
 
 
 # --- search / show commands ---------------------------------------------------
@@ -2408,3 +2408,123 @@ async def test_collection_gallery_is_sorted_by_rarity_then_alphabetical(cog):
         imagegen.render_gallery = real
 
     assert seen["order"] == ["Asuka", "Mika", "Rei", "Yuki", "Ann", "bella", "Amy", "Zoe"]
+
+
+# --- .card pool (member-facing whole-pool search) -----------------------------
+
+
+@pytest.mark.asyncio
+async def test_pool_finds_partial_matches_across_whole_pool_and_marks_owned(cog):
+    from cardcollect.models import MemberState
+
+    guild = FakeGuild(410)
+    admin = FakeMember(4100, guild)
+    member = FakeMember(4101, guild)
+    channel = FakeChannel(41000, guild)
+    ids = await _seed_search_pool(cog, guild, admin, channel)
+    await cog._save_member_state(member, MemberState(collection=[ids["Lucy"]]))
+
+    ctx = FakeCtx(member, guild, channel)
+    await cog.card.commands["pool"].callback(cog, ctx, query="lucy")
+    sent = ctx.sent[-1]
+    assert "2 found, you own 1" in sent.content
+    assert f"✅ `{ids['Lucy']}`" in sent.content            # owned
+    assert f"⬜ `{ids['Lucy Heartfilia']}`" in sent.content  # in the pool, not owned
+    assert "Rebecca" not in sent.content and "Nami" not in sent.content
+    assert sent.files and sent.view is None                 # one page: no pager
+
+    # a series word finds every character from that anime, owned or not
+    ctx = FakeCtx(member, guild, channel)
+    await cog.card.commands["pool"].callback(cog, ctx, query="EDGERUNNERS")
+    assert "Lucy" in ctx.sent[-1].content and "Rebecca" in ctx.sent[-1].content
+
+
+@pytest.mark.asyncio
+async def test_pool_no_match_and_find_hint(cog):
+    guild = FakeGuild(411)
+    admin = FakeMember(4110, guild)
+    member = FakeMember(4111, guild)
+    channel = FakeChannel(41100, guild)
+    await _seed_search_pool(cog, guild, admin, channel)
+
+    ctx = FakeCtx(member, guild, channel)
+    await cog.card.commands["pool"].callback(cog, ctx, query="zzz")
+    assert "No card in the pool matches" in ctx.sent[-1].content
+
+    ctx = FakeCtx(member, guild, channel)
+    await cog.card.commands["find"].callback(cog, ctx, query="lucy")
+    assert ".card pool lucy" in ctx.sent[-1].content
+
+
+@pytest.mark.asyncio
+async def test_pool_hides_retired_unless_owned_or_admin(cog):
+    import types
+    from cardcollect.models import MemberState
+
+    guild = FakeGuild(412)
+    admin = FakeMember(4120, guild)
+    admin.guild_permissions = types.SimpleNamespace(manage_guild=True, administrator=False)
+    member = FakeMember(4121, guild)
+    owner = FakeMember(4122, guild)
+    channel = FakeChannel(41200, guild)
+    ids = await _seed_search_pool(cog, guild, admin, channel)
+    async with cog.config.guild(guild).pool() as pool:
+        pool[str(ids["Lucy"])]["retired"] = True
+    await cog._save_member_state(owner, MemberState(collection=[ids["Lucy"]]))
+
+    ctx = FakeCtx(member, guild, channel)
+    await cog.card.commands["pool"].callback(cog, ctx, query="lucy")
+    assert "1 found" in ctx.sent[-1].content and "[retired]" not in ctx.sent[-1].content
+
+    ctx = FakeCtx(owner, guild, channel)  # owns the retired card, so still sees it
+    await cog.card.commands["pool"].callback(cog, ctx, query="lucy")
+    assert "2 found" in ctx.sent[-1].content and "[retired]" in ctx.sent[-1].content
+
+    ctx = FakeCtx(admin, guild, channel)
+    await cog.card.commands["pool"].callback(cog, ctx, query="lucy")
+    assert "2 found" in ctx.sent[-1].content and "[retired]" in ctx.sent[-1].content
+
+
+@pytest.mark.asyncio
+async def test_pool_over_one_page_gets_a_pager_that_only_the_invoker_can_use(cog):
+    guild = FakeGuild(413)
+    admin = FakeMember(4130, guild)
+    member = FakeMember(4131, guild)
+    bystander = FakeMember(4132, guild)
+    channel = FakeChannel(41300, guild)
+    for i in range(GALLERY_PAGE_SIZE + 1):
+        ctx = FakeCtx(admin, guild, channel, attachments=[FakeAttachment(fake_art_bytes((i, i, i)))])
+        await cog.card.commands["addcard"].callback(cog, ctx, "common", name_and_series=f"Pooled{i} | Big Series")
+
+    ctx = FakeCtx(member, guild, channel)
+    await cog.card.commands["pool"].callback(cog, ctx, query="big series")
+    sent = ctx.sent[-1]
+    view = sent.view
+    assert isinstance(view, views.PoolSearchView)
+    assert "page 1/2" in sent.content and f"{GALLERY_PAGE_SIZE + 1} found" in sent.content
+    assert view.previous.disabled is True and view.next.disabled is False
+
+    interaction = FakeInteraction(member, channel, message=sent)
+    await view.next.callback(interaction)
+    assert view.page == 1 and view.next.disabled is True
+    assert "page 2/2" in interaction.original_edit["content"]
+    assert interaction.original_edit["attachments"]
+
+    intruder = FakeInteraction(bystander, channel)
+    await view.previous.callback(intruder)
+    assert view.page == 1
+    text, ephemeral = intruder.response.messages[0]
+    assert "ran this search" in text and ephemeral is True
+
+
+def test_pool_is_open_to_all_members():
+    import inspect
+
+    src = inspect.getsource(cc_module.CardCollect).splitlines()
+    i = next(n for n, l in enumerate(src) if "async def card_pool(" in l)
+    decorators = []
+    j = i - 1
+    while src[j].strip().startswith("@"):
+        decorators.append(src[j].strip())
+        j -= 1
+    assert not any("admin_or_permissions" in d for d in decorators)

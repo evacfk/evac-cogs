@@ -890,7 +890,10 @@ class CardCollect(commands.Cog):
         state, owned = await self._owned_cards(ctx.author)
         matches = engine.search_cards(owned, query)
         if not matches:
-            await ctx.send(f"None of your cards match **{query.strip()}**.")
+            await ctx.send(
+                f"None of your cards match **{query.strip()}**. "
+                f"(`.card pool {query.strip()}` searches every card in the pool.)"
+            )
             return
 
         shown = matches[:GALLERY_PAGE_SIZE]
@@ -911,6 +914,60 @@ class CardCollect(commands.Cog):
         quantities = Counter(state.collection)
         gallery = await asyncio.to_thread(imagegen.render_gallery, entries, quantities=quantities)
         await ctx.send(content=caption[:1990], file=discord.File(gallery, filename="matches.png"))
+
+    async def _is_pool_admin(self, member: discord.Member) -> bool:
+        perms = getattr(member, "guild_permissions", None)
+        if perms is not None and (perms.manage_guild or perms.administrator):
+            return True
+        is_admin = getattr(self.bot, "is_admin", None)
+        return bool(is_admin is not None and await is_admin(member))
+
+    @card.command(name="pool")
+    @commands.guild_only()
+    async def card_pool(self, ctx: commands.Context, *, query: str):
+        """Search EVERY card in the pool by character name or anime/series
+        (partial matches work: `.card pool lucy`, `.card pool edgerunners`).
+        Shows all matches with their art, and marks the ones you own. Retired
+        cards are hidden unless you own one."""
+        state = await self._member_state(ctx.author)
+        owned_ids = set(state.collection)
+        pool_cards = await self._pool_cards(ctx.guild)
+        if not await self._is_pool_admin(ctx.author):
+            pool_cards = [c for c in pool_cards if not c.retired or c.card_id in owned_ids]
+        matches = [
+            c
+            for c in engine.search_cards(pool_cards, query)
+            if storage.card_image_exists(self.data_path, ctx.guild.id, c.card_id)
+        ]
+        shown_query = discord.utils.escape_mentions(discord.utils.escape_markdown(query.strip()))[:60]
+        if not matches:
+            await ctx.send(f"No card in the pool matches **{shown_query}**.")
+            return
+
+        pages = [matches[i : i + GALLERY_PAGE_SIZE] for i in range(0, len(matches), GALLERY_PAGE_SIZE)]
+        owned_count = sum(1 for c in matches if c.card_id in owned_ids)
+        quantities = Counter(state.collection)
+
+        def caption_for(page_index: int, page_cards: List[Card]) -> str:
+            head = f"Pool cards matching **{shown_query}**: {len(matches)} found, you own {owned_count} (✅ = owned)"
+            if len(pages) > 1:
+                head += f" · page {page_index + 1}/{len(pages)}"
+            lines = "\n".join(
+                f"{'✅' if c.card_id in owned_ids else '⬜'} {self._card_line(c)}{' [retired]' if c.retired else ''}"
+                for c in page_cards
+            )
+            return f"{head}\n{lines}"[:1990]
+
+        def read_image(card_id: int) -> Optional[bytes]:
+            return self._read_card_image(ctx.guild, card_id)
+
+        view = views.PoolSearchView(ctx.author.id, pages, quantities, read_image, caption_for)
+        gallery, caption = await view.render_current_async()
+        if len(pages) == 1:
+            await ctx.send(content=caption, file=discord.File(gallery, filename="pool.png"))
+            return
+        msg = await ctx.send(content=caption, file=discord.File(gallery, filename="pool.png"), view=view)
+        view.message = msg
 
     @card.command(name="poolsearch", aliases=["searchpool"])
     @commands.guild_only()
