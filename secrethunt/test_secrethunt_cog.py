@@ -630,6 +630,8 @@ async def test_the_poem_is_posted_and_pinned_and_the_old_one_comes_down(env):
 async def test_a_failed_pin_is_reported_and_forgotten(env):
     ctx = Ctx(env)
     ch = env.chans[2]
+    async with env.conf.poems() as poems:
+        poems[str(ch.id)] = 12345  # an older poem was pinned here
     ch.fail_pin = True
     await env.cog.secrethunt_poem.callback(env.cog, ctx, ch, "")
     assert "could not pin" in ctx.out[-1] and str(ch.id) not in await env.conf.poems()
