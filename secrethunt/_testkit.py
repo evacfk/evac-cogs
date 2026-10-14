@@ -251,6 +251,9 @@ class FakeMember:
     async def add_roles(self, *roles, reason=None):
         self.roles += [r for r in roles if r not in self.roles]
 
+    async def remove_roles(self, *roles, reason=None):
+        self.roles = [r for r in self.roles if r not in roles]
+
 
 class FakeGuild:
     def __init__(self, gid=1):

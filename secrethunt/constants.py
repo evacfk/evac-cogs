@@ -1,7 +1,7 @@
 """Config defaults and fixed values for secrethunt (Secrets of Wonderland)."""
 from zoneinfo import ZoneInfo
 
-COG_VERSION = "1.3.0"
+COG_VERSION = "1.4.0"
 CONFIG_IDENTIFIER = 0x5EC8E7A1
 HOME_TZ = ZoneInfo("America/Los_Angeles")
 
@@ -32,7 +32,7 @@ DEFAULT_GUILD = {
     "active": "",            # newest published puzzle (shown in status)
     "objects": {},           # puzzle id -> {channel id (str): pinned object message id}
     "finishers": {},         # puzzle id -> [user ids in finishing order]
-    "roles": {},             # tier -> role id (Easy never has one)
+    "roles": {}, "puzzle_roles": {},             # tier -> role id (Easy never has one)
     "hall_channel_id": None, # the Hall of Secrets: one post per puzzle listing its solvers
     "hall_messages": {}, "poems": {},     # puzzle id -> that puzzle's Hall post
     "test_mode": False,

@@ -654,3 +654,110 @@ async def test_disable_silences_triggers_reactions_and_delivery(env):
     assert await state(env, member(env, 12)) is None
     await find_object(env, a)
     assert (await state(env, a))["stage"] == engine.STAGE_RIDDLE
+
+
+# ---------------------------------------------------------------- per-puzzle badge roles and .secrets
+
+
+def as_hard(monkeypatch, env):
+    monkeypatch.setitem(env.mod.PUZZLES, PID, {**PUZZLES[PID], "tier": "hard"})
+
+
+async def test_a_hard_puzzle_grants_its_own_role_and_the_tier_role(env, monkeypatch):
+    as_hard(monkeypatch, env)
+    tier_role, puzzle_role = env.g.add_role(310, "Timekeeper"), env.g.add_role(311, "The Late Rabbit")
+    async with env.conf.roles() as roles:
+        roles["hard"] = tier_role.id
+    async with env.conf.puzzle_roles() as pr:
+        pr[PID] = puzzle_role.id
+    a = await solve(env, 21)
+    assert set(a.roles) == {tier_role, puzzle_role}
+    assert "Timekeeper" in a.dms[-1] and "The Late Rabbit" in a.dms[-1] and "roles." in a.dms[-1]
+
+
+async def test_one_role_used_for_both_is_granted_once(env, monkeypatch):
+    as_hard(monkeypatch, env)
+    async with env.conf.roles() as roles:
+        roles["hard"] = env.role.id
+    async with env.conf.puzzle_roles() as pr:
+        pr[PID] = env.role.id
+    a = await solve(env, 21)
+    assert a.roles == [env.role] and "roles." not in a.dms[-1]
+
+
+async def test_an_easy_puzzle_never_grants_a_puzzle_role_even_if_one_is_saved(env):
+    async with env.conf.puzzle_roles() as pr:
+        pr[PID] = env.role.id  # saved by hand: Easy still ignores it
+    a = await solve(env, 21)
+    assert a.roles == [] and "role" not in a.dms[-1].lower()
+
+
+async def test_puzzlerole_command_creates_unhoisted_role_named_for_the_puzzle(env, monkeypatch):
+    as_hard(monkeypatch, env)
+    ctx = Ctx(env)
+    await env.cog.secrethunt_puzzlerole.callback(env.cog, ctx, PID, None)
+    role = env.g.created_roles[-1]
+    assert role.name == "The Late Rabbit" and role.kw["hoist"] is False and "colour" not in role.kw
+    assert (await env.conf.puzzle_roles())[PID] == role.id and "not get it retroactively" in ctx.out[-1]
+    await env.cog.secrethunt_puzzlerole.callback(env.cog, ctx, PID, env.role)  # or an existing role
+    assert (await env.conf.puzzle_roles())[PID] == env.role.id
+
+
+async def test_puzzlerole_refuses_easy_and_unknown_puzzles(env):
+    ctx = Ctx(env)
+    await env.cog.secrethunt_puzzlerole.callback(env.cog, ctx, PID, None)
+    assert "no role or badge" in ctx.out[-1] and await env.conf.puzzle_roles() == {}
+    await env.cog.secrethunt_puzzlerole.callback(env.cog, ctx, "nope", None)
+    assert "Unknown puzzle" in ctx.out[-1]
+
+
+async def test_roleicon_accepts_a_puzzle_id(env, monkeypatch):
+    as_hard(monkeypatch, env)
+    ctx = Ctx(env)
+    await env.cog.secrethunt_roleicon.callback(env.cog, ctx, PID)
+    assert f".secrethunt puzzlerole {PID}" in ctx.out[-1]
+    async with env.conf.puzzle_roles() as pr:
+        pr[PID] = env.role.id
+    ctx.message.attachments = [Attachment()]
+    await env.cog.secrethunt_roleicon.callback(env.cog, ctx, PID)
+    assert ctx.out[-1] == "Icon set." and env.role.edits[-1]["display_icon"] == b"png"
+
+
+async def test_reset_takes_back_the_puzzle_role_but_not_the_tier_role(env, monkeypatch):
+    as_hard(monkeypatch, env)
+    tier_role, puzzle_role = env.g.add_role(310, "Timekeeper"), env.g.add_role(311, "The Late Rabbit")
+    async with env.conf.roles() as roles:
+        roles["hard"] = tier_role.id
+    async with env.conf.puzzle_roles() as pr:
+        pr[PID] = puzzle_role.id
+    a = await solve(env, 21)
+    await env.cog.secrethunt_reset.callback(env.cog, Ctx(env), a, PID)
+    assert a.roles == [tier_role]
+
+
+async def test_status_lists_puzzle_roles_and_flags_a_deleted_one(env, monkeypatch):
+    as_hard(monkeypatch, env)
+    async with env.conf.puzzle_roles() as pr:
+        pr[PID] = 424242  # role no longer exists
+    assert "The Late Rabbit: MISSING" in (await env.cog._status_embed(env.g)).description
+
+
+async def test_secrets_lists_only_solved_puzzles_with_rank_and_nothing_in_progress(env):
+    ctx = Ctx(env)
+    a = member(env, 31)
+    await env.cog.secrets_cmd.callback(env.cog, ctx, a)
+    assert "has not found any secrets yet" in ctx.out[-1]
+    await start(env, a)  # in progress: must not show, not even as a hint that a hunt exists
+    await env.cog.secrets_cmd.callback(env.cog, ctx, a)
+    assert "has not found any secrets yet" in ctx.out[-1]
+    solver = await solve(env, 32)
+    await env.cog.secrets_cmd.callback(env.cog, ctx, solver)
+    embed = ctx.out[-1]
+    assert embed.title == "Secrets found by user32" and embed.description == "**Easy** \u00b7 The Late Rabbit \u00b7 finder #1"
+
+
+async def test_secrets_defaults_to_the_asker(env):
+    solver = await solve(env, 33)
+    ctx = Ctx(env, author=solver)
+    await env.cog.secrets_cmd.callback(env.cog, ctx, None)
+    assert "The Late Rabbit" in ctx.out[-1].description

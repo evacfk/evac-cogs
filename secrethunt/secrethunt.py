@@ -332,24 +332,32 @@ class SecretHunt(commands.Cog):
 
     async def _on_solved(self, guild, member, pid: str, rank: int):
         puzzle = PUZZLES[pid]
-        role = await self._grant_role(guild, member, puzzle["tier"])
+        earned = await self._grant_roles(guild, member, pid)
         text = puzzle["solved"].format(rank=f"\n\nYou were finder **#{rank}**.")
-        if role is not None:
-            text += f"\n\nYou earned the **{role.name}** role."
+        if earned:
+            text += "\n\nYou earned the " + " and ".join(f"**{r.name}**" for r in earned) + (
+                " roles." if len(earned) > 1 else " role.")
         await self._dm(member, text)
         await self._refresh_hall(guild, pid)
 
-    async def _grant_role(self, guild, member, tier: str):
-        """The tier's role if one is configured (Easy never has one), else None."""
-        role = guild.get_role((await self.config.guild(guild).roles()).get(tier) or 0)
-        if role is None:
-            return None
-        try:
-            await member.add_roles(role, reason="Solved a secret hunt")
-            return role
-        except _DISCORD_ERRORS:
-            log.warning("secrethunt: could not give %s to %s", role.id, member.id)
-            return None
+    async def _grant_roles(self, guild, member, pid: str) -> list:
+        """The tier's role and this puzzle's own role, whichever are configured (Easy never has either)."""
+        conf = self.config.guild(guild)
+        tier = PUZZLES[pid]["tier"]
+        if tier == "easy":
+            return []
+        ids = [(await conf.roles()).get(tier), (await conf.puzzle_roles()).get(pid)]
+        earned = []
+        for rid in ids:
+            role = guild.get_role(rid or 0)
+            if role is None or role in earned:
+                continue
+            try:
+                await member.add_roles(role, reason="Solved a secret hunt")
+                earned.append(role)
+            except _DISCORD_ERRORS:
+                log.warning("secrethunt: could not give %s to %s", role.id, member.id)
+        return earned
 
     async def _refresh_hall(self, guild, pid: str, create: bool = False):
         """Post or edit this puzzle's Hall of Secrets entry: its tier and every solver's name, in finishing order."""
@@ -464,6 +472,10 @@ class SecretHunt(commands.Cog):
             "Pool": ", ".join(f"<#{c}>" if self._lookup(guild, c) else f"**MISSING** `{c}`" for c in pool)
                     or "not set (`channels`)",
             "Roles": "easy: none (by design), " + ", ".join(tier_roles),
+            "Puzzle roles": ", ".join(
+                f"{PUZZLES[p]['title']}: {r.mention if r else 'MISSING'}"
+                for p, rid in (await conf.puzzle_roles()).items() if p in PUZZLES
+                for r in [guild.get_role(rid)]) or "none",
             "Hall of Secrets": hall.mention if hall else "not set (`hall`)",
         }
         for pid in await conf.published():
@@ -615,15 +627,41 @@ class SecretHunt(commands.Cog):
         await ctx.send(f"{tier.title()} reward role: {role.mention}. Drag it where you want it in the role list, and "
                        "keep it below my own top role so I can hand it out.")
 
-    @secrethunt.command(name="roleicon")
-    async def secrethunt_roleicon(self, ctx, tier: str):
-        """Attach an image (under 256 KB) to set a tier role's icon (needs boost level 2+)."""
-        checked = await self._tier_role(ctx, tier)
-        if checked is None:
-            return
-        role = checked[1]
+    @secrethunt.command(name="puzzlerole")
+    async def secrethunt_puzzlerole(self, ctx, puzzle_id: str, role: discord.Role = None):
+        """Give one puzzle its own badge role (Medium and up): pass a role, or omit it to create one named for the puzzle."""
+        puzzle = PUZZLES.get(puzzle_id)
+        if puzzle is None:
+            return await ctx.send("Unknown puzzle. Known: " + ", ".join(PUZZLES))
+        if puzzle["tier"] == "easy":
+            return await ctx.send("Easy puzzles have no role or badge by design.")
         if role is None:
-            return await ctx.send(f"Set the role first with `.secrethunt role {checked[0]}`.")
+            try:
+                role = await ctx.guild.create_role(name=puzzle["title"], hoist=False, mentionable=False,
+                                                   reason="Secret hunt puzzle role")
+            except _DISCORD_ERRORS as err:
+                return await ctx.send(f"I could not create the role ({type(err).__name__}); I need Manage Roles.")
+        async with self.config.guild(ctx.guild).puzzle_roles() as roles:
+            roles[puzzle_id] = role.id
+        await ctx.send(f"**{puzzle['title']}** now awards {role.mention} to everyone who solves it from here on. "
+                       "Keep it below my top role. Earlier solvers do not get it retroactively.")
+
+    @secrethunt.command(name="roleicon")
+    async def secrethunt_roleicon(self, ctx, target: str):
+        """Attach an image (under 256 KB) as a role's icon. `target` is a tier or a puzzle id (needs boost level 2+)."""
+        key = (target or "").lower()
+        if key in PUZZLES:
+            if PUZZLES[key]["tier"] == "easy":
+                return await ctx.send("Easy puzzles have no role or badge by design.")
+            role = ctx.guild.get_role((await self.config.guild(ctx.guild).puzzle_roles()).get(key) or 0)
+            hint = f".secrethunt puzzlerole {key}"
+        else:
+            checked = await self._tier_role(ctx, key)
+            if checked is None:
+                return
+            role, hint = checked[1], f".secrethunt role {checked[0]}"
+        if role is None:
+            return await ctx.send(f"Set the role first with `{hint}`.")
         if not ctx.message.attachments:
             return await ctx.send("Attach a PNG or JPG with the command.")
         att = ctx.message.attachments[0]
@@ -681,5 +719,32 @@ class SecretHunt(commands.Cog):
                 if member.id in fin.get(puzzle_id, []):
                     fin[puzzle_id].remove(member.id)
         if puzzle_id in PUZZLES:
+            role = ctx.guild.get_role((await self.config.guild(ctx.guild).puzzle_roles()).get(puzzle_id) or 0)
+            if role is not None and role in member.roles:
+                try:
+                    await member.remove_roles(role, reason="Secret hunt progress reset")
+                except _DISCORD_ERRORS:
+                    pass
             await self._refresh_hall(ctx.guild, puzzle_id)
         await ctx.send("Reset." if existed else "They had no progress on that puzzle.")
+
+    # ------------------------------------------------------------------ members
+
+    @commands.command(name="secrets")
+    @commands.guild_only()
+    async def secrets_cmd(self, ctx, member: discord.Member = None):
+        """The secrets a member has found. Only solved ones are shown, nothing about hunts in progress."""
+        member = member or ctx.author
+        states = await self.config.member(member).puzzles()
+        found = [(pid, st) for pid, st in states.items()
+                 if pid in PUZZLES and st.get("stage") == engine.STAGE_SOLVED]
+        order = {pid: i for i, pid in enumerate(await self.config.guild(ctx.guild).published())}
+        found.sort(key=lambda item: order.get(item[0], len(order)))
+        if not found:
+            return await ctx.send(f"{engine.escape_markdown(member.display_name)} has not found any secrets yet.")
+        lines = [f"**{PUZZLES[pid]['tier'].title()}** \N{MIDDLE DOT} {PUZZLES[pid]['title']}"
+                 + (f" \N{MIDDLE DOT} finder #{st['rank']}" if st.get("rank") else "") for pid, st in found]
+        embed = discord.Embed(title=f"Secrets found by {member.display_name}", description="\n".join(lines),
+                              color=discord.Color.gold())
+        embed.set_footer(text=f"{len(found)} secret{'' if len(found) == 1 else 's'} found")
+        await ctx.send(embed=embed)

@@ -24,12 +24,20 @@ Roles for harder tiers (not needed for Easy):
 .secrethunt roleicon medium           # attach a PNG/JPG under 256 KB (needs boost level 2+); roles have no colour on purpose
 ```
 
+Badge roles per puzzle (Medium and up; Easy never):
+```
+.secrethunt puzzlerole <puzzle_id>    # creates a role named for the puzzle (not hoisted), or pass an existing one
+.secrethunt roleicon <puzzle_id>      # attach an icon; works for tier roles too
+```
+Solvers get the tier role (if set) and the puzzle's role (if set); only future solvers, not earlier ones.
+Members can run `.secrets [member]` to see which secrets someone has found (solved ones only).
+
 Bot permissions: Send Messages (and Send Messages in Threads), Embed Links, Manage Messages / Pin Messages (pin, delete the
 trigger and pin notice, remove reactions), Read Message History, Manage Roles. Keep tier roles below the bot's top role.
 
 ## Admin commands
 `status`, `version`, `channels`, `setup [id] [force]`, `start <id>`, `poem [channel]`, `enable`, `disable`,
-`testmode <on|off>`, `hall [channel]`, `hallrefresh`, `role <tier> [role]`, `roleicon <tier>`, 
+`testmode <on|off>`, `hall [channel]`, `hallrefresh`, `role <tier> [role]`, `puzzlerole <puzzle> [role]`, `roleicon <tier or puzzle>`, 
 `who <member>`, `preview [id]` (DMs you every variant's clues and answers: spoilers), `reset <member> [id]`.
 
 ## Adding a weekly puzzle
