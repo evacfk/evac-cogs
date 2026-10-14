@@ -1,6 +1,6 @@
 import types
 
-from introform import embeds
+from wonderland.introform import embeds
 
 
 def fake_member():

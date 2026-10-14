@@ -50,11 +50,11 @@ def mod(monkeypatch):
     root.core = core
     for name, m in (("redbot", root), ("redbot.core", core), ("redbot.core.commands", commands_ns)):
         monkeypatch.setitem(sys.modules, name, m)
-    for name in ("mystats.mystats", "mystats.embeds"):
+    for name in ("wonderland.mystats.mystats", "wonderland.mystats.embeds"):
         monkeypatch.delitem(sys.modules, name, raising=False)
-    m = importlib.import_module("mystats.mystats")
+    m = importlib.import_module("wonderland.mystats.mystats")
     yield m
-    for name in ("mystats.mystats", "mystats.embeds"):
+    for name in ("wonderland.mystats.mystats", "wonderland.mystats.embeds"):
         sys.modules.pop(name, None)
 
 

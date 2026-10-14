@@ -1,5 +1,5 @@
 """Pure formatting tests: what a member sees for each game's raw numbers."""
-from mystats import engine
+from wonderland.mystats import engine
 
 
 def test_pct_handles_zero_total():

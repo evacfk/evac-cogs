@@ -26,6 +26,18 @@ class MyStats(commands.Cog):
     async def red_delete_data_for_user(self, **kwargs):
         return  # nothing stored here
 
+    async def build_embed(self, ctx: commands.Context, member: discord.Member) -> discord.Embed:
+        """The stats embed for `member`. Shared by `.mystats` and `.wld stats`."""
+        raw = await sources.gather(self.bot, member)
+        try:
+            currency = await bank.get_currency_name(ctx.guild)
+            balance = await bank.get_balance(member)
+            balance_text = f"**Balance:** {balance:,} {currency}"
+        except Exception:
+            currency, balance_text = "coins", None
+        sections = engine.build_sections(raw, currency)
+        return embeds.stats_embed(member, sections, balance_text)
+
     @commands.group(name="mystats", invoke_without_command=True)
     @commands.guild_only()
     @commands.cooldown(1, COOLDOWN_SECONDS, commands.BucketType.user)
@@ -33,16 +45,8 @@ class MyStats(commands.Cog):
         """Your record across every game: minigames, duels, heists, casino, cards, puzzle, Verdict and more."""
         member = member or ctx.author
         async with ctx.typing():
-            raw = await sources.gather(self.bot, member)
-            try:
-                currency = await bank.get_currency_name(ctx.guild)
-                balance = await bank.get_balance(member)
-                balance_text = f"**Balance:** {balance:,} {currency}"
-            except Exception:
-                currency, balance_text = "coins", None
-            sections = engine.build_sections(raw, currency)
-        await ctx.send(embed=embeds.stats_embed(member, sections, balance_text),
-                       allowed_mentions=discord.AllowedMentions.none())
+            embed = await self.build_embed(ctx, member)
+        await ctx.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
 
     @mystats.command(name="version")
     async def mystats_version(self, ctx: commands.Context):

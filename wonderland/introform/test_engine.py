@@ -1,5 +1,5 @@
-from introform import engine
-from introform.constants import QUESTIONS
+from wonderland.introform import engine
+from wonderland.introform.constants import QUESTIONS
 
 ZWSP = engine.ZWSP
 

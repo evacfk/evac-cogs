@@ -3,7 +3,7 @@ import types
 
 import pytest
 
-from mystats import sources
+from wonderland.mystats import sources
 
 
 class Group:

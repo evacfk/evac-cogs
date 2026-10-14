@@ -5,7 +5,7 @@ Not a behavior test -- live Discord behavior can't be proven here.
 
 
 def test_module_imports_and_defines_cog_view_and_modal():
-    from introform import introform
+    from wonderland.introform import introform
 
     assert hasattr(introform, "IntroForm")
     assert hasattr(introform, "IntroPanelView")
@@ -13,15 +13,15 @@ def test_module_imports_and_defines_cog_view_and_modal():
 
 
 def test_panel_view_has_all_buttons():
-    from introform.introform import IntroPanelView
+    from wonderland.introform.introform import IntroPanelView
 
     view = IntroPanelView(cog=None)
     assert {"open_button", "find_button", "delete_button"}.issubset(dir(view))
 
 
 def test_modal_builds_one_input_per_question_within_discord_limits():
-    from introform.constants import QUESTIONS
-    from introform.introform import IntroModal
+    from wonderland.introform.constants import QUESTIONS
+    from wonderland.introform.introform import IntroModal
 
     modal = IntroModal(cog=None, existing_answers={"name": "Dylan"})
     assert len(modal.inputs) == len(QUESTIONS)
@@ -37,14 +37,14 @@ def test_modal_builds_one_input_per_question_within_discord_limits():
 
 
 def test_group_uses_invoke_without_command_and_subcommands_exist():
-    from introform.introform import IntroForm
+    from wonderland.introform.introform import IntroForm
 
     for name in ("setchannel", "panel", "enforce", "settings"):
         assert hasattr(IntroForm, name)
 
 
 def test_find_views_build_under_the_stub():
-    from introform.introform import FindView, ResultsView, SearchModal
+    from wonderland.introform.introform import FindView, ResultsView, SearchModal
 
     assert {"pick_member", "keyword_button"}.issubset(dir(FindView(cog=None)))
     assert len(SearchModal(cog=None).children) == 1
@@ -54,14 +54,14 @@ def test_find_views_build_under_the_stub():
 
 
 def test_prune_and_find_support_methods_exist():
-    from introform.introform import IntroForm
+    from wonderland.introform.introform import IntroForm
 
     for name in ("prune", "show_intro", "handle_search"):
         assert hasattr(IntroForm, name)
 
 
 def test_modal_prefills_about_me_from_a_legacy_games_answer():
-    from introform.introform import IntroModal
+    from wonderland.introform.introform import IntroModal
 
     modal = IntroModal(cog=None, existing_answers={"name": "Old", "games": "Chess", "extra": "Hi"})
     assert modal.inputs["extra"].default == "Hi\n\nGames I play: Chess"

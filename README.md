@@ -9,6 +9,7 @@ Custom Red-DiscordBot cogs for the Wonderland server, running on **Hana**.
 | `duel` | Challenge another member to a best-of-3 wagered duel using wondercoin. |
 | `heist` | Cooperative bank-heist minigame — signup window, three-phase Safe/Risky engine, jail mechanic. |
 | `gamblethreads` | Opens a per-user thread for gambling commands to keep the main bot channel clean. |
+| `wonderland` | The `.wld` guidebook (command guide, server map, mod cheat sheet) plus IntroForm, IntroCleanup and MyStats in one package. |
 
 ## Installing on Hana
 
