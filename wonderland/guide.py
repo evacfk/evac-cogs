@@ -14,51 +14,48 @@ from redbot.core import Config, commands
 
 from . import embeds, engine
 from .constants import (
-    COG_VERSION, CONFIG_ID, PUBLISH_FOOTER, STATS_COOLDOWN, STUB_TTL, VIEW_TIMEOUT,
+    COG_VERSION, CONFIG_ID, FOOTER, PUBLISH_FOOTER, STATS_COOLDOWN, STUB_TTL, VIEW_TIMEOUT,
 )
-from .content import HOME_KEY, MAP, MAP_KEY, PAGES
+from .content import HOME_KEY, MAP_KEY, PAGES
 
 log = logging.getLogger("red.evac-cogs.wonderland")
 
-Topic = Literal["economy", "casino", "games", "profile", "community", "music"]
+Topic = Literal["start", "economy", "casino", "games", "profile", "community", "music"]
 
 
-class TopicSelect(discord.ui.Select):
-    def __init__(self, cog: "Wonderland", is_mod: bool, current: str):
-        options = [discord.SelectOption(label="Home", value=HOME_KEY, emoji="🐇", default=current == HOME_KEY)]
-        for page in engine.visible_pages(is_mod):
-            if page.mod_only:
-                continue
-            options.append(discord.SelectOption(
-                label=page.title, value=page.key, emoji=page.emoji, default=current == page.key))
-        options.append(discord.SelectOption(
-            label="Server Map", value=MAP_KEY, emoji="🗺️", default=current == MAP_KEY))
-        if is_mod:
-            mod = engine.get_page("mod", True)
-            options.append(discord.SelectOption(
-                label=mod.title, value=mod.key, emoji=mod.emoji, default=current == mod.key))
-        super().__init__(placeholder="Pick a topic…", min_values=1, max_values=1, options=options)
+class TopicButton(discord.ui.Button):
+    def __init__(self, cog: "Wonderland", key: str, label: str, emoji: str, row: int, current: bool):
+        super().__init__(label=label, emoji=emoji, row=row,
+                         style=discord.ButtonStyle.primary if current else discord.ButtonStyle.secondary)
         self.cog = cog
-        self.is_mod = is_mod
+        self.key = key
 
     async def callback(self, interaction: discord.Interaction):
-        key = self.values[0]
-        embed = self.cog.render(key, interaction.guild, self.is_mod, member=interaction.user)
-        new_view = GuideView(self.cog, self.view.author_id, self.is_mod, key)
-        new_view.message = self.view.message
-        self.view.stop()
+        view = self.view
+        embed = self.cog.render(self.key, interaction.guild, view.is_mod, member=interaction.user)
+        new_view = GuideView(self.cog, view.author_id, view.is_mod, self.key)
+        new_view.message = view.message
+        view.stop()
         await interaction.response.edit_message(embed=embed, view=new_view)
 
 
 class GuideView(discord.ui.View):
-    """The dropdown. Only the person who asked can use it."""
+    """The topic buttons (two rows). Only the person who asked can use them."""
 
     def __init__(self, cog: "Wonderland", author_id: int, is_mod: bool, current: str = HOME_KEY):
         super().__init__(timeout=VIEW_TIMEOUT)
         self.cog = cog
         self.author_id = author_id
+        self.is_mod = is_mod
         self.message: Optional[discord.Message] = None
-        self.add_item(TopicSelect(cog, is_mod, current))
+        topics = [(HOME_KEY, "Home", "🐇")]
+        topics += [(p.key, p.title.split(" &")[0], p.emoji) for p in engine.visible_pages(is_mod) if not p.mod_only]
+        topics.append((MAP_KEY, "Channels", "🗺️"))
+        if is_mod:
+            mod = engine.get_page("mod", True)
+            topics.append((mod.key, "Mod", mod.emoji))
+        for index, (key, label, emoji) in enumerate(topics):
+            self.add_item(TopicButton(cog, key, label, emoji, index // 5, key == current))
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
         if interaction.user.id != self.author_id:
@@ -184,7 +181,8 @@ class Wonderland(commands.Cog):
         if page is None:
             return embeds.home_embed(engine.visible_pages(is_mod))
         lines = engine.page_lines(page, self._exists)
-        return embeds.page_embed(page, lines, footer) if footer else embeds.page_embed(page, lines)
+        resolver = self._resolver(guild, member, public)
+        return embeds.page_embed(page, lines, footer or FOOTER, resolver)
 
     async def _deliver(self, ctx: commands.Context, make):
         """Show `make(user) -> (embed, view or None)` to the person who asked, and only them.

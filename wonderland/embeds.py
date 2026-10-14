@@ -18,19 +18,23 @@ def _base(title: str, description: str, footer: str = FOOTER) -> discord.Embed:
 
 def home_embed(pages: List[Page]) -> discord.Embed:
     lines = [f"{p.emoji} **{p.title}**: {p.blurb}" for p in pages if not p.mod_only]
-    lines.append("🗺️ **Server Map**: what every channel is for")
+    lines.append("🗺️ **Channel Guide**: what every channel is for")
     mod = [p for p in pages if p.mod_only]
     if mod:
         lines.append(f"{mod[0].emoji} **{mod[0].title}**: {mod[0].blurb}")
     body = (
-        "Pick a topic from the menu below.\n\n" + "\n".join(lines)
+        "Tap a topic below.\n\n" + "\n".join(lines)
         + "\n\nQuick jumps: `.wld map` · `.wld stats` · `.wld search <word>`"
     )
     return _base("🐇 Wonderland Guide", body)
 
 
-def page_embed(page: Page, lines: List[str], footer: str = FOOTER) -> discord.Embed:
-    body = page.blurb + "\n\n" + ("\n".join(lines) if lines else "Nothing to show here right now.")
+def page_embed(page: Page, lines: List[str], footer: str = FOOTER, resolve=None) -> discord.Embed:
+    blurb, extra = page.blurb, page.body
+    if resolve is not None:
+        blurb, extra = engine.fill_channels(blurb, resolve), engine.fill_channels(extra, resolve)
+    head = blurb + ("\n\n" + extra if extra else "")
+    body = head + "\n\n" + ("\n".join(lines) if lines else "Nothing to show here right now.")
     return _base(f"{page.emoji} {page.title}", body, footer)
 
 
@@ -50,4 +54,4 @@ def search_embed(query: str, hits) -> discord.Embed:
 
 
 def key_label(key: str) -> str:
-    return {HOME_KEY: "Home", MAP_KEY: "Server Map"}.get(key, key)
+    return {HOME_KEY: "Home", MAP_KEY: "Channel Guide"}.get(key, key)

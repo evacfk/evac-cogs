@@ -306,23 +306,23 @@ async def test_page_shows_only_live_commands(mod):
     assert ".lottery" not in text and ".bank balance" not in text
 
 
-async def test_member_never_sees_the_mod_page_or_dropdown_option(mod):
+async def test_member_never_sees_the_mod_page_or_button(mod):
     cog = make(mod)
     ctx = FakeCtx(author_id=5)
     await cog.wonderland.subs["mod"].callback(cog, ctx)
     reply = await shown(ctx, 5)
     assert "Mod Cheat Sheet" not in (reply["embed"].title or "")
-    values = [o.value for o in reply["view"].children[0].options]
+    values = [b.key for b in reply["view"].children]
     assert "mod" not in values and MAP_KEY in values and HOME_KEY in values
 
 
-async def test_mod_gets_the_mod_page_and_option(mod):
+async def test_mod_gets_the_mod_page_and_button(mod):
     cog = make(mod, mods={9})
     ctx = FakeCtx(author_id=9)
     await cog.wonderland.subs["mod"].callback(cog, ctx)
     reply = await shown(ctx, 9)
     assert "Mod Cheat Sheet" in reply["embed"].title
-    values = [o.value for o in reply["view"].children[0].options]
+    values = [b.key for b in reply["view"].children]
     assert values[-1] == "mod"
 
 
@@ -424,13 +424,11 @@ async def test_published_guide_uses_the_public_map(mod):
     assert "<#12>" not in map_post and "**verified-chat**" in map_post
 
 
-async def test_dropdown_map_is_filtered_for_the_person_who_picked_it(mod):
+async def test_button_map_is_filtered_for_the_person_who_picked_it(mod):
     guild = FakeGuild([FakeChannel(11, "🧸・cuddle"), FakeChannel(12, "🔢・counting", hidden_from={5})])
     cog = make(mod)
     view = mod.GuideView(cog, author_id=5, is_mod=False)
-    select = view.children[0]
-    select._view = view          # discord.py keeps these private; the public ones are read-only
-    select._values = [MAP_KEY]
+    button = next(b for b in view.children if b.key == MAP_KEY)
     edits = []
 
     async def edit_message(**kw):
@@ -438,7 +436,7 @@ async def test_dropdown_map_is_filtered_for_the_person_who_picked_it(mod):
     interaction = types.SimpleNamespace(
         guild=guild, user=types.SimpleNamespace(id=5),
         response=types.SimpleNamespace(edit_message=edit_message))
-    await select.callback(interaction)
+    await button.callback(interaction)
     text = edits[0]["embed"].description
     assert "<#11>" in text and "<#12>" not in text and "counting" not in text
     assert edits[0]["view"].author_id == 5
@@ -484,7 +482,7 @@ async def test_stats_without_mystats_says_so(mod):
     assert "aren't available" in ctx.sent[0].args[0]
 
 
-async def test_dropdown_only_answers_to_the_person_who_asked(mod):
+async def test_buttons_only_answer_to_the_person_who_asked(mod):
     cog = make(mod)
     view = mod.GuideView(cog, author_id=5, is_mod=False)
     replies = []
@@ -571,3 +569,46 @@ async def test_version_probe(mod):
     ctx = FakeCtx()
     await cog.wonderland.subs["version"].callback(cog, ctx)
     assert ctx.sent[0].args[0].startswith("Wonderland guide v")
+
+
+async def test_buttons_fit_discord_limits_and_highlight_the_current_topic(mod):
+    cog = make(mod)
+    for is_mod in (False, True):
+        view = mod.GuideView(cog, 5, is_mod, "casino")
+        assert len(view.children) <= 10 and all(b.row in (0, 1) for b in view.children)
+        assert sum(1 for b in view.children if b.row == 0) <= 5
+        current = [b for b in view.children if b.style == discord.ButtonStyle.primary]
+        assert [b.key for b in current] == ["casino"]
+        assert all(b.label for b in view.children)
+
+
+async def test_start_page_links_the_first_three_channels(mod):
+    guild = FakeGuild([FakeChannel(1, "💌・intro"), FakeChannel(2, "🌈・role-select"), FakeChannel(3, "🧸・cuddle")])
+    cog = make(mod, commands={"payday"})
+    text = cog.render("start", guild, False, member=types.SimpleNamespace(id=5)).description
+    assert "<#1>" in text and "<#2>" in text and "<#3>" in text
+    assert text.index("<#1>") < text.index("<#2>") < text.index("<#3>")
+    assert "`.payday`" in text and ".birthday" not in text and "{#" not in text
+
+
+async def test_start_page_names_a_channel_it_cannot_link(mod):
+    cog = make(mod)
+    text = cog.render("start", FakeGuild([]), False, member=types.SimpleNamespace(id=5)).description
+    assert "**#intro**" in text and "{#" not in text
+
+
+async def test_casino_page_points_to_the_hub_button(mod):
+    guild = FakeGuild([FakeChannel(9, "🎰・wondercasino")])
+    cog = make(mod, commands={"gamble", "heist"})
+    text = cog.render("casino", guild, False, member=types.SimpleNamespace(id=5)).description
+    assert "<#9>" in text and "Open a Table" in text
+    assert "team up" not in text and "mostly a solo game" in text
+
+
+async def test_published_start_page_is_public_and_first(mod):
+    guild = FakeGuild([FakeChannel(1, "💌・intro", hidden_from={"everyone"})])
+    cog = make(mod)
+    channel = FakeChannel(77, "server-guide")
+    await cog.wonderland.subs["publish"].callback(cog, FakeCtx(guild=guild), channel)
+    first = channel.sent[0].kw["embed"]
+    assert "Start here" in first.title and "<#1>" not in first.description and "**#intro**" in first.description

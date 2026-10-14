@@ -1,9 +1,9 @@
 """Fixed values for the Wonderland guide. No discord/redbot imports here."""
 
-COG_VERSION = "1.2.1"
+COG_VERSION = "1.3.0"
 CONFIG_ID = 0x574C44  # "WLD"
 
-VIEW_TIMEOUT = 120          # seconds the dropdown stays alive
+VIEW_TIMEOUT = 120          # seconds the topic buttons stay alive
 STUB_TTL = 60               # seconds the one-line "tap to open" stub stays in the channel
 STATS_COOLDOWN = 15
 SEARCH_MAX_RESULTS = 15

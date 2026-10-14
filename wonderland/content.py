@@ -26,6 +26,7 @@ class Page:
     blurb: str
     entries: tuple
     mod_only: bool = False
+    body: str = ""   # optional text between the blurb and the command lines; `{#slug}` becomes a channel link
 
 
 @dataclass(frozen=True)
@@ -46,6 +47,13 @@ class Section:
 
 
 PAGES = (
+    Page("start", "🌱", "Start here", "New here? Do these three first. Nothing is required.", (
+        Entry(".birthday set <date>", "add your birthday", requires=("birthday set",)),
+        Entry(".payday", "free coins, any time", requires=("payday",)),
+        Entry(".card daily", "a free card, once a day", requires=("card daily",)),
+        Entry(".wld search <word>", "find any command by what it does"),
+    ), body="**1.** Introduce yourself in {#intro}\n**2.** Pick your roles in {#role-select}\n"
+            "**3.** Say hi in {#cuddle}\n\n**When you have a minute**"),
     Page("economy", "💰", "Economy & Shop", "Earn, spend and send wondercoin.", (
         Entry(".bank balance", "check your coins", requires=("bank balance",)),
         Entry(".bank transfer @user <amount>", "send coins to someone", requires=("bank transfer",)),
@@ -54,8 +62,10 @@ PAGES = (
         Entry(".shop", "browse and buy items", requires=("shop",)),
         Entry(".lottery", "join the lottery", requires=("lottery",)),
     )),
-    Page("casino", "🎰", "Casino", "Games run at the casino tables in #wondercasino, not in general chat.", (
-        Entry(".gamble", "open your own private gambling thread", requires=("gamble",)),
+    Page("casino", "🎰", "Casino",
+         "Games happen in {#wondercasino}. Tap **Open a Table** on its menu for your own private thread, "
+         "or pick a game from its dropdown. The commands below also work.", (
+        Entry(".gamble", "same as the Open a Table button", requires=("gamble",)),
         Entry(".endgambling", "close your thread (run it inside the thread)", requires=("endgambling",)),
         Entry(".wonderjack table", "sit at the multiplayer blackjack table", requires=("wonderjack table",)),
         Entry("{cmds}", "table games: pick one and place your bet",
@@ -63,7 +73,7 @@ PAGES = (
         Entry(".payouts", "what the slot machine pays", requires=("payouts",)),
         Entry(".duel @user <bet>", "challenge someone to a best-of-3 duel", requires=("duel",)),
         Entry(".duelstats [@user]", "a duel record", requires=("duelstats",)),
-        Entry(".heist", "team up for a heist", requires=("heist",)),
+        Entry(".heist", "pull a heist (mostly a solo game)", requires=("heist",)),
     )),
     Page("games", "🎮", "Games & Activities", "Things to do when you want to play.", (
         Entry(".fish", "go fishing", requires=("fish",)),

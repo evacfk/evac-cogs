@@ -108,5 +108,17 @@ def map_blocks(resolve: Callable[[Channel], object]) -> List[Tuple[str, List[str
     return blocks
 
 
+_CHANNEL_TOKEN = re.compile(r"\{#([^}]+)\}")
+
+
+def fill_channels(text: str, resolve: Callable[[Channel], object]) -> str:
+    """Replace `{#slug}` with a channel link, or a bold #name when it can't be linked or opened."""
+    def sub(match):
+        slug = match.group(1)
+        found = resolve(Channel(slug, "", ""))
+        return found if isinstance(found, str) else f"**#{slug}**"
+    return _CHANNEL_TOKEN.sub(sub, text)
+
+
 def clamp(text: str, limit: int = 4000) -> str:
     return text if len(text) <= limit else text[: limit - 1].rstrip() + "…"
