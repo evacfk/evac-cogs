@@ -654,3 +654,67 @@ def joinlog_test_embed(rows: list[tuple[str, str, str, str]], config_note: str):
     lines = [f"`{when}` {kind:<5} {who} — {snippet}" for when, kind, who, snippet in rows] or ["(no messages)"]
     e.add_field(name="Parsed", value=clip("\n".join(lines)), inline=False)
     return e
+
+
+# -- weekly recap drafts (1.4.0) -----------------------------------------------
+
+def _recap_fields(embed, pending: dict, *, mods: bool) -> None:
+    """The parts of a recap that code (not Claude) writes: numbers, top moments, and mods-only growth."""
+    from . import recap  # local: recap is pure and tiny, this keeps embeds' import graph unchanged
+
+    facts = pending["facts"]
+    embed.add_field(name="By the numbers", value=clip(recap.numbers_block(facts)), inline=False)
+    moments = recap.moments_block([recap.Highlight.from_dict(h) for h in pending.get("highlights", [])])
+    if moments:
+        embed.add_field(name="Top moments", value=clip(moments), inline=False)
+    if mods:
+        embed.add_field(name="🔒 Mods only: growth (not posted)", value=clip(recap.growth_block(facts), 700), inline=False)
+        if pending.get("mods"):
+            embed.add_field(name="🔒 Mods only: event ideas (not posted)", value=clip(pending["mods"]), inline=False)
+
+
+def recap_draft_embed(pending: dict, *, used: int, cap: int, post_channel_id: int | None, state: str = "draft", by: str | None = None):
+    """What a mod sees: the exact public post, plus the private parts, plus the buttons' context."""
+    color = {"draft": COLOR_PRIMARY, "approved": COLOR_GOOD, "rejected": COLOR_BAD}.get(state, COLOR_PRIMARY)
+    title = f"📰 Recap draft · {pending['label']}"
+    if state == "approved":
+        title = f"✅ Recap posted · {pending['label']}"
+    elif state == "rejected":
+        title = f"❌ Recap rejected · {pending['label']}"
+    e = _embed(title, pending["public"], color)
+    _recap_fields(e, pending, mods=True)
+    if state == "draft":
+        where = f"<#{post_channel_id}>" if post_channel_id else "**no channel set yet** (`.pulse digest recap channel #channel`)"
+        e.add_field(name="Approve posts to", value=where, inline=False)
+    foot = [f"Draft {used}/{cap} this week"]
+    n = int(pending["facts"].get("highlight_messages_scanned") or 0)
+    if n:
+        foot.append(f"read {fmt_int(n)} messages" + (" (hit the read limit)" if pending.get("truncated") else ""))
+    if by:
+        foot.append(("posted" if state == "approved" else "rejected") + f" by {by}")
+    _footer(e, " · ".join(foot))
+    return e
+
+
+def recap_public_embed(pending: dict):
+    """What members see after Approve. No mods-only fields."""
+    e = _embed(f"📰 Weekly recap · {pending['label']}", pending["public"], COLOR_PRIMARY)
+    _recap_fields(e, pending, mods=False)
+    return e
+
+
+def recap_status_embed(*, source: str, post: str, model: str, key_set: bool, used: int, cap: int, tokens_in: int, tokens_out: int,
+                       auto: bool, voice_chars: int, excluded: int, min_reactions: int, notes: bool, pending: int):
+    e = _embed("📰 Weekly recap", "Draft with `.pulse digest recap` (or `recap this` for the week so far).")
+    e.add_field(name="Highlights from", value=source, inline=True)
+    e.add_field(name="Approved posts go to", value=post, inline=True)
+    e.add_field(name="Automatic draft", value="Mondays after the weekly digest" if auto else "off", inline=True)
+    e.add_field(name="API key", value="set" if key_set else "**missing**: owner runs `.set api anthropic api_key,<key>`", inline=True)
+    e.add_field(name="Model", value=model, inline=True)
+    e.add_field(name="Drafts, last 7 days", value=f"{used}/{cap} · {fmt_int(tokens_in)} in / {fmt_int(tokens_out)} out tokens", inline=True)
+    e.add_field(name="Your voice", value=f"{fmt_int(voice_chars)} characters saved" if voice_chars else "not set (a default tone is used)", inline=True)
+    e.add_field(name="Minimum reactions", value=str(min_reactions), inline=True)
+    e.add_field(name="Left out", value=f"{excluded} member(s)", inline=True)
+    e.add_field(name="Note for next draft", value="saved" if notes else "none", inline=True)
+    e.add_field(name="Waiting for a decision", value=str(pending), inline=True)
+    return e

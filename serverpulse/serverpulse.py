@@ -6,6 +6,10 @@ weekday x hour heatmap, a best-window finder, anomaly flags, a live board and
 scheduled digests. Command group is `.pulse` (alias `.activity`), mods only, and
 only usable in the configured mod channel.
 
+The one place message text is read is `.pulse digest recap`: when a mod asks for a
+weekly recap draft, the week's most-reacted messages from one channel are sent to
+Claude's API to write it (see recap.py). Tracking itself never stores text.
+
 Logic lives in pure modules (tracker / storage / engine / backfill / export);
 this file is the Discord wiring.
 """
@@ -15,6 +19,7 @@ import asyncio
 import io
 import json
 import logging
+import re
 import time
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
@@ -25,7 +30,7 @@ from redbot.core.bot import Red
 from redbot.core.data_manager import cog_data_path
 
 from . import backfill as bf
-from . import cohorts, embeds, engine, heatmap, models, storage
+from . import cohorts, embeds, engine, heatmap, models, recap, recap_io, storage, views
 from .cohort_store import CohortStore
 from . import export as export_mod
 from .constants import (
@@ -39,6 +44,12 @@ from .constants import (
     DEFAULT_WINDOW_DAYS,
     DIGEST_CHECK_MINUTES,
     FLUSH_INTERVAL_SECONDS,
+    RECAP_HIGHLIGHTS,
+    RECAP_MAX_TOKENS,
+    RECAP_PENDING_MAX,
+    RECAP_PER_AUTHOR,
+    RECAP_PUBLIC_MAX,
+    RECAP_VOICE_MAX,
     RETENTION_DEFAULT_DAYS,
     TIMEZONE,
     USER_RETENTION_DAYS,
@@ -113,6 +124,11 @@ class ServerPulse(commands.Cog):
         self._inviters: dict[int, dict[str, str]] = {}
         self._invite_locks: dict[int, asyncio.Lock] = {}
         self._joinlog_running: set[int] = set()
+        self._init_recap_state()
+
+    def _init_recap_state(self) -> None:
+        self._recap_running: set[int] = set()
+        self._recap_locks: dict[int, asyncio.Lock] = {}
 
     def cog_unload(self):
         if tasks is not None:
@@ -146,6 +162,18 @@ class ServerPulse(commands.Cog):
                 store.touch(store.records.pop(key))
             store.close(user_id)
             await asyncio.to_thread(store.flush)
+        await self._forget_in_pending_recaps(user_id)
+
+    async def _forget_in_pending_recaps(self, user_id: int) -> None:
+        """A recap draft that quotes this person can't be edited cleanly, so such drafts are dropped."""
+        for guild_id, data in (await self.config.all_guilds()).items():
+            pending = (data.get("recap") or {}).get("pending") or {}
+            if not any(h.get("author_id") == user_id for p in pending.values() for h in p.get("highlights", [])):
+                continue
+            async with self.config.guild_from_id(guild_id).recap() as r:
+                r["pending"] = {
+                    k: p for k, p in r["pending"].items() if not any(h.get("author_id") == user_id for h in p.get("highlights", []))
+                }
 
     # ------------------------------------------------------------------
     # Per-guild state
@@ -1137,12 +1165,13 @@ class ServerPulse(commands.Cog):
 
     @pulse.group(name="digest", invoke_without_command=True)
     async def pulse_digest(self, ctx: commands.Context):
-        """Scheduled summaries in the mod channel. `.pulse digest weekly|monthly on|off`, `.pulse digest now weekly|monthly`."""
+        """Scheduled summaries in the mod channel. `.pulse digest weekly|monthly on|off`, `.pulse digest now weekly|monthly`, `.pulse digest recap`."""
         gconf = self.config.guild(ctx.guild)
         w, m = await gconf.digest_weekly(), await gconf.digest_monthly()
         await ctx.send(
             f"Weekly (Mondays 9am Pacific): **{'on' if w['enabled'] else 'off'}** · Monthly (1st, 9am Pacific): **{'on' if m['enabled'] else 'off'}**\n"
-            "Change with `.pulse digest weekly on|off` / `.pulse digest monthly on|off`; preview with `.pulse digest now weekly|monthly`."
+            "Change with `.pulse digest weekly on|off` / `.pulse digest monthly on|off`; preview with `.pulse digest now weekly|monthly`.\n"
+            "Community recap written by Claude for you to approve: `.pulse digest recap` (setup and options: `.pulse digest recap status`)."
         )
 
     async def _toggle_digest(self, ctx: commands.Context, name: str, due, enabled: bool):
@@ -1218,6 +1247,403 @@ class ServerPulse(commands.Cog):
             cfg["last"] = key
             await getattr(gconf, name).set(cfg)
             await self._send_digest(guild, kind, start, end)
+        await self._run_recap_check(guild, nowl)
+
+    # -- weekly recap (Claude drafts, a mod approves) -----------------------------
+
+    def _recap_lock(self, guild_id: int) -> asyncio.Lock:
+        return self._recap_locks.setdefault(guild_id, asyncio.Lock())
+
+    def _recap_source(self, guild: discord.Guild, r: dict):
+        """The channel highlights come from: the configured one, else a channel named "cuddle"."""
+        channel = guild.get_channel_or_thread(r["source_channel"]) if r.get("source_channel") else None
+        if channel is not None:
+            return channel
+        return next((c for c in getattr(guild, "text_channels", []) if c.name == "cuddle"), None)
+
+    async def _recap_precheck(self, r: dict) -> str:
+        """The API key, or a RecapError saying what to fix. Also enforces the weekly draft cap."""
+        if not recap.can_draft(r["usage"], time.time(), r["max_drafts_week"]):
+            raise recap.RecapError(
+                f"That's the limit of {r['max_drafts_week']} drafts in 7 days (every regenerate counts). "
+                "Raise it with `.pulse digest recap cap <number>`."
+            )
+        tokens = await self.bot.get_shared_api_tokens("anthropic")
+        key = (tokens or {}).get("api_key")
+        if not key:
+            raise recap.RecapError("No Anthropic API key yet. The bot owner sets it with `.set api anthropic api_key,<key>` (in DMs).")
+        return key
+
+    async def _recap_ask(self, guild: discord.Guild, r: dict, facts: dict, highlights: list) -> tuple[str, str]:
+        """One Claude call -> (public text, mods text). Counts toward the weekly cap."""
+        key = await self._recap_precheck(r)
+        body = recap.build_request(r["model"], recap.build_system(r["voice"]), recap.build_user(facts, highlights), RECAP_MAX_TOKENS)
+        result = recap.parse_response(await recap_io.call_claude(key, body))
+        async with self.config.guild(guild).recap() as live:
+            live["usage"] = recap.record_usage(live["usage"], time.time(), result.input_tokens, result.output_tokens)
+        recap.check_result(result)
+        return recap.split_draft(result.text)
+
+    async def _recap_build(self, guild: discord.Guild, r: dict, source, resolved) -> dict:
+        """Read the week, gather the numbers, ask Claude. Returns a pending draft."""
+        start, end, label, _ps, _pe = resolved
+        prep = await self._prepare(guild)
+        report = await self._report_for(prep, "week", resolved)
+        if report.slots_n < 24:
+            raise recap.RecapError("There isn't a full day of activity data for that week yet.")
+        best = engine.find_windows(report.baseline, BEST_WINDOW_HOURS, BEST_WINDOW_TOP_N, "best")
+        quiet = engine.find_windows(report.baseline, BEST_WINDOW_HOURS, BEST_WINDOW_TOP_N, "quiet")
+        start_ts, end_ts = models.day_start_ts(start), models.day_end_ts(end)
+        store = self._cohorts.get(guild.id)
+        sources = cohorts.by_source(store.in_range(start_ts, end_ts), prep.now_ts) if store else []
+        prefixes = await self.bot.get_valid_prefixes(guild)
+        candidates, scanned, truncated = await recap_io.collect_candidates(
+            source, start_ts, end_ts, min_reactions=r["min_reactions"], prefixes=prefixes,
+            exclude_commands=prep.st["exclude_commands"], excluded_user_ids=r["excluded_users"],
+        )
+        highlights = recap.pick_highlights(
+            candidates, min_reactions=r["min_reactions"], limit=RECAP_HIGHLIGHTS, excluded_user_ids=r["excluded_users"],
+            per_author=RECAP_PER_AUTHOR,
+        )
+        facts = recap.build_facts(report, sources, member_count=getattr(guild, "member_count", None), best=best, quiet=quiet,
+                                  scanned=scanned, notes=r["notes"])
+        public, mods = await self._recap_ask(guild, r, facts, highlights)
+        pending = recap.new_pending(start=start, end=end, label=label, public=public, mods=mods, facts=facts,
+                                    highlights=highlights, now=time.time())
+        pending["truncated"] = truncated
+        return pending
+
+    async def _recap_run(self, guild: discord.Guild, channel, resolved) -> None:
+        """Draft a recap into `channel` with Approve / Edit / Regenerate / Reject buttons."""
+        if guild.id in self._recap_running:
+            await channel.send("A recap is already being written. Give it a minute.", delete_after=15)
+            return
+        self._recap_running.add(guild.id)
+        placeholder = source = None
+        try:
+            r = await self.config.guild(guild).recap()
+            source = self._recap_source(guild, r)
+            if source is None:
+                raise recap.RecapError("I don't know which channel to read. Set it with `.pulse digest recap source #cuddle`.")
+            await self._recap_precheck(r)  # fail before spending minutes reading history
+            placeholder = await channel.send(
+                f"✍️ Reading the week in {source.mention} and drafting the recap. A busy week can take a couple of minutes."
+            )
+            pending = await self._recap_build(guild, r, source, resolved)
+            async with self.config.guild(guild).recap() as live:
+                live["pending"][str(placeholder.id)] = pending
+                live["pending"] = recap.trim_pending(live["pending"], RECAP_PENDING_MAX)
+                live["notes"] = ""  # a note is for one draft
+                used, cap, post = recap.drafts_used(live["usage"], time.time()), live["max_drafts_week"], live["post_channel"]
+            await placeholder.edit(
+                content=None, embed=embeds.recap_draft_embed(pending, used=used, cap=cap, post_channel_id=post), view=views.recap_view(),
+            )
+        except recap.RecapError as e:
+            await self._recap_say(channel, placeholder, f"⚠️ {e}")
+        except discord.Forbidden:
+            where = source.mention if source is not None else "that channel"
+            await self._recap_say(channel, placeholder, f"⚠️ I can't read {where}. I need View Channel and Read Message History there.")
+        except Exception:
+            log.exception("serverpulse: recap draft failed in guild %s", guild.id)
+            await self._recap_say(channel, placeholder, "⚠️ Something went wrong while drafting the recap. The details are in the bot log.")
+        finally:
+            self._recap_running.discard(guild.id)
+
+    @staticmethod
+    async def _recap_say(channel, placeholder, text: str) -> None:
+        try:
+            if placeholder is not None:
+                await placeholder.edit(content=text, embed=None, view=None)
+            else:
+                await channel.send(text)
+        except discord.HTTPException:
+            pass
+
+    async def _run_recap_check(self, guild: discord.Guild, nowl: datetime) -> None:
+        """Monday-morning draft, once per week, only if switched on."""
+        r = await self.config.guild(guild).recap()
+        if not r["auto"]:
+            return
+        key, start, _end = engine.weekly_due(nowl)
+        if r["last"] == key:
+            return
+        async with self.config.guild(guild).recap() as live:
+            live["last"] = key  # mark first: at-most-once beats a draft every five minutes if something keeps failing
+        st = await self._ensure_guild(guild)
+        channel = guild.get_channel_or_thread(st["mod_channel"] or 0)
+        if channel is None:
+            log.warning("serverpulse: recap skipped, mod channel %s not found in guild %s", st["mod_channel"], guild.id)
+            return
+        resolved = engine.resolve_period("week", start.isoformat(), nowl.date())
+        if resolved is not None:
+            await self._recap_run(guild, channel, resolved)
+
+    # -- recap buttons ---------------------------------------------------------
+
+    @commands.Cog.listener()
+    async def on_interaction(self, interaction):
+        action = recap.parse_custom_id((getattr(interaction, "data", None) or {}).get("custom_id"))
+        if action is None:
+            return
+        try:
+            await self._recap_button(interaction, action)
+        except Exception:
+            log.exception("serverpulse: recap button failed")
+            try:
+                send = interaction.followup.send if interaction.response.is_done() else interaction.response.send_message
+                await send("Something went wrong. Please try again.", ephemeral=True)
+            except Exception:
+                pass
+
+    async def _recap_button(self, interaction, action: str) -> None:
+        guild = interaction.guild
+        if guild is None or not self._guild_allowed(guild.id):
+            return
+        if not await self._is_mod(interaction.user):
+            await interaction.response.send_message("Only mods can do that.", ephemeral=True)
+            return
+        msg = interaction.message
+        key = str(msg.id)
+        r = await self.config.guild(guild).recap()
+        pending = r["pending"].get(key)
+        if pending is None:
+            await interaction.response.send_message("That draft was already handled, or it's too old.", ephemeral=True)
+            return
+        who = getattr(interaction.user, "display_name", None) or "a mod"
+        used, cap = recap.drafts_used(r["usage"], time.time()), r["max_drafts_week"]
+
+        if action == "reject":
+            async with self._recap_lock(guild.id):
+                async with self.config.guild(guild).recap() as live:
+                    taken = live["pending"].pop(key, None)
+            if taken is None:
+                await interaction.response.send_message("Someone already handled that draft.", ephemeral=True)
+                return
+            await interaction.response.edit_message(
+                embed=embeds.recap_draft_embed(taken, used=used, cap=cap, post_channel_id=None, state="rejected", by=who), view=None,
+            )
+            return
+
+        if action == "approve":
+            target = guild.get_channel_or_thread(r["post_channel"]) if r["post_channel"] else None
+            if target is None:
+                await interaction.response.send_message(
+                    "There's no channel to post in yet. Set one with `.pulse digest recap channel #channel`, then press Approve again.",
+                    ephemeral=True,
+                )
+                return
+            await interaction.response.defer()
+            async with self._recap_lock(guild.id):
+                async with self.config.guild(guild).recap() as live:
+                    taken = live["pending"].pop(key, None)
+                if taken is None:
+                    await interaction.followup.send("Someone already handled that draft.", ephemeral=True)
+                    return
+                try:
+                    await target.send(embed=embeds.recap_public_embed(taken), allowed_mentions=discord.AllowedMentions.none())
+                except (discord.Forbidden, discord.HTTPException):
+                    async with self.config.guild(guild).recap() as live:
+                        live["pending"][key] = taken  # still waiting: nothing was posted
+                    await interaction.followup.send(
+                        f"I couldn't post in {target.mention}. Check that I can send messages and embed links there, then try again.",
+                        ephemeral=True,
+                    )
+                    return
+            await msg.edit(
+                embed=embeds.recap_draft_embed(taken, used=used, cap=cap, post_channel_id=target.id, state="approved", by=who), view=None,
+            )
+            return
+
+        if action == "edit":
+            async def submitted(inter, text: str) -> None:
+                text = recap.defang(text.strip())[:RECAP_PUBLIC_MAX]
+                async with self._recap_lock(guild.id):
+                    async with self.config.guild(guild).recap() as live:
+                        current = live["pending"].get(key)
+                        if current is not None:
+                            current["public"] = text
+                            snapshot, post = dict(current), live["post_channel"]
+                if current is None:
+                    await inter.response.send_message("That draft was already handled.", ephemeral=True)
+                    return
+                await inter.response.edit_message(
+                    embed=embeds.recap_draft_embed(snapshot, used=used, cap=cap, post_channel_id=post), view=views.recap_view(),
+                )
+
+            await interaction.response.send_modal(views.edit_modal(pending["public"], submitted))
+            return
+
+        if action == "regen":
+            if guild.id in self._recap_running:
+                await interaction.response.send_message("A draft is being written right now. Give it a minute.", ephemeral=True)
+                return
+            try:
+                await self._recap_precheck(r)
+            except recap.RecapError as e:
+                await interaction.response.send_message(f"⚠️ {e}", ephemeral=True)
+                return
+            await interaction.response.defer()
+            self._recap_running.add(guild.id)
+            try:
+                await msg.edit(content="✍️ Rewriting…")
+                try:
+                    public, mods = await self._recap_ask(
+                        guild, r, pending["facts"], [recap.Highlight.from_dict(h) for h in pending["highlights"]],
+                    )
+                except recap.RecapError as e:
+                    await msg.edit(content=f"⚠️ {e}")  # the old draft and its buttons stay
+                    return
+                async with self._recap_lock(guild.id):
+                    async with self.config.guild(guild).recap() as live:
+                        current = live["pending"].get(key)
+                        if current is not None:
+                            current["public"], current["mods"] = public, mods
+                            snapshot, post = dict(current), live["post_channel"]
+                            used = recap.drafts_used(live["usage"], time.time())
+                if current is None:
+                    await msg.edit(content="That draft was handled while I was rewriting it.", embed=None, view=None)
+                    return
+                await msg.edit(
+                    content=None, embed=embeds.recap_draft_embed(snapshot, used=used, cap=cap, post_channel_id=post),
+                    view=views.recap_view(),
+                )
+            finally:
+                self._recap_running.discard(guild.id)
+
+    # -- recap commands --------------------------------------------------------
+
+    @pulse_digest.group(name="recap", invoke_without_command=True)
+    async def pulse_digest_recap(self, ctx: commands.Context, when: str = "last"):
+        """Claude drafts the weekly community recap for you to approve. `.pulse digest recap [last|this|YYYY-MM-DD]`.
+
+        Reads the week in the highlights channel (humans only), adds the week's numbers and join
+        sources, and posts a draft here with Approve / Edit / Regenerate / Reject. Nothing is public
+        until you press Approve. Setup and options: `.pulse digest recap status`.
+        """
+        prep = await self._prepare(ctx.guild)
+        resolved = engine.resolve_period("week", when, prep.today)
+        if resolved is None:
+            await ctx.send("I couldn't read that. Try `.pulse digest recap`, `recap this`, or `recap 2026-10-05`.")
+            return
+        await self._recap_run(ctx.guild, ctx.channel, resolved)
+
+    @pulse_digest_recap.command(name="status")
+    async def pulse_recap_status(self, ctx: commands.Context):
+        """Show the recap settings and what's still missing."""
+        r = await self.config.guild(ctx.guild).recap()
+        source = self._recap_source(ctx.guild, r)
+        post = ctx.guild.get_channel_or_thread(r["post_channel"]) if r["post_channel"] else None
+        tokens = await self.bot.get_shared_api_tokens("anthropic")
+        now = time.time()
+        t_in, t_out = recap.tokens_used(r["usage"], now)
+        await ctx.send(embed=embeds.recap_status_embed(
+            source=source.mention if source else "**not set**: `.pulse digest recap source #cuddle`",
+            post=post.mention if post else "**not set**: `.pulse digest recap channel #channel`",
+            model=r["model"], key_set=bool((tokens or {}).get("api_key")), used=recap.drafts_used(r["usage"], now),
+            cap=r["max_drafts_week"], tokens_in=t_in, tokens_out=t_out, auto=r["auto"], voice_chars=len(r["voice"]),
+            excluded=len(r["excluded_users"]), min_reactions=r["min_reactions"], notes=bool(r["notes"]), pending=len(r["pending"]),
+        ))
+
+    async def _recap_set(self, guild: discord.Guild, **updates) -> None:
+        async with self.config.guild(guild).recap() as r:
+            r.update(updates)
+
+    @pulse_digest_recap.command(name="source")
+    async def pulse_recap_source(self, ctx: commands.Context, channel: discord.TextChannel):
+        """The channel whose week gets read for highlights (usually #cuddle)."""
+        await self._recap_set(ctx.guild, source_channel=channel.id)
+        await self._ack(ctx)
+
+    @pulse_digest_recap.command(name="channel")
+    async def pulse_recap_channel(self, ctx: commands.Context, channel: discord.TextChannel):
+        """Where an approved recap is posted."""
+        await self._recap_set(ctx.guild, post_channel=channel.id)
+        await self._ack(ctx)
+
+    @pulse_digest_recap.command(name="auto")
+    async def pulse_recap_auto(self, ctx: commands.Context, state: bool):
+        """Draft one every Monday after the weekly digest (it still waits for your approval)."""
+        updates = {"auto": state}
+        if state:
+            updates["last"] = engine.weekly_due(models.local_dt(time.time()))[0]  # start with the *next* Monday, not a stale backlog
+        await self._recap_set(ctx.guild, **updates)
+        await self._ack(ctx)
+
+    @pulse_digest_recap.command(name="voice")
+    async def pulse_recap_voice(self, ctx: commands.Context, action: str = "show", *, text: str = ""):
+        """Teach it your voice: `voice add <text>` (paste past announcements), `voice set <text>`, `voice show`, `voice clear`.
+
+        Also a good place for a line or two about the server. Claude writes the recap to sound like this.
+        """
+        action = action.lower()
+        r = await self.config.guild(ctx.guild).recap()
+        if action == "show":
+            if not r["voice"]:
+                await ctx.send("No voice saved yet, so a warm default tone is used. Add some with `.pulse digest recap voice add <paste an announcement you wrote>`.")
+            else:
+                await ctx.send(f"**Saved voice** ({len(r['voice']):,} of {RECAP_VOICE_MAX:,} characters):\n>>> {embeds.clip(r['voice'], 1700)}")
+            return
+        if action == "clear":
+            await self._recap_set(ctx.guild, voice="")
+            await self._ack(ctx)
+            return
+        if action not in ("add", "set") or not text.strip():
+            await ctx.send("Use `voice add <text>`, `voice set <text>`, `voice show` or `voice clear`.")
+            return
+        new = text.strip() if action == "set" else (r["voice"].rstrip() + "\n\n" + text.strip()).strip()
+        if len(new) > RECAP_VOICE_MAX:
+            await ctx.send(f"That would pass the {RECAP_VOICE_MAX:,}-character limit ({len(new):,}). Trim it, or use `voice set` to replace what's there.")
+            return
+        await self._recap_set(ctx.guild, voice=new)
+        await ctx.send(f"✅ Saved ({len(new):,} of {RECAP_VOICE_MAX:,} characters).", delete_after=10)
+
+    @pulse_digest_recap.command(name="note")
+    async def pulse_recap_note(self, ctx: commands.Context, *, text: str = ""):
+        """Tell the next draft what happened this week (events, news). `note <text>`, `note clear`; used once, then cleared."""
+        text = text.strip()
+        if not text:
+            r = await self.config.guild(ctx.guild).recap()
+            await ctx.send(f">>> {embeds.clip(r['notes'], 1700)}" if r["notes"] else "No note saved. Add one with `.pulse digest recap note <what happened>`.")
+            return
+        await self._recap_set(ctx.guild, notes="" if text.lower() == "clear" else text[:600])
+        await self._ack(ctx)
+
+    @pulse_digest_recap.command(name="exclude")
+    async def pulse_recap_exclude(self, ctx: commands.Context, user: discord.User):
+        """Never read or highlight this member's messages."""
+        async with self.config.guild(ctx.guild).recap() as r:
+            if user.id not in r["excluded_users"]:
+                r["excluded_users"].append(user.id)
+        await self._ack(ctx)
+
+    @pulse_digest_recap.command(name="include")
+    async def pulse_recap_include(self, ctx: commands.Context, user: discord.User):
+        """Undo `exclude` for this member."""
+        async with self.config.guild(ctx.guild).recap() as r:
+            r["excluded_users"] = [u for u in r["excluded_users"] if u != user.id]
+        await self._ack(ctx)
+
+    @pulse_digest_recap.command(name="cap")
+    async def pulse_recap_cap(self, ctx: commands.Context, drafts_per_week: int):
+        """Most drafts (including regenerates) in any 7 days. Default 6. This is the cost limit."""
+        await self._recap_set(ctx.guild, max_drafts_week=max(1, min(drafts_per_week, 30)))
+        await self._ack(ctx)
+
+    @pulse_digest_recap.command(name="reactions")
+    async def pulse_recap_reactions(self, ctx: commands.Context, minimum: int):
+        """Fewest reactions a message needs to count as a highlight (default 3)."""
+        await self._recap_set(ctx.guild, min_reactions=max(1, min(minimum, 100)))
+        await self._ack(ctx)
+
+    @pulse_digest_recap.command(name="model")
+    async def pulse_recap_model(self, ctx: commands.Context, model: str):
+        """Which Claude model writes the draft, e.g. `claude-sonnet-5-5`."""
+        if not re.fullmatch(r"[A-Za-z0-9._-]{3,64}", model):
+            await ctx.send("That doesn't look like a model name. Example: `claude-sonnet-5-5`.")
+            return
+        await self._recap_set(ctx.guild, model=model)
+        await self._ack(ctx)
+
 
     # -- backfill -------------------------------------------------------------
 

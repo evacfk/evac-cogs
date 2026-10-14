@@ -472,7 +472,7 @@ async def test_toggling_a_digest_on_skips_the_stale_backlog(tmp_path, clock):
     ctx = SimpleNamespace(guild=GUILD, send=_send)
     await cog._toggle_digest(ctx, "digest_weekly", engine.weekly_due, True)
     cfg = await cog.config.guild(GUILD).digest_weekly()
-    assert cfg["enabled"] and cfg["last"] == engine.weekly_due(datetime.now(TIMEZONE))[0]
+    assert cfg["enabled"] and cfg["last"] == engine.weekly_due(models.local_dt(sp.time.time()))[0]  # the pinned clock, not today
 
 
 # ------------------------------------------------------------------ arg parsing

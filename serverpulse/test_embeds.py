@@ -3,6 +3,7 @@ from datetime import date, timedelta
 import pytest
 
 from serverpulse import embeds, engine, models
+from serverpulse.constants import COG_VERSION
 from serverpulse._testdata import local_ts, traffic
 
 START = date(2026, 9, 1)
@@ -203,7 +204,7 @@ class TestOtherEmbeds:
         assert_fits(e)
         assert "<#3>" in e.fields[0].value
         v = embeds.version_embed(days_stored=1, coverage_start_ts=None, live_since_ts=None, pending_msgs=3, backfill_status="none")
-        assert "1.3.0" in v.description
+        assert COG_VERSION in v.description
 
     def test_backfill_embed_states(self):
         now = local_ts(2026, 9, 30)

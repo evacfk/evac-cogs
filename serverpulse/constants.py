@@ -3,8 +3,8 @@ from __future__ import annotations
 
 from zoneinfo import ZoneInfo
 
-COG_VERSION = "1.3.0"
-COG_BUILD = "2026-10-03"
+COG_VERSION = "1.4.0"
+COG_BUILD = "2026-10-13"
 
 TIMEZONE_NAME = "America/Los_Angeles"
 TIMEZONE = ZoneInfo(TIMEZONE_NAME)
@@ -63,6 +63,29 @@ WEEKDAY_ALIASES = {
 }
 SPARK_CHARS = "▁▂▃▄▅▆▇█"
 
+# -- weekly recap (1.4.0) ----------------------------------------------------
+RECAP_MODEL = "claude-sonnet-5-5"
+RECAP_MAX_TOKENS = 4000  # a ceiling, not a target: a draft is ~700 tokens; the rest is headroom for model thinking
+RECAP_MAX_DRAFTS_WEEK = 6  # drafts + regenerations in a rolling 7 days; the cost cap
+RECAP_MIN_REACTIONS = 3
+RECAP_HIGHLIGHTS = 8  # most-reacted messages handed to Claude
+RECAP_PER_AUTHOR = 2
+RECAP_SNIPPET_CHARS = 280  # per highlight, what Claude sees
+RECAP_MOMENT_CHARS = 110  # per highlight, what is quoted in the public post
+RECAP_MOMENTS = 3  # "Top moments" lines in the public post
+RECAP_MAX_SCAN = 60000  # messages read per draft; a safety stop, not an expected size
+RECAP_VOICE_MAX = 6000
+RECAP_PUBLIC_MAX = 2500  # the public text; keeps the whole draft embed under Discord's 6000-character limit
+RECAP_MODS_MAX = 1000  # one embed field
+RECAP_PENDING_MAX = 5
+RECAP_API_URL = "https://api.anthropic.com/v1/messages"
+RECAP_API_VERSION = "2023-06-01"
+RECAP_API_TIMEOUT = 150
+RECAP_DEFAULT_VOICE = (
+    "Warm, playful and community-first. Short sentences, a little humour, a few emoji. "
+    "Speaks as the owner (\"we\", \"our\"), never like a press release."
+)
+
 # -- Config defaults --------------------------------------------------------
 DEFAULT_GUILD = {
     "ignored_channels": list(DEFAULT_IGNORED_CHANNEL_IDS),
@@ -80,6 +103,21 @@ DEFAULT_GUILD = {
     # invite code -> label; joins through any other invite are labelled by its creator
     "invite_sources": {"etywguQBWq": "Disboard", "829baEszgg": "discord.me"},
     "joinlog": {"join_channel": None, "leave_channel": None},
+    # -- weekly recap drafts (1.4.0), see recap.py ----------------------------
+    "recap": {
+        "source_channel": None,   # where the week's highlights come from; None = a channel named "cuddle"
+        "post_channel": None,     # where an approved recap is posted (must be set before Approve works)
+        "voice": "",              # the owner's style notes + past announcements, used to write in their voice
+        "notes": "",              # what happened this week (events etc.), used once by the next draft then cleared
+        "model": RECAP_MODEL,
+        "min_reactions": RECAP_MIN_REACTIONS,
+        "max_drafts_week": RECAP_MAX_DRAFTS_WEEK,
+        "excluded_users": [],     # members whose messages are never read or highlighted
+        "auto": False,            # draft one every Monday after the weekly digest
+        "last": "",               # week key of the last automatic draft (at-most-once)
+        "usage": [],              # [[timestamp, input tokens, output tokens], ...] last 30 days
+        "pending": {},            # draft message id -> draft awaiting a decision
+    },
 }
 
 COHORT_FLUSH_SECONDS = 600  # join records are rewritten at most this often (plus on unload)

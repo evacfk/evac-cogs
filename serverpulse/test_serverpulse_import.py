@@ -17,6 +17,7 @@ EXPECTED_COMMANDS = {
     "anomalies", "members", "export", "board", "start", "stop", "refresh", "digest", "weekly", "monthly", "now",
     "backfill", "status", "resume", "cancel", "ignore", "unignore", "ignored", "set", "modchannel", "modrole",
     "commands", "settings",
+    "recap", "auto", "voice", "note", "exclude", "include", "cap", "reactions", "model",
 }
 
 
