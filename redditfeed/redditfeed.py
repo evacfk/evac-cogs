@@ -161,6 +161,16 @@ class RedditFeed(DashboardIntegration, commands.Cog):
             log.exception("redditfeed: queue expiry failed")
         await self._announce_source_change()
 
+    async def _persist_handled(self, keys: list, now: float, queue_entry: Optional[tuple] = None) -> None:
+        """Write 'already handled' keys (and the queue record, if any) to Config right now."""
+        if queue_entry is not None:
+            message_id, entry = queue_entry
+            async with self.config.queue() as stored:
+                stored[message_id] = entry.to_dict()
+        async with self.config.dedup_store() as seen:
+            for key in keys:
+                seen[key] = now
+
     async def _announce_source_change(self) -> None:
         """Tell the log channel when the feed switches between data sources."""
         active = getattr(self.source, "active_name", None)
@@ -210,6 +220,7 @@ class RedditFeed(DashboardIntegration, commands.Cog):
                     continue
                 await self._post_media_items(channel, post, media_items, mapping.subreddit)
                 dedup_store[dedup_key] = now
+                await asyncio.shield(self._persist_handled([dedup_key], now))     # see _queue_one_subreddit
 
             newest_post = post
 
@@ -414,10 +425,13 @@ class RedditFeed(DashboardIntegration, commands.Cog):
             except discord.HTTPException as exc:
                 log.warning("redditfeed: could not queue a post from r/%s: %s", mapping.subreddit, exc)
                 continue
-            async with self.config.queue() as stored:
-                stored[str(message.id)] = entry.to_dict()
-            for c in fresh:
-                dedup_store[engine.build_dedup_key(c, post["id"])] = now
+            keys = [engine.build_dedup_key(c, post["id"]) for c in fresh]
+            for key in keys:
+                dedup_store[key] = now
+            # Recorded the moment the card exists, and shielded from a reload that
+            # cancels this task right after the send: this used to wait for the end
+            # of the whole cycle, so an interrupted cycle re-queued everything.
+            await asyncio.shield(self._persist_handled(keys, now, queue_entry=(str(message.id), entry)))
             qcfg["pending"] += 1
             queued += 1
             self._bump("queued")
@@ -609,7 +623,7 @@ class RedditFeed(DashboardIntegration, commands.Cog):
     @redditfeed.command(name="version")
     async def redditfeed_version(self, ctx: commands.Context) -> None:
         """Version-probe command -- confirms a deploy actually took."""
-        await ctx.send("redditfeed build: source-v7 (.redditfeed backfill)")
+        await ctx.send("redditfeed build: source-v8 (dedup saved per post, no duplicates after an interrupted cycle)")
 
     async def _map_subreddit(self, name: str, channel_id: int) -> bool:
         """The one place a subreddit gets mapped to a channel -- `add` and the

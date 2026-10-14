@@ -1127,3 +1127,48 @@ async def test_backfill_leaves_cycle_stats_and_the_mapping_alone():
     before = dict((await cog.config.mappings())["feet"])
     await cb("redditfeed_backfill")(cog, Ctx(guild=Guild([FEET_CH])), "feet", 72)
     assert cog._last_stats == {"queued": 7} and (await cog.config.mappings())["feet"] == before
+
+
+# ---------------------------------------------------------------- interrupted cycles must not duplicate
+
+def _two_subs(approval):
+    old = SubredditMapping(subreddit="feet", channel_ids=[20], approval=approval, added_ts=NOW - 86400,
+                           last_poll_ts=NOW - 7200).to_dict()
+    new = SubredditMapping(subreddit="toes", channel_ids=[20], approval=approval, added_ts=NOW - 86400,
+                           last_poll_ts=NOW - 60).to_dict()
+    return {"feet": old, "toes": new}          # feet is polled first (least recently polled)
+
+
+async def _interrupt_second_fetch(cog):
+    """A reload cancels the poll task while it is fetching the second subreddit."""
+    state = {"n": 0}
+
+    async def on_fetch():
+        state["n"] += 1
+        if state["n"] == 2:
+            raise asyncio.CancelledError()
+
+    cog.source.on_fetch = on_fetch
+    with pytest.raises(asyncio.CancelledError):
+        await cog._run_poll_cycle()
+    cog.source.on_fetch = None
+
+
+async def test_interrupted_manual_cycle_does_not_requeue_what_it_already_queued():
+    """REGRESSION: the dedup store was only written at the end of a cycle, so a reload mid-cycle
+    (cycles are minutes long on the RSS backup) re-queued every card it had already sent."""
+    cog = make({"feet": [post("a")], "toes": [post("b")]}, mappings=_two_subs("manual"))
+    await _interrupt_second_fetch(cog)
+    assert len(QUEUE_CH.sent) == 1                      # "a" was queued before the interruption
+    await cog._run_poll_cycle()                         # the fresh cycle after the reload
+    queued = sorted(e["post"]["id"] for e in (await cog.config.queue()).values())
+    assert queued == ["a", "b"] and len(QUEUE_CH.sent) == 2
+
+
+async def test_interrupted_auto_cycle_does_not_repost_to_the_public_channel():
+    cog = make({"feet": [post("a", age_min=2, score=1)], "toes": [post("b", age_min=2, score=1)]},
+               mappings=_two_subs("auto"))
+    await _interrupt_second_fetch(cog)
+    assert [m.content for m in FEET_CH.sent] == ["https://i.redd.it/a.jpg"]
+    await cog._run_poll_cycle()
+    assert sorted(m.content for m in FEET_CH.sent) == ["https://i.redd.it/a.jpg", "https://i.redd.it/b.jpg"]
