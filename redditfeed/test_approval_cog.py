@@ -1030,3 +1030,31 @@ async def test_map_command_survives_a_broken_tgfeed():
     ctx = Ctx(guild=guild)
     await cb("redditfeed_map")(cog, ctx, None)
     assert "<#20> \u2190 r/feet" in ctx.sent[0]
+
+
+async def test_check_command_explains_each_recent_post_and_changes_nothing():
+    fresh = post("new", age_min=20, score=9)
+    held = post("held", age_min=180, score=1)
+    ready = post("ready", age_min=180, score=9)
+    cog = make({"feet": [fresh, held, ready]})
+    ctx = Ctx(guild=Guild([FEET_CH]))
+    before = await cog.config.dedup_store()
+    await cb("redditfeed_check")(cog, ctx, "r/Feet")
+    out = "\n".join(ctx.sent)
+    assert "WOULD QUEUE" in out and "below the minimum 3" in out and "too new" in out
+    assert QUEUE_CH.sent == [] and await cog.config.dedup_store() == before
+
+
+async def test_check_command_reports_an_empty_source_and_an_unmapped_sub_and_a_source_error():
+    cog = make({})
+    ctx = Ctx(guild=Guild([FEET_CH]))
+    await cb("redditfeed_check")(cog, ctx, "feet")
+    assert "source returned nothing" in ctx.sent[0]
+    ctx2 = Ctx(guild=Guild([FEET_CH]))
+    await cb("redditfeed_check")(cog, ctx2, "nope")
+    assert ctx2.sent == ["r/nope isn't mapped."]
+    bad = make({})
+    bad.source.fail = True
+    ctx3 = Ctx(guild=Guild([FEET_CH]))
+    await cb("redditfeed_check")(bad, ctx3, "feet")
+    assert "the source failed" in ctx3.sent[0]

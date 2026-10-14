@@ -339,3 +339,41 @@ def prune_posted_map(posted: dict, now_ts: float, ttl_days: float = constants.PO
         newest = sorted(fresh.items(), key=lambda kv: float(kv[1].get("ts", 0)), reverse=True)[:max_entries]
         fresh = dict(newest)
     return fresh
+
+
+# -- Diagnostics (`.redditfeed check`) -------------------------------------------------
+
+def _age_text(seconds: float) -> str:
+    minutes = max(0, int(seconds // 60))
+    return f"{minutes}m" if minutes < 120 else f"{minutes // 60}h"
+
+
+def diagnose_post(
+    post: dict, now_ts: float, mapping: SubredditMapping, dedup_store: dict,
+    min_age_seconds: float, min_score: int,
+) -> str:
+    """What the poller would do with `post` right now, in the same order it checks:
+    keywords, media, already-handled, then (manual mode) the queue gates. Read-only."""
+    if not passes_keyword_filter(post, mapping.require_keywords, mapping.block_keywords):
+        return "skipped: keyword filter"
+    if not extract_media_items(post):
+        url = post.get("url") or post.get("url_overridden_by_dest") or ""
+        host = urlparse(url).netloc or "no link"
+        return f"skipped: no postable image/video (links to {host})"
+    pid = post.get("id", "")
+    if all(build_dedup_key(c, pid) in dedup_store for c in mapping.channel_ids):
+        return "already handled (queued or posted before)"
+    if mapping.approval != constants.APPROVAL_MANUAL:
+        return "WOULD POST (auto mode)"
+    reason = queue_skip_reason(post, now_ts, mapping.added_ts, min_age_seconds, min_score)
+    if reason is None:
+        return "WOULD QUEUE"
+    created = float(post.get("created_utc") or 0)
+    if reason == "too_new":
+        wait = int((min_age_seconds - (now_ts - created)) // 60) + 1
+        return f"waiting: too new, queues in ~{wait} min if score holds"
+    if reason == "low_score":
+        return f"held: score {post.get('score') if post.get('score') is not None else '?'} is below the minimum {min_score}"
+    if reason == "before_added":
+        return "skipped: posted before this subreddit was mapped (no backfill)"
+    return f"skipped: {reason}"

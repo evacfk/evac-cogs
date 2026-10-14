@@ -596,7 +596,7 @@ class RedditFeed(DashboardIntegration, commands.Cog):
     @redditfeed.command(name="version")
     async def redditfeed_version(self, ctx: commands.Context) -> None:
         """Version-probe command -- confirms a deploy actually took."""
-        await ctx.send("redditfeed build: source-v5 (.redditfeed map also shows tgfeed channels)")
+        await ctx.send("redditfeed build: source-v6 (.redditfeed check dry-run)")
 
     async def _map_subreddit(self, name: str, channel_id: int) -> bool:
         """The one place a subreddit gets mapped to a channel -- `add` and the
@@ -974,6 +974,50 @@ class RedditFeed(DashboardIntegration, commands.Cog):
             if channel_id:
                 out[channel_id] = f"TG topic \"{(item.get('title') or item.get('topic_id'))}\"" + (" (paused)" if item.get("paused") else "")
         return out
+
+    @redditfeed.command(name="check")
+    async def redditfeed_check(self, ctx: commands.Context, subreddit: str) -> None:
+        """Dry run for one subreddit: what the source returns right now and why each
+        recent post would (or wouldn't) be queued or posted. Changes nothing."""
+        name = engine.normalize_subreddit(subreddit)
+        raw = (await self.config.mappings()).get(name)
+        if not raw:
+            await ctx.send(f"r/{name} isn't mapped.")
+            return
+        mapping = SubredditMapping.from_dict(raw)
+        qcfg = await self._queue_settings()
+        now = time.time()
+        after = engine.queue_fetch_after(now, mapping.added_ts)
+        async with ctx.typing():
+            try:
+                posts = await self.source.fetch_new_posts(name, after, constants.QUEUE_FETCH_LIMIT)
+            except RedditSourceError as exc:
+                await ctx.send(f"r/{name}: the source failed: {exc}")
+                return
+        dedup_store = await self.config.dedup_store()
+        served = getattr(self.source, "active_name", None) or "source"
+        posts = sorted(posts, key=lambda p: p.get("created_utc") or 0, reverse=True)
+        header = (f"**r/{name}** [{'paused, ' if mapping.paused else ''}{mapping.approval}] via **{served}**: "
+                  f"{len(posts)} post(s) in the window since "
+                  f"<t:{int(after)}:R>. Queue gates: {qcfg['min_age'] // 60} min old, score {qcfg['min_score']}+.")
+        if mapping.added_ts:
+            header += f" Mapped <t:{int(mapping.added_ts)}:R> (older posts are never backfilled)."
+        if not posts:
+            header += ("\nThe source returned nothing. Either nothing was posted in the window, or the source hasn't "
+                       "indexed it yet (Arctic Shift can lag Reddit by a while). Compare with `.redditfeed source`.")
+            await ctx.send(header)
+            return
+        lines = [header, ""]
+        for post in posts[:10]:
+            age = engine._age_text(now - float(post.get("created_utc") or now))
+            score = post.get("score") if post.get("score") is not None else "?"
+            verdict = engine.diagnose_post(post, now, mapping, dedup_store, qcfg["min_age"], qcfg["min_score"])
+            title = (post.get("title") or "").strip().replace("\n", " ")[:50]
+            lines.append(f"`{post.get('id')}` {age} ago, score {score}: {verdict} - {title}")
+        if len(posts) > 10:
+            lines.append(f"...and {len(posts) - 10} older post(s)")
+        for page in embeds.paginate_lines(lines):
+            await ctx.send(page)
 
     @redditfeed.command(name="prefix")
     async def redditfeed_prefix(self, ctx: commands.Context, *, prefix: str) -> None:

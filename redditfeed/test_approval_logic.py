@@ -143,3 +143,56 @@ def test_new_channel_only_proposed_when_creation_is_possible():
 def test_noise_only_names_propose_nothing_even_when_creation_is_allowed():
     dest = discovery.propose_destination("GoneWild", CHANNELS, can_create=True)
     assert dest.channel_id is None and dest.new_name is None
+
+
+# -- .redditfeed check: why a post would or wouldn't be queued ----------------------------------
+
+from redditfeed.models import SubredditMapping as _SM  # noqa: E402
+
+
+def _diag(p, mapping=None, dedup=None, now=NOW):
+    mapping = mapping or _SM(subreddit="x", channel_ids=[5], added_ts=NOW - 86400)
+    return engine.diagnose_post(p, now, mapping, dedup or {}, 3600, 3)
+
+
+def _img(age_min, score=10, **kw):
+    return {"id": "a", "created_utc": NOW - age_min * 60, "score": score,
+            "url": "https://i.redd.it/a.jpg", **kw}
+
+
+def test_diagnose_would_queue():
+    assert _diag(_img(120)) == "WOULD QUEUE"
+
+
+def test_diagnose_too_new_says_how_long_to_wait():
+    assert "queues in ~31 min" in _diag(_img(30))
+
+
+def test_diagnose_low_score_names_the_numbers():
+    out = _diag(_img(120, score=1))
+    assert "score 1" in out and "minimum 3" in out
+
+
+def test_diagnose_unknown_score_is_not_held():
+    p = _img(120)
+    del p["score"]
+    assert _diag(p) == "WOULD QUEUE"
+
+
+def test_diagnose_posted_before_the_mapping_existed():
+    m = _SM(subreddit="x", channel_ids=[5], added_ts=NOW - 600)
+    assert "before this subreddit was mapped" in _diag(_img(120), m)
+
+
+def test_diagnose_no_media_names_the_host():
+    p = {"id": "a", "created_utc": NOW - 7200, "score": 9, "url": "https://pixiv.net/artworks/1"}
+    out = _diag(p)
+    assert "no postable image/video" in out and "pixiv.net" in out
+
+
+def test_diagnose_already_handled_and_auto_mode_and_keywords():
+    dedup = {engine.build_dedup_key(5, "a"): NOW}
+    assert _diag(_img(120), dedup=dedup).startswith("already handled")
+    assert _diag(_img(10), _SM(subreddit="x", channel_ids=[5], approval="auto")) == "WOULD POST (auto mode)"
+    blocked = _SM(subreddit="x", channel_ids=[5], block_keywords=["bad"])
+    assert _diag(_img(120, title="so bad"), blocked) == "skipped: keyword filter"
