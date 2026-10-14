@@ -505,8 +505,6 @@ async def test_easy_can_never_be_given_a_role_or_badge(env):
     assert "no role or badge" in ctx.out[-1] and await env.conf.roles() == {}
     await env.cog.secrethunt_roleicon.callback(env.cog, ctx, "Easy")
     assert "no role or badge" in ctx.out[-1]
-    await env.cog.secrethunt_rolecolor.callback(env.cog, ctx, "easy", "#fff")
-    assert "no role or badge" in ctx.out[-1]
     await env.cog.secrethunt_role.callback(env.cog, ctx, "legendary", None)
     assert "Tier must be one of" in ctx.out[-1]
 
@@ -515,13 +513,13 @@ async def test_role_command_creates_the_tiers_default_role_hoisted(env):
     ctx = Ctx(env)
     await env.cog.secrethunt_role.callback(env.cog, ctx, "hard", None)
     role = env.g.created_roles[-1]
-    assert role.name == "Timekeeper" and role.kw["hoist"] is True
+    assert role.name == "Timekeeper" and role.kw["hoist"] is True and "colour" not in role.kw  # members keep their own colour
     assert (await env.conf.roles())["hard"] == role.id
     await env.cog.secrethunt_role.callback(env.cog, ctx, "medium", env.role)  # or point it at an existing role
     assert (await env.conf.roles())["medium"] == env.role.id
 
 
-async def test_roleicon_and_rolecolor_edit_the_right_tiers_role(env):
+async def test_roleicon_edits_the_right_tiers_role(env):
     ctx = Ctx(env)
     await env.cog.secrethunt_roleicon.callback(env.cog, ctx, "medium")
     assert "Set the role first" in ctx.out[-1]
@@ -538,11 +536,6 @@ async def test_roleicon_and_rolecolor_edit_the_right_tiers_role(env):
     await env.cog.secrethunt_roleicon.callback(env.cog, ctx, "medium")
     assert "boost level" in ctx.out[-1]
     env.role.fail_edit = False
-    await env.cog.secrethunt_rolecolor.callback(env.cog, ctx, "medium", "nothex")
-    assert "hex colour" in ctx.out[-1]
-    await env.cog.secrethunt_rolecolor.callback(env.cog, ctx, "medium", "#1abc9c")
-    colour = env.role.edits[-1]["colour"]
-    assert getattr(colour, "value", colour) == 0x1ABC9C
 
 
 async def test_enable_refuses_until_pool_and_puzzle_exist(env):

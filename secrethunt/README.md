@@ -21,8 +21,7 @@ and icon). Only Easy exists so far.
 Roles for harder tiers (not needed for Easy):
 ```
 .secrethunt role medium               # creates "Secret Finder"; hard = "Timekeeper"; expert = "Eye of Wonder"; or pass a role
-.secrethunt roleicon medium           # attach a PNG/JPG under 256 KB (needs boost level 2+)
-.secrethunt rolecolor medium #1abc9c
+.secrethunt roleicon medium           # attach a PNG/JPG under 256 KB (needs boost level 2+); roles have no colour on purpose
 ```
 
 Bot permissions: Send Messages (and Send Messages in Threads), Embed Links, Manage Messages / Pin Messages (pin, delete the
@@ -30,7 +29,7 @@ trigger and pin notice, remove reactions), Read Message History, Manage Roles. K
 
 ## Admin commands
 `status`, `version`, `channels`, `setup [id] [force]`, `start <id>`, `poem [channel]`, `enable`, `disable`,
-`testmode <on|off>`, `hall [channel]`, `hallrefresh`, `role <tier> [role]`, `roleicon <tier>`, `rolecolor <tier> <hex>`,
+`testmode <on|off>`, `hall [channel]`, `hallrefresh`, `role <tier> [role]`, `roleicon <tier>`, 
 `who <member>`, `preview [id]` (DMs you every variant's clues and answers: spoilers), `reset <member> [id]`.
 
 ## Adding a weekly puzzle

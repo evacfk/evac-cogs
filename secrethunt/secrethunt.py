@@ -23,7 +23,7 @@ from redbot.core import Config, commands
 from . import embeds, engine
 from .constants import (
     COG_VERSION, CONFIG_IDENTIFIER, DEFAULT_GUILD, DEFAULT_MEMBER, ICON_MAX_BYTES, POOL_MAX, POOL_MIN,
-    TICK_SECONDS, TIER_ROLE_COLORS, TIER_ROLE_NAMES, WATCH_EMOJI,
+    TICK_SECONDS, TIER_ROLE_NAMES, WATCH_EMOJI,
 )
 from .puzzles import PUZZLES
 
@@ -585,7 +585,7 @@ class SecretHunt(commands.Cog):
         if role is None:
             try:
                 role = await ctx.guild.create_role(
-                    name=TIER_ROLE_NAMES[tier], colour=discord.Colour(TIER_ROLE_COLORS[tier]), hoist=True,
+                    name=TIER_ROLE_NAMES[tier], hoist=True,
                     mentionable=False, reason="Secret hunt reward role")
             except _DISCORD_ERRORS as err:
                 return await ctx.send(f"I could not create the role ({type(err).__name__}); I need Manage Roles.")
@@ -614,25 +614,6 @@ class SecretHunt(commands.Cog):
             return await ctx.send(f"Discord refused it ({type(err).__name__}). Needs boost level 2 or more, "
                                   "Manage Roles, and a PNG/JPG.")
         await ctx.send("Icon set.")
-
-    @secrethunt.command(name="rolecolor")
-    async def secrethunt_rolecolor(self, ctx, tier: str, hex_color: str):
-        """Set a tier role's colour, e.g. `.secrethunt rolecolor medium #1abc9c`."""
-        checked = await self._tier_role(ctx, tier)
-        if checked is None:
-            return
-        role = checked[1]
-        if role is None:
-            return await ctx.send(f"Set the role first with `.secrethunt role {checked[0]}`.")
-        try:
-            value = int(hex_color.lstrip("#"), 16)
-        except ValueError:
-            return await ctx.send("Give a hex colour like `#f1c40f`.")
-        try:
-            await role.edit(colour=discord.Colour(value), reason="Secret hunt role colour")
-        except _DISCORD_ERRORS as err:
-            return await ctx.send(f"Discord refused it ({type(err).__name__}).")
-        await ctx.send("Colour set.")
 
     @secrethunt.command(name="who")
     async def secrethunt_who(self, ctx, member: discord.Member):

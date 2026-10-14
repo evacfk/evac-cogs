@@ -1,7 +1,7 @@
 """Config defaults and fixed values for secrethunt (Secrets of Wonderland)."""
 from zoneinfo import ZoneInfo
 
-COG_VERSION = "1.1.0"
+COG_VERSION = "1.1.1"
 CONFIG_IDENTIFIER = 0x5EC8E7A1
 HOME_TZ = ZoneInfo("America/Los_Angeles")
 
@@ -22,7 +22,6 @@ HALL_BUDGET = 3800                 # characters of solver names per Hall of Secr
 TIER_ORDER = ("easy", "medium", "hard", "expert")
 # Easy deliberately has no role or badge: solvers are only listed in the Hall of Secrets.
 TIER_ROLE_NAMES = {"medium": "Secret Finder", "hard": "Timekeeper", "expert": "Eye of Wonder"}
-TIER_ROLE_COLORS = {"medium": 0x1ABC9C, "hard": 0xF1C40F, "expert": 0x9B59B6}
 
 DEFAULT_GUILD = {
     "enabled": False,
