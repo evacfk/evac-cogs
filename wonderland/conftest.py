@@ -49,9 +49,21 @@ if _commands is not None and not hasattr(_commands, "hybrid_group"):
 _discord = sys.modules.get("discord")
 if _discord is not None and not hasattr(_discord.ui, "Select"):
     class _Select:
+        """Mirrors the real Select closely enough that tests can drive it: `view` and `values`
+        are read-only properties over the private `_view` / `_values`."""
+
         def __init__(self, *a, **kw):
-            self.values = []
+            self._values = []
+            self._view = None
             self.__dict__.update(kw)
+
+        @property
+        def values(self):
+            return self._values
+
+        @property
+        def view(self):
+            return self._view
 
     _discord.ui.Select = _Select
     _discord.SelectOption = lambda **kw: types.SimpleNamespace(**kw)

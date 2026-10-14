@@ -85,12 +85,24 @@ def channel_line(ch: Channel, mention: Optional[str]) -> str:
     return f"{ch.emoji} {label}: {ch.desc}"
 
 
-def map_blocks(resolve: Callable[[str], Optional[str]]) -> List[Tuple[str, List[str]]]:
-    """[(section title, [lines])]. `resolve(slug)` returns a clickable mention or None."""
-    return [
-        (section.title, [channel_line(ch, resolve(ch.slug)) for ch in section.channels])
-        for section in MAP
-    ]
+HIDDEN = object()  # `resolve` returns this for a channel the viewer cannot see
+
+
+def map_blocks(resolve: Callable[[str], object]) -> List[Tuple[str, List[str]]]:
+    """[(section title, [lines])]. `resolve(slug)` returns a clickable mention, None when the live
+    channel can't be found (the name is shown in bold instead), or HIDDEN to leave it out.
+    A section with nothing left to show is dropped."""
+    blocks = []
+    for section in MAP:
+        lines = []
+        for ch in section.channels:
+            found = resolve(ch.slug)
+            if found is HIDDEN:
+                continue
+            lines.append(channel_line(ch, found))
+        if lines:
+            blocks.append((section.title, lines))
+    return blocks
 
 
 def clamp(text: str, limit: int = 4000) -> str:

@@ -119,3 +119,10 @@ def test_every_page_fits_in_one_embed_even_with_every_command_live():
 def test_no_removed_commands_are_advertised():
     text = " ".join(e.usage + e.desc for p in PAGES for e in p.entries)
     assert "gamblehub" not in text
+
+
+def test_map_blocks_skips_hidden_channels_and_drops_empty_sections():
+    blocks = dict(engine.map_blocks(lambda slug: engine.HIDDEN if slug in {"verify", "qotd", "hall-of-secrets", "selfies",
+                                                                        "share-your-pics", "gm-and-gn-only", "counting"} else None))
+    assert "other" not in blocks
+    assert "important" in blocks and "chat" in blocks

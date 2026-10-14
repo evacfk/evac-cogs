@@ -43,7 +43,7 @@ class TopicSelect(discord.ui.Select):
 
     async def callback(self, interaction: discord.Interaction):
         key = self.values[0]
-        embed = self.cog.render(key, interaction.guild, self.is_mod)
+        embed = self.cog.render(key, interaction.guild, self.is_mod, member=interaction.user)
         new_view = GuideView(self.cog, self.view.author_id, self.is_mod, key)
         new_view.message = self.view.message
         self.view.stop()
@@ -104,21 +104,43 @@ class Wonderland(commands.Cog):
         except Exception:
             return False
 
-    def _resolver(self, guild: Optional[discord.Guild]):
-        names = {c.id: c.name for c in getattr(guild, "channels", [])} if guild else {}
-        # Voice channels and categories are included: Room Creator is a voice channel.
+    def _resolver(self, guild: Optional[discord.Guild], member=None, public: bool = False):
+        """slug -> mention / None / HIDDEN.
+        member: channels that member can't see are HIDDEN.
+        public: a copy everybody reads. Channels @everyone can't open stay listed but as a plain
+        bold name, never a link that would show "no access"."""
+        channels = list(getattr(guild, "channels", [])) if guild else []
+        by_id = {c.id: c for c in channels}
+        names = {c.id: c.name for c in channels}
+        # Voice channels and forums are included on purpose: Room Creator is a voice channel.
 
-        def resolve(slug: str) -> Optional[str]:
+        def resolve(slug: str):
             channel_id = engine.match_channel(slug, names)
-            return f"<#{channel_id}>" if channel_id else None
+            if channel_id is None:
+                return None
+            if public:
+                try:
+                    if not by_id[channel_id].permissions_for(guild.default_role).view_channel:
+                        return None
+                except Exception:
+                    pass
+            elif member is not None:
+                try:
+                    if not by_id[channel_id].permissions_for(member).view_channel:
+                        return engine.HIDDEN
+                except Exception:
+                    pass  # can't tell: show it rather than hide it wrongly
+            return f"<#{channel_id}>"
 
         return resolve
 
-    def render(self, key: str, guild: Optional[discord.Guild], is_mod: bool, footer: Optional[str] = None):
+    def render(self, key: str, guild: Optional[discord.Guild], is_mod: bool, footer: Optional[str] = None, member=None,
+               public: bool = False):
         if key == HOME_KEY:
             return embeds.home_embed(engine.visible_pages(is_mod))
         if key == MAP_KEY:
-            return embeds.map_embed(self._resolver(guild), footer) if footer else embeds.map_embed(self._resolver(guild))
+            resolver = self._resolver(guild, member, public)
+            return embeds.map_embed(resolver, footer) if footer else embeds.map_embed(resolver)
         page = engine.get_page(key, is_mod)
         if page is None:
             return embeds.home_embed(engine.visible_pages(is_mod))
@@ -146,7 +168,7 @@ class Wonderland(commands.Cog):
         if key == "mod" and not is_mod:
             key = HOME_KEY
         view = GuideView(self, ctx.author.id, is_mod, key)
-        await self._send_private(ctx, self.render(key, ctx.guild, is_mod), view)
+        await self._send_private(ctx, self.render(key, ctx.guild, is_mod, member=ctx.author), view)
 
     # ------------------------------------------------------------------ commands
 
@@ -208,7 +230,7 @@ class Wonderland(commands.Cog):
             new: dict = {}
             keys = [p.key for p in PAGES if not p.mod_only] + [MAP_KEY]
             for key in keys:
-                embed = self.render(key, ctx.guild, False, footer=PUBLISH_FOOTER)
+                embed = self.render(key, ctx.guild, False, footer=PUBLISH_FOOTER, public=True)
                 message = None
                 if str(key) in old:
                     try:

@@ -103,11 +103,15 @@ class FakeMessage:
 
 
 class FakeChannel:
-    def __init__(self, id, name):
+    def __init__(self, id, name, hidden_from=()):
         self.id, self.name = id, name
+        self.hidden_from = set(hidden_from)  # ids of members/roles that can't view it
         self.sent = []
         self.store = {}
         self.mention = f"<#{id}>"
+
+    def permissions_for(self, who):
+        return types.SimpleNamespace(view_channel=who.id not in self.hidden_from)
 
     async def send(self, **kw):
         m = FakeMessage(**kw)
@@ -123,6 +127,7 @@ class FakeChannel:
 
 class FakeGuild:
     id = 1
+    default_role = types.SimpleNamespace(id="everyone")
 
     def __init__(self, channels):
         self.channels = channels
@@ -237,6 +242,81 @@ async def test_map_links_live_channels_and_falls_back_to_bold_names(mod):
     await cog.wonderland.subs["map"].callback(cog, ctx)
     text = ctx.sent[0].kw["embed"].description
     assert "<#11>" in text and "<#12>" in text and "**pillow-talk**" in text
+
+
+def _map_text(mod, guild, member=None, public=False):
+    cog = make(mod)
+    return cog.render(MAP_KEY, guild, False, member=member, public=public).description
+
+
+async def test_map_hides_channels_the_member_cannot_open(mod):
+    guild = FakeGuild([FakeChannel(11, "🧸・cuddle"), FakeChannel(12, "✅・verified-chat", hidden_from={5}),
+                       FakeChannel(13, "🔐・verify")])
+    text = _map_text(mod, guild, member=types.SimpleNamespace(id=5))
+    assert "<#11>" in text and "<#13>" in text
+    assert "<#12>" not in text and "verified-chat" not in text
+
+
+async def test_map_shows_the_gated_channel_to_a_member_who_has_access(mod):
+    guild = FakeGuild([FakeChannel(12, "✅・verified-chat", hidden_from={5})])
+    assert "<#12>" in _map_text(mod, guild, member=types.SimpleNamespace(id=6))
+
+
+async def test_map_drops_a_section_with_nothing_visible(mod):
+    everything = [FakeChannel(i, name, hidden_from={5}) for i, name in
+                  enumerate(["🔐・verify", "❓・qotd", "🗝️・hall-of-secrets", "📸・selfies", "🖼️・share-your-pics",
+                             "🌗・gm-and-gn-only", "🔢・counting"], start=100)]
+    text = _map_text(mod, FakeGuild(everything), member=types.SimpleNamespace(id=5))
+    assert "**OTHER**" not in text
+
+
+async def test_map_unknown_channels_still_show_by_name_not_hidden(mod):
+    text = _map_text(mod, FakeGuild([]), member=types.SimpleNamespace(id=5))
+    assert "**pillow-talk**" in text
+
+
+async def test_map_when_permissions_cannot_be_read_shows_the_channel(mod):
+    class Odd(FakeChannel):
+        def permissions_for(self, who):
+            raise RuntimeError("no")
+    text = _map_text(mod, FakeGuild([Odd(11, "🧸・cuddle")]), member=types.SimpleNamespace(id=5))
+    assert "<#11>" in text
+
+
+async def test_public_map_never_links_a_channel_everyone_cannot_open(mod):
+    guild = FakeGuild([FakeChannel(11, "🧸・cuddle"), FakeChannel(12, "✅・verified-chat", hidden_from={"everyone"})])
+    text = _map_text(mod, guild, public=True)
+    assert "<#11>" in text and "<#12>" not in text and "**verified-chat**" in text
+
+
+async def test_published_guide_uses_the_public_map(mod):
+    guild = FakeGuild([FakeChannel(12, "✅・verified-chat", hidden_from={"everyone"})])
+    cog = make(mod)
+    ctx = FakeCtx(guild=guild)
+    channel = FakeChannel(77, "server-guide")
+    await cog.wonderland.subs["publish"].callback(cog, ctx, channel)
+    map_post = channel.sent[-1].kw["embed"].description
+    assert "<#12>" not in map_post and "**verified-chat**" in map_post
+
+
+async def test_dropdown_map_is_filtered_for_the_person_who_picked_it(mod):
+    guild = FakeGuild([FakeChannel(11, "🧸・cuddle"), FakeChannel(12, "✅・verified-chat", hidden_from={5})])
+    cog = make(mod)
+    view = mod.GuideView(cog, author_id=5, is_mod=False)
+    select = view.children[0]
+    select._view = view          # discord.py keeps these private; the public ones are read-only
+    select._values = [MAP_KEY]
+    edits = []
+
+    async def edit_message(**kw):
+        edits.append(kw)
+    interaction = types.SimpleNamespace(
+        guild=guild, user=types.SimpleNamespace(id=5),
+        response=types.SimpleNamespace(edit_message=edit_message))
+    await select.callback(interaction)
+    text = edits[0]["embed"].description
+    assert "<#11>" in text and "<#12>" not in text and "verified-chat" not in text
+    assert edits[0]["view"].author_id == 5
 
 
 async def test_search_reports_hits_and_misses(mod):
