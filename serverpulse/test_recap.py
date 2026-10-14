@@ -159,6 +159,20 @@ def test_system_prompt_states_the_rules_and_carries_the_voice():
     assert "Sarcastic but kind" in system
 
 
+def test_voice_samples_are_fenced_as_style_only_so_their_content_cannot_leak_into_the_recap():
+    old_announcement = "Still working on the Rui stuff: the new bot, the server icon, some emotes. Suggestions welcome!"
+    system = recap.build_system(old_announcement)
+    rules, samples = system.rsplit("<voice_samples>", 1)
+    assert old_announcement not in rules and old_announcement in samples.split("</voice_samples>")[0]
+    assert "OLD writing" in rules and "NOT news" in rules and "never mention, continue or build on" in rules
+    assert "mod_notes" in rules  # the one legitimate channel for the owner's own news
+    assert "voice and context" not in system  # the old label invited the model to treat samples as facts
+
+
+def test_user_prompt_tells_claude_to_stay_inside_the_data():
+    assert "Cover only what is in <facts> and <highlights>" in recap.build_user({}, [])
+
+
 def test_system_prompt_falls_back_to_a_default_voice():
     assert "Warm, playful" in recap.build_system("   ")
 

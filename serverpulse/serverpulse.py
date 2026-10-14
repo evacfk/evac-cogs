@@ -1573,7 +1573,8 @@ class ServerPulse(commands.Cog):
     async def pulse_recap_voice(self, ctx: commands.Context, action: str = "show", *, text: str = ""):
         """Teach it your voice: `voice add <text>` (paste past announcements), `voice set <text>`, `voice show`, `voice clear`.
 
-        Also a good place for a line or two about the server. Claude writes the recap to sound like this.
+        Claude copies only the tone and style of these samples, never their content, so old announcements are fine.
+        For news about this week, use `.pulse digest recap note <what happened>`.
         """
         action = action.lower()
         r = await self.config.guild(ctx.guild).recap()
