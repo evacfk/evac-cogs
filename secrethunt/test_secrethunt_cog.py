@@ -435,10 +435,11 @@ async def test_a_missing_hall_channel_does_not_stop_the_solve(env):
 async def test_starting_a_puzzle_posts_its_empty_hall_entry_so_the_order_is_release_order(env):
     ctx = Ctx(env)
     await env.cog.secrethunt_start.callback(env.cog, ctx, PID)
-    assert len(env.hall.sent) == 1 and hall_description(env) == "*Nobody yet.*"
-    assert env.hall.sent[0].embed.title == "Easy \u00b7 The Late Rabbit"
-    await env.cog.secrethunt_start.callback(env.cog, ctx, PID)  # starting again must not duplicate it
-    assert len(env.hall.sent) == 1
+    assert len(env.hall.sent) == 2 and hall_description(env) == "*Nobody yet.*"
+    assert env.hall.sent[0].embed.title.endswith("Secrets of Wonderland")  # the intro is first
+    assert env.hall.sent[1].embed.title == "Easy \u00b7 The Late Rabbit"
+    await env.cog.secrethunt_start.callback(env.cog, ctx, PID)  # starting again must not duplicate anything
+    assert len(env.hall.sent) == 2
 
 
 async def test_the_hall_is_one_post_per_puzzle_edited_in_place_in_finishing_order(env):
@@ -488,7 +489,8 @@ async def test_changing_the_hall_channel_starts_fresh_posts(env):
     await env.cog.secrethunt_hall.callback(env.cog, ctx, new_hall)
     assert await env.conf.hall_messages() == {}
     await env.cog.secrethunt_hallrefresh.callback(env.cog, ctx)
-    assert len(new_hall.sent) == 1 and new_hall.sent[0].embed.description == "1. user21"
+    assert len(new_hall.sent) == 2 and new_hall.sent[0].embed.title.endswith("Secrets of Wonderland")
+    assert new_hall.sent[1].embed.description == "1. user21" and await env.conf.hall_intro() == new_hall.sent[0].id
 
 
 async def test_reset_and_data_deletion_take_people_off_the_hall(env):
@@ -761,3 +763,63 @@ async def test_secrets_defaults_to_the_asker(env):
     ctx = Ctx(env, author=solver)
     await env.cog.secrets_cmd.callback(env.cog, ctx, None)
     assert "The Late Rabbit" in ctx.out[-1].description
+
+
+# ---------------------------------------------------------------- the Hall intro
+
+
+def intro_text(env):
+    return env.hall.sent[0].embed.description
+
+
+async def test_hallrefresh_puts_the_intro_first_even_when_puzzle_posts_already_exist(env):
+    await env.cog._refresh_hall(env.g, PID, create=True)  # a puzzle post from before the intro
+    assert len(env.hall.sent) == 1 and env.hall.sent[0].embed.title.startswith("Easy")
+    await env.cog.secrethunt_hallrefresh.callback(env.cog, Ctx(env))
+    titles = [m.embed.title for m in env.hall.sent]
+    assert len(titles) == 2 and titles[0].endswith("Secrets of Wonderland") and titles[1].startswith("Easy")
+
+
+async def test_the_intro_is_the_approved_text_without_the_nobody_will_tell_you_line(env):
+    await env.cog.secrethunt_hallrefresh.callback(env.cog, Ctx(env))
+    text = intro_text(env)
+    assert "There are secrets hidden around this server." in text and "Nobody will tell you" not in text
+    for tier in ("Easy", "Medium", "Hard", "Expert"):
+        assert f"**{tier}:**" in text
+    assert "`.secrets`" in text and "The current poem" not in text  # nothing pinned yet
+
+
+async def test_the_intro_names_where_the_poem_is_pinned_and_follows_it(env):
+    ctx = Ctx(env)
+    await env.cog.secrethunt_hallrefresh.callback(env.cog, ctx)
+    await env.cog.secrethunt_poem.callback(env.cog, ctx, env.chans[0], "")
+    assert f"<#{env.chans[0].id}>" in intro_text(env)
+    await env.cog.secrethunt_poem.callback(env.cog, ctx, env.chans[1], "")
+    assert f"<#{env.chans[0].id}>" in intro_text(env) and f"<#{env.chans[1].id}>" in intro_text(env)
+    assert len(env.hall.sent) == 2  # edited in place, not reposted
+
+
+async def test_posting_a_poem_before_the_intro_exists_does_not_create_it(env):
+    await env.cog.secrethunt_poem.callback(env.cog, Ctx(env), env.chans[0], "")
+    assert env.hall.sent == []
+
+
+async def test_a_deleted_intro_is_rebuilt_at_the_top_with_the_puzzle_posts_after_it(env):
+    ctx = Ctx(env)
+    await env.cog.secrethunt_hallrefresh.callback(env.cog, ctx)
+    await solve(env, 21)
+    env.hall.sent.remove(env.hall.sent[0])  # a mod deleted the intro
+    await env.cog.secrethunt_hallrefresh.callback(env.cog, ctx)
+    titles = [m.embed.title for m in env.hall.sent]
+    assert len(titles) == 2 and titles[0].endswith("Secrets of Wonderland") and titles[1].startswith("Easy")
+    assert env.hall.sent[1].embed.description == "1. user21"  # the solver list survived the rebuild
+
+
+async def test_a_second_puzzle_goes_below_the_first_after_the_intro(env, monkeypatch):
+    other = {**PUZZLES[PID], "id": "second", "title": "The Second One"}
+    monkeypatch.setitem(env.mod.PUZZLES, "second", other)
+    ctx = Ctx(env)
+    await env.cog.secrethunt_start.callback(env.cog, ctx, PID)
+    await env.cog.secrethunt_start.callback(env.cog, ctx, "second")
+    titles = [m.embed.title for m in env.hall.sent]
+    assert titles[0].endswith("Secrets of Wonderland") and titles[1:] == ["Easy \u00b7 The Late Rabbit", "Easy \u00b7 The Second One"]

@@ -48,6 +48,7 @@ acrostic spells the trigger and that no answer appears in the public poem. Then 
 ## Notes
 - The trigger word is not a command: it is caught by a listener, the message is deleted at once, and nothing about
   it shows in `.help`. It also works as a plain DM to the bot.
+- The Hall of Secrets starts with a "what is this?" post (tiers, how it works, where the current poem is pinned). `start` and `hallrefresh` create it if missing, at the top; the `poem` command keeps its poem-channel line up to date. Its text lives in `embeds.intro_embed`.
 - The bot deletes the "pinned a message" notice so it cannot point at the object.
 - `poem` pins the poem it posts and unpins the previous poem in that channel. `disable` silences triggers, reactions and clue delivery; `enable` resumes.
 - Two wrong hunt objects lock a member out of the riddle for 24 hours; then they get two fresh tries on the same riddle.

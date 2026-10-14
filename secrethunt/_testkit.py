@@ -188,6 +188,9 @@ class _Partial:
     async def unpin(self, **kw):
         raise http_error("NotFound")
 
+    async def delete(self):
+        raise http_error("NotFound")
+
 
 class FakeChannel:
     def __init__(self, guild, cid, name="chan"):

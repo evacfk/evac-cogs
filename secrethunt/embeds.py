@@ -31,3 +31,23 @@ def hall_embed(tier: str, title: str, text: str, hidden: int, total: int) -> dis
         note += f" \N{MIDDLE DOT} {hidden} more not shown"
     embed.set_footer(text=note)
     return embed
+
+
+def intro_embed(poem_channel_ids) -> discord.Embed:
+    """The "what is this?" post at the top of the Hall of Secrets."""
+    text = (
+        "There are secrets hidden around this server.\n\n"
+        "**How it works:** a poem appears. If you figure out what it's hiding, the secret begins, and the Rabbit "
+        "comes to find you. Everything happens in Discord, and your path is your own, so sharing answers with a "
+        "friend won't help them.\n\n"
+        "**Tiers:**\n"
+        "\N{LARGE GREEN CIRCLE} **Easy:** a few days. A new one most weeks.\n"
+        "\N{LARGE ORANGE CIRCLE} **Medium:** about a week.\n"
+        "\N{LARGE RED CIRCLE} **Hard:** weeks.\n"
+        "\N{LARGE PURPLE CIRCLE} **Expert:** months.\n\n"
+        "Everyone who solves a secret is listed below. Hard and Expert solvers also earn a badge role. "
+        "Check yours any time with `.secrets`."
+    )
+    if poem_channel_ids:
+        text += "\n\n**The current poem is pinned in " + ", ".join(f"<#{c}>" for c in poem_channel_ids) + ".**"
+    return discord.Embed(title="\N{OLD KEY} Secrets of Wonderland", description=text, color=discord.Color.gold())

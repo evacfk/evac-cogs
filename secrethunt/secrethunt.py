@@ -359,6 +359,37 @@ class SecretHunt(commands.Cog):
                 log.warning("secrethunt: could not give %s to %s", role.id, member.id)
         return earned
 
+    async def _refresh_intro(self, guild, create: bool = False) -> None:
+        """Keep the "what is this?" post at the very top of the Hall. Edited in place when it exists. When it has to be
+        created, the puzzle posts are cleared first (the caller rewrites them) so that it really is the first post."""
+        conf = self.config.guild(guild)
+        hall = self._lookup(guild, await conf.hall_channel_id() or 0)
+        if hall is None:
+            return
+        async with self._lock(guild.id):
+            mid = await conf.hall_intro()
+            if not mid and not create:
+                return
+            embed = embeds.intro_embed(list((await conf.poems()).keys())[:3])
+            try:
+                if mid:
+                    try:
+                        await hall.get_partial_message(mid).edit(embed=embed)
+                        return
+                    except discord.NotFound:
+                        pass  # deleted: rebuild the channel top-down
+                async with conf.hall_messages() as posts:
+                    for old in list(posts.values()):
+                        try:
+                            await hall.get_partial_message(old).delete()
+                        except _DISCORD_ERRORS:
+                            pass
+                    posts.clear()
+                msg = await hall.send(embed=embed)
+                await conf.hall_intro.set(msg.id)
+            except _DISCORD_ERRORS:
+                log.warning("secrethunt: could not write the Hall of Secrets intro in guild %s", guild.id)
+
     async def _refresh_hall(self, guild, pid: str, create: bool = False):
         """Post or edit this puzzle's Hall of Secrets entry: its tier and every solver's name, in finishing order."""
         puzzle, conf = PUZZLES[pid], self.config.guild(guild)
@@ -515,6 +546,7 @@ class SecretHunt(commands.Cog):
             if puzzle_id not in published:
                 published.append(puzzle_id)
         await conf.active.set(puzzle_id)
+        await self._refresh_intro(ctx.guild, create=True)
         await self._refresh_hall(ctx.guild, puzzle_id, create=True)  # its Hall post exists from day one, in release order
         await ctx.send(f"**{PUZZLES[puzzle_id]['title']}** is live (once the hunt is enabled).")
 
@@ -546,6 +578,7 @@ class SecretHunt(commands.Cog):
                 poems.pop(str(target.id), None)
                 notes.append(f"Posted, but I could not pin it ({type(err).__name__}): I need Pin Messages here, "
                              "and a channel holds at most 50 pins.")
+        await self._refresh_intro(ctx.guild)  # it names the channels the poem is pinned in
         if notes:
             return await ctx.send(" ".join(notes))
         if target.id != ctx.channel.id:
@@ -582,6 +615,7 @@ class SecretHunt(commands.Cog):
         """Set (or clear) the Hall of Secrets channel. Each puzzle gets one post there listing its solvers."""
         conf = self.config.guild(ctx.guild)
         await conf.hall_channel_id.set(channel.id if channel else None)
+        await conf.hall_intro.set(0)
         await conf.hall_messages.set({})  # the old posts live in the old channel; new ones are written on demand
         await ctx.send(f"Hall of Secrets: {channel.mention}. Run `.secrethunt hallrefresh` to write the posts."
                        if channel else "Hall of Secrets cleared.")
@@ -589,6 +623,7 @@ class SecretHunt(commands.Cog):
     @secrethunt.command(name="hallrefresh")
     async def secrethunt_hallrefresh(self, ctx):
         """Rewrite every puzzle's Hall of Secrets post from the saved solver lists (after a deleted post, say)."""
+        await self._refresh_intro(ctx.guild, create=True)
         done = 0
         for pid in (await self.config.guild(ctx.guild).published()):  # release order
             if pid in PUZZLES:
