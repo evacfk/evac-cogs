@@ -150,7 +150,7 @@ class Wonderland(commands.Cog):
 
     # ------------------------------------------------------------------ commands
 
-    @commands.hybrid_group(name="wonderland", aliases=["wld"], fallback="menu")
+    @commands.hybrid_group(name="wonderland", aliases=["wld"], fallback="menu", invoke_without_command=True)
     @commands.guild_only()
     async def wonderland(self, ctx: commands.Context):
         """Your guide to everything Wonderland's bots can do."""
@@ -188,7 +188,8 @@ class Wonderland(commands.Cog):
         stats_cog = self.bot.get_cog("MyStats")
         if stats_cog is None:
             return await ctx.send("Stats aren't available right now.", ephemeral=True)
-        async with ctx.typing():
+        # ephemeral=True matters on the slash version: a plain defer would make the reply public.
+        async with ctx.typing(ephemeral=True):
             embed = await stats_cog.build_embed(ctx, member)
         await self._send_private(ctx, embed)
 

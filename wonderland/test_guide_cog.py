@@ -156,7 +156,9 @@ class FakeCtx:
         self.sent.append(m)
         return m
 
-    def typing(self):
+    def typing(self, *, ephemeral=False):
+        self.typing_ephemeral = ephemeral
+
         class _T:
             async def __aenter__(s): return None
             async def __aexit__(s, *a): return False
@@ -255,6 +257,17 @@ async def test_stats_uses_the_mystats_cog_and_replies_privately(mod):
     await cog.wonderland.subs["stats"].callback(cog, ctx, None)
     assert ctx.sent[0].kw["embed"].title == "stats for 5"
     assert ctx.sent[0].kw["delete_after"] == mod.PREFIX_REPLY_TTL
+
+
+async def test_stats_defer_is_ephemeral_so_the_slash_reply_is_never_public(mod):
+    class FakeStats:
+        async def build_embed(self, ctx, member):
+            return discord.Embed(title="x")
+    cog = make(mod, cogs={"MyStats": FakeStats()})
+    ctx = FakeCtx(interaction=object())
+    await cog.wonderland.subs["stats"].callback(cog, ctx, None)
+    assert ctx.typing_ephemeral is True
+    assert ctx.sent[0].kw["ephemeral"] is True
 
 
 async def test_stats_without_mystats_says_so(mod):
