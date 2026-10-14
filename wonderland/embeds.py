@@ -34,7 +34,7 @@ def page_embed(page: Page, lines: List[str], footer: str = FOOTER) -> discord.Em
     return _base(f"{page.emoji} {page.title}", body, footer)
 
 
-def map_embed(resolve: Callable[[str], Optional[str]], footer: str = FOOTER) -> discord.Embed:
+def map_embed(resolve: Callable[[object], object], footer: str = FOOTER) -> discord.Embed:
     parts = []
     for title, lines in engine.map_blocks(resolve):
         parts.append(f"**{title.upper()}**\n" + "\n".join(lines))

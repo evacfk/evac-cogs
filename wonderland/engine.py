@@ -81,22 +81,25 @@ def match_channel(slug: str, names: Dict[int, str]) -> Optional[int]:
 
 
 def channel_line(ch: Channel, mention: Optional[str]) -> str:
-    label = mention or f"**{ch.slug}**"
-    return f"{ch.emoji} {label}: {ch.desc}"
+    """One map line. With no link (mention is None) the name is bold, plus the unlock hint if any."""
+    if mention:
+        return f"{ch.emoji} {mention}: {ch.desc}"
+    hint = f" ({ch.unlock})" if ch.unlock else ""
+    return f"{ch.emoji} **{ch.slug}**: {ch.desc}{hint}"
 
 
 HIDDEN = object()  # `resolve` returns this for a channel the viewer cannot see
 
 
-def map_blocks(resolve: Callable[[str], object]) -> List[Tuple[str, List[str]]]:
-    """[(section title, [lines])]. `resolve(slug)` returns a clickable mention, None when the live
+def map_blocks(resolve: Callable[[Channel], object]) -> List[Tuple[str, List[str]]]:
+    """[(section title, [lines])]. `resolve(channel)` returns a clickable mention, None when the live
     channel can't be found (the name is shown in bold instead), or HIDDEN to leave it out.
     A section with nothing left to show is dropped."""
     blocks = []
     for section in MAP:
         lines = []
         for ch in section.channels:
-            found = resolve(ch.slug)
+            found = resolve(ch)
             if found is HIDDEN:
                 continue
             lines.append(channel_line(ch, found))

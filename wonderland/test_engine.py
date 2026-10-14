@@ -80,10 +80,11 @@ def test_match_channel_is_case_insensitive_for_spaces():
 
 
 def test_map_lines_use_mentions_when_found_and_bold_names_otherwise():
-    blocks = dict(engine.map_blocks(lambda slug: "<#7>" if slug == "cuddle" else None))
+    blocks = dict(engine.map_blocks(lambda ch: "<#7>" if ch.slug == "cuddle" else None))
     chat = blocks["chat"]
     assert any(line.startswith("🧸 <#7>:") for line in chat)
     assert any(line.startswith("🌙 **pillow-talk**:") for line in chat)
+    assert any("(pick the role in role-select)" in line for line in chat)
 
 
 def test_clamp_truncates_with_ellipsis():
@@ -112,7 +113,7 @@ def test_every_page_fits_in_one_embed_even_with_every_command_live():
     for p in PAGES:
         text = p.blurb + "\n\n" + "\n".join(engine.page_lines(p, live))
         assert len(text) < 3900, (p.key, len(text))
-    mapped = "\n\n".join(t + "\n" + "\n".join(lines) for t, lines in engine.map_blocks(lambda s: "<#123456789012345678>"))
+    mapped = "\n\n".join(t + "\n" + "\n".join(lines) for t, lines in engine.map_blocks(lambda ch: "<#123456789012345678>"))
     assert len(mapped) < 3900
 
 
@@ -122,7 +123,24 @@ def test_no_removed_commands_are_advertised():
 
 
 def test_map_blocks_skips_hidden_channels_and_drops_empty_sections():
-    blocks = dict(engine.map_blocks(lambda slug: engine.HIDDEN if slug in {"verify", "qotd", "hall-of-secrets", "selfies",
+    blocks = dict(engine.map_blocks(lambda ch: engine.HIDDEN if ch.slug in {"verify", "qotd", "hall-of-secrets", "selfies",
                                                                         "share-your-pics", "gm-and-gn-only", "counting"} else None))
     assert "other" not in blocks
     assert "important" in blocks and "chat" in blocks
+
+
+def test_unlinked_channel_shows_its_unlock_hint_only_when_it_has_one():
+    from wonderland.content import Channel
+    assert engine.channel_line(Channel("a", "x", "d"), None) == "x **a**: d"
+    assert engine.channel_line(Channel("a", "x", "d", unlock="verify first"), None) == "x **a**: d (verify first)"
+    assert engine.channel_line(Channel("a", "x", "d", unlock="verify first"), "<#1>") == "x <#1>: d"
+
+
+def test_the_three_gated_channels_are_flagged():
+    from wonderland.content import MAP
+    by = {c.slug: c for s in MAP for c in s.channels}
+    for slug in ("verify", "verified-chat", "pillow-talk"):
+        assert by[slug].public_link is False, slug
+    assert by["verify"].unlock == ""                 # vanishes for verified members
+    assert by["verified-chat"].unlock and by["pillow-talk"].unlock
+    assert by["cuddle"].public_link is True

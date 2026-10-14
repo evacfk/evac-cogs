@@ -14,7 +14,7 @@ from redbot.core import Config, commands
 
 from . import embeds, engine
 from .constants import (
-    COG_VERSION, CONFIG_ID, PREFIX_REPLY_TTL, PUBLISH_FOOTER, STATS_COOLDOWN, VIEW_TIMEOUT,
+    COG_VERSION, CONFIG_ID, PUBLISH_FOOTER, STATS_COOLDOWN, STUB_TTL, VIEW_TIMEOUT,
 )
 from .content import HOME_KEY, MAP, MAP_KEY, PAGES
 
@@ -78,6 +78,43 @@ class GuideView(discord.ui.View):
                 pass
 
 
+class OpenView(discord.ui.View):
+    """The one-line public stub a `.wld` prefix command leaves in the channel.
+
+    Prefix commands can't reply privately, so the real guide only appears when someone taps the
+    button, and then as an ephemeral message that only that person sees (built for them: their
+    visible channels, their mod status). Anyone can tap it and gets their own copy.
+    """
+
+    def __init__(self, make):
+        super().__init__(timeout=STUB_TTL)
+        self.make = make
+        self.message: Optional[discord.Message] = None
+
+    @discord.ui.button(label="Open it (only you will see it)", emoji="🐇", style=discord.ButtonStyle.primary)
+    async def open_button(self, interaction: discord.Interaction, button):
+        await interaction.response.defer(ephemeral=True)
+        try:
+            embed, view = await self.make(interaction.user)
+        except Exception:
+            log.exception("wonderland: building the guide failed")
+            await interaction.followup.send("Something went wrong. Try `/wonderland`.", ephemeral=True)
+            return
+        kwargs = {"embed": embed, "ephemeral": True, "wait": True}
+        if view is not None:
+            kwargs["view"] = view
+        message = await interaction.followup.send(**kwargs)
+        if view is not None:
+            view.message = message
+
+    async def on_timeout(self):
+        if self.message is not None:
+            try:
+                await self.message.delete()
+            except Exception:
+                pass
+
+
 class Wonderland(commands.Cog):
     """A compact guidebook to everything Wonderland's bots can do."""
 
@@ -105,31 +142,33 @@ class Wonderland(commands.Cog):
             return False
 
     def _resolver(self, guild: Optional[discord.Guild], member=None, public: bool = False):
-        """slug -> mention / None / HIDDEN.
-        member: channels that member can't see are HIDDEN.
-        public: a copy everybody reads. Channels @everyone can't open stay listed but as a plain
-        bold name, never a link that would show "no access"."""
+        """channel -> mention / None (name only) / HIDDEN.
+
+        member: what that member can open. A channel they can't open vanishes, unless it has an
+        `unlock` hint (verified-chat, pillow-talk): then it stays as a bold name plus the hint.
+        public: the copy everybody reads. Channels with public_link=False, and any @everyone can't
+        open, are a bold name only, never a link that would show "no access".
+        """
         channels = list(getattr(guild, "channels", [])) if guild else []
         by_id = {c.id: c for c in channels}
         names = {c.id: c.name for c in channels}
         # Voice channels and forums are included on purpose: Room Creator is a voice channel.
 
-        def resolve(slug: str):
-            channel_id = engine.match_channel(slug, names)
+        def can_view(channel_id, who) -> Optional[bool]:
+            try:
+                return bool(by_id[channel_id].permissions_for(who).view_channel)
+            except Exception:
+                return None  # can't tell
+
+        def resolve(ch):
+            channel_id = engine.match_channel(ch.slug, names)
             if channel_id is None:
                 return None
             if public:
-                try:
-                    if not by_id[channel_id].permissions_for(guild.default_role).view_channel:
-                        return None
-                except Exception:
-                    pass
-            elif member is not None:
-                try:
-                    if not by_id[channel_id].permissions_for(member).view_channel:
-                        return engine.HIDDEN
-                except Exception:
-                    pass  # can't tell: show it rather than hide it wrongly
+                if not ch.public_link or can_view(channel_id, guild.default_role) is False:
+                    return None
+            elif member is not None and can_view(channel_id, member) is False:
+                return None if ch.unlock else engine.HIDDEN
             return f"<#{channel_id}>"
 
         return resolve
@@ -147,28 +186,40 @@ class Wonderland(commands.Cog):
         lines = engine.page_lines(page, self._exists)
         return embeds.page_embed(page, lines, footer) if footer else embeds.page_embed(page, lines)
 
-    async def _send_private(self, ctx: commands.Context, embed: discord.Embed, view: Optional[GuideView] = None):
-        """Slash: ephemeral. Prefix: short-lived reply, and the invoking message is removed."""
-        kwargs = {"embed": embed, "allowed_mentions": discord.AllowedMentions.none()}
-        if view is not None:
-            kwargs["view"] = view
+    async def _deliver(self, ctx: commands.Context, make):
+        """Show `make(user) -> (embed, view or None)` to the person who asked, and only them.
+
+        Slash: an ephemeral reply, straight away. Prefix: a one-line stub with a button (see
+        OpenView), because a prefix reply is visible to the whole channel."""
         if ctx.interaction is not None:
-            message = await ctx.send(ephemeral=True, **kwargs)
-        else:
-            message = await ctx.send(delete_after=PREFIX_REPLY_TTL, **kwargs)
-            try:
-                await ctx.message.delete()
-            except Exception:
-                pass  # no Manage Messages here; the reply still cleans itself up
-        if view is not None:
-            view.message = message
+            await ctx.defer(ephemeral=True)  # also keeps slow builders (stats) inside Discord's 3s window
+            embed, view = await make(ctx.author)
+            kwargs = {"embed": embed, "ephemeral": True, "allowed_mentions": discord.AllowedMentions.none()}
+            if view is not None:
+                kwargs["view"] = view
+            message = await ctx.send(**kwargs)
+            if view is not None:
+                view.message = message
+            return
+        stub = OpenView(make)
+        stub.message = await ctx.send(
+            "🐇 **Wonderland guide**: tap the button. Only you will see it.",
+            view=stub, delete_after=STUB_TTL, allowed_mentions=discord.AllowedMentions.none())
+        try:
+            await ctx.message.delete()
+        except Exception:
+            pass  # no Manage Messages here; the stub still cleans itself up
+
+    def _guide_maker(self, ctx: commands.Context, key: str):
+        async def make(user):
+            is_mod = await self._is_mod(user)
+            shown = HOME_KEY if key == "mod" and not is_mod else key
+            view = GuideView(self, user.id, is_mod, shown)
+            return self.render(shown, ctx.guild, is_mod, member=user), view
+        return make
 
     async def _open(self, ctx: commands.Context, key: str):
-        is_mod = await self._is_mod(ctx.author)
-        if key == "mod" and not is_mod:
-            key = HOME_KEY
-        view = GuideView(self, ctx.author.id, is_mod, key)
-        await self._send_private(ctx, self.render(key, ctx.guild, is_mod, member=ctx.author), view)
+        await self._deliver(ctx, self._guide_maker(ctx, key))
 
     # ------------------------------------------------------------------ commands
 
@@ -191,29 +242,27 @@ class Wonderland(commands.Cog):
     @wonderland.command(name="mod")
     async def wonderland_mod(self, ctx: commands.Context):
         """The mod cheat sheet (mods only)."""
-        if not await self._is_mod(ctx.author):
-            return await self._send_private(ctx, embeds.home_embed(engine.visible_pages(False)))
-        await self._open(ctx, "mod")
+        await self._open(ctx, "mod")  # a non-mod just gets the normal home page
 
     @wonderland.command(name="search")
     async def wonderland_search(self, ctx: commands.Context, *, word: str):
         """Find a command by what it does, e.g. `.wld search card`."""
-        is_mod = await self._is_mod(ctx.author)
-        hits = engine.search(word, self._exists, is_mod)
-        await self._send_private(ctx, embeds.search_embed(word, hits))
+        async def make(user):
+            hits = engine.search(word, self._exists, await self._is_mod(user))
+            return embeds.search_embed(word, hits), None
+        await self._deliver(ctx, make)
 
     @wonderland.command(name="stats")
     @commands.cooldown(1, STATS_COOLDOWN, commands.BucketType.user)
     async def wonderland_stats(self, ctx: commands.Context, member: Optional[discord.Member] = None):
         """Your record across every game (or someone else's)."""
-        member = member or ctx.author
         stats_cog = self.bot.get_cog("MyStats")
         if stats_cog is None:
             return await ctx.send("Stats aren't available right now.", ephemeral=True)
-        # ephemeral=True matters on the slash version: a plain defer would make the reply public.
-        async with ctx.typing(ephemeral=True):
-            embed = await stats_cog.build_embed(ctx, member)
-        await self._send_private(ctx, embed)
+
+        async def make(user):
+            return await stats_cog.build_embed(ctx, member or user), None
+        await self._deliver(ctx, make)
 
     @wonderland.command(name="version")
     async def wonderland_version(self, ctx: commands.Context):
@@ -222,13 +271,14 @@ class Wonderland(commands.Cog):
 
     @wonderland.command(name="publish")
     @commands.mod_or_permissions(manage_guild=True)
-    async def wonderland_publish(self, ctx: commands.Context, channel: discord.TextChannel):
-        """Post the whole guide in a channel, or refresh it if it's already there."""
+    async def wonderland_publish(self, ctx: commands.Context, channel: discord.TextChannel,
+                                 what: Literal["all", "map"] = "all"):
+        """Post the guide in a channel (`all`, the default) or just the server map (`map`). Run it again to refresh."""
         async with ctx.typing():
             stored = await self.config.guild(ctx.guild).publish()
             old = stored.get("messages", {}) if stored.get("channel_id") == channel.id else {}
-            new: dict = {}
-            keys = [p.key for p in PAGES if not p.mod_only] + [MAP_KEY]
+            new: dict = dict(old)  # keep earlier posts so a map-only run never orphans the other pages
+            keys = [MAP_KEY] if what == "map" else [p.key for p in PAGES if not p.mod_only] + [MAP_KEY]
             for key in keys:
                 embed = self.render(key, ctx.guild, False, footer=PUBLISH_FOOTER, public=True)
                 message = None
@@ -242,4 +292,5 @@ class Wonderland(commands.Cog):
                     message = await channel.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
                 new[str(key)] = message.id
             await self.config.guild(ctx.guild).publish.set({"channel_id": channel.id, "messages": new})
-        await ctx.send(f"Guide published in {channel.mention} ({len(new)} messages). Run this again to refresh it.")
+        posted = len(keys)
+        await ctx.send(f"Published {posted} message{'s' if posted != 1 else ''} in {channel.mention}. Run the same command again to refresh them.")

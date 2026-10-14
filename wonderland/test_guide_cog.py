@@ -161,29 +161,118 @@ class FakeCtx:
         self.sent.append(m)
         return m
 
-    def typing(self, *, ephemeral=False):
-        self.typing_ephemeral = ephemeral
+    async def defer(self, *, ephemeral=False):
+        self.deferred_ephemeral = ephemeral
 
+    def typing(self, *, ephemeral=False):
         class _T:
             async def __aenter__(s): return None
             async def __aexit__(s, *a): return False
         return _T()
 
 
+class Click:
+    """A user tapping a button or picking from a menu."""
+
+    def __init__(self, user_id, guild):
+        self.user = types.SimpleNamespace(id=user_id)
+        self.guild = guild
+        self.deferred_ephemeral = None
+        self.followups = []
+        self.response = types.SimpleNamespace(defer=self._defer)
+        self.followup = types.SimpleNamespace(send=self._send)
+
+    async def _defer(self, *, ephemeral=False):
+        self.deferred_ephemeral = ephemeral
+
+    async def _send(self, *a, **kw):
+        m = FakeMessage(**kw)
+        m.args = a
+        self.followups.append(m)
+        return m
+
+
+async def tap(stub, interaction):
+    item = stub.open_button
+    cb = getattr(item, "callback", None)
+    if cb is None:
+        await item(interaction, None)   # stub environment: the decorator left a plain method
+    else:
+        await cb(interaction)
+
+
+async def shown(ctx, user_id=5):
+    """What the person ends up seeing privately, for either way of invoking the command."""
+    if ctx.interaction is not None:
+        return ctx.sent[0].kw
+    stub = ctx.sent[0].kw["view"]
+    click = Click(user_id, ctx.guild)
+    await tap(stub, click)
+    assert click.deferred_ephemeral is True
+    return click.followups[0].kw
+
+
 def make(mod, **bot_kw):
     return mod.Wonderland(FakeBot(**bot_kw))
 
 
-async def test_prefix_reply_is_short_lived_and_invoking_message_removed(mod):
+async def test_prefix_command_leaves_only_a_content_free_stub_in_the_channel(mod):
     cog = make(mod, commands={"payday"})
     ctx = FakeCtx()
     await cog.wonderland.callback(cog, ctx)
-    sent = ctx.sent[0]
-    assert sent.kw["delete_after"] == mod.PREFIX_REPLY_TTL
-    assert "ephemeral" not in sent.kw
+    stub = ctx.sent[0]
+    assert stub.kw["delete_after"] == mod.STUB_TTL
+    assert "embed" not in stub.kw                      # nothing from the guide is public
+    assert "payday" not in stub.args[0] and "Economy" not in stub.args[0]
+    assert isinstance(stub.kw["view"], mod.OpenView)
     assert ctx.message.deleted
-    assert sent.kw["view"].message is sent
-    assert "Wonderland Guide" in sent.kw["embed"].title
+    assert stub.kw["view"].message is stub
+
+
+async def test_tapping_the_stub_gives_a_private_ephemeral_guide(mod):
+    cog = make(mod, commands={"payday"})
+    ctx = FakeCtx()
+    await cog.wonderland.callback(cog, ctx)
+    click = Click(5, ctx.guild)
+    await tap(ctx.sent[0].kw["view"], click)
+    reply = click.followups[0].kw
+    assert click.deferred_ephemeral is True and reply["ephemeral"] is True
+    assert "Wonderland Guide" in reply["embed"].title
+    assert reply["view"].author_id == 5
+
+
+async def test_each_person_who_taps_gets_their_own_copy_built_for_them(mod):
+    guild = FakeGuild([FakeChannel(11, "🧸・cuddle"), FakeChannel(12, "🔢・counting", hidden_from={5})])
+    cog = make(mod)
+    ctx = FakeCtx(guild=guild)
+    await cog.wonderland.subs["map"].callback(cog, ctx)
+    stub = ctx.sent[0].kw["view"]
+    c5, c6 = Click(5, guild), Click(6, guild)
+    await tap(stub, c5)
+    await tap(stub, c6)
+    seen5 = c5.followups[0].kw["embed"].description
+    seen6 = c6.followups[0].kw["embed"].description
+    assert "<#12>" not in seen5 and "<#12>" in seen6
+    assert c6.followups[0].kw["view"].author_id == 6
+
+
+async def test_a_failing_builder_tells_the_person_instead_of_hanging(mod):
+    cog = make(mod)
+
+    async def broken(user):
+        raise RuntimeError("boom")
+    stub = mod.OpenView(broken)
+    click = Click(5, FakeGuild([]))
+    await tap(stub, click)
+    assert "Something went wrong" in click.followups[0].args[0]
+    assert click.followups[0].kw["ephemeral"] is True
+
+
+async def test_stub_deletes_itself_when_it_times_out(mod):
+    stub = mod.OpenView(None)
+    stub.message = FakeMessage()
+    await stub.on_timeout()
+    assert stub.message.deleted
 
 
 async def test_slash_reply_is_ephemeral_and_nothing_is_deleted(mod):
@@ -191,6 +280,7 @@ async def test_slash_reply_is_ephemeral_and_nothing_is_deleted(mod):
     ctx = FakeCtx(interaction=object())
     await cog.wonderland.callback(cog, ctx)
     sent = ctx.sent[0]
+    assert ctx.deferred_ephemeral is True
     assert sent.kw["ephemeral"] is True
     assert "delete_after" not in sent.kw
     assert not ctx.message.deleted
@@ -211,7 +301,7 @@ async def test_page_shows_only_live_commands(mod):
     cog = make(mod, commands={"payday", "shop"})
     ctx = FakeCtx()
     await cog.wonderland.subs["page"].callback(cog, ctx, "economy")
-    text = ctx.sent[0].kw["embed"].description
+    text = (await shown(ctx))["embed"].description
     assert "`.payday`" in text and "`.shop`" in text
     assert ".lottery" not in text and ".bank balance" not in text
 
@@ -220,9 +310,9 @@ async def test_member_never_sees_the_mod_page_or_dropdown_option(mod):
     cog = make(mod)
     ctx = FakeCtx(author_id=5)
     await cog.wonderland.subs["mod"].callback(cog, ctx)
-    assert "Mod Cheat Sheet" not in (ctx.sent[0].kw["embed"].title or "")
-    await cog.wonderland.callback(cog, ctx)
-    values = [o.value for o in ctx.sent[-1].kw["view"].children[0].options]
+    reply = await shown(ctx, 5)
+    assert "Mod Cheat Sheet" not in (reply["embed"].title or "")
+    values = [o.value for o in reply["view"].children[0].options]
     assert "mod" not in values and MAP_KEY in values and HOME_KEY in values
 
 
@@ -230,8 +320,9 @@ async def test_mod_gets_the_mod_page_and_option(mod):
     cog = make(mod, mods={9})
     ctx = FakeCtx(author_id=9)
     await cog.wonderland.subs["mod"].callback(cog, ctx)
-    assert "Mod Cheat Sheet" in ctx.sent[0].kw["embed"].title
-    values = [o.value for o in ctx.sent[0].kw["view"].children[0].options]
+    reply = await shown(ctx, 9)
+    assert "Mod Cheat Sheet" in reply["embed"].title
+    values = [o.value for o in reply["view"].children[0].options]
     assert values[-1] == "mod"
 
 
@@ -240,7 +331,7 @@ async def test_map_links_live_channels_and_falls_back_to_bold_names(mod):
     cog = make(mod)
     ctx = FakeCtx(guild=guild)
     await cog.wonderland.subs["map"].callback(cog, ctx)
-    text = ctx.sent[0].kw["embed"].description
+    text = (await shown(ctx))["embed"].description
     assert "<#11>" in text and "<#12>" in text and "**pillow-talk**" in text
 
 
@@ -250,11 +341,40 @@ def _map_text(mod, guild, member=None, public=False):
 
 
 async def test_map_hides_channels_the_member_cannot_open(mod):
-    guild = FakeGuild([FakeChannel(11, "🧸・cuddle"), FakeChannel(12, "✅・verified-chat", hidden_from={5}),
-                       FakeChannel(13, "🔐・verify")])
+    guild = FakeGuild([FakeChannel(11, "🧸・cuddle"), FakeChannel(12, "🔢・counting", hidden_from={5}),
+                       FakeChannel(13, "❓・qotd")])
     text = _map_text(mod, guild, member=types.SimpleNamespace(id=5))
     assert "<#11>" in text and "<#13>" in text
-    assert "<#12>" not in text and "verified-chat" not in text
+    assert "<#12>" not in text and "counting" not in text
+
+
+async def test_locked_channel_with_an_unlock_hint_stays_as_a_plain_name(mod):
+    guild = FakeGuild([FakeChannel(12, "✅・verified-chat", hidden_from={5}),
+                       FakeChannel(14, "🌙・pillow-talk", hidden_from={5})])
+    text = _map_text(mod, guild, member=types.SimpleNamespace(id=5))
+    assert "<#12>" not in text and "<#14>" not in text
+    assert "**verified-chat**: for verified members (verify first)" in text
+    assert "**pillow-talk**" in text and "(pick the role in role-select)" in text
+
+
+async def test_verify_channel_disappears_for_someone_who_already_verified(mod):
+    guild = FakeGuild([FakeChannel(13, "🔐・verify", hidden_from={5})])
+    text = _map_text(mod, guild, member=types.SimpleNamespace(id=5))
+    assert "verify**" not in text and "<#13>" not in text
+
+
+async def test_verify_is_clickable_for_someone_who_can_still_see_it(mod):
+    guild = FakeGuild([FakeChannel(13, "🔐・verify")])
+    assert "<#13>" in _map_text(mod, guild, member=types.SimpleNamespace(id=6))
+
+
+async def test_public_copy_never_links_verify_verified_chat_or_pillow_talk_even_if_everyone_can_see_them(mod):
+    guild = FakeGuild([FakeChannel(11, "🧸・cuddle"), FakeChannel(12, "✅・verified-chat"),
+                       FakeChannel(13, "🔐・verify"), FakeChannel(14, "🌙・pillow-talk")])
+    text = _map_text(mod, guild, public=True)
+    assert "<#11>" in text
+    assert not any(f"<#{i}>" in text for i in (12, 13, 14))
+    assert "**verify**" in text and "**verified-chat**" in text and "**pillow-talk**" in text
 
 
 async def test_map_shows_the_gated_channel_to_a_member_who_has_access(mod):
@@ -300,7 +420,7 @@ async def test_published_guide_uses_the_public_map(mod):
 
 
 async def test_dropdown_map_is_filtered_for_the_person_who_picked_it(mod):
-    guild = FakeGuild([FakeChannel(11, "🧸・cuddle"), FakeChannel(12, "✅・verified-chat", hidden_from={5})])
+    guild = FakeGuild([FakeChannel(11, "🧸・cuddle"), FakeChannel(12, "🔢・counting", hidden_from={5})])
     cog = make(mod)
     view = mod.GuideView(cog, author_id=5, is_mod=False)
     select = view.children[0]
@@ -315,7 +435,7 @@ async def test_dropdown_map_is_filtered_for_the_person_who_picked_it(mod):
         response=types.SimpleNamespace(edit_message=edit_message))
     await select.callback(interaction)
     text = edits[0]["embed"].description
-    assert "<#11>" in text and "<#12>" not in text and "verified-chat" not in text
+    assert "<#11>" in text and "<#12>" not in text and "counting" not in text
     assert edits[0]["view"].author_id == 5
 
 
@@ -323,9 +443,10 @@ async def test_search_reports_hits_and_misses(mod):
     cog = make(mod, commands={"fish", "fishinfo"})
     ctx = FakeCtx()
     await cog.wonderland.subs["search"].callback(cog, ctx, word="fish")
-    assert "`.fish`" in ctx.sent[0].kw["embed"].description
-    await cog.wonderland.subs["search"].callback(cog, ctx, word="zzzz")
-    assert "Nothing found" in ctx.sent[1].kw["embed"].description
+    assert "`.fish`" in (await shown(ctx))["embed"].description
+    ctx2 = FakeCtx()
+    await cog.wonderland.subs["search"].callback(cog, ctx2, word="zzzz")
+    assert "Nothing found" in (await shown(ctx2))["embed"].description
 
 
 async def test_stats_uses_the_mystats_cog_and_replies_privately(mod):
@@ -335,8 +456,9 @@ async def test_stats_uses_the_mystats_cog_and_replies_privately(mod):
     cog = make(mod, cogs={"MyStats": FakeStats()})
     ctx = FakeCtx(author_id=5)
     await cog.wonderland.subs["stats"].callback(cog, ctx, None)
-    assert ctx.sent[0].kw["embed"].title == "stats for 5"
-    assert ctx.sent[0].kw["delete_after"] == mod.PREFIX_REPLY_TTL
+    assert "embed" not in ctx.sent[0].kw                       # the stub carries no stats
+    assert (await shown(ctx, 5))["embed"].title == "stats for 5"
+    assert (await shown(ctx, 8))["embed"].title == "stats for 8"   # whoever taps sees their own
 
 
 async def test_stats_defer_is_ephemeral_so_the_slash_reply_is_never_public(mod):
@@ -346,7 +468,7 @@ async def test_stats_defer_is_ephemeral_so_the_slash_reply_is_never_public(mod):
     cog = make(mod, cogs={"MyStats": FakeStats()})
     ctx = FakeCtx(interaction=object())
     await cog.wonderland.subs["stats"].callback(cog, ctx, None)
-    assert ctx.typing_ephemeral is True
+    assert ctx.deferred_ephemeral is True
     assert ctx.sent[0].kw["ephemeral"] is True
 
 
@@ -413,6 +535,30 @@ async def test_publish_to_a_new_channel_does_not_touch_the_old_posts(mod):
     await cog.wonderland.subs["publish"].callback(cog, ctx, new)
     assert all(not m.edits for m in old.sent)
     assert len(new.sent) == len(old.sent)
+
+
+async def test_publish_map_only_posts_one_message_and_keeps_other_page_ids(mod):
+    cog = make(mod)
+    ctx = FakeCtx()
+    channel = FakeChannel(77, "server-guide")
+    await cog.wonderland.subs["publish"].callback(cog, ctx, channel, "all")
+    total = len(channel.sent)
+    await cog.wonderland.subs["publish"].callback(cog, ctx, channel, "map")
+    assert len(channel.sent) == total                 # the map was edited in place, nothing new
+    assert "Published 1 message " in ctx.sent[-1].args[0]
+    stored = (await cog.config.guild(ctx.guild).publish())["messages"]
+    assert len(stored) == total                       # other pages still tracked
+    await cog.wonderland.subs["publish"].callback(cog, ctx, channel, "all")
+    assert len(channel.sent) == total                 # a later full run edits, never duplicates
+
+
+async def test_publish_map_only_into_a_fresh_channel_posts_just_the_map(mod):
+    cog = make(mod)
+    ctx = FakeCtx()
+    channel = FakeChannel(78, "server-guide")
+    await cog.wonderland.subs["publish"].callback(cog, ctx, channel, "map")
+    assert len(channel.sent) == 1
+    assert "Server Map" in channel.sent[0].kw["embed"].title
 
 
 async def test_version_probe(mod):

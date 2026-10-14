@@ -33,6 +33,10 @@ class Channel:
     slug: str       # the channel name without its emoji prefix, used to find the live channel
     emoji: str
     desc: str
+    # Channels whose access changes with something the member does (verifying, picking a role):
+    public_link: bool = True   # False: the published copy shows the name only, never a link
+    unlock: str = ""           # how to get in. A member who can't open it sees the name + this hint,
+                               # instead of the channel vanishing ("" = hide it from them)
 
 
 @dataclass(frozen=True)
@@ -148,13 +152,14 @@ MAP = (
     )),
     Section("chat", (
         Channel("cuddle", "🧸", "main chat"),
-        Channel("pillow-talk", "🌙", "an adult version of cuddle where NSFW conversations are permitted"),
-        Channel("verified-chat", "✅", "for verified members"),
+        Channel("pillow-talk", "🌙", "an adult version of cuddle where NSFW conversations are permitted",
+                public_link=False, unlock="pick the role in role-select"),
+        Channel("verified-chat", "✅", "for verified members", public_link=False, unlock="verify first"),
         Channel("bump-us", "🚀", "bump the server and earn rewards"),
         Channel("chat-topics", "🧵", "specific conversation topics"),
     )),
     Section("other", (
-        Channel("verify", "🔐", "become a verified Wonderlandian!"),
+        Channel("verify", "🔐", "become a verified Wonderlandian!", public_link=False),
         Channel("qotd", "❓", "question of the day"),
         Channel("hall-of-secrets", "🗝️", "secret hunting"),
         Channel("selfies", "📸", "selfie sharing"),
