@@ -1058,3 +1058,72 @@ async def test_check_command_reports_an_empty_source_and_an_unmapped_sub_and_a_s
     ctx3 = Ctx(guild=Guild([FEET_CH]))
     await cb("redditfeed_check")(bad, ctx3, "feet")
     assert "the source failed" in ctx3.sent[0]
+
+
+# ---------------------------------------------------------------- backfill
+
+async def test_backfill_queues_posts_from_before_the_mapping_and_beyond_the_12h_lookback():
+    old = post("old", age_min=60 * 50)            # 50h old: before added_ts (24h ago) and past the 12h window
+    cog = make({"feet": [old]})
+    await cog._run_poll_cycle()
+    assert QUEUE_CH.sent == []                    # the normal poll never touches it
+    ctx = Ctx(guild=Guild([FEET_CH]))
+    await cb("redditfeed_backfill")(cog, ctx, "feet", 72)
+    assert len(QUEUE_CH.sent) == 1 and "1** post(s) added" in ctx.sent[0]
+    after = cog.source.fetches[-1][1]
+    assert abs(after - (time.time() - 72 * 3600)) < 5
+
+
+async def test_backfill_twice_does_not_repeat_posts():
+    cog = make({"feet": [post("a", age_min=3000)]})
+    ctx = Ctx(guild=Guild([FEET_CH]))
+    await cb("redditfeed_backfill")(cog, ctx, "feet", 72)
+    await cb("redditfeed_backfill")(cog, ctx, "feet", 72)
+    assert len(QUEUE_CH.sent) == 1 and "already handled 1" in ctx.sent[1] and "0** post(s)" in ctx.sent[1]
+
+
+async def test_backfill_cap_keeps_the_newest_posts(monkeypatch):
+    monkeypatch.setattr(rf_module.constants, "BACKFILL_MAX_POSTS", 2)
+    posts = [post(f"p{i}", age_min=200 + i * 100) for i in range(5)]      # p0 newest ... p4 oldest
+    cog = make({"feet": posts})
+    ctx = Ctx(guild=Guild([FEET_CH]))
+    await cb("redditfeed_backfill")(cog, ctx, "feet", 48)
+    queued_ids = [e["post"]["id"] for e in (await cog.config.queue()).values()]
+    assert sorted(queued_ids) == ["p0", "p1"] and "run it again for more" in ctx.sent[0]
+
+
+async def test_backfill_respects_the_score_gate_and_the_queue_cap():
+    cog = make({"feet": [post("low", age_min=3000, score=1), post("ok", age_min=3000)]}, queue_min_score=5)
+    ctx = Ctx(guild=Guild([FEET_CH]))
+    await cb("redditfeed_backfill")(cog, ctx, "feet", 72)
+    assert len(QUEUE_CH.sent) == 1 and "low score 1" in ctx.sent[0]
+    full = make({"feet": [post("a", age_min=3000)]}, queue_max_pending=0)
+    ctx2 = Ctx(guild=Guild([FEET_CH]))
+    await cb("redditfeed_backfill")(full, ctx2, "feet", 72)
+    assert "queue is full" in ctx2.sent[0]
+
+
+async def test_backfill_refuses_auto_unmapped_and_paused_and_clamps_hours():
+    auto = SubredditMapping(subreddit="feet", channel_ids=[20], approval="auto", added_ts=NOW - 86400).to_dict()
+    cog = make({"feet": [post("a", age_min=3000)]}, mappings={"feet": auto})
+    ctx = Ctx(guild=Guild([FEET_CH]))
+    await cb("redditfeed_backfill")(cog, ctx, "feet", 24)
+    assert "auto mode" in ctx.sent[0] and QUEUE_CH.sent == [] and cog.source.fetches == []
+    await cb("redditfeed_backfill")(cog, ctx, "nope", 24)
+    assert ctx.sent[1] == "r/nope isn't mapped."
+    paused = SubredditMapping(subreddit="feet", channel_ids=[20], paused=True, added_ts=NOW - 86400).to_dict()
+    pcog = make({}, mappings={"feet": paused})
+    pctx = Ctx(guild=Guild([FEET_CH]))
+    await cb("redditfeed_backfill")(pcog, pctx, "feet", 24)
+    assert "paused" in pctx.sent[0]
+    big = make({"feet": []})
+    await cb("redditfeed_backfill")(big, Ctx(guild=Guild([FEET_CH])), "feet", 99999)
+    assert abs(big.source.fetches[-1][1] - (time.time() - 168 * 3600)) < 5
+
+
+async def test_backfill_leaves_cycle_stats_and_the_mapping_alone():
+    cog = make({"feet": [post("a", age_min=3000)]})
+    cog._last_stats = {"queued": 7}
+    before = dict((await cog.config.mappings())["feet"])
+    await cb("redditfeed_backfill")(cog, Ctx(guild=Guild([FEET_CH])), "feet", 72)
+    assert cog._last_stats == {"queued": 7} and (await cog.config.mappings())["feet"] == before

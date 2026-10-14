@@ -112,6 +112,8 @@ QUEUE_FETCH_LIMIT = 100
 QUEUE_MAX_PER_SUB_PER_CYCLE = 5
 QUEUE_MAX_PREVIEW_IMAGES = 4
 QUEUE_POST_DELAY_SECONDS = 1.0
+BACKFILL_MAX_HOURS = 168       # `backfill` looks at most a week back
+BACKFILL_MAX_POSTS = 25        # ...and queues at most this many per run
 
 QUEUE_APPROVE_ID = "redditfeed:q:approve"
 QUEUE_REJECT_ID = "redditfeed:q:reject"

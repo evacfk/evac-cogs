@@ -342,20 +342,30 @@ class RedditFeed(DashboardIntegration, commands.Cog):
     def _bump(self, key: str, n: int = 1) -> None:
         self._last_stats[key] = self._last_stats.get(key, 0) + n
 
-    async def _queue_one_subreddit(self, mapping: SubredditMapping, dedup_store: dict, now: float, qcfg: dict) -> dict:
+    async def _queue_one_subreddit(
+        self, mapping: SubredditMapping, dedup_store: dict, now: float, qcfg: dict,
+        *, after: Optional[float] = None, ignore_added: bool = False,
+        max_queue: Optional[int] = None, newest_first: bool = False,
+    ) -> dict:
         """Manual mode: find posts that have settled (old enough, enough score),
         and put them in the mod queue instead of the public channel. Posts that
         aren't ready yet are simply looked at again next cycle until they age
-        out of the lookback window."""
+        out of the lookback window. The keyword arguments are for `backfill`:
+        a custom window, ignoring the "mapped after this post" rule, a bigger
+        per-run cap, and newest posts first so a cap drops the oldest."""
         queue_channel = self.bot.get_channel(qcfg["channel_id"]) if qcfg["channel_id"] else None
         if queue_channel is None:
             mapping.last_error = "manual approval is on but no queue channel is set (.redditfeed queue channel #mod-queue)"
             self._bump("no_queue_channel")
             return dedup_store
 
-        after = engine.queue_fetch_after(time.time(), mapping.added_ts)
+        if after is None:
+            after = engine.queue_fetch_after(time.time(), mapping.added_ts)
         posts = await self.source.fetch_new_posts(mapping.subreddit, after, constants.QUEUE_FETCH_LIMIT)
         posts = engine.sort_posts_oldest_first(posts)
+        if newest_first:
+            posts.reverse()
+        per_run_cap = max_queue or constants.QUEUE_MAX_PER_SUB_PER_CYCLE
 
         queued = 0
         newest_post = None
@@ -365,18 +375,21 @@ class RedditFeed(DashboardIntegration, commands.Cog):
                 continue
             media_items = engine.extract_media_items(post)
             if not media_items:
+                self._bump("no_media")
                 continue
             fresh = [c for c in mapping.channel_ids if engine.build_dedup_key(c, post["id"]) not in dedup_store]
             if not fresh:
+                self._bump("already_handled")
                 continue
-            reason = engine.queue_skip_reason(post, time.time(), mapping.added_ts, qcfg["min_age"], qcfg["min_score"])
+            reason = engine.queue_skip_reason(
+                post, time.time(), None if ignore_added else mapping.added_ts, qcfg["min_age"], qcfg["min_score"])
             if reason is not None:
                 self._bump(reason)
                 continue
             if qcfg["pending"] >= qcfg["max_pending"]:
                 self._bump("queue_full")
                 break
-            if queued >= constants.QUEUE_MAX_PER_SUB_PER_CYCLE:
+            if queued >= per_run_cap:
                 self._bump("per_sub_cap")
                 break
 
@@ -596,7 +609,7 @@ class RedditFeed(DashboardIntegration, commands.Cog):
     @redditfeed.command(name="version")
     async def redditfeed_version(self, ctx: commands.Context) -> None:
         """Version-probe command -- confirms a deploy actually took."""
-        await ctx.send("redditfeed build: source-v6 (.redditfeed check dry-run)")
+        await ctx.send("redditfeed build: source-v7 (.redditfeed backfill)")
 
     async def _map_subreddit(self, name: str, channel_id: int) -> bool:
         """The one place a subreddit gets mapped to a channel -- `add` and the
@@ -974,6 +987,53 @@ class RedditFeed(DashboardIntegration, commands.Cog):
             if channel_id:
                 out[channel_id] = f"TG topic \"{(item.get('title') or item.get('topic_id'))}\"" + (" (paused)" if item.get("paused") else "")
         return out
+
+    @redditfeed.command(name="backfill")
+    async def redditfeed_backfill(self, ctx: commands.Context, subreddit: str, hours: int = 24) -> None:
+        """Queue older posts for approval: `.redditfeed backfill <sub> [hours]` (default 24, max 168).
+        Manual-approval subreddits only. Follows the queue gates (min age / score / cap), newest
+        first, at most 25 per run; posts already queued or posted are never repeated."""
+        name = engine.normalize_subreddit(subreddit)
+        raw = (await self.config.mappings()).get(name)
+        if not raw:
+            await ctx.send(f"r/{name} isn't mapped.")
+            return
+        mapping = SubredditMapping.from_dict(raw)
+        if mapping.approval != constants.APPROVAL_MANUAL:
+            await ctx.send(f"r/{name} is in auto mode, so a backfill would post straight into the channel. "
+                           f"Switch it first (`.redditfeed mode {name} manual`), backfill, review, then switch back.")
+            return
+        if not mapping.channel_ids or mapping.paused:
+            await ctx.send(f"r/{name} is paused or has no channel; fix that first.")
+            return
+        hours = min(max(int(hours), 1), constants.BACKFILL_MAX_HOURS)
+        async with ctx.typing():
+            async with self._cycle_lock:             # the poll loop also writes the dedup store
+                saved_stats, self._last_stats = self._last_stats, {}
+                try:
+                    dedup_store = await self.config.dedup_store()
+                    qcfg = await self._queue_settings()
+                    now = time.time()
+                    try:
+                        dedup_store = await self._queue_one_subreddit(
+                            mapping, dedup_store, now, qcfg, after=now - hours * 3600, ignore_added=True,
+                            max_queue=constants.BACKFILL_MAX_POSTS, newest_first=True)
+                    except RedditSourceError as exc:
+                        await ctx.send(f"r/{name}: the source failed: {exc}")
+                        return
+                    await self.config.dedup_store.set(dedup_store)
+                    stats = self._last_stats
+                finally:
+                    self._last_stats = saved_stats
+        if mapping.last_error:
+            await ctx.send(f"r/{name}: {mapping.last_error}")
+            return
+        queued = stats.get("queued", 0)
+        notes = ", ".join(f"{k.replace('_', ' ')} {v}" for k, v in sorted(stats.items()) if k != "queued")
+        await ctx.send(f"Backfill r/{name}, last {hours}h: **{queued}** post(s) added to the queue"
+                       + (f". Not queued: {notes}." if notes else ".")
+                       + (" Cap reached: run it again for more." if stats.get("per_sub_cap") else "")
+                       + (" The queue is full: clear some first." if stats.get("queue_full") else ""))
 
     @redditfeed.command(name="check")
     async def redditfeed_check(self, ctx: commands.Context, subreddit: str) -> None:
