@@ -515,7 +515,27 @@ class SecretHunt(commands.Cog):
         if pid not in PUZZLES:
             return await ctx.send("No puzzle is started. Use `.secrethunt start late_rabbit` first.")
         target = channel or ctx.channel
-        await target.send(embed=embeds.poem_embed(PUZZLES[pid]))
+        try:
+            posted = await target.send(embed=embeds.poem_embed(PUZZLES[pid]))
+        except _DISCORD_ERRORS as err:
+            return await ctx.send(f"I could not post there ({type(err).__name__}).")
+        notes = []
+        async with self.config.guild(ctx.guild).poems() as poems:
+            old = poems.get(str(target.id))
+            if old:  # the previous poem in this channel comes down as the new one goes up
+                try:
+                    await target.get_partial_message(old).unpin(reason="A new secret poem replaces it")
+                except _DISCORD_ERRORS:
+                    pass  # already unpinned or deleted
+            try:
+                await posted.pin(reason="Secret poem")
+                poems[str(target.id)] = posted.id
+            except _DISCORD_ERRORS as err:
+                poems.pop(str(target.id), None)
+                notes.append(f"Posted, but I could not pin it ({type(err).__name__}): I need Pin Messages here, "
+                             "and a channel holds at most 50 pins.")
+        if notes:
+            return await ctx.send(" ".join(notes))
         if target.id != ctx.channel.id:
             await ctx.tick()
 

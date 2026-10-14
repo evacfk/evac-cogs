@@ -147,7 +147,7 @@ class FakeMessage:
         self.attachments = []
         self.type = kw.get("type", 0)
 
-    async def pin(self):
+    async def pin(self, **kw):
         if getattr(self.channel, "fail_pin", False):
             raise http_error("Forbidden")
         self.pinned = True
@@ -155,6 +155,9 @@ class FakeMessage:
         pins_add = getattr(getattr(discord, "MessageType", None), "pins_add", None)
         if pins_add is not None:  # Discord posts "<bot> pinned a message to this channel"; so does the fake
             self.channel.sent.append(FakeMessage(self.channel, author=types.SimpleNamespace(id=999), type=pins_add))
+
+    async def unpin(self, **kw):
+        self.pinned = False
 
     async def delete(self):
         self.deleted = True
@@ -180,6 +183,9 @@ class _Partial:
         raise http_error("NotFound")
 
     async def remove_reaction(self, emoji, member):
+        raise http_error("NotFound")
+
+    async def unpin(self, **kw):
         raise http_error("NotFound")
 
 

@@ -614,8 +614,41 @@ async def test_preview_dms_the_admin_every_variant_with_answers(env):
     assert all(a in text for a in PUZZLES[PID]["answers"]) and text.count("Variant") == 5
 
 
-async def test_the_poem_command_posts_the_acrostic_in_any_channel_or_post(env):
+async def test_the_poem_is_posted_and_pinned_and_the_old_one_comes_down(env):
     ctx = Ctx(env)
-    await env.cog.secrethunt_poem.callback(env.cog, ctx, env.chans[1], "")
-    poem = env.chans[1].sent[-1].embed.description
+    ch = env.chans[1]
+    await env.cog.secrethunt_poem.callback(env.cog, ctx, ch, "")
+    first = next(m for m in ch.sent if m.embed is not None and m.pinned and "Hatter" in (m.embed.title or ""))
+    poem = first.embed.description
     assert engine.acrostic(poem.strip("*").split("\n")) == "tick"
+    await env.cog.secrethunt_poem.callback(env.cog, ctx, ch, "")
+    pinned_poems = [m for m in ch.sent if m.embed is not None and m.pinned and "Hatter" in (m.embed.title or "")]
+    assert len(pinned_poems) == 1 and pinned_poems[0] is not first and not first.pinned
+    assert (await env.conf.poems())[str(ch.id)] == pinned_poems[0].id
+
+
+async def test_a_failed_pin_is_reported_and_forgotten(env):
+    ctx = Ctx(env)
+    ch = env.chans[2]
+    ch.fail_pin = True
+    await env.cog.secrethunt_poem.callback(env.cog, ctx, ch, "")
+    assert "could not pin" in ctx.out[-1] and str(ch.id) not in await env.conf.poems()
+
+
+async def test_a_deleted_old_poem_does_not_block_the_new_one(env):
+    ctx = Ctx(env)
+    ch = env.chans[3]
+    async with env.conf.poems() as poems:
+        poems[str(ch.id)] = 999999  # a poem a mod deleted long ago
+    await env.cog.secrethunt_poem.callback(env.cog, ctx, ch, "")
+    assert (await env.conf.poems())[str(ch.id)] != 999999
+
+
+async def test_disable_silences_triggers_reactions_and_delivery(env):
+    a = member(env, 11)
+    await start(env, a)
+    await env.conf.enabled.set(False)
+    await env.cog._on_guild_message(chat(env, member(env, 12), ".tick"))
+    assert await state(env, member(env, 12)) is None
+    await find_object(env, a)
+    assert (await state(env, a))["stage"] == engine.STAGE_RIDDLE
