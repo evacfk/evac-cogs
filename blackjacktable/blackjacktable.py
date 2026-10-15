@@ -15,7 +15,9 @@ import discord
 from redbot.core import Config, bank, checks, commands
 from redbot.core.bot import Red
 
+from . import panel as panel_specs
 from .constants import (
+    COG_VERSION,
     BET_TIMEOUT_SECONDS,
     DEFAULT_CHANNEL_ID,
     DEFAULT_DECK_COUNT,
@@ -38,6 +40,7 @@ from .embeds import (
     render_results_embed,
     render_session_summary_embed,
 )
+from .settings_panel import PanelError, open_panel
 from .table import Table, TableError
 from .views import ActionView, BettingView, LobbyView, NextRoundView
 
@@ -289,7 +292,7 @@ class BlackjackTable(commands.Cog):
     @commands.guild_only()
     async def wonderjack_count(self, ctx: commands.Context) -> None:
         """Check the current running/true count -- only works if an admin
-        has turned this on with `.wonderjackset showcount true`."""
+        has turned it on in the `.wonderjackset` panel."""
         if not _channel_allowed(ctx.channel):
             await ctx.send(
                 f"Blackjack can only be played in <#{DEFAULT_CHANNEL_ID}> or a thread under it."
@@ -308,104 +311,58 @@ class BlackjackTable(commands.Cog):
     # Admin commands
     # ------------------------------------------------------------------
 
-    @commands.group(name="wonderjackset")
+    # -- Changes the panel makes (each returns the message to show, or raises PanelError) -----------
+
+    async def _apply_enabled(self, guild, member, on: bool) -> str:
+        """A table already in progress finishes normally even if this is flipped off mid-round;
+        this only blocks new lobbies from opening."""
+        await self.config.guild(guild).enabled.set(bool(on))
+        return f"Blackjack table {'enabled' if on else 'disabled'}."
+
+    async def _apply_show_count(self, guild, member, on: bool) -> str:
+        """When on, anyone can run `.wonderjack count` during an active table to check their own manual count."""
+        await self.config.guild(guild).show_count.set(bool(on))
+        return f"Count checking (`.wonderjack count`) {'enabled' if on else 'disabled'}."
+
+    async def _apply_bets(self, guild, member, values: dict) -> str:
+        """Minimum and maximum bet for this server's table."""
+        try:
+            low = int(float(values["min_bet"]))
+            high = int(float(values["max_bet"]))
+        except (KeyError, TypeError, ValueError):
+            raise PanelError("Both boxes need a plain number.")
+        if low < 1:
+            raise PanelError("Minimum bet must be at least 1.")
+        if high < low:
+            raise PanelError(f"Maximum bet must be at least the minimum bet ({low}).")
+        await self.config.guild(guild).min_bet.set(low)
+        await self.config.guild(guild).max_bet.set(high)
+        return f"Bets: {low} to {high}."
+
+    async def _apply_shoe(self, guild, member, values: dict) -> str:
+        """How many decks the shoe uses and how deep to deal before reshuffling. Takes effect on the next shuffle."""
+        try:
+            decks = int(float(values["deck_count"]))
+            pct = int(float(values["penetration_pct"]))
+        except (KeyError, TypeError, ValueError):
+            raise PanelError("Both boxes need a plain number.")
+        if not (MIN_DECK_COUNT <= decks <= MAX_DECK_COUNT):
+            raise PanelError(f"Deck count must be between {MIN_DECK_COUNT} and {MAX_DECK_COUNT}.")
+        min_pct, max_pct = int(MIN_PENETRATION_PCT * 100), int(MAX_PENETRATION_PCT * 100)
+        if not (min_pct <= pct <= max_pct):
+            raise PanelError(f"Penetration must be between {min_pct} and {max_pct} percent.")
+        await self.config.guild(guild).deck_count.set(decks)
+        await self.config.guild(guild).penetration_pct.set(pct)
+        return f"Shoe: {decks} deck(s), reshuffled at {pct}% dealt. Takes effect the next time the shoe reshuffles."
+
+    @commands.group(name="wonderjackset", invoke_without_command=True)
     @commands.guild_only()
     @checks.admin_or_permissions(manage_guild=True)
     async def wonderjackset(self, ctx: commands.Context) -> None:
-        """Admin configuration for the blackjack table cog."""
+        """Open the blackjack table settings panel."""
+        await open_panel(ctx, self, panel_specs.build_specs(), title="Blackjack table", intro=panel_specs.INTRO)
 
-    @wonderjackset.command(name="enabled")
-    async def wonderjackset_enabled(self, ctx: commands.Context, on_off: bool) -> None:
-        """Turn the blackjack table on or off for this server.
-
-        A table already in progress finishes normally even if this is
-        flipped off mid-round -- this only blocks new lobbies from opening.
-        """
-        await self.config.guild(ctx.guild).enabled.set(on_off)
-        state = "enabled" if on_off else "disabled"
-        await ctx.send(f"Blackjack table {state}.")
-
-    @wonderjackset.command(name="minbet")
-    async def wonderjackset_minbet(self, ctx: commands.Context, amount: int) -> None:
-        """Set the minimum bet for this server's blackjack table."""
-        if amount < 1:
-            await ctx.send("Minimum bet must be at least 1.")
-            return
-        await self.config.guild(ctx.guild).min_bet.set(amount)
-        await ctx.send(f"Minimum bet set to {amount}.")
-
-    @wonderjackset.command(name="maxbet")
-    async def wonderjackset_maxbet(self, ctx: commands.Context, amount: int) -> None:
-        """Set the maximum bet for this server's blackjack table."""
-        min_bet = await self.config.guild(ctx.guild).min_bet()
-        if amount < min_bet:
-            await ctx.send(f"Maximum bet must be at least the minimum bet ({min_bet}).")
-            return
-        await self.config.guild(ctx.guild).max_bet.set(amount)
-        await ctx.send(f"Maximum bet set to {amount}.")
-
-    @wonderjackset.command(name="decks")
-    async def wonderjackset_decks(self, ctx: commands.Context, count: int) -> None:
-        """Set how many decks the shoe uses (1-8).
-
-        Fewer decks = a faster, more obvious count -- easier to learn on.
-        More decks = closer to a real casino floor, harder to track. This
-        only takes effect on the NEXT shoe shuffle (an in-progress shoe
-        keeps dealing at its current size until it hits penetration).
-        """
-        if not (MIN_DECK_COUNT <= count <= MAX_DECK_COUNT):
-            await ctx.send(f"Deck count must be between {MIN_DECK_COUNT} and {MAX_DECK_COUNT}.")
-            return
-        await self.config.guild(ctx.guild).deck_count.set(count)
-        await ctx.send(
-            f"Shoe size set to {count} deck(s). Takes effect next time the shoe reshuffles."
-        )
-
-    @wonderjackset.command(name="penetration")
-    async def wonderjackset_penetration(self, ctx: commands.Context, percent: int) -> None:
-        """Set how deep into the shoe to deal before reshuffling (1-99, as a percent).
-
-        75 (the default) matches standard casino cut-card depth. Lower
-        means shorter counting runs that reset more often; higher means
-        longer runs before a reshuffle. Also only takes effect on the next
-        shuffle, same as deck count.
-        """
-        min_pct, max_pct = int(MIN_PENETRATION_PCT * 100), int(MAX_PENETRATION_PCT * 100)
-        if not (min_pct <= percent <= max_pct):
-            await ctx.send(f"Penetration must be between {min_pct} and {max_pct} percent.")
-            return
-        await self.config.guild(ctx.guild).penetration_pct.set(percent)
-        await ctx.send(
-            f"Penetration set to {percent}%. Takes effect next time the shoe reshuffles."
-        )
-
-    @wonderjackset.command(name="showcount")
-    async def wonderjackset_showcount(self, ctx: commands.Context, on_off: bool) -> None:
-        """Turn `.wonderjack count` on or off for this server.
-
-        When on, anyone can run `.wonderjack count` during an active table
-        to see the current running/true count -- meant as a way to check
-        your own manual count while learning, not something shown
-        automatically or publicly on the table itself.
-        """
-        await self.config.guild(ctx.guild).show_count.set(on_off)
-        state = "enabled" if on_off else "disabled"
-        await ctx.send(f"Count checking (`.wonderjack count`) {state}.")
-
-    @wonderjackset.command(name="settings")
-    async def wonderjackset_settings(self, ctx: commands.Context) -> None:
-        """Show the current blackjack table settings for this server."""
-        settings = await self.config.guild(ctx.guild).all()
-        embed = discord.Embed(title="Blackjack Table Settings", color=discord.Color.blurple())
-        embed.add_field(name="Enabled", value=str(settings["enabled"]))
-        embed.add_field(name="Min bet", value=str(settings["min_bet"]))
-        embed.add_field(name="Max bet", value=str(settings["max_bet"]))
-        embed.add_field(name="Channel", value=f"<#{DEFAULT_CHANNEL_ID}> + its threads")
-        embed.add_field(name="Seats", value=f"{MIN_SEATS}-{MAX_SEATS}")
-        embed.add_field(name="Decks", value=str(settings["deck_count"]))
-        embed.add_field(name="Penetration", value=f"{settings['penetration_pct']}%")
-        embed.add_field(name="Count checking", value=str(settings["show_count"]))
-        embed.add_field(name="Lobby timeout", value=f"{settings['lobby_timeout']}s")
-        embed.add_field(name="Bet timeout", value=f"{settings['bet_timeout']}s")
-        embed.add_field(name="Turn timeout", value=f"{settings['turn_timeout']}s")
-        await ctx.send(embed=embed)
+    @wonderjackset.command(name="version")
+    async def wonderjackset_version(self, ctx: commands.Context) -> None:
+        """Show the running version (use it to confirm a deploy)."""
+        await ctx.send(f"BlackjackTable v{COG_VERSION}")

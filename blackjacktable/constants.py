@@ -25,20 +25,20 @@ MAX_SEATS: int = 7
 # deck. The shoe now persists across multiple rounds (see table.py) and only
 # reshuffles once dealt past the penetration depth below -- this is what
 # makes card counting meaningful instead of resetting every hand.
-DEFAULT_DECK_COUNT: int = 2  # admin-adjustable per guild via .blackjackset decks
+DEFAULT_DECK_COUNT: int = 2  # admin-adjustable per guild in the .wonderjackset panel
 MIN_DECK_COUNT: int = 1
 MAX_DECK_COUNT: int = 8
 
 # Fraction of the shoe dealt before a reshuffle -- 0.75 means a fresh
 # reshuffle once 75% of the shoe has been dealt (25% remaining), matching
-# standard casino cut-card depth. Admin-adjustable via .blackjackset penetration.
+# standard casino cut-card depth. Admin-adjustable in the .wonderjackset panel.
 DEFAULT_PENETRATION_PCT: float = 0.75
 MIN_PENETRATION_PCT: float = 0.10
 MAX_PENETRATION_PCT: float = 0.95
 
 # Whether `.blackjack count` reveals the running/true count to anyone who
 # asks. Off by default -- an admin opts a server into the count-checking
-# learning aid explicitly via .blackjackset showcount.
+# learning aid explicitly in the .wonderjackset panel.
 DEFAULT_SHOW_COUNT: bool = False
 
 LOBBY_TIMEOUT_SECONDS: int = 45
@@ -55,3 +55,5 @@ BLACKJACK_PAYOUT_DENOMINATOR: int = 2
 # Regular win pays 1:1 (bet returned + equal winnings) -- no magic number needed
 # in engine.py beyond "bet * 2 back", but named here for clarity/searchability.
 REGULAR_WIN_MULTIPLIER: int = 2
+
+COG_VERSION: str = "1.1.0"
