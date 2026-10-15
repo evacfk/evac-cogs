@@ -43,7 +43,7 @@ PAGE_TEMPLATE = """\
     </table>
   </div>
   {% else %}
-  <p>No subreddits are mapped to channels in this server yet. Use <code>.redditfeed add &lt;subreddit&gt; #channel</code>.</p>
+  <p>No subreddits are mapped to channels in this server yet. Open <code>.redditfeed</code> in Discord and use Add in the Feeds tab.</p>
   {% endif %}
 
   {% if form %}

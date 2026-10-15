@@ -210,7 +210,7 @@ def format_summary(
     if stats.already_mapped:
         hidden.append(f"{stats.already_mapped} already mapped")
     if stats.denied:
-        hidden.append(f"{stats.denied} denied earlier (`.redditfeed denied`)")
+        hidden.append(f"{stats.denied} denied earlier (see the Discovery tab in `.redditfeed`)")
     if stats.safety_filtered:
         hidden.append(f"{stats.safety_filtered} hidden by the name/description safety screen")
     if hidden:

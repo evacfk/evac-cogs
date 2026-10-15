@@ -18,16 +18,20 @@ def test_redditfeed_command_group_and_subcommands_exist():
     from redditfeed.redditfeed import RedditFeed
 
     group = RedditFeed.redditfeed
-    sub_names = {"version", "add", "remove", "removechannel", "pause", "resume", "interval", "stagger", "list", "status"}
     # The dev stub's _StubCommand doesn't expose a children registry, so this
     # just confirms each subcommand attribute exists on the class and is a
     # callable/stub command object, not that dispatch actually routes to it.
     assert hasattr(RedditFeed, "redditfeed_version")
-    assert hasattr(RedditFeed, "redditfeed_add")
     assert hasattr(RedditFeed, "redditfeed_status")
-    assert hasattr(RedditFeed, "redditfeed_keyword")
-    assert hasattr(RedditFeed, "redditfeed_keyword_require")
-    assert hasattr(RedditFeed, "redditfeed_keyword_block")
+    for name in ("redditfeed_queue", "redditfeed_map", "redditfeed_check", "redditfeed_backfill", "redditfeed_source"):
+        assert hasattr(RedditFeed, name), name
+    # the old typed setters live in the panel now
+    for name in ("redditfeed_add", "redditfeed_addmany", "redditfeed_remove", "redditfeed_removechannel", "redditfeed_pause",
+                 "redditfeed_resume", "redditfeed_mode", "redditfeed_modeall", "redditfeed_interval", "redditfeed_stagger",
+                 "redditfeed_list", "redditfeed_resetall", "redditfeed_xbutton", "redditfeed_redgifs", "redditfeed_logchannel",
+                 "redditfeed_category", "redditfeed_prefix", "redditfeed_denied", "redditfeed_undeny", "redditfeed_keyword",
+                 "redditfeed_queue_channel", "redditfeed_queue_clear"):
+        assert not hasattr(RedditFeed, name), name
     assert group is not None
 
 
@@ -70,7 +74,7 @@ def test_version_probe_text_is_the_new_build():
 
     from redditfeed import redditfeed
 
-    assert "redditfeed build: source-v8" in inspect.getsource(redditfeed)
+    assert "redditfeed build: source-v9" in inspect.getsource(redditfeed)
 
 
 def test_setup_function_exists():
@@ -82,5 +86,6 @@ def test_setup_function_exists():
 def test_discovery_commands_exist():
     from redditfeed.redditfeed import RedditFeed
 
-    for name in ("redditfeed_discover", "redditfeed_denied", "redditfeed_undeny"):
-        assert hasattr(RedditFeed, name), name
+    assert hasattr(RedditFeed, "redditfeed_discover")
+    for name in ("redditfeed_denied", "redditfeed_undeny"):
+        assert not hasattr(RedditFeed, name), name

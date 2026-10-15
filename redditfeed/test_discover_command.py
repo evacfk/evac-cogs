@@ -10,6 +10,7 @@ import pytest
 from redditfeed import redditfeed as redditfeed_module
 from redditfeed.arctic_shift import RedditSourceError
 from redditfeed.redditfeed import RedditFeed
+from redditfeed.settings_panel import PanelError
 
 
 class _Value:
@@ -244,13 +245,12 @@ async def test_nothing_to_suggest_just_posts_the_summary():
 
 # -- denied list commands ----------------------------------------------------------------------------
 
-async def test_denied_and_undeny_commands():
+async def test_undeny_lets_a_denied_subreddit_be_suggested_again():
+    from redditfeed import panel
     cog = make_cog(denied=["b", "a"])
-    ctx = FakeCtx()
-    await command_callback("redditfeed_denied")(cog, ctx)
-    assert "r/a, r/b" in ctx.channel.sent[0].content
-
-    await command_callback("redditfeed_undeny")(cog, ctx, "r/A")
+    assert [i[0] for i in await panel._denied(cog, None)] == ["a", "b"]
+    assert "can be suggested again" in await cog._apply_undeny(None, None, "r/A")
     assert cog.config.denied_subreddits.data == ["b"]
-    await command_callback("redditfeed_undeny")(cog, ctx, "zzz")
-    assert "isn't on the denied list" in ctx.channel.sent[-1].content
+    with pytest.raises(PanelError) as err:
+        await cog._apply_undeny(None, None, "zzz")
+    assert "isn't on the denied list" in str(err.value)

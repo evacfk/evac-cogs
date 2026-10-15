@@ -12,6 +12,7 @@ from redditfeed import constants, discovery, discovery_ui, engine, redditfeed as
 from redditfeed.arctic_shift import RedditSourceError
 from redditfeed.models import QueueEntry, SubredditMapping
 from redditfeed.redditfeed import RedditFeed
+from redditfeed.settings_panel import PanelError
 
 NOW = time.time()
 
@@ -180,6 +181,18 @@ def _no_delays(monkeypatch):
 def cb(name):
     cmd = getattr(RedditFeed, name)
     return getattr(cmd, "callback", None) or cmd.func
+
+
+ME = SimpleNamespace(id=1, mention="<@1>", display_name="mod")
+GUILD = SimpleNamespace(get_channel=lambda cid: {c.id: c for c in (QUEUE_CH, FEET_CH, LOG_CH)}.get(cid))
+
+
+async def run(coro):
+    """Await an _apply_* coroutine the way the panel does and return what the admin would see."""
+    try:
+        return await coro
+    except PanelError as exc:
+        return str(exc)
 
 
 class Ctx:
@@ -493,50 +506,103 @@ async def test_a_mode_change_mid_cycle_survives():
 
 # ---------------------------------------------------------------- commands
 
-async def test_mode_and_modeall_commands():
+async def test_switch_mode_and_mode_all():
     cog = make(mappings={
         "a": SubredditMapping(subreddit="a").to_dict(), "b": SubredditMapping(subreddit="b").to_dict()})
-    ctx = Ctx()
-    await cb("redditfeed_mode")(cog, ctx, "r/A", "auto")
+    assert "auto" in await cog._apply_switch_mode(GUILD, ME, "r/A")
     assert (await cog.config.mappings())["a"]["approval"] == "auto"
-    await cb("redditfeed_mode")(cog, ctx, "a", "sometimes")
-    assert "manual" in ctx.sent[-1] and "auto" in ctx.sent[-1]
-    await cb("redditfeed_mode")(cog, ctx, "zzz", "auto")
-    assert "isn't mapped" in ctx.sent[-1]
-    await cb("redditfeed_modeall")(cog, ctx, "manual")
+    assert "manual" in await cog._apply_switch_mode(GUILD, ME, "a")               # flips back
+    assert (await cog.config.mappings())["a"]["approval"] == "manual"
+    assert "isn't mapped" in await run(cog._apply_switch_mode(GUILD, ME, "zzz"))
+    assert "manual or auto" in await run(cog._apply_mode_all(GUILD, ME, "sometimes"))
+    assert "2 subreddit(s) are now **auto**" in await cog._apply_mode_all(GUILD, ME, "auto")
+    assert {m["approval"] for m in (await cog.config.mappings()).values()} == {"auto"}
+    await cog._apply_mode_all(GUILD, ME, "manual")
     assert {m["approval"] for m in (await cog.config.mappings()).values()} == {"manual"}
 
 
-async def test_addmany_maps_every_subreddit_and_refuses_a_non_nsfw_channel():
+async def test_add_maps_every_subreddit_and_refuses_a_non_nsfw_channel():
     cog = make(mappings={})
-    ctx = Ctx()
-    await cb("redditfeed_addmany")(cog, ctx, Chan(55, nsfw=False), "a", "b")
-    assert await cog.config.mappings() == {} and "age-restricted" in ctx.sent[-1]
-    await cb("redditfeed_addmany")(cog, ctx, FEET_CH, "a", "R/B", "a")
+    assert "age-restricted" in await run(cog._apply_add(GUILD, ME, "a b", [Chan(55, nsfw=False)]))
+    assert await cog.config.mappings() == {}
+    assert "at least one subreddit" in await run(cog._apply_add(GUILD, ME, "  ", [FEET_CH]))
+    assert "Pick the channel" in await run(cog._apply_add(GUILD, ME, "a", []))
+    msg = await cog._apply_add(GUILD, ME, "a, R/B  a", [FEET_CH])
     maps = await cog.config.mappings()
+    assert "2 subreddit(s)" in msg and "r/a, r/b" in msg
     assert set(maps) == {"a", "b"} and maps["a"]["channel_ids"] == [20] and maps["a"]["approval"] == "manual"
+    await cog._apply_add(GUILD, ME, "c", [FEET_CH, QUEUE_CH])                        # several channels at once
+    assert (await cog.config.mappings())["c"]["channel_ids"] == [20, 10]
+    await cog._apply_add(GUILD, ME, "a", [QUEUE_CH])                                 # again: only adds the channel
+    assert (await cog.config.mappings())["a"]["channel_ids"] == [20, 10]
 
 
-async def test_resetall_needs_confirmation_and_clears_mappings_dedup_and_pending():
+async def test_edit_feed_sets_channels_and_keyword_filters_and_remove_pause_work():
+    cog = make(mappings={"a": SubredditMapping(subreddit="a", channel_ids=[20]).to_dict()})
+    msg = await cog._apply_feed(GUILD, ME, "r/A", "Toes, soles\nsoles", " Face ", [QUEUE_CH, FEET_CH, FEET_CH])
+    m = (await cog.config.mappings())["a"]
+    assert m["channel_ids"] == [10, 20] and m["require_keywords"] == ["toes", "soles"] and m["block_keywords"] == ["face"]
+    assert "toes, soles" in msg
+    await cog._apply_feed(GUILD, ME, "a", "", "", [FEET_CH])                          # blank boxes clear the filters
+    m = (await cog.config.mappings())["a"]
+    assert m["require_keywords"] == [] and m["block_keywords"] == []
+    assert "at least one channel" in await run(cog._apply_feed(GUILD, ME, "a", "", "", []))
+    assert "isn't mapped" in await run(cog._apply_feed(GUILD, ME, "zzz", "", "", [FEET_CH]))
+    assert "paused" in await cog._apply_pause(GUILD, ME, "a", True)
+    assert (await cog.config.mappings())["a"]["paused"] is True
+    assert "active" in await cog._apply_pause(GUILD, ME, "a", False)
+    assert "isn't mapped" in await run(cog._apply_pause(GUILD, ME, "zzz", True))
+    assert "Removed r/a" in await cog._apply_remove(GUILD, ME, "a")
+    assert await cog.config.mappings() == {}
+    assert "isn't mapped" in await run(cog._apply_remove(GUILD, ME, "a"))
+
+
+async def test_reset_all_clears_mappings_dedup_and_pending():
     cog = make({"feet": [post("a")]})
     card = await queued(cog)
-    ctx = Ctx()
-    await cb("redditfeed_resetall")(cog, ctx, "")
-    assert await cog.config.mappings() and "resetall yes" in ctx.sent[-1]
-    await cb("redditfeed_resetall")(cog, ctx, "yes")
+    assert await cog.config.mappings()
+    await cog._apply_reset_all(GUILD, ME)
     assert await cog.config.mappings() == {} and await cog.config.dedup_store() == {}
     assert (await cog.config.queue())[str(card.id)]["status"] == "expired"
 
 
 async def test_queue_channel_must_be_nsfw_and_hidden_from_everyone():
     cog = make()
-    ctx = Ctx()
-    await cb("redditfeed_queue_channel")(cog, ctx, Chan(70, nsfw=False))
-    assert "age-restricted" in ctx.sent[-1] and await cog.config.queue_channel_id() == 10
-    await cb("redditfeed_queue_channel")(cog, ctx, Chan(71, everyone_can_view=True))
-    assert "@everyone" in ctx.sent[-1] and await cog.config.queue_channel_id() == 10
-    await cb("redditfeed_queue_channel")(cog, ctx, Chan(72))
+    assert "age-restricted" in await run(cog._apply_queue_channel(GUILD, ME, Chan(70, nsfw=False)))
+    assert await cog.config.queue_channel_id() == 10
+    assert "@everyone" in await run(cog._apply_queue_channel(GUILD, ME, Chan(71, everyone_can_view=True)))
+    assert await cog.config.queue_channel_id() == 10
+    assert "Pick a channel" in await run(cog._apply_queue_channel(GUILD, ME, None))
+    await cog._apply_queue_channel(GUILD, ME, Chan(72))
     assert await cog.config.queue_channel_id() == 72
+
+
+async def test_queue_gates_are_clamped_and_junk_is_refused():
+    cog = make()
+    await cog._apply_queue_gates(GUILD, ME, {"min_score": "-5", "min_age": "30", "max_pending": "0"})
+    assert (await cog.config.queue_min_score(), await cog.config.queue_min_age_minutes(), await cog.config.queue_max_pending()) == (0, 30, 1)
+    assert "plain number" in await run(cog._apply_queue_gates(GUILD, ME, {"min_score": "x", "min_age": "1", "max_pending": "1"}))
+    assert await cog.config.queue_max_pending() == 1
+
+
+async def test_simple_settings_save_and_clear():
+    cog = make()
+    await cog._apply_x_button(GUILD, ME, False)
+    assert await cog.config.x_button() is False
+    await cog._apply_log_channel(GUILD, ME, SimpleNamespace(id=31, mention="<#31>"))
+    assert await cog.config.log_channel_id() == 31
+    assert "Pick a channel" in await run(cog._apply_log_channel(GUILD, ME, None))
+    await cog._apply_category(GUILD, ME, SimpleNamespace(id=55, name="Feeds"))
+    assert await cog.config.new_channel_category_id() == 55
+    assert "no longer create" in await cog._apply_category(GUILD, ME, None)
+    assert await cog.config.new_channel_category_id() is None
+    assert "start with" in await cog._apply_prefix(GUILD, ME, "  X ")
+    assert await cog.config.new_channel_prefix() == "X"
+    assert "no prefix" in await cog._apply_prefix(GUILD, ME, "")
+    await cog._apply_polling(GUILD, ME, {"interval": "5", "stagger": "-3"})
+    assert await cog.config.poll_interval_seconds() == constants.MIN_POLL_INTERVAL_SECONDS
+    assert await cog.config.stagger_seconds() == constants.MIN_STAGGER_SECONDS
+    assert "plain number" in await run(cog._apply_polling(GUILD, ME, {"interval": "soon", "stagger": "1"}))
 
 
 async def test_queue_status_reports_the_numbers():
@@ -827,6 +893,9 @@ async def test_other_video_links_are_never_uploaded():
     assert cog.redgifs.calls == [] and FEET_CH.sent[0].file is None
 
 
+MOD7 = SimpleNamespace(id=7, mention="<@7>", display_name="mod")
+
+
 class RgCtx:
     def __init__(self):
         self.sent = []
@@ -835,17 +904,14 @@ class RgCtx:
         self.sent.append(text)
 
 
-async def test_redgifs_command_shows_and_sets_the_mode():
+async def test_redgifs_mode_is_upload_or_link():
     cog = make()
-    ctx = RgCtx()
-    cb = RedditFeed.redditfeed_redgifs
-    cb = getattr(cb, "callback", None) or cb.func
-    await cb(cog, ctx, "")
-    assert "upload" in ctx.sent[-1]
-    await cb(cog, ctx, "LINK")
+    await cog._apply_redgifs(GUILD, ME, "LINK")
     assert await cog.config.redgifs_mode() == "link"
-    await cb(cog, ctx, "nope")
-    assert await cog.config.redgifs_mode() == "link" and "upload" in ctx.sent[-1]
+    assert "upload or link" in await run(cog._apply_redgifs(GUILD, ME, "nope"))
+    assert await cog.config.redgifs_mode() == "link"
+    await cog._apply_redgifs(GUILD, ME, "upload")
+    assert await cog.config.redgifs_mode() == "upload"
 
 
 # ---------------------------------------------------------------- RedGifs in the queue
@@ -903,15 +969,10 @@ async def test_deciding_a_card_removes_the_clip_from_the_queue_channel():
 
 # ---------------------------------------------------------------- queue clear
 
-async def test_queue_clear_needs_confirmation_and_changes_nothing_without_it():
+async def test_queue_clear_refuses_when_nothing_is_waiting_and_otherwise_rejects_all():
     cog = make({"feet": [post("a"), post("b")]})
+    assert "Nothing is waiting" in await run(cog._apply_queue_clear(GUILD, MOD7))
     await cog._run_poll_cycle()
-    ctx = RgCtx()
-    ctx.author = SimpleNamespace(id=7, mention="<@7>", display_name="mod")
-    cb = RedditFeed.redditfeed_queue_clear
-    cb = getattr(cb, "callback", None) or cb.func
-    await cb(cog, ctx, "")
-    assert "2" in ctx.sent[-1] and "confirm" in ctx.sent[-1]
     assert len(engine.pending_ids(await cog.config.queue())) == 2
 
 
@@ -919,26 +980,18 @@ async def test_queue_clear_rejects_everything_waiting_and_nothing_posts():
     cog = make({"feet": [post("a"), post("b")]})
     await cog._run_poll_cycle()
     cards = list(QUEUE_CH.sent)
-    ctx = RgCtx()
-    ctx.author = SimpleNamespace(id=7, mention="<@7>", display_name="mod")
-    cb = RedditFeed.redditfeed_queue_clear
-    cb = getattr(cb, "callback", None) or cb.func
-    await cb(cog, ctx, "YES")
+    msg = await cog._apply_queue_clear(GUILD, MOD7)
     stored = await cog.config.queue()
     assert engine.pending_ids(stored) == [] and all(r["status"] == "rejected" and r["resolved_by"] == 7 for r in stored.values())
     assert FEET_CH.sent == []
     assert all(c.edits and c.edits[-1]["view"] is None and c.edits[-1]["attachments"] == [] for c in cards)
-    assert "Rejected 2" in ctx.sent[-1] and any("cleared the redditfeed queue" in (m.content or "") for m in LOG_CH.sent)
+    assert "Rejected 2" in msg and any("cleared the redditfeed queue" in (m.content or "") for m in LOG_CH.sent)
 
 
 async def test_cleared_posts_do_not_come_back_and_new_ones_can_queue():
     cog = make({"feet": [post("a")]})
     await cog._run_poll_cycle()
-    ctx = RgCtx()
-    ctx.author = SimpleNamespace(id=7, mention="<@7>", display_name="mod")
-    cb = RedditFeed.redditfeed_queue_clear
-    cb = getattr(cb, "callback", None) or cb.func
-    await cb(cog, ctx, "yes")
+    await cog._apply_queue_clear(GUILD, MOD7)
     n = len(QUEUE_CH.sent)
     await cog._run_poll_cycle()
     assert len(QUEUE_CH.sent) == n                       # "a" is deduped, not re-queued
@@ -947,19 +1000,12 @@ async def test_cleared_posts_do_not_come_back_and_new_ones_can_queue():
     assert len(QUEUE_CH.sent) == n + 1
 
 
-async def test_queue_clear_with_nothing_waiting_and_with_a_deleted_card():
-    cog = make()
-    ctx = RgCtx()
-    ctx.author = SimpleNamespace(id=7, mention="<@7>", display_name="mod")
-    cb = RedditFeed.redditfeed_queue_clear
-    cb = getattr(cb, "callback", None) or cb.func
-    await cb(cog, ctx, "yes")
-    assert ctx.sent[-1] == "Nothing is waiting."
+async def test_queue_clear_with_a_deleted_card_still_closes_the_record():
     cog = make({"feet": [post("a")]})
     await cog._run_poll_cycle()
     QUEUE_CH.messages.clear()                            # the card was deleted by hand
-    await cb(cog, ctx, "yes")
-    assert "1 card(s) couldn't be edited" in ctx.sent[-1]
+    msg = await cog._apply_queue_clear(GUILD, MOD7)
+    assert "1 card(s) couldn't be edited" in msg
     assert engine.pending_ids(await cog.config.queue()) == []
 
 

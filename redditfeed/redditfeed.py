@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import io
 import logging
+import re
 import time
 from typing import Optional
 
@@ -23,6 +24,8 @@ from .fallback_sources import FallbackSource, RedditRssSource
 from .dashboard_integration import DashboardIntegration, dashboard_page
 from .dashboard_view import PAGE_TEMPLATE
 from .models import QueueEntry, SubredditMapping
+from .settings_panel import PanelError, open_panel
+from . import panel as panel_specs
 
 log = logging.getLogger("red.redditfeed")
 
@@ -366,7 +369,7 @@ class RedditFeed(DashboardIntegration, commands.Cog):
         per-run cap, and newest posts first so a cap drops the oldest."""
         queue_channel = self.bot.get_channel(qcfg["channel_id"]) if qcfg["channel_id"] else None
         if queue_channel is None:
-            mapping.last_error = "manual approval is on but no queue channel is set (.redditfeed queue channel #mod-queue)"
+            mapping.last_error = "manual approval is on but no queue channel is set (set it in .redditfeed, Queue tab)"
             self._bump("no_queue_channel")
             return dedup_store
 
@@ -548,7 +551,7 @@ class RedditFeed(DashboardIntegration, commands.Cog):
                 result = f"\u274c Rejected by {who}."
                 if action == "pause":
                     await self._apply_paused(entry.subreddit, True)
-                    result = f"\u23f8\ufe0f Rejected by {who}, and r/{entry.subreddit} is paused (`.redditfeed resume {entry.subreddit}` to undo)."
+                    result = f"\u23f8\ufe0f Rejected by {who}, and r/{entry.subreddit} is paused (resume it in `.redditfeed`, Feeds tab)."
                     await self._log(f"\u23f8\ufe0f {interaction.user.display_name} paused r/{entry.subreddit} from the approval queue.")
             entry.resolved_ts = time.time()
             entry.resolved_by = interaction.user.id
@@ -617,13 +620,17 @@ class RedditFeed(DashboardIntegration, commands.Cog):
     @commands.guild_only()
     @commands.mod_or_permissions(manage_guild=True)
     async def redditfeed(self, ctx: commands.Context) -> None:
-        """Manage the subreddit -> channel image feed."""
+        """Feed control panel (admins). Mods get the help list: status, queue, check, backfill, discover, map."""
+        perms = ctx.author.guild_permissions
+        if perms.administrator or perms.manage_guild:
+            await open_panel(ctx, self, panel_specs.build_specs(), title="Reddit feed", intro=panel_specs.INTRO)
+            return
         await ctx.send_help(ctx.command)
 
     @redditfeed.command(name="version")
     async def redditfeed_version(self, ctx: commands.Context) -> None:
         """Version-probe command -- confirms a deploy actually took."""
-        await ctx.send("redditfeed build: source-v8 (dedup saved per post, no duplicates after an interrupted cycle)")
+        await ctx.send("redditfeed build: source-v9 (control panel)")
 
     async def _map_subreddit(self, name: str, channel_id: int) -> bool:
         """The one place a subreddit gets mapped to a channel -- `add` and the
@@ -641,131 +648,6 @@ class RedditFeed(DashboardIntegration, commands.Cog):
             mappings[name] = mapping.to_dict()
         return raw is None
 
-    @redditfeed.command(name="add")
-    async def redditfeed_add(
-        self, ctx: commands.Context, subreddit: str, channel: discord.TextChannel
-    ) -> None:
-        """Map a subreddit to a channel. Safe to call again to add another channel
-        to a subreddit already mapped, or to map another subreddit to the same channel.
-        """
-        name = engine.normalize_subreddit(subreddit)
-        await self._map_subreddit(name, channel.id)
-        await ctx.send(f"r/{name} -> {channel.mention} ({await self._mode_of(name)} approval)")
-
-    async def _mode_of(self, name: str) -> str:
-        raw = (await self.config.mappings()).get(name) or {}
-        return SubredditMapping.from_dict(raw).approval if raw else constants.DEFAULT_APPROVAL
-
-    @redditfeed.command(name="addmany")
-    async def redditfeed_addmany(self, ctx: commands.Context, channel: discord.TextChannel, *subreddits: str) -> None:
-        """Map several subreddits to one channel at once.
-        `.redditfeed addmany #feet feet footfetish soles`"""
-        names = []
-        for raw in subreddits:
-            name = engine.normalize_subreddit(raw)
-            if name and name not in names:
-                names.append(name)
-        if not names:
-            await ctx.send("Give me at least one subreddit after the channel.")
-            return
-        if not channel.is_nsfw():
-            await ctx.send(f"{channel.mention} isn't age-restricted. Fix that first; these feeds are NSFW.")
-            return
-        for name in names:
-            await self._map_subreddit(name, channel.id)
-        await ctx.send(f"Mapped {len(names)} subreddit(s) -> {channel.mention}: " + ", ".join(f"r/{n}" for n in names)
-                       + f"\nNew mappings use **{constants.DEFAULT_APPROVAL}** approval (posts wait in the queue).")
-
-    @redditfeed.command(name="resetall")
-    async def redditfeed_resetall(self, ctx: commands.Context, confirm: str = "") -> None:
-        """Remove EVERY subreddit mapping and forget what was already posted.
-        Settings, the denied list and learned topics are kept. `.redditfeed resetall yes`"""
-        if confirm.lower() != "yes":
-            count = len(await self.config.mappings())
-            await ctx.send(f"This removes all {count} mapping(s). Run `.redditfeed resetall yes` to confirm.")
-            return
-        async with self.config.mappings() as mappings:
-            removed = len(mappings)
-            mappings.clear()
-        await self.config.dedup_store.set({})
-        async with self.config.queue() as stored:
-            now = time.time()
-            for message_id in engine.pending_ids(stored):
-                stored[message_id]["status"] = constants.QUEUE_EXPIRED
-                stored[message_id]["resolved_ts"] = now
-        await ctx.send(f"Removed {removed} mapping(s) and cleared the dedup memory. Pending queue items were discarded.")
-
-    @redditfeed.command(name="mode")
-    async def redditfeed_mode(self, ctx: commands.Context, subreddit: str, mode: str) -> None:
-        """`manual` = posts wait in the mod queue; `auto` = posts go straight to the channel."""
-        parsed = engine.parse_approval(mode)
-        name = engine.normalize_subreddit(subreddit)
-        if parsed is None:
-            await ctx.send("Mode must be `manual` or `auto`.")
-            return
-        async with self.config.mappings() as mappings:
-            raw = mappings.get(name)
-            if not raw:
-                await ctx.send(f"r/{name} isn't mapped.")
-                return
-            mapping = SubredditMapping.from_dict(raw)
-            mapping.approval = parsed
-            mappings[name] = mapping.to_dict()
-        await ctx.send(f"r/{name} is now **{parsed}**.")
-
-    @redditfeed.command(name="modeall")
-    async def redditfeed_modeall(self, ctx: commands.Context, mode: str) -> None:
-        """Set every mapped subreddit to `manual` or `auto` at once."""
-        parsed = engine.parse_approval(mode)
-        if parsed is None:
-            await ctx.send("Mode must be `manual` or `auto`.")
-            return
-        async with self.config.mappings() as mappings:
-            for name, raw in list(mappings.items()):
-                mapping = SubredditMapping.from_dict(raw)
-                mapping.approval = parsed
-                mappings[name] = mapping.to_dict()
-            count = len(mappings)
-        await ctx.send(f"{count} subreddit(s) are now **{parsed}**.")
-
-    @redditfeed.command(name="remove")
-    async def redditfeed_remove(self, ctx: commands.Context, subreddit: str) -> None:
-        """Remove a subreddit mapping entirely (all its channels)."""
-        name = engine.normalize_subreddit(subreddit)
-        async with self.config.mappings() as mappings:
-            if name not in mappings:
-                await ctx.send(f"r/{name} isn't mapped.")
-                return
-            del mappings[name]
-        await ctx.send(f"Removed r/{name}.")
-
-    @redditfeed.command(name="removechannel")
-    async def redditfeed_removechannel(
-        self, ctx: commands.Context, subreddit: str, channel: discord.TextChannel
-    ) -> None:
-        """Remove one channel from a subreddit's mapping, keeping the rest."""
-        name = engine.normalize_subreddit(subreddit)
-        async with self.config.mappings() as mappings:
-            raw = mappings.get(name)
-            if not raw:
-                await ctx.send(f"r/{name} isn't mapped.")
-                return
-            mapping = SubredditMapping.from_dict(raw)
-            if channel.id in mapping.channel_ids:
-                mapping.channel_ids.remove(channel.id)
-            mappings[name] = mapping.to_dict()
-        await ctx.send(f"Removed {channel.mention} from r/{name}.")
-
-    @redditfeed.command(name="pause")
-    async def redditfeed_pause(self, ctx: commands.Context, subreddit: str) -> None:
-        """Pause polling for a subreddit without deleting its mapping."""
-        await self._set_paused(ctx, subreddit, True)
-
-    @redditfeed.command(name="resume")
-    async def redditfeed_resume(self, ctx: commands.Context, subreddit: str) -> None:
-        """Resume polling for a previously paused subreddit."""
-        await self._set_paused(ctx, subreddit, False)
-
     async def _apply_paused(self, name: str, paused: bool) -> bool:
         """The one place a mapping's paused flag is written -- the commands and
         the dashboard page both go through here. False if `name` isn't mapped.
@@ -779,44 +661,251 @@ class RedditFeed(DashboardIntegration, commands.Cog):
             mappings[name] = mapping.to_dict()
         return True
 
-    async def _set_paused(self, ctx: commands.Context, subreddit: str, paused: bool) -> None:
-        name = engine.normalize_subreddit(subreddit)
+    # -- Changes the panel makes (each returns the message to show, or raises PanelError) -----------------
+
+    @staticmethod
+    def _text_channel(guild, channel):
+        """The real guild channel for whatever the panel handed over (select values are partial channels)."""
+        real = guild.get_channel(channel.id) if guild is not None else None
+        real = real if real is not None else channel
+        if not hasattr(real, "is_nsfw") or not hasattr(real, "send"):
+            raise PanelError("Pick a text channel.")
+        return real
+
+    @staticmethod
+    def _words(text) -> list:
+        """Comma- or newline-separated words, lowercased and de-duplicated."""
+        out = []
+        for part in re.split(r"[,\n]+", text or ""):
+            word = part.strip().lower()
+            if word and word not in out:
+                out.append(word)
+        return out
+
+    async def _mapping_or_raise(self, name: str) -> SubredditMapping:
+        raw = (await self.config.mappings()).get(engine.normalize_subreddit(name))
+        if not raw:
+            raise PanelError(f"r/{engine.normalize_subreddit(name)} isn't mapped.")
+        return SubredditMapping.from_dict(raw)
+
+    async def _apply_add(self, guild, member, text: str, channels) -> str:
+        """Map one or more subreddits (spaces or commas between them) to one or more age-restricted channels.
+        Safe to repeat: it only adds the channel to a subreddit that is already mapped."""
+        names = []
+        for raw in re.split(r"[\s,]+", text or ""):
+            name = engine.normalize_subreddit(raw)
+            if name and name not in names:
+                names.append(name)
+        if not names:
+            raise PanelError("Give me at least one subreddit name.")
+        picked = list(channels or [])
+        if not picked:
+            raise PanelError("Pick the channel the posts should go to.")
+        real = [self._text_channel(guild, c) for c in picked]
+        for channel in real:
+            if not channel.is_nsfw():
+                raise PanelError(f"{channel.mention} isn't age-restricted. Fix that first; these feeds are NSFW.")
+        new = 0
+        for name in names:
+            for channel in real:
+                if await self._map_subreddit(name, channel.id):
+                    new += 1
+        where = " ".join(c.mention for c in real)
+        return (f"Mapped {len(names)} subreddit(s) -> {where}: " + ", ".join(f"r/{n}" for n in names)
+                + f". New mappings use **{constants.DEFAULT_APPROVAL}** approval (posts wait in the queue).")
+
+    async def _apply_feed(self, guild, member, name: str, require_text: str, block_text: str, channels) -> str:
+        """Edit one subreddit: the channels it posts to and its keyword filters."""
+        name = engine.normalize_subreddit(name)
+        channel_ids = []
+        for channel in channels or []:
+            if channel.id not in channel_ids:
+                channel_ids.append(channel.id)
+        if not channel_ids:
+            raise PanelError("Pick at least one channel (use Remove to drop the subreddit).")
+        async with self.config.mappings() as mappings:
+            raw = mappings.get(name)
+            if not raw:
+                raise PanelError(f"r/{name} isn't mapped.")
+            mapping = SubredditMapping.from_dict(raw)
+            mapping.channel_ids = channel_ids
+            mapping.require_keywords = self._words(require_text)
+            mapping.block_keywords = self._words(block_text)
+            mappings[name] = mapping.to_dict()
+        return (f"r/{name} posts to {' '.join(f'<#{c}>' for c in channel_ids)}. "
+                f"Must contain: {', '.join(mapping.require_keywords) or 'anything'}. "
+                f"Never contain: {', '.join(mapping.block_keywords) or 'nothing'}.")
+
+    async def _apply_remove(self, guild, member, name: str) -> str:
+        """Remove a subreddit mapping entirely (all its channels)."""
+        name = engine.normalize_subreddit(name)
+        async with self.config.mappings() as mappings:
+            if name not in mappings:
+                raise PanelError(f"r/{name} isn't mapped.")
+            del mappings[name]
+        return f"Removed r/{name}."
+
+    async def _apply_pause(self, guild, member, name: str, paused: bool) -> str:
+        name = engine.normalize_subreddit(name)
         if not await self._apply_paused(name, paused):
-            await ctx.send(f"r/{name} isn't mapped.")
-            return
-        await ctx.send(f"r/{name} is now {'paused' if paused else 'active'}.")
+            raise PanelError(f"r/{name} isn't mapped.")
+        return f"r/{name} is now {'paused' if paused else 'active'}."
 
-    @redditfeed.command(name="interval")
-    async def redditfeed_interval(self, ctx: commands.Context, seconds: int) -> None:
-        """Set the shared poll interval, in seconds (floor: 30s)."""
-        clamped = engine.clamp_poll_interval(seconds)
+    async def _apply_switch_mode(self, guild, member, name: str) -> str:
+        """manual <-> auto for one subreddit. `manual` = posts wait in the mod queue; `auto` = straight to the channel."""
+        name = engine.normalize_subreddit(name)
+        async with self.config.mappings() as mappings:
+            raw = mappings.get(name)
+            if not raw:
+                raise PanelError(f"r/{name} isn't mapped.")
+            mapping = SubredditMapping.from_dict(raw)
+            mapping.approval = constants.APPROVAL_AUTO if mapping.approval == constants.APPROVAL_MANUAL else constants.APPROVAL_MANUAL
+            mappings[name] = mapping.to_dict()
+        return f"r/{name} is now **{mapping.approval}**."
+
+    async def _apply_mode_all(self, guild, member, mode: str) -> str:
+        """Set every mapped subreddit to `manual` or `auto` at once."""
+        parsed = engine.parse_approval(mode)
+        if parsed is None:
+            raise PanelError("Mode must be manual or auto.")
+        async with self.config.mappings() as mappings:
+            for name, raw in list(mappings.items()):
+                mapping = SubredditMapping.from_dict(raw)
+                mapping.approval = parsed
+                mappings[name] = mapping.to_dict()
+            count = len(mappings)
+        return f"{count} subreddit(s) are now **{parsed}**."
+
+    async def _apply_reset_all(self, guild, member, _value=None) -> str:
+        """Remove EVERY subreddit mapping and forget what was already posted. Settings, the denied list and learned topics are kept."""
+        async with self.config.mappings() as mappings:
+            removed = len(mappings)
+            mappings.clear()
+        await self.config.dedup_store.set({})
+        async with self.config.queue() as stored:
+            now = time.time()
+            for message_id in engine.pending_ids(stored):
+                stored[message_id]["status"] = constants.QUEUE_EXPIRED
+                stored[message_id]["resolved_ts"] = now
+        return f"Removed {removed} mapping(s) and cleared the dedup memory. Pending queue items were discarded."
+
+    async def _apply_queue_channel(self, guild, member, channel) -> str:
+        """Set the mod-only, age-restricted channel where manual-approval posts wait."""
+        if channel is None:
+            raise PanelError("Pick a channel.")
+        real = self._text_channel(guild, channel)
+        if not real.is_nsfw():
+            raise PanelError(f"{real.mention} must be age-restricted (the previews are explicit).")
+        if real.permissions_for(real.guild.default_role).view_channel:
+            raise PanelError(f"{real.mention} is visible to @everyone. Make it mods-only first.")
+        await self.config.queue_channel_id.set(real.id)
+        return f"Queue channel set to {real.mention}. Manual-approval posts will appear there."
+
+    async def _apply_queue_gates(self, guild, member, values: dict) -> str:
+        """Only queue posts with at least this score and this age; stop queueing at the cap."""
+        try:
+            score = int(float(values["min_score"]))
+            age = int(float(values["min_age"]))
+            cap = int(float(values["max_pending"]))
+        except (KeyError, TypeError, ValueError):
+            raise PanelError("Every box needs a plain number.")
+        score, age, cap = max(0, score), max(0, age), max(1, cap)
+        await self.config.queue_min_score.set(score)
+        await self.config.queue_min_age_minutes.set(age)
+        await self.config.queue_max_pending.set(cap)
+        return f"Queue gates: score {score}+, at least {age} min old, at most {cap} waiting."
+
+    async def _apply_queue_clear(self, guild, member, _value=None) -> str:
+        """Reject everything waiting in the queue. Nothing is posted and those posts never come back (they stay deduped)."""
+        stored = await self.config.queue()
+        if not engine.pending_ids(stored):
+            raise PanelError("Nothing is waiting.")
+        now = time.time()
+        cleared: list = []
+        async with self.config.queue() as live:
+            for message_id in engine.pending_ids(live):
+                entry = QueueEntry.from_dict(live[message_id])
+                entry.status = constants.QUEUE_REJECTED
+                entry.resolved_ts, entry.resolved_by = now, member.id
+                live[message_id] = entry.to_dict()
+                cleared.append((message_id, entry.queue_channel_id))
+        result = f"\u274c Cleared by {member.mention} (queue cleared, nothing posted)."
+        failed = 0
+        for message_id, channel_id in cleared:
+            channel = self.bot.get_channel(channel_id) if channel_id else None
+            try:
+                message = await channel.fetch_message(int(message_id))
+                await message.edit(content=None, embeds=queue_ui.resolved_embeds(list(message.embeds), result),
+                                   attachments=[], view=None)
+            except (AttributeError, discord.NotFound, discord.Forbidden, discord.HTTPException):
+                failed += 1       # card gone or unreachable: the record is already closed either way
+            await asyncio.sleep(0.3)
+        await self._log(f"\U0001F9F9 {member.display_name} cleared the redditfeed queue ({len(cleared)} item(s) rejected).")
+        note = f" ({failed} card(s) couldn't be edited, usually because they were already deleted.)" if failed else ""
+        return f"Rejected {len(cleared)} waiting item(s). Nothing was posted.{note}"
+
+    async def _apply_x_button(self, guild, member, on: bool) -> str:
+        """The mod-only X under new feed posts (existing posts keep theirs)."""
+        await self.config.x_button.set(bool(on))
+        return f"X button is now {'on' if on else 'off'} for new posts."
+
+    async def _apply_redgifs(self, guild, member, mode: str) -> str:
+        """`upload`: post RedGifs clips as a playable video file. `link`: post the bare link (Discord won't embed it)."""
+        value = (mode or "").strip().lower()
+        if value not in (constants.REDGIFS_UPLOAD, constants.REDGIFS_LINK):
+            raise PanelError("Choose upload or link.")
+        await self.config.redgifs_mode.set(value)
+        return f"RedGifs posts will now use **{value}**."
+
+    async def _apply_log_channel(self, guild, member, channel) -> str:
+        """Where X removals and queue pauses are logged."""
+        if channel is None:
+            raise PanelError("Pick a channel.")
+        await self.config.log_channel_id.set(channel.id)
+        return f"Logging to {getattr(channel, 'mention', channel.id)}."
+
+    async def _apply_category(self, guild, member, category) -> str:
+        """Category where `discover` may create new channels (cleared = it never creates one)."""
+        if category is None:
+            await self.config.new_channel_category_id.set(None)
+            return "`discover` will no longer create channels."
+        await self.config.new_channel_category_id.set(category.id)
+        return f"`discover` may create new channels in {getattr(category, 'name', None) or category.id}."
+
+    async def _apply_prefix(self, guild, member, prefix: str) -> str:
+        """Text put in front of new channel names. Blank clears it."""
+        value = (prefix or "").strip()
+        await self.config.new_channel_prefix.set(value)
+        return f"New channel names will start with `{value}`." if value else "New channel names get no prefix."
+
+    async def _apply_polling(self, guild, member, values: dict) -> str:
+        """The shared poll interval and the pause between individual subreddit requests."""
+        try:
+            interval = int(float(values["interval"]))
+            stagger = float(values["stagger"])
+        except (KeyError, TypeError, ValueError):
+            raise PanelError("Both boxes need a plain number.")
+        clamped, gap = engine.clamp_poll_interval(interval), engine.clamp_stagger(stagger)
         await self.config.poll_interval_seconds.set(clamped)
-        note = f" (raised from {seconds} to the {clamped}s floor)" if clamped != seconds else ""
-        await ctx.send(f"Poll interval set to {clamped}s{note}.")
+        await self.config.stagger_seconds.set(gap)
+        note = f" (raised from {interval} to the {clamped}s floor)" if clamped != interval else ""
+        return f"Polling every {clamped}s{note}, {gap}s between subreddits."
 
-    @redditfeed.command(name="stagger")
-    async def redditfeed_stagger(self, ctx: commands.Context, seconds: float) -> None:
-        """Set the delay between individual subreddit requests within a poll cycle."""
-        clamped = engine.clamp_stagger(seconds)
-        await self.config.stagger_seconds.set(clamped)
-        await ctx.send(f"Stagger set to {clamped}s.")
-
-    @redditfeed.command(name="list")
-    async def redditfeed_list(self, ctx: commands.Context) -> None:
-        """List all mapped subreddits."""
-        mappings_raw = await self.config.mappings()
-        if not mappings_raw:
-            await ctx.send("No subreddits mapped yet. `.redditfeed add <subreddit> #channel`")
-            return
-        lines = [f"r/{name}" for name in sorted(mappings_raw)]
-        await ctx.send("\n".join(lines))
+    async def _apply_undeny(self, guild, member, name: str) -> str:
+        """Let a subreddit denied in `discover` be suggested again."""
+        name = engine.normalize_subreddit(name)
+        async with self.config.denied_subreddits() as denied:
+            if name not in denied:
+                raise PanelError(f"r/{name} isn't on the denied list.")
+            denied.remove(name)
+        return f"r/{name} can be suggested again."
 
     @redditfeed.command(name="status")
     async def redditfeed_status(self, ctx: commands.Context) -> None:
         """Per-subreddit status: channel(s), last poll, last post found, active/paused."""
         mappings_raw = await self.config.mappings()
         if not mappings_raw:
-            await ctx.send("No subreddits mapped yet. `.redditfeed add <subreddit> #channel`")
+            await ctx.send("No subreddits mapped yet. Open `.redditfeed` and use Add in the Feeds tab.")
             return
         mappings = [SubredditMapping.from_dict(raw) for raw in mappings_raw.values()]
         lines = embeds.build_status_lines(mappings)
@@ -839,7 +928,7 @@ class RedditFeed(DashboardIntegration, commands.Cog):
 
     # -- Queue + feed settings ---------------------------------------------------------
 
-    @redditfeed.group(name="queue", invoke_without_command=True)
+    @redditfeed.command(name="queue")
     async def redditfeed_queue(self, ctx: commands.Context) -> None:
         """Show the approval queue: where it is, what's waiting, and what the last cycle did."""
         stored = await self.config.queue()
@@ -849,7 +938,7 @@ class RedditFeed(DashboardIntegration, commands.Cog):
         manual = sum(1 for m in mappings if m.approval == constants.APPROVAL_MANUAL)
         stats = self._last_stats or {}
         lines = [
-            f"Queue channel: {f'<#{channel_id}>' if channel_id else '**not set** (`.redditfeed queue channel #mod-queue`)'}",
+            f"Queue channel: {f'<#{channel_id}>' if channel_id else '**not set** (`.redditfeed` > Queue tab)'}",
             f"Waiting for a decision: **{len(pending)}** (cap {await self.config.queue_max_pending()})",
             f"Queued only when a post is at least **{await self.config.queue_min_age_minutes()} min** old "
             f"and has **{await self.config.queue_min_score()}+** score",
@@ -860,114 +949,10 @@ class RedditFeed(DashboardIntegration, commands.Cog):
             lines.append("Last cycle: " + ", ".join(f"{k.replace('_', ' ')} {v}" for k, v in sorted(stats.items())))
         await ctx.send("\n".join(lines))
 
-    @redditfeed_queue.command(name="channel")
-    async def redditfeed_queue_channel(self, ctx: commands.Context, channel: discord.TextChannel) -> None:
-        """Set the mod-only channel where manual-approval posts wait."""
-        if not channel.is_nsfw():
-            await ctx.send(f"{channel.mention} must be age-restricted (the previews are explicit).")
-            return
-        if channel.permissions_for(channel.guild.default_role).view_channel:
-            await ctx.send(f"{channel.mention} is visible to @everyone. Make it mods-only first.")
-            return
-        await self.config.queue_channel_id.set(channel.id)
-        await ctx.send(f"Queue channel set to {channel.mention}. Manual-approval posts will appear there.")
-
-    @redditfeed_queue.command(name="minscore")
-    async def redditfeed_queue_minscore(self, ctx: commands.Context, score: int) -> None:
-        """Only queue posts with at least this score (0 = no minimum)."""
-        await self.config.queue_min_score.set(max(0, score))
-        await ctx.send(f"Minimum score: {max(0, score)}.")
-
-    @redditfeed_queue.command(name="minage")
-    async def redditfeed_queue_minage(self, ctx: commands.Context, minutes: int) -> None:
-        """Only queue posts at least this many minutes old (lets scores settle)."""
-        await self.config.queue_min_age_minutes.set(max(0, minutes))
-        await ctx.send(f"Minimum age: {max(0, minutes)} minutes.")
-
-    @redditfeed_queue.command(name="max")
-    async def redditfeed_queue_max(self, ctx: commands.Context, count: int) -> None:
-        """Stop adding to the queue once this many items are waiting."""
-        await self.config.queue_max_pending.set(max(1, count))
-        await ctx.send(f"Queue cap: {max(1, count)} waiting items.")
-
-    @redditfeed_queue.command(name="clear")
-    async def redditfeed_queue_clear(self, ctx: commands.Context, confirm: str = "") -> None:
-        """Reject everything waiting in the queue: `.redditfeed queue clear yes`.
-        Nothing is posted, and those posts never come back (they stay deduped).
-        Settings, subreddits and anything already decided are untouched."""
-        stored = await self.config.queue()
-        pending = engine.pending_ids(stored)
-        if confirm.strip().lower() != "yes":
-            await ctx.send(f"This rejects all **{len(pending)}** waiting item(s) without posting them. "
-                           "Run `.redditfeed queue clear yes` to confirm.")
-            return
-        if not pending:
-            await ctx.send("Nothing is waiting.")
-            return
-        now = time.time()
-        cleared: list = []
-        async with self.config.queue() as live:
-            for message_id in engine.pending_ids(live):
-                entry = QueueEntry.from_dict(live[message_id])
-                entry.status = constants.QUEUE_REJECTED
-                entry.resolved_ts, entry.resolved_by = now, ctx.author.id
-                live[message_id] = entry.to_dict()
-                cleared.append((message_id, entry.queue_channel_id))
-        result = f"\u274c Cleared by {ctx.author.mention} (queue cleared, nothing posted)."
-        failed = 0
-        for message_id, channel_id in cleared:
-            channel = self.bot.get_channel(channel_id) if channel_id else None
-            try:
-                message = await channel.fetch_message(int(message_id))
-                await message.edit(content=None, embeds=queue_ui.resolved_embeds(list(message.embeds), result),
-                                   attachments=[], view=None)
-            except (AttributeError, discord.NotFound, discord.Forbidden, discord.HTTPException):
-                failed += 1       # card gone or unreachable: the record is already closed either way
-            await asyncio.sleep(0.3)
-        await self._log(f"\U0001F9F9 {ctx.author.display_name} cleared the redditfeed queue ({len(cleared)} item(s) rejected).")
-        note = f" ({failed} card(s) couldn't be edited, usually because they were already deleted.)" if failed else ""
-        await ctx.send(f"Rejected {len(cleared)} waiting item(s). Nothing was posted.{note}")
-
-    @redditfeed.command(name="xbutton")
-    async def redditfeed_xbutton(self, ctx: commands.Context, state: str) -> None:
-        """`on`/`off`: the mod-only X under new feed posts (existing posts keep theirs)."""
-        value = state.strip().lower()
-        if value not in ("on", "off"):
-            await ctx.send("Use `on` or `off`.")
-            return
-        await self.config.x_button.set(value == "on")
-        await ctx.send(f"X button is now {value} for new posts.")
-
-    @redditfeed.command(name="redgifs")
-    async def redditfeed_redgifs(self, ctx: commands.Context, mode: str = "") -> None:
-        """`upload` (default): post RedGifs clips as a playable video file. `link`: post the bare link (Discord won't embed it)."""
-        value = mode.strip().lower()
-        if not value:
-            await ctx.send(f"RedGifs mode: **{await self.config.redgifs_mode()}**. Use `upload` or `link`.")
-            return
-        if value not in (constants.REDGIFS_UPLOAD, constants.REDGIFS_LINK):
-            await ctx.send("Use `upload` or `link`.")
-            return
-        await self.config.redgifs_mode.set(value)
-        await ctx.send(f"RedGifs posts will now use **{value}**.")
-
-    @redditfeed.command(name="logchannel")
-    async def redditfeed_logchannel(self, ctx: commands.Context, channel: discord.TextChannel) -> None:
-        """Where X removals and queue pauses are logged (default: #mod-commands)."""
-        await self.config.log_channel_id.set(channel.id)
-        await ctx.send(f"Logging to {channel.mention}.")
-
-    @redditfeed.command(name="category")
-    async def redditfeed_category(self, ctx: commands.Context, category: discord.CategoryChannel) -> None:
-        """Category where `discover` may create new channels. New channels inherit its
-        permissions and are age-restricted. Until this is set, discover never creates one."""
-        await self.config.new_channel_category_id.set(category.id)
-        await ctx.send(f"`discover` may create new channels in **{category.name}**.")
-
     @redditfeed.command(name="map")
     async def redditfeed_map(self, ctx: commands.Context, category: Optional[discord.CategoryChannel] = None) -> None:
         """Show what maps where, and which channels in a category aren't mapped.
-        Uses the category from `.redditfeed category` unless you name one."""
+        Uses the category from the panel's Discovery tab unless you name one."""
         guild = ctx.guild
         if category is None:
             category_id = await self.config.new_channel_category_id()
@@ -975,7 +960,7 @@ class RedditFeed(DashboardIntegration, commands.Cog):
             category = found if hasattr(found, "text_channels") else None
         mappings = [SubredditMapping.from_dict(raw) for raw in (await self.config.mappings()).values()]
         if not mappings:
-            await ctx.send("No subreddits mapped yet. `.redditfeed add <subreddit> #channel`")
+            await ctx.send("No subreddits mapped yet. Open `.redditfeed` and use Add in the Feeds tab.")
             return
         category_channels = {c.id: c.name for c in category.text_channels} if category else {}
         lines = embeds.build_mapping_overview(
@@ -1015,7 +1000,7 @@ class RedditFeed(DashboardIntegration, commands.Cog):
         mapping = SubredditMapping.from_dict(raw)
         if mapping.approval != constants.APPROVAL_MANUAL:
             await ctx.send(f"r/{name} is in auto mode, so a backfill would post straight into the channel. "
-                           f"Switch it first (`.redditfeed mode {name} manual`), backfill, review, then switch back.")
+                           f"Switch it first (`.redditfeed`, Feeds tab), backfill, review, then switch back.")
             return
         if not mapping.channel_ids or mapping.paused:
             await ctx.send(f"r/{name} is paused or has no channel; fix that first.")
@@ -1093,13 +1078,6 @@ class RedditFeed(DashboardIntegration, commands.Cog):
         for page in embeds.paginate_lines(lines):
             await ctx.send(page)
 
-    @redditfeed.command(name="prefix")
-    async def redditfeed_prefix(self, ctx: commands.Context, *, prefix: str) -> None:
-        """Text put in front of new channel names, e.g. `.redditfeed prefix 🔞・`. `off` clears it."""
-        value = "" if prefix.strip().lower() == "off" else prefix.strip()
-        await self.config.new_channel_prefix.set(value)
-        await ctx.send(f"New channel names will start with `{value}`." if value else "New channel names get no prefix.")
-
     # -- Discovery: suggest subreddits, mods approve/deny with a preview ---------------
 
     async def _approve_suggestion(self, name: str, channel_id=None, new_name=None, guild=None, display_name: str = ""):
@@ -1133,7 +1111,7 @@ class RedditFeed(DashboardIntegration, commands.Cog):
             category = guild.get_channel(category_id) if category_id else None
             if category is None:
                 raise discovery.DestinationError(
-                    "I'm not allowed to create channels yet. Set a category with `.redditfeed category <category>`, "
+                    "I'm not allowed to create channels yet. Set a category in `.redditfeed` (Discovery tab), "
                     "or pick an existing channel from the dropdown."
                 )
             try:
@@ -1165,7 +1143,7 @@ class RedditFeed(DashboardIntegration, commands.Cog):
 
         Several prefixes: `feet,foot,sole` (max 5). Leave the channel out and each
         card proposes one (an existing channel that matches, or a new one if a
-        category is set with `.redditfeed category`); a dropdown on the card changes
+        category is set in the panel's Discovery tab); a dropdown on the card changes
         it. Give a channel to force every card to it. Run it in an age-restricted
         channel (previews are explicit). Examples:
         `.redditfeed discover feet,foot`   `.redditfeed discover feet #feet 5000`
@@ -1263,84 +1241,9 @@ class RedditFeed(DashboardIntegration, commands.Cog):
                 except discord.HTTPException as exc:
                     log.warning("redditfeed: could not post suggestion for r/%s: %s", candidate.name, exc)
 
-    @redditfeed.command(name="denied")
-    async def redditfeed_denied(self, ctx: commands.Context) -> None:
-        """List subreddits you denied in `discover` (they're never suggested again)."""
-        denied = await self.config.denied_subreddits()
-        if not denied:
-            await ctx.send("No denied subreddits.")
-            return
-        await ctx.send("Denied: " + ", ".join(f"r/{name}" for name in sorted(denied)) + "\nUndo with `.redditfeed undeny <subreddit>`.")
-
-    @redditfeed.command(name="undeny")
-    async def redditfeed_undeny(self, ctx: commands.Context, subreddit: str) -> None:
-        """Let a previously denied subreddit be suggested again."""
-        name = engine.normalize_subreddit(subreddit)
-        async with self.config.denied_subreddits() as denied:
-            if name not in denied:
-                await ctx.send(f"r/{name} isn't on the denied list.")
-                return
-            denied.remove(name)
-        await ctx.send(f"r/{name} can be suggested again.")
-
-    @redditfeed.group(name="keyword", invoke_without_command=True)
-    async def redditfeed_keyword(self, ctx: commands.Context) -> None:
-        """Manage per-subreddit keyword filters."""
-        await ctx.send_help(ctx.command)
-
-    @redditfeed_keyword.command(name="show")
-    async def redditfeed_keyword_show(self, ctx: commands.Context, subreddit: str) -> None:
-        name = engine.normalize_subreddit(subreddit)
-        mappings_raw = await self.config.mappings()
-        raw = mappings_raw.get(name)
-        if not raw:
-            await ctx.send(f"r/{name} isn't mapped.")
-            return
-        mapping = SubredditMapping.from_dict(raw)
-        require = ", ".join(mapping.require_keywords) or "(none)"
-        block = ", ".join(mapping.block_keywords) or "(none)"
-        await ctx.send(f"r/{name}\nrequire: {require}\nblock: {block}")
-
-    @redditfeed_keyword.command(name="require")
-    async def redditfeed_keyword_require(
-        self, ctx: commands.Context, action: str, subreddit: str, *, word: str
-    ) -> None:
-        """`.redditfeed keyword require add|remove <subreddit> <word>`"""
-        await self._edit_keyword_list(ctx, action, subreddit, word, constants.KEYWORD_MODE_REQUIRE)
-
-    @redditfeed_keyword.command(name="block")
-    async def redditfeed_keyword_block(
-        self, ctx: commands.Context, action: str, subreddit: str, *, word: str
-    ) -> None:
-        """`.redditfeed keyword block add|remove <subreddit> <word>`"""
-        await self._edit_keyword_list(ctx, action, subreddit, word, constants.KEYWORD_MODE_BLOCK)
-
-    async def _edit_keyword_list(
-        self, ctx: commands.Context, action: str, subreddit: str, word: str, mode: str
-    ) -> None:
-        action = action.lower()
-        if action not in ("add", "remove"):
-            await ctx.send("Action must be `add` or `remove`.")
-            return
-        name = engine.normalize_subreddit(subreddit)
-        async with self.config.mappings() as mappings:
-            raw = mappings.get(name)
-            if not raw:
-                await ctx.send(f"r/{name} isn't mapped.")
-                return
-            mapping = SubredditMapping.from_dict(raw)
-            target = mapping.require_keywords if mode == constants.KEYWORD_MODE_REQUIRE else mapping.block_keywords
-            word_lower = word.lower()
-            if action == "add" and word_lower not in target:
-                target.append(word_lower)
-            elif action == "remove" and word_lower in target:
-                target.remove(word_lower)
-            mappings[name] = mapping.to_dict()
-        await ctx.send(f"r/{name} {mode} keywords: {', '.join(target) or '(none)'}")
-
     # -- Dashboard page ------------------------------------------------------------
     # Registration is handled by DashboardIntegration (dashboard_integration.py).
-    # Everything the page can do is also a `.redditfeed` command; the page is a
+    # Everything the page can do is also in the `.redditfeed` panel; the page is a
     # second front end over the same config, and writes go through _apply_paused.
 
     async def _on_bot_loop(self, coro):
