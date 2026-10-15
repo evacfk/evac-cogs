@@ -9,6 +9,11 @@ import discord
 from redbot.core import bank, commands, Config, checks
 from redbot.core.bot import Red
 
+from . import panel as panel_specs
+from .settings_panel import PanelError, open_panel
+
+COG_VERSION = "1.1.0"
+
 # ---------------------------------------------------------------------------
 # Wondercasino hub — how a "game" entry works
 #
@@ -586,8 +591,8 @@ class GambleThreads(commands.Cog):
         thread, created = await self._get_or_create_personal_thread(guild, ctx.author)
         if thread is None:
             await ctx.send(
-                "No gambling channel is configured yet — ask a mod to run "
-                "`.gambleset channel #wondercasino` first."
+                "No gambling channel is configured yet — ask a mod to "
+                "pick a hub channel in `.gambleset` first."
             )
             return
         if not created:
@@ -744,8 +749,8 @@ class GambleThreads(commands.Cog):
             # "thinking…" placeholder from the defer() above in place,
             # instead of leaving it stuck alongside a brand-new message.
             await interaction.edit_original_response(
-                content="No gambling channel is configured yet — ask a mod to run "
-                "`.gambleset channel #wondercasino` first."
+                content="No gambling channel is configured yet — ask a mod to "
+                "pick a hub channel in `.gambleset` first."
             )
             return
         try:
@@ -1071,7 +1076,7 @@ class GambleThreads(commands.Cog):
         Returns an error string on failure, None on success."""
         channel = await self._hub_channel(guild)
         if channel is None:
-            return "No hub channel is set — run `.gambleset channel #wondercasino` first."
+            return "No hub channel is set — pick one in `.gambleset` first."
         message_id = await self.config.guild(guild).hub_message_id()
         games = await self.config.guild(guild).games()
         embed = self._build_hub_embed(games)
@@ -1096,37 +1101,51 @@ class GambleThreads(commands.Cog):
 
     # ---------- admin config: gambling threads ----------
 
-    @commands.group(name="gambleset")
+    @commands.group(name="gambleset", invoke_without_command=True)
     @commands.guild_only()
     async def gambleset(self, ctx: commands.Context):
-        """Configure gambling threads."""
-
-    @gambleset.command(name="channel")
-    async def gambleset_channel(self, ctx: commands.Context, channel: discord.TextChannel):
-        """Set the Wondercasino hub channel — where personal/shared threads spawn from."""
-        await self.config.guild(ctx.guild).bot_channel_id.set(channel.id)
-        await ctx.send(
-            f"Gambling threads will now be created in {channel.mention}. "
-            f"Run `.gamblehub setup` next to post the menu there."
-        )
-
-    @gambleset.command(name="timeout")
-    async def gambleset_timeout(self, ctx: commands.Context, minutes: int):
-        """Set the personal-thread inactivity timeout in minutes (min 1)."""
-        if minutes < 1:
-            await ctx.send("Timeout must be at least 1 minute.")
+        """Settings panel for the hub channel and thread timeouts (admins). Others get the command list."""
+        perms = ctx.author.guild_permissions
+        if perms.administrator or perms.manage_guild:
+            await open_panel(ctx, self, panel_specs.build_specs(), title="Wondercasino", intro=panel_specs.INTRO)
             return
-        await self.config.guild(ctx.guild).timeout_minutes.set(minutes)
-        await ctx.send(f"Personal gambling threads now auto-close after {minutes} minute(s) of inactivity.")
+        await ctx.send_help(ctx.command)
 
-    @gambleset.command(name="sharedtimeout")
-    async def gambleset_sharedtimeout(self, ctx: commands.Context, minutes: int):
-        """Set the shared-table (e.g. blackjack-table) inactivity timeout in minutes (min 1)."""
-        if minutes < 1:
-            await ctx.send("Timeout must be at least 1 minute.")
-            return
-        await self.config.guild(ctx.guild).shared_timeout_minutes.set(minutes)
-        await ctx.send(f"Shared tables now auto-close after {minutes} minute(s) of inactivity.")
+    @gambleset.command(name="version")
+    async def gambleset_version(self, ctx: commands.Context):
+        """Show the running gamble version (deploy probe)."""
+        await ctx.send(f"gamble v{COG_VERSION} (settings panel: `.gambleset`)")
+
+    # The panel calls these; each returns the message to show or raises PanelError.
+
+    async def _apply_channel(self, guild, member, channel) -> str:
+        if channel is None:
+            raise PanelError("Pick the hub channel.")
+        await self.config.guild(guild).bot_channel_id.set(channel.id)
+        return (f"Gambling threads will now be created in {channel.mention}. "
+                "Press Post / refresh hub menu to put the menu there.")
+
+    async def _apply_timeouts(self, guild, member, values) -> str:
+        numbers = {}
+        for key, label in (("personal", "Personal threads"), ("shared", "Shared tables")):
+            try:
+                n = int(str((values or {}).get(key, "")).strip())
+            except ValueError:
+                raise PanelError(f"{label} must be a whole number of minutes.")
+            if n < 1:
+                raise PanelError(f"{label} must be at least 1 minute.")
+            numbers[key] = n
+        conf = self.config.guild(guild)
+        await conf.timeout_minutes.set(numbers["personal"])
+        await conf.shared_timeout_minutes.set(numbers["shared"])
+        return (f"Personal threads auto-close after {numbers['personal']} minute(s) of inactivity, "
+                f"shared tables after {numbers['shared']}.")
+
+    async def _apply_post_hub(self, guild, member, _value=None) -> str:
+        error = await self._refresh_hub_message(guild)
+        if error:
+            raise PanelError(error)
+        return "Hub menu posted/refreshed."
 
     @gambleset.command(name="settings")
     async def gambleset_settings(self, ctx: commands.Context):
@@ -1378,7 +1397,7 @@ class GambleThreads(commands.Cog):
         hub menu never gets buried but hub-spawned threads stay usable."""
         channel = await self._hub_channel(ctx.guild)
         if channel is None:
-            await ctx.send("No hub channel is set — run `.gambleset channel #wondercasino` first.")
+            await ctx.send("No hub channel is set — pick one in `.gambleset` first.")
             return
         everyone = ctx.guild.default_role
         overwrite = channel.overwrites_for(everyone)
