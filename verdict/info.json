@@ -3,10 +3,17 @@
     "short": "A daily crowd question: pick your answer, then guess what everyone else picks.",
     "description": "Posts one question a day with 2-4 buttons. Members tap their own answer, then guess what most people will pick. The next post carries yesterday's result, and the old post becomes a final tally showing who picked what, who read the crowd and the lone wolves. Keeps streaks, awards a monthly Mind Reader role, and opens a voters-only private discussion thread that members are added to once their answer and guess are in (locked and archived with the next post, when its discussion is copied to a public thread for everyone). Members can suggest questions that wait for the owner's tick or cross in a private channel.",
     "end_user_data_statement": "This cog stores each member's answers and guesses to the open question (answers are shown by name in the final result post), their streak and counts, and monthly scores. Suggested questions are stored with the submitter's user ID until reviewed. It is deleted on a Red data-deletion request.",
-    "install_msg": "Set up with `.verdict channel #cuddle`, `.verdict reviewchannel #private-channel`, optionally `.verdict mindreaderrole @role`, then `.verdict enable`. Test with `.verdict post`.",
-    "author": ["evacfk"],
+    "install_msg": "Run `.verdict settings` (needs Manage Server) to open the settings panel: pick the daily question channel (#cuddle), a private review channel for member suggestions, optionally the Mind Reader role, then switch Daily question on. Test with `.verdict post`.",
+    "author": [
+        "evacfk"
+    ],
     "requirements": [],
-    "tags": ["daily", "poll", "community", "streak"],
+    "tags": [
+        "daily",
+        "poll",
+        "community",
+        "streak"
+    ],
     "min_bot_version": "3.5.0",
     "hidden": false,
     "disabled": false,

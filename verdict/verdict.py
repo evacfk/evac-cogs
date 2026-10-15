@@ -14,12 +14,15 @@ from __future__ import annotations
 import asyncio
 import logging
 import random
+import re
 import time
 
 import discord
 from redbot.core import Config, commands
 
 from . import embeds, engine
+from . import panel as panel_specs
+from .settings_panel import PanelError, open_panel
 from .constants import (
     COG_VERSION, CONFIG_IDENTIFIER, CROSS, DEFAULT_GUILD, DEFAULT_MEMBER, KEEP_HISTORY, KEEP_MONTHS, MAX_PENDING_PER_USER,
     STAFF_ROLE_IDS, STREAK_MILESTONES, SUGGEST_COOLDOWN_SECONDS, THREAD_ARCHIVE_MINUTES, TICK, TICK_SECONDS,
@@ -146,7 +149,7 @@ class Verdict(commands.Cog):
             conf = self.config.guild(guild)
             channel = guild.get_channel(await conf.channel_id() or 0)
             if channel is None:
-                return "Set the channel first: `.verdict channel #channel`."
+                return "Open `.verdict settings` and pick the channel first."
             cur = await conf.current()
             yesterday = None
             if cur:
@@ -651,94 +654,78 @@ class Verdict(commands.Cog):
             return
         await ctx.send(await self.post_daily(ctx.guild, time.time()))
 
-    # admin settings
+    # ---------- settings (the panel calls these) ----------
 
-    @verdict.command(name="channel")
-    @commands.admin_or_permissions(manage_guild=True)
-    async def verdict_channel(self, ctx: commands.Context, channel: discord.TextChannel):
-        """Where the daily question is posted (#cuddle)."""
-        await self.config.guild(ctx.guild).channel_id.set(channel.id)
-        await ctx.send(f"The daily question goes in {channel.mention}.")
+    async def _apply_enabled(self, guild, member, on) -> str:
+        conf = self.config.guild(guild)
+        if on and not await conf.channel_id():
+            raise PanelError("Pick the daily question channel first.")
+        await conf.enabled.set(bool(on))
+        if on:
+            return "Daily Verdict is on. The first question goes out at the next posting hour, or use `.verdict post`."
+        return "Daily Verdict is off."
 
-    @verdict.command(name="reviewchannel")
-    @commands.admin_or_permissions(manage_guild=True)
-    async def verdict_reviewchannel(self, ctx: commands.Context, channel: discord.TextChannel):
-        """Private channel where member suggestions wait for a ✅ or ❌ from you."""
-        perms = channel.permissions_for(ctx.guild.default_role)
+    async def _apply_channel(self, guild, member, channel) -> str:
+        if channel is None:
+            raise PanelError("The daily question channel is required.")
+        await self.config.guild(guild).channel_id.set(channel.id)
+        return f"The daily question goes in {channel.mention}."
+
+    async def _apply_review_channel(self, guild, member, channel) -> str:
+        if channel is None:
+            raise PanelError("The review channel is required.")
+        perms = channel.permissions_for(guild.default_role)
         if getattr(perms, "view_channel", False):
-            await ctx.send(f"{channel.mention} can be seen by @everyone. Pick a private channel.")
-            return
-        await self.config.guild(ctx.guild).review_channel_id.set(channel.id)
-        await ctx.send(f"Suggestions go to {channel.mention}. Only you (the bot owner) and `.verdict approvers` can approve.")
+            raise PanelError(f"{channel.mention} can be seen by @everyone. Pick a private channel.")
+        await self.config.guild(guild).review_channel_id.set(channel.id)
+        return f"Suggestions go to {channel.mention}. Only the bot owner and the approvers can approve."
 
-    @verdict.command(name="approvers")
-    @commands.admin_or_permissions(manage_guild=True)
-    async def verdict_approvers(self, ctx: commands.Context, *members: discord.Member):
-        """Extra people whose ✅/❌ counts (the bot owner always can). Replaces the list."""
-        await self.config.guild(ctx.guild).approver_ids.set([m.id for m in members])
-        await ctx.send("Approvers: owner" + "".join(f", {m.display_name}" for m in members))
+    async def _apply_approvers(self, guild, member, values) -> str:
+        raw = str((values or {}).get("ids") or "")
+        ids, missing = [], []
+        for token in re.findall(r"\d{15,20}", raw):
+            who = guild.get_member(int(token))
+            if who is None:
+                missing.append(token)
+            elif who.id not in ids:
+                ids.append(who.id)
+        if missing:
+            raise PanelError("These aren't members of this server: " + ", ".join(missing))
+        await self.config.guild(guild).approver_ids.set(ids)
+        names = "".join(f", {guild.get_member(i).display_name}" for i in ids)
+        return "Approvers: owner" + names
 
-    @verdict.command(name="hour")
-    @commands.admin_or_permissions(manage_guild=True)
-    async def verdict_hour(self, ctx: commands.Context, hour: int):
-        """Pacific hour (0-23) the daily question goes out. Default 10."""
+    async def _apply_hour(self, guild, member, values) -> str:
+        try:
+            hour = int(float(values["hour"]))
+        except (KeyError, TypeError, ValueError):
+            raise PanelError("Enter an hour from 0 to 23.")
         if not 0 <= hour <= 23:
-            await ctx.send("Pick an hour from 0 to 23.")
-            return
-        await self.config.guild(ctx.guild).post_hour.set(hour)
-        await ctx.send(f"Daily question at {hour}:00 Pacific.")
+            raise PanelError("Pick an hour from 0 to 23.")
+        await self.config.guild(guild).post_hour.set(hour)
+        return f"Daily question at {hour}:00 Pacific."
 
-    @verdict.command(name="pingrole")
-    @commands.admin_or_permissions(manage_guild=True)
-    async def verdict_pingrole(self, ctx: commands.Context, role: discord.Role = None):
-        """Role pinged on the daily post (leave empty to stop pinging)."""
-        await self.config.guild(ctx.guild).ping_role_id.set(role.id if role else None)
-        await ctx.send(f"Pinging {role.name}." if role else "No ping on the daily post.",
-                       allowed_mentions=discord.AllowedMentions.none())
+    async def _apply_ping_role(self, guild, member, role) -> str:
+        await self.config.guild(guild).ping_role_id.set(role.id if role else None)
+        return f"Pinging {role.name}." if role else "No ping on the daily post."
 
-    @verdict.command(name="mindreaderrole")
-    @commands.admin_or_permissions(manage_guild=True)
-    async def verdict_mindreaderrole(self, ctx: commands.Context, role: discord.Role = None):
-        """Role given to last month's best crowd-reader (leave empty to turn the title off)."""
-        await self.config.guild(ctx.guild).mind_reader_role_id.set(role.id if role else None)
-        await ctx.send(f"Mind Reader role: {role.name}." if role else "No Mind Reader role.",
-                       allowed_mentions=discord.AllowedMentions.none())
+    async def _apply_mind_reader_role(self, guild, member, role) -> str:
+        await self.config.guild(guild).mind_reader_role_id.set(role.id if role else None)
+        return f"Mind Reader role: {role.name}." if role else "No Mind Reader role."
 
-    @verdict.command(name="threads")
-    @commands.admin_or_permissions(manage_guild=True)
-    async def verdict_threads(self, ctx: commands.Context, setting: str = None):
-        """Voters-only discussion thread per question: `.verdict threads on` or `off` (no argument shows the state)."""
-        conf = self.config.guild(ctx.guild).threads_enabled
-        if setting is None:
-            await ctx.send(f"Discussion threads are {'on' if await conf() else 'off'}.")
-            return
-        if setting.lower() not in ("on", "off"):
-            await ctx.send("Use `on` or `off`.")
-            return
-        await conf.set(setting.lower() == "on")
-        await ctx.send(f"Discussion threads {setting.lower()} from the next question. An open thread still locks at the next post.")
-
-    @verdict.command(name="enable")
-    @commands.admin_or_permissions(manage_guild=True)
-    async def verdict_enable(self, ctx: commands.Context):
-        """Start posting a question every day."""
-        if not await self.config.guild(ctx.guild).channel_id():
-            await ctx.send("Set the channel first: `.verdict channel #channel`.")
-            return
-        await self.config.guild(ctx.guild).enabled.set(True)
-        await ctx.send("Daily Verdict is on. The first question goes out at the next posting hour, or use `.verdict post`.")
-
-    @verdict.command(name="disable")
-    @commands.admin_or_permissions(manage_guild=True)
-    async def verdict_disable(self, ctx: commands.Context):
-        """Stop posting."""
-        await self.config.guild(ctx.guild).enabled.set(False)
-        await ctx.send("Daily Verdict is off.")
+    async def _apply_threads(self, guild, member, on) -> str:
+        await self.config.guild(guild).threads_enabled.set(bool(on))
+        return (f"Discussion threads {'on' if on else 'off'} from the next question. "
+                "An open thread still locks at the next post.")
 
     @verdict.command(name="settings")
     async def verdict_settings(self, ctx: commands.Context):
-        """Show settings."""
+        """Admins: open the settings panel. Mods: print the current settings."""
         if not await self._require_staff(ctx):
+            return
+        perms = ctx.author.guild_permissions
+        if perms.administrator or perms.manage_guild:
+            await open_panel(ctx, self, panel_specs.build_specs(), title="Daily Verdict", intro=panel_specs.INTRO)
             return
         s = await self.config.guild(ctx.guild).all()
         ch = lambda i: f"<#{i}>" if i else "not set"  # noqa: E731

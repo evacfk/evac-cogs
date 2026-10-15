@@ -320,9 +320,13 @@ async def test_review_channel_must_be_private(env):
     ctx = Ctx(env, Member(env.g, 1))
     public = env.g.add_channel(102, "public")
     public.permissions_for = lambda role: types.SimpleNamespace(view_channel=True)
-    await cmd(env, "verdict_reviewchannel")(env.cog, ctx, public)
-    assert "seen by @everyone" in ctx.sent[-1]
+    with pytest.raises(env.mod.PanelError, match="seen by @everyone"):
+        await env.cog._apply_review_channel(env.g, ctx.author, public)
     assert await env.conf.review_channel_id() == 101
+    private = env.g.add_channel(103, "private")
+    private.permissions_for = lambda role: types.SimpleNamespace(view_channel=False)
+    await env.cog._apply_review_channel(env.g, ctx.author, private)
+    assert await env.conf.review_channel_id() == 103
 
 
 async def test_staff_commands_need_a_staff_role(env):
@@ -369,6 +373,7 @@ async def test_settings_command_works_while_a_question_is_open(env):
     await env.cog._tick(env.g, ts(2026, 10, 5, 10, 5))
     assert await env.conf.current()
     mod = Ctx(env, Member(env.g, 61, roles=[types.SimpleNamespace(id=426696709780013066)]))
+    mod.author.guild_permissions = types.SimpleNamespace(administrator=False, manage_guild=False)
     await cmd(env, "verdict_settings")(env.cog, mod)
     assert "Daily Verdict" in mod.sent[-1]
 
@@ -527,14 +532,11 @@ async def test_next_post_locks_and_archives_the_old_thread_and_opens_a_new_one(e
 async def test_threads_off_posts_without_a_thread_but_still_closes_the_open_one(env):
     await env.cog.post_daily(env.g, ts(2026, 10, 13))
     old = env.chan.threads[0]
-    ctx = Ctx(env, Member(env.g, 1))
-    await cmd(env, "verdict_threads")(env.cog, ctx, setting="off")
-    assert "off" in ctx.sent[-1]
+    assert "off" in await env.cog._apply_threads(env.g, None, False)
     await env.cog.post_daily(env.g, ts(2026, 10, 14))
     assert len(env.chan.threads) == 1 and old.locked and (await env.conf.current())["thread_id"] is None
     assert not any("thread" in f.name.lower() for f in env.chan.sent[1].embed.fields if "Yesterday" not in f.name)
-    await cmd(env, "verdict_threads")(env.cog, ctx)
-    assert "off" in ctx.sent[-1]
+    assert await env.conf.threads_enabled() is False
 
 
 async def test_a_failed_thread_does_not_stop_the_post_or_the_voting(env):
@@ -612,3 +614,68 @@ async def test_a_public_copy_that_will_not_lock_is_retried(env):
     pub.fail_edit = False
     await env.cog.post_daily(env.g, ts(2026, 10, 15))
     assert pub.locked and pub.archived and await env.conf.thread_cleanup() == []
+
+
+# ------------------------------------------------------------ settings (the panel's apply methods)
+
+async def test_enable_needs_a_channel_and_hour_is_validated(env):
+    await env.conf.channel_id.set(None)
+    await env.conf.enabled.set(False)
+    with pytest.raises(env.mod.PanelError):
+        await env.cog._apply_enabled(env.g, None, True)
+    assert await env.conf.enabled() is False
+    await env.cog._apply_channel(env.g, None, env.chan)
+    assert "on" in await env.cog._apply_enabled(env.g, None, True) and await env.conf.enabled() is True
+    assert "off" in await env.cog._apply_enabled(env.g, None, False)
+    for bad in ("24", "-1", "x", ""):
+        with pytest.raises(env.mod.PanelError):
+            await env.cog._apply_hour(env.g, None, {"hour": bad})
+    await env.cog._apply_hour(env.g, None, {"hour": "7"})
+    assert await env.conf.post_hour() == 7
+    with pytest.raises(env.mod.PanelError):
+        await env.cog._apply_channel(env.g, None, None)
+
+
+async def test_roles_and_approvers(env):
+    role = env.g.add_role(900, "Pingers")
+    await env.cog._apply_ping_role(env.g, None, role)
+    await env.cog._apply_mind_reader_role(env.g, None, role)
+    assert await env.conf.ping_role_id() == 900 and await env.conf.mind_reader_role_id() == 900
+    await env.cog._apply_ping_role(env.g, None, None)
+    await env.cog._apply_mind_reader_role(env.g, None, None)
+    assert await env.conf.ping_role_id() is None and await env.conf.mind_reader_role_id() is None
+    a, b = Member(env.g, 111111111111111111), Member(env.g, 222222222222222222)
+    msg = await env.cog._apply_approvers(env.g, None, {"ids": "<@111111111111111111>, 222222222222222222 111111111111111111"})
+    assert await env.conf.approver_ids() == [a.id, b.id] and "user111111111111111111" in msg
+    with pytest.raises(env.mod.PanelError):
+        await env.cog._apply_approvers(env.g, None, {"ids": "333333333333333333"})
+    assert await env.conf.approver_ids() == [a.id, b.id]
+    await env.cog._apply_approvers(env.g, None, {"ids": ""})
+    assert await env.conf.approver_ids() == []
+
+
+async def test_settings_opens_the_panel_for_admins_and_prints_for_mods(env, monkeypatch):
+    opened = []
+
+    async def fake_open(ctx, cog, specs, *, title, intro=""):
+        opened.append((title, [s.key for s in specs]))
+    monkeypatch.setattr(env.mod, "open_panel", fake_open)
+    mod_ctx = Ctx(env, Member(env.g, 61, roles=[types.SimpleNamespace(id=426696709780013066)]))
+    mod_ctx.author.guild_permissions = types.SimpleNamespace(administrator=False, manage_guild=False)
+    await cmd(env, "verdict_settings")(env.cog, mod_ctx)
+    assert opened == [] and "Daily Verdict v" in mod_ctx.sent[-1]
+    admin_ctx = Ctx(env, Member(env.g, 62, roles=[types.SimpleNamespace(id=426696709780013066)]))
+    admin_ctx.author.guild_permissions = types.SimpleNamespace(administrator=False, manage_guild=True)
+    await cmd(env, "verdict_settings")(env.cog, admin_ctx)
+    assert opened == [("Daily Verdict", ["enabled", "channel", "hour", "ping_role", "threads", "review_channel",
+                                         "approvers", "mind_reader_role"])]
+    nobody = Ctx(env, Member(env.g, 63))
+    await cmd(env, "verdict_settings")(env.cog, nobody)
+    assert "Only Staff" in nobody.sent[-1] and len(opened) == 1
+
+
+async def test_removed_setter_commands_are_gone(env):
+    for gone in ("channel", "reviewchannel", "approvers", "hour", "pingrole", "mindreaderrole", "threads", "enable", "disable"):
+        assert not hasattr(env.mod.Verdict, f"verdict_{gone}")
+    for kept in ("add", "queue", "remove", "post", "settings", "top", "results", "suggest", "version"):
+        assert hasattr(env.mod.Verdict, f"verdict_{kept}")
