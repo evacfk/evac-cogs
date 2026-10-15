@@ -21,6 +21,8 @@ from redbot.core import Config, bank, commands
 from redbot.core.data_manager import cog_data_path
 
 from . import embeds, engine
+from . import panel as panel_specs
+from .settings_panel import PanelError, open_panel
 from .constants import (
     ART_SLOTS, BTN_CLEAN, CARD_COMMAND_COOLDOWN, BTN_FEED, BTN_PLAY, BTN_TREAT, COG_VERSION, CONFIG_IDENTIFIER, DEFAULT_GUILD,
     DEFAULT_MEMBER, NEW_EGG_DELAY_HOURS, RENDER_DELAY_SECONDS, STAFF_ROLE_IDS, TICK_SECONDS, TREATS,
@@ -480,7 +482,7 @@ class WonderPet(commands.Cog):
         """Bring the pet's card to the bottom of the channel."""
         s = await self.config.guild(ctx.guild).all()
         if not s["channel_id"]:
-            await ctx.send("The pet isn't set up here yet. Staff: `.wonderpet channel #cuddle`, then `.wonderpet newegg`.")
+            await ctx.send("The pet isn't set up here yet. Staff: pick the channel in `.wonderpet settings`, then `.wonderpet newegg`.")
             return
         if not s["pet"]:
             await ctx.send("No pet right now. A new egg is on its way.")
@@ -549,49 +551,40 @@ class WonderPet(commands.Cog):
 
     # -- staff ----------------------------------------------------------------
 
-    @pet.command(name="channel")
-    async def pet_channel(self, ctx: commands.Context, channel: discord.TextChannel):
-        """Where the pet lives (#cuddle)."""
-        if not await self._require_staff(ctx):
-            return
-        await self.config.guild(ctx.guild).channel_id.set(channel.id)
-        await ctx.send(f"The pet lives in {channel.mention}. Start with `.wonderpet newegg`.")
+    # ---------- settings (the panel calls these) ----------
 
-    @pet.command(name="pingrole")
-    async def pet_pingrole(self, ctx: commands.Context, role: discord.Role = None):
-        """Role pinged on the serious warnings (sick / critical / final). No role = no pings."""
-        if not await self._require_staff(ctx):
-            return
-        await self.config.guild(ctx.guild).ping_role_id.set(role.id if role else None)
-        await ctx.send(f"Serious warnings ping {role.name}." if role else "Warnings won't ping a role.",
-                       allowed_mentions=discord.AllowedMentions.none())
+    async def _apply_channel(self, guild, member, channel) -> str:
+        if channel is None:
+            raise PanelError("The pet channel is required.")
+        await self.config.guild(guild).channel_id.set(channel.id)
+        return f"The pet lives in {channel.mention}. Start with `.wonderpet newegg`."
 
-    @pet.command(name="hour")
-    async def pet_hour(self, ctx: commands.Context, hour: int):
-        """Pacific hour (0-23) the card is posted fresh each day. Default 9."""
-        if not await self._require_staff(ctx):
-            return
+    async def _apply_ping_role(self, guild, member, role) -> str:
+        await self.config.guild(guild).ping_role_id.set(role.id if role else None)
+        return f"Serious warnings ping {role.name}." if role else "Warnings won't ping a role."
+
+    async def _apply_hour(self, guild, member, values) -> str:
+        try:
+            hour = int(float(values["hour"]))
+        except (KeyError, TypeError, ValueError):
+            raise PanelError("Enter an hour from 0 to 23.")
         if not 0 <= hour <= 23:
-            await ctx.send("Pick an hour from 0 to 23.")
-            return
-        await self.config.guild(ctx.guild).daily_hour.set(hour)
-        await ctx.send(f"The card is re-posted daily at {hour}:00 Pacific.")
+            raise PanelError("Pick an hour from 0 to 23.")
+        await self.config.guild(guild).daily_hour.set(hour)
+        return f"The card is re-posted daily at {hour}:00 Pacific."
 
-    @pet.command(name="treatprice")
-    async def pet_treatprice(self, ctx: commands.Context, price: int):
-        """Price of a basic treat (the feast costs 4x)."""
-        if not await self._require_staff(ctx):
-            return
-        await self.config.guild(ctx.guild).treat_price.set(max(0, price))
-        await ctx.send(f"Basic treats cost {max(0, price):,}; the royal feast {max(0, price) * 4:,}.")
-
-    @pet.command(name="treatcap")
-    async def pet_treatcap(self, ctx: commands.Context, per_day: int):
-        """How many treats one member can give per day."""
-        if not await self._require_staff(ctx):
-            return
-        await self.config.guild(ctx.guild).treat_cap.set(max(0, per_day))
-        await ctx.send(f"Each member can give {max(0, per_day)} treats a day.")
+    async def _apply_treats(self, guild, member, values) -> str:
+        try:
+            price = int(float(values["price"]))
+            cap = int(float(values["cap"]))
+        except (KeyError, TypeError, ValueError):
+            raise PanelError("Both boxes need a whole number.")
+        if price < 0 or cap < 0:
+            raise PanelError("Both numbers must be 0 or more.")
+        conf = self.config.guild(guild)
+        await conf.treat_price.set(price)
+        await conf.treat_cap.set(cap)
+        return f"Basic treats cost {price:,}; the royal feast {price * 4:,}. Each member can give {cap} a day."
 
     @pet.command(name="name")
     async def pet_name(self, ctx: commands.Context, *, name: str):
@@ -617,7 +610,7 @@ class WonderPet(commands.Cog):
             gconf = self.config.guild(ctx.guild)
             s = await gconf.all()
             if self._channel(ctx.guild, s) is None:
-                await ctx.send("Set the channel first: `.wonderpet channel #cuddle`.")
+                await ctx.send("Set the channel first: open `.wonderpet settings` and pick it.")
                 return
             if s["pet"] and confirm.lower() != "confirm":
                 await ctx.send(f"{s['pet']['name']} is still here. Use `.wonderpet newegg confirm` to replace it.")
@@ -663,7 +656,11 @@ class WonderPet(commands.Cog):
 
     @pet.command(name="settings")
     async def pet_settings(self, ctx: commands.Context):
-        """Show settings."""
+        """Admins: open the settings panel. Everyone else: the current settings."""
+        perms = ctx.author.guild_permissions
+        if perms.administrator or perms.manage_guild:
+            await open_panel(ctx, self, panel_specs.build_specs(), title="WonderPet", intro=panel_specs.INTRO)
+            return
         s = await self.config.guild(ctx.guild).all()
         channel = f"<#{s['channel_id']}>" if s["channel_id"] else "not set"
         role = f"<@&{s['ping_role_id']}>" if s["ping_role_id"] else "none"

@@ -296,7 +296,7 @@ async def test_before_the_daily_hour_the_card_is_only_edited(env):
 
 
 async def test_only_staff_can_change_things(env):
-    await _setup(env)
+    await _setup(env, "baby")
     sent = []
 
     class Ctx:
@@ -308,12 +308,13 @@ async def test_only_staff_can_change_things(env):
         async def send(self, text=None, **kw):
             sent.append(text)
 
-    fn = getattr(env.mod.WonderPet.pet_hour, "callback", env.mod.WonderPet.pet_hour)
-    await fn(env.cog, Ctx(Member(1)), 7)
-    assert "Only Staff" in sent[-1] and (await env.cog.config.guild(env.guild).daily_hour()) == 9
+    fn = getattr(env.mod.WonderPet.pet_name, "callback", env.mod.WonderPet.pet_name)
+    before = (await env.cog.config.guild(env.guild).pet())["name"]
+    await fn(env.cog, Ctx(Member(1)), name="Zed")
+    assert "Only Staff" in sent[-1] and (await env.cog.config.guild(env.guild).pet())["name"] == before
     staff = Member(2, roles=[types.SimpleNamespace(id=STAFF)])
-    await fn(env.cog, Ctx(staff), 7)
-    assert (await env.cog.config.guild(env.guild).daily_hour()) == 7
+    await fn(env.cog, Ctx(staff), name="Zed")
+    assert (await env.cog.config.guild(env.guild).pet())["name"] == "Zed"
 
 
 async def test_newegg_needs_confirmation_when_a_pet_is_alive(env):
@@ -454,3 +455,58 @@ async def test_card_embed_carries_the_needs_line_in_the_wellbeing_field():
     e = embeds.card_embed(pet, now=3600.0, this_week=[], last_week=[])
     field = next(f for f in e.fields if f.name == "Wellbeing")
     assert "Needs most" in field.value and "Feed" in field.value
+
+
+# ------------------------------------------------------------ settings (the panel's apply methods)
+
+async def test_channel_role_hour_and_treat_settings(env):
+    gconf = env.cog.config.guild(env.guild)
+    with pytest.raises(env.mod.PanelError):
+        await env.cog._apply_channel(env.guild, None, None)
+    await env.cog._apply_channel(env.guild, None, env.chan)
+    assert await gconf.channel_id() == env.chan.id
+    await env.cog._apply_ping_role(env.guild, None, types.SimpleNamespace(id=5, name="Carers"))
+    assert await gconf.ping_role_id() == 5
+    await env.cog._apply_ping_role(env.guild, None, None)
+    assert await gconf.ping_role_id() is None
+    for bad in ("24", "-1", "x", ""):
+        with pytest.raises(env.mod.PanelError):
+            await env.cog._apply_hour(env.guild, None, {"hour": bad})
+    assert await gconf.daily_hour() == 9
+    await env.cog._apply_hour(env.guild, None, {"hour": "7"})
+    assert await gconf.daily_hour() == 7
+    for bad in ({"price": "-1", "cap": "3"}, {"price": "5", "cap": "-1"}, {"price": "x", "cap": "1"}, {}):
+        with pytest.raises(env.mod.PanelError):
+            await env.cog._apply_treats(env.guild, None, bad)
+    msg = await env.cog._apply_treats(env.guild, None, {"price": "250", "cap": "4"})
+    assert (await gconf.treat_price(), await gconf.treat_cap()) == (250, 4) and "1,000" in msg
+
+
+async def test_settings_opens_the_panel_for_admins_and_prints_for_others(env, monkeypatch):
+    opened = []
+
+    async def fake_open(ctx, cog, specs, *, title, intro=""):
+        opened.append((title, [s.key for s in specs]))
+    monkeypatch.setattr(env.mod, "open_panel", fake_open)
+    sent = []
+
+    class Ctx:
+        guild = env.guild
+
+        def __init__(self, manage):
+            self.author = types.SimpleNamespace(guild_permissions=types.SimpleNamespace(administrator=False, manage_guild=manage))
+
+        async def send(self, text=None, **kw):
+            sent.append(text)
+    fn = getattr(env.mod.WonderPet.pet_settings, "callback", env.mod.WonderPet.pet_settings)
+    await fn(env.cog, Ctx(True))
+    assert opened == [("WonderPet", ["channel", "ping_role", "hour", "treats"])] and sent == []
+    await fn(env.cog, Ctx(False))
+    assert "WonderPet v" in sent[-1] and len(opened) == 1
+
+
+async def test_removed_setter_commands_are_gone(env):
+    for gone in ("pet_channel", "pet_pingrole", "pet_hour", "pet_treatprice", "pet_treatcap"):
+        assert not hasattr(env.mod.WonderPet, gone)
+    for kept in ("pet_card", "pet_name", "pet_newegg", "pet_art", "pet_settings", "pet_version"):
+        assert hasattr(env.mod.WonderPet, kept)
