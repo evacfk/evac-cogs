@@ -6,7 +6,7 @@ guild via `.minigamehub` commands -- these are just the seed defaults.
 """
 from zoneinfo import ZoneInfo
 
-# Default fixed spawn channel (general chat). Editable via `.minigamehub channel`.
+# Default fixed spawn channel (general chat). Editable in the `.minigamehub` panel.
 DEFAULT_SPAWN_CHANNEL_ID = 93284396739604480
 
 # Mod role gate for everything except the two wipe commands (bot-owner only).
@@ -25,3 +25,6 @@ SCHEDULER_TICK_SECONDS = 30
 GAME_KEYS = ["pet", "mathdrop", "hunt", "lootdrop", "reacttowin", "boss"]
 
 CONFIG_IDENTIFIER = 0xE7ACF3E5  # arbitrary, stable, evac/minigamehub
+
+# Bumped on every deploy so `.minigamehub version` can confirm the new build is live.
+COG_VERSION = "1.1.0"

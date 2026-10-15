@@ -17,8 +17,8 @@ PARAM_SCHEMA maps game_key -> list of param specs:
   choices: allowed values, only for kind == "choice"
   unit:    optional, "minutes" -- the field is stored in seconds (Config,
            game logic) but shown/edited in minutes here, same convention as
-           `.minigamehub game <key> frequency` and `.minigamehub
-           activitywindow`. Reserved for "how often"/"how long the whole
+           the `.minigamehub` panel's frequency and
+           activity-window settings. Reserved for "how often"/"how long the whole
            event runs" fields (spawn frequency, boss fight duration); short
            per-action timeouts (response_timeout, attack_cooldown, etc.) stay
            in seconds since minutes would just be awkward decimals there.
@@ -275,7 +275,7 @@ class ConfigView(discord.ui.View):
             description="\n".join(lines),
             color=discord.Color.blurple(),
         )
-        embed.set_footer(text="Scenario pools and boss tiers aren't editable here -- see `scenario`/`bossscenario` and `game boss tier`. Hunt's animal pool has its own GUI: `.minigamehub huntanimals`.")
+        embed.set_footer(text="Scenario pools and boss tiers aren't editable here -- see `scenario`/`bossscenario`; boss tiers are in the `.minigamehub` panel. Hunt's animal pool has its own GUI: `.minigamehub huntanimals`.")
         return embed
 
     async def refresh(self, interaction: discord.Interaction):

@@ -24,9 +24,12 @@ from redbot.core.utils.chat_formatting import box, humanize_list, pagify
 from . import offerings, pacing, scenarios as scenario_data, stats
 from .activity import ActivityTracker, is_channel_active
 from .config_schema import DEFAULT_GUILD, DEFAULT_MEMBER
-from .constants import CONFIG_IDENTIFIER, GAME_KEYS, MOD_ROLE_ID, RESET_TIMEZONE, SCHEDULER_TICK_SECONDS
+from .constants import COG_VERSION, CONFIG_IDENTIFIER, GAME_KEYS, MOD_ROLE_ID, RESET_TIMEZONE, SCHEDULER_TICK_SECONDS
 from .games import GAME_REGISTRY
+from . import panel as panel_specs
+from .settings_panel import PanelError, open_panel
 from .settings_ui import ConfigView, HuntAnimalsView
+from .settings_ui import _parse_range as parse_range
 
 log = logging.getLogger("red.minigamehub")
 
@@ -381,24 +384,164 @@ class MinigameHub(commands.Cog):
     # Admin command tree
     # ------------------------------------------------------------------ #
 
-    @commands.group(name="minigamehub", aliases=["mgh"])
+    @commands.group(name="minigamehub", aliases=["mgh"], invoke_without_command=True)
     @commands.guild_only()
     @_mod_check()
     async def minigamehub(self, ctx: commands.Context):
-        """Manage the unified minigame spawner."""
+        """Minigame spawner settings panel (admins). Mods get the command list."""
+        perms = ctx.author.guild_permissions
+        if perms.administrator or perms.manage_guild:
+            await open_panel(ctx, self, panel_specs.build_specs(), title="MinigameHub", intro=panel_specs.INTRO)
+            return
+        await ctx.send_help(ctx.command)
 
-    @minigamehub.command(name="toggle")
-    async def mgh_toggle(self, ctx: commands.Context):
-        """Enable or disable spawning in this server."""
-        current = await self.config.guild(ctx.guild).enabled()
-        await self.config.guild(ctx.guild).enabled.set(not current)
-        state = "enabled" if not current else "disabled"
-        if not current:
-            await self._seed_scenarios(ctx.guild)
-            # Fresh, spaced-out timers for every game rather than whatever
-            # was left over from before.
-            await self._shuffle(ctx.guild)
-        await ctx.send(f"MinigameHub is now **{state}** in this server.")
+    # ------------------------------------------------------------------ #
+    # Settings (the panel calls these)
+    # ------------------------------------------------------------------ #
+
+    @staticmethod
+    def _number(values, key, label, *, integer=False):
+        try:
+            number = float(str((values or {})[key]).strip())
+        except (KeyError, TypeError, ValueError):
+            raise PanelError(f"{label} needs a number.")
+        return int(number) if integer else number
+
+    async def _apply_enabled(self, guild, member, on) -> str:
+        await self.config.guild(guild).enabled.set(bool(on))
+        if on:
+            await self._seed_scenarios(guild)
+            # Fresh, spaced-out timers for every game rather than whatever was left over from before.
+            await self._shuffle(guild)
+        return f"MinigameHub is now {'on' if on else 'off'} in this server."
+
+    async def _apply_channel(self, guild, member, channel) -> str:
+        if channel is None:
+            raise PanelError("The spawn channel is required.")
+        await self.config.guild(guild).spawn_channel.set(channel.id)
+        return f"Spawn channel set to {channel.mention}."
+
+    async def _apply_activity_window(self, guild, member, values) -> str:
+        minutes = self._number(values, "minutes", "The activity window")
+        seconds = round(minutes * 60)
+        if seconds < 10:
+            raise PanelError("That's too short: pick at least 1/6 of a minute (10 seconds).")
+        await self.config.guild(guild).activity_window.set(seconds)
+        return f"Activity window set to {minutes:g} min ({_fmt_secs(seconds)})."
+
+    async def _apply_spacing(self, guild, member, values) -> str:
+        minutes = self._number(values, "minutes", "The spacing")
+        if minutes < 0:
+            raise PanelError("Spacing can't be negative.")
+        await self.config.guild(guild).min_separation.set(round(minutes * 60))
+        return f"Minimum spacing between games set to {minutes:g} min."
+
+    async def _apply_game_toggle(self, guild, member, game_key) -> str:
+        if game_key not in GAME_KEYS:
+            raise PanelError("Unknown game.")
+        sep = await self.config.guild(guild).min_separation()
+        mult = await self._pacing_multiplier(guild)
+        async with self.config.guild(guild).games() as games:
+            games[game_key]["enabled"] = not games[game_key]["enabled"]
+            state = "on" if games[game_key]["enabled"] else "off"
+            if games[game_key]["enabled"]:
+                _stagger(games, time.time(), sep, reroll={game_key}, mult=mult)
+        return f"`{game_key}` is now {state}."
+
+    async def _apply_game_save(self, guild, member, game_key, values, picked=None) -> str:
+        """Frequency (minutes) and, for every game except boss, the base reward range."""
+        if game_key not in GAME_KEYS:
+            raise PanelError("Unknown game.")
+        lo_min = self._number(values, "min_minutes", "The shortest wait")
+        hi_min = self._number(values, "max_minutes", "The longest wait")
+        min_seconds, max_seconds = round(lo_min * 60), round(hi_min * 60)
+        if min_seconds <= 0 or max_seconds < min_seconds:
+            raise PanelError("The shortest wait must be positive and the longest can't be below it.")
+        reward = None
+        raw_lo = str(values.get("reward_min") or "").strip()
+        raw_hi = str(values.get("reward_max") or "").strip()
+        if raw_lo or raw_hi:
+            if game_key == "boss":
+                raise PanelError("Boss rewards are per tier: use the Boss tiers section.")
+            try:
+                reward = [int(float(raw_lo)), int(float(raw_hi))]
+            except ValueError:
+                raise PanelError("Fill in both reward boxes with whole numbers, or leave both blank.")
+            if reward[0] < 0 or reward[1] < reward[0]:
+                raise PanelError("The reward minimum must be 0 or more, and the maximum can't be below it.")
+        sep = await self.config.guild(guild).min_separation()
+        mult = await self._pacing_multiplier(guild)
+        async with self.config.guild(guild).games() as games:
+            games[game_key]["min_frequency"] = min_seconds
+            games[game_key]["max_frequency"] = max_seconds
+            if reward is not None:
+                games[game_key]["reward_range"] = reward
+            # Re-roll this game against its new window so an old timer doesn't linger.
+            _stagger(games, time.time(), sep, reroll={game_key}, mult=mult)
+        text = f"`{game_key}` every {_fmt_secs(min_seconds)} to {_fmt_secs(max_seconds)}"
+        return text + (f", reward {_fmt_range(*reward)}." if reward else ".")
+
+    async def _apply_pacing(self, guild, member, values) -> str:
+        cap = self._number(values, "daily_cap", "The daily cap", integer=True)
+        start = self._number(values, "taper_start", "The taper start")
+        floor = self._number(values, "taper_floor", "The taper floor")
+        if cap <= 0:
+            raise PanelError("The daily cap must be positive.")
+        if not 0 <= start <= 100 or not 0 <= floor <= 100:
+            raise PanelError("The taper start and floor are percentages between 0 and 100.")
+        async with self.config.guild(guild).payout_pacing() as pc:
+            pc["daily_cap_per_user"] = cap
+            pc["taper_start_pct"] = start
+            pc["taper_floor_pct"] = floor
+        return f"Daily cap {cap:,} per user, taper from {start:g}% down to {floor:g}%."
+
+    async def _apply_adaptive_enabled(self, guild, member, on) -> str:
+        async with self.config.guild(guild).adaptive_pacing() as conf:
+            conf["enabled"] = bool(on)
+        return f"Adaptive pacing is now {'on' if on else 'off'}."
+
+    async def _apply_adaptive(self, guild, member, values) -> str:
+        busy = self._number(values, "busy", "The busy threshold", integer=True)
+        quiet = self._number(values, "quiet", "The quiet threshold", integer=True)
+        multiplier = self._number(values, "multiplier", "The quiet multiplier")
+        grace = self._number(values, "grace_minutes", "The startup grace")
+        if busy <= quiet or quiet < 0:
+            raise PanelError("Busy must be greater than quiet, and quiet can't be negative.")
+        if multiplier < 1:
+            raise PanelError("The quiet multiplier must be at least 1 (1 = no slowdown).")
+        if grace < 0:
+            raise PanelError("The startup grace can't be negative.")
+        async with self.config.guild(guild).adaptive_pacing() as conf:
+            conf["busy_threshold"] = busy
+            conf["quiet_threshold"] = quiet
+            conf["quiet_multiplier"] = multiplier
+            conf["startup_grace_seconds"] = round(grace * 60)
+        return (f"Busy at {busy}+ talkers, quiet at {quiet} or fewer, {multiplier:g}x slower when quiet, "
+                f"{grace:g} min startup grace.")
+
+    async def _apply_tier_save(self, guild, member, tier, values, picked=None) -> str:
+        try:
+            hp = parse_range(str(values.get("hp") or ""))
+            reward = parse_range(str(values.get("reward") or ""))
+            penalty = parse_range(str(values.get("penalty") or ""))
+        except ValueError as exc:
+            raise PanelError(f"Ranges {exc}.")
+        try:
+            weight = int(float(str(values.get("weight") or "").strip()))
+        except ValueError:
+            raise PanelError("The weight needs a whole number.")
+        if weight < 0:
+            raise PanelError("The weight can't be negative.")
+        async with self.config.guild(guild).games() as games:
+            if tier not in games["boss"]["tiers"]:
+                raise PanelError("Unknown tier.")
+            games["boss"]["tiers"][tier] = {"hp": list(hp), "reward": list(reward), "penalty": list(penalty), "weight": weight}
+        return f"Boss tier `{tier}` updated."
+
+    @minigamehub.command(name="version")
+    async def mgh_version(self, ctx: commands.Context):
+        """Show the running build (deploy probe)."""
+        await ctx.send(f"MinigameHub v{COG_VERSION}")
 
     @minigamehub.command(name="schedule")
     async def mgh_schedule(self, ctx: commands.Context):
@@ -412,44 +555,6 @@ class MinigameHub(commands.Cog):
         """Re-roll every game's timer to a new random time from its own frequency, spaced apart."""
         lines = await self._shuffle(ctx.guild)
         await ctx.send(box("\n".join(lines), lang="text"), view=ScheduleView(self, ctx.guild))
-
-    @minigamehub.command(name="spacing")
-    async def mgh_spacing(self, ctx: commands.Context, minutes: Optional[float] = None):
-        """Show or set the minimum minutes between any two games' scheduled times."""
-        if minutes is None:
-            sep = await self.config.guild(ctx.guild).min_separation()
-            await ctx.send(f"Minimum spacing between games: {sep / 60:g} min.")
-            return
-        if minutes < 0:
-            await ctx.send("Spacing can't be negative.")
-            return
-        await self.config.guild(ctx.guild).min_separation.set(round(minutes * 60))
-        await ctx.send(f"Minimum spacing between games set to {minutes:g} min.")
-
-    @minigamehub.command(name="channel")
-    async def mgh_channel(self, ctx: commands.Context, channel: Optional[discord.TextChannel] = None):
-        """Show or set the fixed spawn channel."""
-        if channel is None:
-            current_id = await self.config.guild(ctx.guild).spawn_channel()
-            current = ctx.guild.get_channel(current_id)
-            await ctx.send(f"Current spawn channel: {current.mention if current else f'`{current_id}` (not found)'}")
-            return
-        await self.config.guild(ctx.guild).spawn_channel.set(channel.id)
-        await ctx.send(f"Spawn channel set to {channel.mention}.")
-
-    @minigamehub.command(name="activitywindow")
-    async def mgh_activitywindow(self, ctx: commands.Context, minutes: Optional[float] = None):
-        """Show or set how recently a message must have appeared for spawns to fire (in minutes)."""
-        if minutes is None:
-            current = await self.config.guild(ctx.guild).activity_window()
-            await ctx.send(f"Current activity window: {current / 60:.2f} min ({_fmt_secs(current)}).")
-            return
-        seconds = round(minutes * 60)
-        if seconds < 10:
-            await ctx.send("That's too short -- pick at least 1/6 of a minute (10 seconds).")
-            return
-        await self.config.guild(ctx.guild).activity_window.set(seconds)
-        await ctx.send(f"Activity window set to {minutes:g} min ({_fmt_secs(seconds)}).")
 
     @minigamehub.command(name="settings")
     async def mgh_settings(self, ctx: commands.Context):
@@ -486,7 +591,7 @@ class MinigameHub(commands.Cog):
         guild_conf = await self.config.guild(ctx.guild).all()
         game_conf = guild_conf["games"][game_key]
         if game_key in ("lootdrop", "boss") and not game_conf.get("scenarios"):
-            await ctx.send(f"No scenarios configured for `{game_key}` yet -- run `.minigamehub toggle` once first so scenarios get seeded, or check `.minigamehub {'scenario' if game_key == 'lootdrop' else 'bossscenario'} list`.")
+            await ctx.send(f"No scenarios configured for `{game_key}` yet -- switch MinigameHub on in the `.minigamehub` panel once first so scenarios get seeded, or check `.minigamehub {'scenario' if game_key == 'lootdrop' else 'bossscenario'} list`.")
             return
 
         await ctx.send(f"\U0001F9EA Test-spawning `{game_key}` here -- no currency or stats will actually change.")
@@ -510,80 +615,6 @@ class MinigameHub(commands.Cog):
             adaptive = " (adaptive)" if g.get("adaptive_pacing", True) else ""
             lines.append(f"{key:<12} [{status:>3}]  every {freq}{adaptive}")
         await ctx.send(box("\n".join(lines), lang="text"))
-
-    @mgh_game.command(name="toggle")
-    async def mgh_game_toggle(self, ctx: commands.Context, game_key: str):
-        """Enable or disable one game type."""
-        game_key = game_key.lower()
-        if game_key not in GAME_KEYS:
-            await ctx.send(f"Unknown game key. Choose from: {humanize_list(GAME_KEYS)}")
-            return
-        sep = await self.config.guild(ctx.guild).min_separation()
-        mult = await self._pacing_multiplier(ctx.guild)
-        async with self.config.guild(ctx.guild).games() as games:
-            games[game_key]["enabled"] = not games[game_key]["enabled"]
-            state = "enabled" if games[game_key]["enabled"] else "disabled"
-            if games[game_key]["enabled"]:
-                _stagger(games, time.time(), sep, reroll={game_key}, mult=mult)
-        await ctx.send(f"`{game_key}` is now **{state}**.")
-
-    @mgh_game.command(name="frequency")
-    async def mgh_game_frequency(self, ctx: commands.Context, game_key: str, min_minutes: float, max_minutes: float):
-        """Set how often (in minutes) one game type can spawn -- a random point
-        between min and max is picked each time. Checked against the activity
-        window separately, so this is "how often it's eligible", not a guarantee."""
-        game_key = game_key.lower()
-        if game_key not in GAME_KEYS:
-            await ctx.send(f"Unknown game key. Choose from: {humanize_list(GAME_KEYS)}")
-            return
-        min_seconds, max_seconds = round(min_minutes * 60), round(max_minutes * 60)
-        if min_seconds <= 0 or max_seconds < min_seconds:
-            await ctx.send("min_minutes must be positive and max_minutes >= min_minutes.")
-            return
-        sep = await self.config.guild(ctx.guild).min_separation()
-        mult = await self._pacing_multiplier(ctx.guild)
-        async with self.config.guild(ctx.guild).games() as games:
-            games[game_key]["min_frequency"] = min_seconds
-            games[game_key]["max_frequency"] = max_seconds
-            # Re-roll this game against its new window so an old timer doesn't linger.
-            _stagger(games, time.time(), sep, reroll={game_key}, mult=mult)
-        await ctx.send(f"`{game_key}` frequency set to {min_minutes:g}-{max_minutes:g} min ({_fmt_secs(min_seconds)}-{_fmt_secs(max_seconds)}).")
-
-    @mgh_game.command(name="reward")
-    async def mgh_game_reward(self, ctx: commands.Context, game_key: str, min_amount: int, max_amount: int):
-        """Set the reward range for one game type (boss uses `tier` instead)."""
-        game_key = game_key.lower()
-        if game_key not in GAME_KEYS:
-            await ctx.send(f"Unknown game key. Choose from: {humanize_list(GAME_KEYS)}")
-            return
-        if game_key == "boss":
-            await ctx.send("Boss rewards are per-tier -- use `.minigamehub game boss tier` instead.")
-            return
-        if min_amount < 0 or max_amount < min_amount:
-            await ctx.send("min_amount must be >= 0 and max_amount >= min_amount.")
-            return
-        async with self.config.guild(ctx.guild).games() as games:
-            games[game_key]["reward_range"] = [min_amount, max_amount]
-        await ctx.send(f"`{game_key}` reward range set to {_fmt_range(min_amount, max_amount)}.")
-
-    @mgh_game.command(name="tier")
-    async def mgh_game_tier(
-        self, ctx: commands.Context, tier: str, hp_min: int, hp_max: int,
-        reward_min: int, reward_max: int, penalty_min: int, penalty_max: int, weight: int,
-    ):
-        """Set a boss difficulty tier (`weak`/`medium`/`strong`)."""
-        tier = tier.lower()
-        async with self.config.guild(ctx.guild).games() as games:
-            if tier not in games["boss"]["tiers"]:
-                await ctx.send(f"Unknown tier. Choose from: {humanize_list(list(games['boss']['tiers'].keys()))}")
-                return
-            games["boss"]["tiers"][tier] = {
-                "hp": [hp_min, hp_max],
-                "reward": [reward_min, reward_max],
-                "penalty": [penalty_min, penalty_max],
-                "weight": weight,
-            }
-        await ctx.send(f"Boss tier `{tier}` updated.")
 
     @mgh_game.command(name="settings")
     async def mgh_game_settings(self, ctx: commands.Context, game_key: str, *, json_patch: Optional[str] = None):
@@ -618,47 +649,6 @@ class MinigameHub(commands.Cog):
             games[game_key].update(patch)
         await ctx.send(f"`{game_key}` settings updated: {humanize_list(list(patch.keys()))}.")
 
-    # -- pacing subgroup ------------------------------------------------ #
-
-    @minigamehub.group(name="pacing")
-    async def mgh_pacing(self, ctx: commands.Context):
-        """Per-user daily payout cap settings."""
-
-    @mgh_pacing.command(name="show")
-    async def mgh_pacing_show(self, ctx: commands.Context):
-        conf = await self.config.guild(ctx.guild).payout_pacing()
-        await ctx.send(box(json.dumps(conf, indent=2), lang="json"))
-
-    @mgh_pacing.command(name="dailycap")
-    async def mgh_pacing_dailycap(self, ctx: commands.Context, amount: int):
-        """Set the per-user daily payout cap (across every game type combined)."""
-        if amount <= 0:
-            await ctx.send("Must be positive.")
-            return
-        async with self.config.guild(ctx.guild).payout_pacing() as pc:
-            pc["daily_cap_per_user"] = amount
-        await ctx.send(f"Daily payout cap set to {amount:,} per user.")
-
-    @mgh_pacing.command(name="taperstart")
-    async def mgh_pacing_taperstart(self, ctx: commands.Context, pct: float):
-        """% of the daily cap at which rewards start tapering down."""
-        if not 0 <= pct <= 100:
-            await ctx.send("Must be between 0 and 100.")
-            return
-        async with self.config.guild(ctx.guild).payout_pacing() as pc:
-            pc["taper_start_pct"] = pct
-        await ctx.send(f"Taper start set to {pct}% of daily cap.")
-
-    @mgh_pacing.command(name="taperfloor")
-    async def mgh_pacing_taperfloor(self, ctx: commands.Context, pct: float):
-        """Minimum reward multiplier (as a %) once a user is at/over their cap."""
-        if not 0 <= pct <= 100:
-            await ctx.send("Must be between 0 and 100.")
-            return
-        async with self.config.guild(ctx.guild).payout_pacing() as pc:
-            pc["taper_floor_pct"] = pct
-        await ctx.send(f"Taper floor set to {pct}%.")
-
     # -- adaptive spawn pacing -------------------------------------------- #
     # Not to be confused with `pacing` above (per-user daily reward cap) or
     # `spacing` (the flat minimum gap between any two games' scheduled
@@ -688,47 +678,6 @@ class MinigameHub(commands.Cog):
             f"current pacing multiplier:    {mult:.2f}x" + (" (fixed startup default)" if in_grace else ""),
         ]
         await ctx.send(box("\n".join(lines), lang="text"))
-
-    @mgh_adaptive.command(name="toggle")
-    async def mgh_adaptive_toggle(self, ctx: commands.Context):
-        """Turn adaptive pacing on or off. Off = every adaptive game always
-        uses its min/max_frequency as-is, same as a non-adaptive game."""
-        async with self.config.guild(ctx.guild).adaptive_pacing() as conf:
-            conf["enabled"] = not conf["enabled"]
-            state = "enabled" if conf["enabled"] else "disabled"
-        await ctx.send(f"Adaptive pacing is now **{state}**.")
-
-    @mgh_adaptive.command(name="thresholds")
-    async def mgh_adaptive_thresholds(self, ctx: commands.Context, busy: int, quiet: int):
-        """Set the busy/quiet talker-count thresholds (busy must be > quiet)."""
-        if busy <= quiet or quiet < 0:
-            await ctx.send("busy must be greater than quiet, and quiet can't be negative.")
-            return
-        async with self.config.guild(ctx.guild).adaptive_pacing() as conf:
-            conf["busy_threshold"] = busy
-            conf["quiet_threshold"] = quiet
-        await ctx.send(f"Busy threshold set to {busy} talkers, quiet threshold set to {quiet} talkers.")
-
-    @mgh_adaptive.command(name="quietmultiplier")
-    async def mgh_adaptive_quietmultiplier(self, ctx: commands.Context, multiplier: float):
-        """How much slower (e.g. 3 = 3x) adaptive games get once fully quiet."""
-        if multiplier < 1:
-            await ctx.send("Must be at least 1 (1 = no slowdown at all).")
-            return
-        async with self.config.guild(ctx.guild).adaptive_pacing() as conf:
-            conf["quiet_multiplier"] = multiplier
-        await ctx.send(f"Quiet multiplier set to {multiplier:g}x.")
-
-    @mgh_adaptive.command(name="startupgrace")
-    async def mgh_adaptive_startupgrace(self, ctx: commands.Context, minutes: float):
-        """How long after a reload/restart to use a fixed blended pace before
-        trusting live activity data (see `.mgh adaptive show`)."""
-        if minutes < 0:
-            await ctx.send("Can't be negative.")
-            return
-        async with self.config.guild(ctx.guild).adaptive_pacing() as conf:
-            conf["startup_grace_seconds"] = round(minutes * 60)
-        await ctx.send(f"Startup grace period set to {minutes:g} min.")
 
     # -- stats / leaderboard -------------------------------------------- #
 
@@ -1276,7 +1225,7 @@ class MinigameHub(commands.Cog):
 
         if not buckets:
             await ctx.send(
-                "No activity data yet. Enable MinigameHub with `.minigamehub toggle` and let it run for a "
+                "No activity data yet. Switch MinigameHub on in the `.minigamehub` panel and let it run for a "
                 "few days, or make sure the bot has read-message-history in the spawn channel for the initial seed."
             )
             return
@@ -1344,7 +1293,7 @@ class MinigameHub(commands.Cog):
                 f"Sampling since {since_txt}, {total_messages} messages seen in the spawn channel. "
                 f"{active_hours}/24 hours have any activity, {busy_hours}/24 look 'busy' by this rough heuristic. "
                 "Frequencies aren't auto-changed -- review and apply with "
-                "`.minigamehub game <key> frequency <min> <max>`."
+                "the Games section of the `.minigamehub` panel."
             ),
         }
 
