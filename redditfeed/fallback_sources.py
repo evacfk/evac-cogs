@@ -237,7 +237,9 @@ class FallbackSource(RedditSource):
     def __init__(self, sources: list, names: Optional[list] = None,
                  primary_failures_to_skip: int = 2,
                  primary_cooldown: float = constants.PRIMARY_COOLDOWN_SECONDS,
-                 clock: Callable[[], float] = time.monotonic):
+                 clock: Callable[[], float] = time.monotonic,
+                 stale_after: float = constants.PRIMARY_STALE_AFTER_SECONDS,
+                 wall_clock: Callable[[], float] = time.time):
         if not sources:
             raise ValueError("FallbackSource needs at least one source")
         self._sources = list(sources)
@@ -245,9 +247,13 @@ class FallbackSource(RedditSource):
         self._failures_to_skip = primary_failures_to_skip
         self._cooldown = primary_cooldown
         self._clock = clock
+        self._stale_after = stale_after
+        self._wall_clock = wall_clock               # epoch seconds, to compare with posts' created_utc
         self._primary_failures = 0
         self._skip_primary_until = 0.0
+        self._primary_newest: Optional[float] = None   # newest created_utc the primary has returned
         self.active_name: Optional[str] = None      # which source served the most recent fetch
+        self.supplemented_by: Optional[str] = None  # backup that was read alongside a stale primary
         self.last_errors: dict = {}                 # name -> last error text (cleared on that source's success)
 
     @property
@@ -257,6 +263,53 @@ class FallbackSource(RedditSource):
     @property
     def primary_skipped(self) -> bool:
         return self._clock() < self._skip_primary_until
+
+    @property
+    def primary_lag(self) -> Optional[float]:
+        """Seconds since the newest post the primary has returned (None until it has returned one)."""
+        if self._primary_newest is None:
+            return None
+        return max(0.0, self._wall_clock() - self._primary_newest)
+
+    @property
+    def primary_stale(self) -> bool:
+        """True when the primary answers but looks behind Reddit. Quiet subreddits can trip this
+        too; that only costs an extra backup read, and dedup absorbs any overlap."""
+        lag = self.primary_lag
+        return lag is not None and lag > self._stale_after
+
+    def _note_primary_posts(self, posts: list[dict]) -> None:
+        for post in posts:
+            try:
+                created = float(post.get("created_utc"))
+            except (TypeError, ValueError):
+                continue
+            if self._primary_newest is None or created > self._primary_newest:
+                self._primary_newest = created
+
+    async def _supplement(self, posts: list[dict], subreddit: str, after_ts: Optional[float], limit: int) -> list[dict]:
+        """Add posts the stale primary is missing from the backups. A backup failing is
+        recorded but never fails the fetch: the primary's posts still go through."""
+        seen = {str(p.get("id")) for p in posts if p.get("id") is not None}
+        merged = list(posts)
+        self.supplemented_by = None
+        for index in range(1, len(self._sources)):
+            name = self._names[index]
+            try:
+                extra = await self._sources[index].fetch_new_posts(subreddit, after_ts, limit)
+            except RedditSourceError as exc:
+                self.last_errors[name] = str(exc)
+                continue
+            self.last_errors.pop(name, None)
+            self.supplemented_by = name
+            for post in extra:
+                pid = post.get("id")
+                if pid is None or str(pid) in seen:
+                    continue
+                seen.add(str(pid))
+                merged.append(post)
+            break
+        return merged
 
     async def fetch_new_posts(self, subreddit: str, after_ts: Optional[float], limit: int) -> list[dict]:
         errors = []
@@ -278,6 +331,11 @@ class FallbackSource(RedditSource):
             if index == 0:
                 self._primary_failures = 0
                 self._skip_primary_until = 0.0
+                self._note_primary_posts(posts)
+                if len(self._sources) > 1 and self.primary_stale:
+                    posts = await self._supplement(posts, subreddit, after_ts, limit)
+                else:
+                    self.supplemented_by = None
             self.active_name = name
             return posts
         raise RedditSourceError("all sources failed -- " + "; ".join(errors))

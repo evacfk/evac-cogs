@@ -62,6 +62,7 @@ class RedditFeed(DashboardIntegration, commands.Cog):
             names=["arctic-shift", "reddit-rss"],
         )
         self._announced_source: Optional[str] = None
+        self._announced_lag = False
         self.redgifs = redgifs.RedgifsResolver()
         self._redgifs_sem = asyncio.Semaphore(2)   # at most two clips downloading at once
         self._poll_task: Optional[asyncio.Task] = None
@@ -163,6 +164,7 @@ class RedditFeed(DashboardIntegration, commands.Cog):
         except Exception:  # noqa: BLE001
             log.exception("redditfeed: queue expiry failed")
         await self._announce_source_change()
+        await self._announce_lag_change()
 
     async def _persist_handled(self, keys: list, now: float, queue_entry: Optional[tuple] = None) -> None:
         """Write 'already handled' keys (and the queue record, if any) to Config right now."""
@@ -188,6 +190,26 @@ class RedditFeed(DashboardIntegration, commands.Cog):
         else:
             await self._log(f"\u26A0\uFE0F redditfeed: {primary} is failing, using **{active}** as a backup "
                             "(coverage may be thinner until it recovers).")
+
+    async def _announce_lag_change(self) -> None:
+        """Tell the log channel when the primary source is hours behind Reddit (it answers,
+        so this isn't the failure case above), and again when it has caught up."""
+        src = self.source
+        if not hasattr(src, "primary_stale"):
+            return
+        lag = src.primary_lag
+        if not self._announced_lag and src.primary_stale and lag is not None \
+                and lag >= constants.PRIMARY_LAG_ANNOUNCE_SECONDS:
+            self._announced_lag = True
+            backup = src.supplemented_by
+            await self._log(
+                f"⚠️ redditfeed: {src.primary_name}'s newest post is {engine._age_text(lag)} old, so it is "
+                f"behind Reddit. " + (f"Also reading **{backup}** so new posts aren't missed (it has no scores, so "
+                                      "the score gate can't apply to those posts)." if backup else
+                                      "The backup couldn't be read either, so new posts may be missed."))
+        elif self._announced_lag and not src.primary_stale:
+            self._announced_lag = False
+            await self._log(f"✅ redditfeed: {src.primary_name} has caught up with Reddit.")
 
     @staticmethod
     def _merge_poll_state(live: dict, polled: dict) -> dict:
@@ -630,7 +652,7 @@ class RedditFeed(DashboardIntegration, commands.Cog):
     @redditfeed.command(name="version")
     async def redditfeed_version(self, ctx: commands.Context) -> None:
         """Version-probe command -- confirms a deploy actually took."""
-        await ctx.send("redditfeed build: source-v9 (control panel)")
+        await ctx.send("redditfeed build: source-v10 (stale-source backup)")
 
     async def _map_subreddit(self, name: str, channel_id: int) -> bool:
         """The one place a subreddit gets mapped to a channel -- `add` and the
@@ -922,6 +944,11 @@ class RedditFeed(DashboardIntegration, commands.Cog):
             return
         lines = [f"Serving from: **{src.active_name or 'nothing yet'}** (primary: {src.primary_name}"
                  f"{', skipped for now after repeated failures' if src.primary_skipped else ''})"]
+        lag = getattr(src, "primary_lag", None)
+        if lag is not None:
+            lines.append(f"Newest post {src.primary_name} has returned: **{engine._age_text(lag)}** old"
+                         + (f" (behind Reddit; also reading **{src.supplemented_by}**)" if src.primary_stale and src.supplemented_by
+                            else " (behind Reddit; no backup could be read)" if src.primary_stale else ""))
         for name, err in sorted(src.last_errors.items()):
             lines.append(f"{name}: {err[:300]}")
         await ctx.send("\n".join(lines))
@@ -945,6 +972,10 @@ class RedditFeed(DashboardIntegration, commands.Cog):
             f"Subreddits: {manual} manual, {len(mappings) - manual} auto. X button: "
             f"{'on' if await self.config.x_button() else 'off'}. Log: <#{await self.config.log_channel_id()}>",
         ]
+        lag = getattr(self.source, "primary_lag", None)
+        if lag is not None:
+            lines.append(f"Newest post the source has returned: {engine._age_text(lag)} old"
+                         + (" (it is behind Reddit, see `.redditfeed source`)" if getattr(self.source, "primary_stale", False) else ""))
         if stats:
             lines.append("Last cycle: " + ", ".join(f"{k.replace('_', ' ')} {v}" for k, v in sorted(stats.items())))
         await ctx.send("\n".join(lines))
@@ -1055,6 +1086,8 @@ class RedditFeed(DashboardIntegration, commands.Cog):
                 return
         dedup_store = await self.config.dedup_store()
         served = getattr(self.source, "active_name", None) or "source"
+        if getattr(self.source, "supplemented_by", None):
+            served += f" + {self.source.supplemented_by}"
         posts = sorted(posts, key=lambda p: p.get("created_utc") or 0, reverse=True)
         header = (f"**r/{name}** [{'paused, ' if mapping.paused else ''}{mapping.approval}] via **{served}**: "
                   f"{len(posts)} post(s) in the window since "

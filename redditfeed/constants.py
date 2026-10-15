@@ -69,6 +69,11 @@ REDDIT_RSS_MIN_GAP_SECONDS = 15.0      # 429s came back at 7s spacing from the e
 RATE_LIMIT_DEFAULT_WAIT_SECONDS = 120  # hold-off after a 429 with no Retry-After header
 RATE_LIMIT_MAX_WAIT_SECONDS = 600
 PRIMARY_COOLDOWN_SECONDS = 300          # after repeated primary failures, skip it this long
+# Arctic Shift can answer happily while being hours behind Reddit (2026-10-15: newest
+# post it had was 11h old). When the newest post it has ever returned this run is older
+# than this, the backup is read as well and the results merged.
+PRIMARY_STALE_AFTER_SECONDS = 30 * 60
+PRIMARY_LAG_ANNOUNCE_SECONDS = 60 * 60  # tell the log channel only once the lag is this long
 
 # -- Subreddit discovery (`.redditfeed discover`) ----------------------------
 

@@ -222,6 +222,51 @@ class TestFallbackSource:
         await fs.fetch_new_posts("x", None, 5)
         assert not fs.primary_skipped
 
+    async def test_stale_primary_is_supplemented_and_merged_by_id(self):
+        now = {"t": 100_000.0}
+        a = FakeSource("a", [{"id": "old1", "created_utc": 100_000.0 - 40_000, "score": 5}])
+        b = FakeSource("b", [{"id": "old1", "created_utc": 100_000.0 - 40_000},
+                             {"id": "new1", "created_utc": 100_000.0 - 600}])
+        fs = fb.FallbackSource([a, b], names=["a", "b"], wall_clock=lambda: now["t"])
+        posts = await fs.fetch_new_posts("x", None, 5)
+        assert fs.primary_stale and fs.supplemented_by == "b"
+        assert [p["id"] for p in posts] == ["old1", "new1"]
+        assert posts[0]["score"] == 5                       # the primary's richer copy wins the overlap
+        assert fs.active_name == "a"                        # primary still "works": no failover announcement
+
+    async def test_fresh_primary_is_not_supplemented(self):
+        now = {"t": 100_000.0}
+        a = FakeSource("a", [{"id": "p", "created_utc": 100_000.0 - 120}])
+        b = FakeSource("b", [{"id": "q", "created_utc": 100_000.0 - 60}])
+        fs = fb.FallbackSource([a, b], names=["a", "b"], wall_clock=lambda: now["t"])
+        assert [p["id"] for p in await fs.fetch_new_posts("x", None, 5)] == ["p"]
+        assert not fs.primary_stale and fs.supplemented_by is None and b.calls == 0
+
+    async def test_unknown_newest_is_not_stale(self):
+        fs = fb.FallbackSource([FakeSource("a", []), FakeSource("b", [{"id": "q"}])], names=["a", "b"])
+        assert await fs.fetch_new_posts("x", None, 5) == []
+        assert fs.primary_lag is None and not fs.primary_stale
+
+    async def test_backup_failure_during_supplement_keeps_primary_posts(self):
+        now = {"t": 100_000.0}
+        a = FakeSource("a", [{"id": "old1", "created_utc": 100_000.0 - 40_000}])
+        b = FakeSource("b", fail=True)
+        fs = fb.FallbackSource([a, b], names=["a", "b"], wall_clock=lambda: now["t"])
+        posts = await fs.fetch_new_posts("x", None, 5)
+        assert [p["id"] for p in posts] == ["old1"]
+        assert fs.supplemented_by is None and "b" in fs.last_errors
+
+    async def test_recovers_when_primary_catches_up(self):
+        now = {"t": 100_000.0}
+        a = FakeSource("a", [{"id": "old1", "created_utc": 100_000.0 - 40_000}])
+        b = FakeSource("b", [{"id": "new1", "created_utc": 100_000.0 - 600}])
+        fs = fb.FallbackSource([a, b], names=["a", "b"], wall_clock=lambda: now["t"])
+        await fs.fetch_new_posts("x", None, 5)
+        assert fs.primary_stale
+        a.posts = [{"id": "new1", "created_utc": 100_000.0 - 300}]
+        await fs.fetch_new_posts("x", None, 5)
+        assert not fs.primary_stale and fs.supplemented_by is None
+
     async def test_search_is_primary_only(self):
         fs = fb.FallbackSource([FakeSource("a", fail=True), FakeSource("b")], names=["a", "b"])
         with pytest.raises(RedditSourceError):
