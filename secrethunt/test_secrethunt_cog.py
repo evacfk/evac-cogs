@@ -13,6 +13,7 @@ from secrethunt import _testkit as tk
 from secrethunt import engine
 from secrethunt.constants import MAX_WRONG_PER_DAY, WATCH_EMOJI
 from secrethunt.puzzles import PUZZLES
+from secrethunt.settings_panel import PanelError
 
 LA = ZoneInfo("America/Los_Angeles")
 PID = "late_rabbit"
@@ -434,11 +435,11 @@ async def test_a_missing_hall_channel_does_not_stop_the_solve(env):
 
 async def test_starting_a_puzzle_posts_its_empty_hall_entry_so_the_order_is_release_order(env):
     ctx = Ctx(env)
-    await env.cog.secrethunt_start.callback(env.cog, ctx, PID)
+    await run(ctx, env.cog._apply_start(env.g, ctx.author, PID))
     assert len(env.hall.sent) == 2 and hall_description(env) == "*Nobody yet.*"
     assert env.hall.sent[0].embed.title.endswith("Secrets of Wonderland")  # the intro is first
     assert env.hall.sent[1].embed.title == "Easy \u00b7 The Late Rabbit"
-    await env.cog.secrethunt_start.callback(env.cog, ctx, PID)  # starting again must not duplicate anything
+    await run(ctx, env.cog._apply_start(env.g, ctx.author, PID))  # starting again must not duplicate anything
     assert len(env.hall.sent) == 2
 
 
@@ -486,9 +487,9 @@ async def test_changing_the_hall_channel_starts_fresh_posts(env):
     await solve(env, 21)
     new_hall = env.g.add_channel(201, "new-hall")
     ctx = Ctx(env)
-    await env.cog.secrethunt_hall.callback(env.cog, ctx, new_hall)
+    await run(ctx, env.cog._apply_hall(env.g, ctx.author, new_hall))
     assert await env.conf.hall_messages() == {}
-    await env.cog.secrethunt_hallrefresh.callback(env.cog, ctx)
+    await run(ctx, env.cog._apply_hallrefresh(env.g, ctx.author))
     assert len(new_hall.sent) == 2 and new_hall.sent[0].embed.title.endswith("Secrets of Wonderland")
     assert new_hall.sent[1].embed.description == "1. user21" and await env.conf.hall_intro() == new_hall.sent[0].id
 
@@ -528,23 +529,33 @@ class Ctx:
         self.out.append("tick")
 
 
+async def run(ctx, coro):
+    """Await an _apply_* coroutine the way the panel does: its message (or PanelError text) is what the admin sees."""
+    try:
+        ctx.out.append(await coro)
+    except PanelError as exc:
+        ctx.out.append(str(exc))
+
+
 async def test_easy_can_never_be_given_a_role_or_badge(env):
     ctx = Ctx(env)
-    await env.cog.secrethunt_role.callback(env.cog, ctx, "easy", None)
+    await run(ctx, env.cog._apply_tier_role(env.g, ctx.author, "easy", None))
     assert "no role or badge" in ctx.out[-1] and await env.conf.roles() == {}
     await env.cog.secrethunt_roleicon.callback(env.cog, ctx, "Easy")
     assert "no role or badge" in ctx.out[-1]
-    await env.cog.secrethunt_role.callback(env.cog, ctx, "legendary", None)
+    await run(ctx, env.cog._apply_tier_role(env.g, ctx.author, "legendary", None))
     assert "Tier must be one of" in ctx.out[-1]
 
 
 async def test_role_command_creates_the_tiers_default_role_hoisted(env):
     ctx = Ctx(env)
-    await env.cog.secrethunt_role.callback(env.cog, ctx, "hard", None)
-    role = env.g.created_roles[-1]
-    assert role.name == "Timekeeper" and role.kw["hoist"] is True and "colour" not in role.kw  # members keep their own colour
-    assert (await env.conf.roles())["hard"] == role.id
-    await env.cog.secrethunt_role.callback(env.cog, ctx, "medium", env.role)  # or point it at an existing role
+    await run(ctx, env.cog._apply_create_tier_roles(env.g, ctx.author))
+    role = next(r for r in env.g.created_roles if r.name == "Timekeeper")
+    assert role.kw["hoist"] is True and "colour" not in role.kw  # members keep their own colour
+    assert (await env.conf.roles())["hard"] == role.id and "Created" in ctx.out[-1]
+    await run(ctx, env.cog._apply_create_tier_roles(env.g, ctx.author))  # nothing left to create
+    assert "already has a role" in ctx.out[-1]
+    await run(ctx, env.cog._apply_tier_role(env.g, ctx.author, "medium", env.role))  # or point it at an existing role
     assert (await env.conf.roles())["medium"] == env.role.id
 
 
@@ -552,7 +563,7 @@ async def test_roleicon_edits_the_right_tiers_role(env):
     ctx = Ctx(env)
     await env.cog.secrethunt_roleicon.callback(env.cog, ctx, "medium")
     assert "Set the role first" in ctx.out[-1]
-    await env.cog.secrethunt_role.callback(env.cog, ctx, "medium", env.role)
+    await run(ctx, env.cog._apply_tier_role(env.g, ctx.author, "medium", env.role))
     await env.cog.secrethunt_roleicon.callback(env.cog, ctx, "medium")
     assert "Attach" in ctx.out[-1]
     ctx.message.attachments = [Attachment(size=300 * 1024)]
@@ -571,20 +582,20 @@ async def test_enable_refuses_until_pool_and_puzzle_exist(env):
     await env.conf.enabled.set(False)
     await env.conf.published.set([])
     ctx = Ctx(env)
-    await env.cog.secrethunt_enable.callback(env.cog, ctx)
+    await run(ctx, env.cog._apply_enabled(env.g, ctx.author, not (await env.cog.config.guild(env.g).enabled())))
     assert "no puzzle started" in ctx.out[-1] and not await env.conf.enabled()
-    await env.cog.secrethunt_start.callback(env.cog, ctx, PID)
-    await env.cog.secrethunt_enable.callback(env.cog, ctx)
+    await run(ctx, env.cog._apply_start(env.g, ctx.author, PID))
+    await run(ctx, env.cog._apply_enabled(env.g, ctx.author, not (await env.cog.config.guild(env.g).enabled())))
     assert await env.conf.enabled()
 
 
 async def test_channels_command_validates_and_resets_objects(env):
     ctx = Ctx(env)
-    await env.cog.secrethunt_channels.callback(env.cog, ctx, env.chans[0])
+    await run(ctx, env.cog._apply_pool(env.g, ctx.author, [env.chans[0]]))
     assert "2 to 5" in ctx.out[-1]
-    await env.cog.secrethunt_channels.callback(env.cog, ctx, env.chans[0], env.chans[0])
+    await run(ctx, env.cog._apply_pool(env.g, ctx.author, [env.chans[0], env.chans[0]]))
     assert "different" in ctx.out[-1]
-    await env.cog.secrethunt_channels.callback(env.cog, ctx, *env.chans[:3])
+    await run(ctx, env.cog._apply_pool(env.g, ctx.author, [*env.chans[:3]]))
     assert await env.conf.pool() == [c.id for c in env.chans[:3]] and await env.conf.objects() == {}
 
 
@@ -619,11 +630,11 @@ async def test_preview_dms_the_admin_every_variant_with_answers(env):
 async def test_the_poem_is_posted_and_pinned_and_the_old_one_comes_down(env):
     ctx = Ctx(env)
     ch = env.chans[1]
-    await env.cog.secrethunt_poem.callback(env.cog, ctx, ch, "")
+    await run(ctx, env.cog._apply_poem(env.g, ctx.author, ch, ""))
     first = next(m for m in ch.sent if m.embed is not None and m.pinned and "Hatter" in (m.embed.title or ""))
     poem = first.embed.description
     assert engine.acrostic(poem.strip("*").split("\n")) == "tick"
-    await env.cog.secrethunt_poem.callback(env.cog, ctx, ch, "")
+    await run(ctx, env.cog._apply_poem(env.g, ctx.author, ch, ""))
     pinned_poems = [m for m in ch.sent if m.embed is not None and m.pinned and "Hatter" in (m.embed.title or "")]
     assert len(pinned_poems) == 1 and pinned_poems[0] is not first and not first.pinned
     assert (await env.conf.poems())[str(ch.id)] == pinned_poems[0].id
@@ -635,7 +646,7 @@ async def test_a_failed_pin_is_reported_and_forgotten(env):
     async with env.conf.poems() as poems:
         poems[str(ch.id)] = 12345  # an older poem was pinned here
     ch.fail_pin = True
-    await env.cog.secrethunt_poem.callback(env.cog, ctx, ch, "")
+    await run(ctx, env.cog._apply_poem(env.g, ctx.author, ch, ""))
     assert "could not pin" in ctx.out[-1] and str(ch.id) not in await env.conf.poems()
 
 
@@ -644,7 +655,7 @@ async def test_a_deleted_old_poem_does_not_block_the_new_one(env):
     ch = env.chans[3]
     async with env.conf.poems() as poems:
         poems[str(ch.id)] = 999999  # a poem a mod deleted long ago
-    await env.cog.secrethunt_poem.callback(env.cog, ctx, ch, "")
+    await run(ctx, env.cog._apply_poem(env.g, ctx.author, ch, ""))
     assert (await env.conf.poems())[str(ch.id)] != 999999
 
 
@@ -697,19 +708,19 @@ async def test_an_easy_puzzle_never_grants_a_puzzle_role_even_if_one_is_saved(en
 async def test_puzzlerole_command_creates_unhoisted_role_named_for_the_puzzle(env, monkeypatch):
     as_hard(monkeypatch, env)
     ctx = Ctx(env)
-    await env.cog.secrethunt_puzzlerole.callback(env.cog, ctx, PID, None)
+    await run(ctx, env.cog._apply_create_puzzle_role(env.g, ctx.author, PID))
     role = env.g.created_roles[-1]
     assert role.name == "The Late Rabbit" and role.kw["hoist"] is False and "colour" not in role.kw
     assert (await env.conf.puzzle_roles())[PID] == role.id and "not get it retroactively" in ctx.out[-1]
-    await env.cog.secrethunt_puzzlerole.callback(env.cog, ctx, PID, env.role)  # or an existing role
+    await run(ctx, env.cog._apply_puzzle_role(env.g, ctx.author, PID, env.role))  # or an existing role
     assert (await env.conf.puzzle_roles())[PID] == env.role.id
 
 
 async def test_puzzlerole_refuses_easy_and_unknown_puzzles(env):
     ctx = Ctx(env)
-    await env.cog.secrethunt_puzzlerole.callback(env.cog, ctx, PID, None)
+    await run(ctx, env.cog._apply_puzzle_role(env.g, ctx.author, PID, None))
     assert "no role or badge" in ctx.out[-1] and await env.conf.puzzle_roles() == {}
-    await env.cog.secrethunt_puzzlerole.callback(env.cog, ctx, "nope", None)
+    await run(ctx, env.cog._apply_puzzle_role(env.g, ctx.author, "nope", None))
     assert "Unknown puzzle" in ctx.out[-1]
 
 
@@ -717,7 +728,7 @@ async def test_roleicon_accepts_a_puzzle_id(env, monkeypatch):
     as_hard(monkeypatch, env)
     ctx = Ctx(env)
     await env.cog.secrethunt_roleicon.callback(env.cog, ctx, PID)
-    assert f".secrethunt puzzlerole {PID}" in ctx.out[-1]
+    assert "Set the role first" in ctx.out[-1]
     async with env.conf.puzzle_roles() as pr:
         pr[PID] = env.role.id
     ctx.message.attachments = [Attachment()]
@@ -775,13 +786,13 @@ def intro_text(env):
 async def test_hallrefresh_puts_the_intro_first_even_when_puzzle_posts_already_exist(env):
     await env.cog._refresh_hall(env.g, PID, create=True)  # a puzzle post from before the intro
     assert len(env.hall.sent) == 1 and env.hall.sent[0].embed.title.startswith("Easy")
-    await env.cog.secrethunt_hallrefresh.callback(env.cog, Ctx(env))
+    await env.cog._apply_hallrefresh(env.g, None)
     titles = [m.embed.title for m in env.hall.sent]
     assert len(titles) == 2 and titles[0].endswith("Secrets of Wonderland") and titles[1].startswith("Easy")
 
 
 async def test_the_intro_is_the_approved_text_without_the_nobody_will_tell_you_line(env):
-    await env.cog.secrethunt_hallrefresh.callback(env.cog, Ctx(env))
+    await env.cog._apply_hallrefresh(env.g, None)
     text = intro_text(env)
     assert "There are secrets hidden around this server." in text and "Nobody will tell you" not in text
     for tier in ("Easy", "Medium", "Hard", "Expert"):
@@ -791,25 +802,25 @@ async def test_the_intro_is_the_approved_text_without_the_nobody_will_tell_you_l
 
 async def test_the_intro_names_where_the_poem_is_pinned_and_follows_it(env):
     ctx = Ctx(env)
-    await env.cog.secrethunt_hallrefresh.callback(env.cog, ctx)
-    await env.cog.secrethunt_poem.callback(env.cog, ctx, env.chans[0], "")
+    await run(ctx, env.cog._apply_hallrefresh(env.g, ctx.author))
+    await run(ctx, env.cog._apply_poem(env.g, ctx.author, env.chans[0], ""))
     assert f"<#{env.chans[0].id}>" in intro_text(env)
-    await env.cog.secrethunt_poem.callback(env.cog, ctx, env.chans[1], "")
+    await run(ctx, env.cog._apply_poem(env.g, ctx.author, env.chans[1], ""))
     assert f"<#{env.chans[0].id}>" in intro_text(env) and f"<#{env.chans[1].id}>" in intro_text(env)
     assert len(env.hall.sent) == 2  # edited in place, not reposted
 
 
 async def test_posting_a_poem_before_the_intro_exists_does_not_create_it(env):
-    await env.cog.secrethunt_poem.callback(env.cog, Ctx(env), env.chans[0], "")
+    await env.cog._apply_poem(env.g, None, env.chans[0], "")
     assert env.hall.sent == []
 
 
 async def test_a_deleted_intro_is_rebuilt_at_the_top_with_the_puzzle_posts_after_it(env):
     ctx = Ctx(env)
-    await env.cog.secrethunt_hallrefresh.callback(env.cog, ctx)
+    await run(ctx, env.cog._apply_hallrefresh(env.g, ctx.author))
     await solve(env, 21)
     env.hall.sent.remove(env.hall.sent[0])  # a mod deleted the intro
-    await env.cog.secrethunt_hallrefresh.callback(env.cog, ctx)
+    await run(ctx, env.cog._apply_hallrefresh(env.g, ctx.author))
     titles = [m.embed.title for m in env.hall.sent]
     assert len(titles) == 2 and titles[0].endswith("Secrets of Wonderland") and titles[1].startswith("Easy")
     assert env.hall.sent[1].embed.description == "1. user21"  # the solver list survived the rebuild
@@ -819,8 +830,8 @@ async def test_a_second_puzzle_goes_below_the_first_after_the_intro(env, monkeyp
     other = {**PUZZLES[PID], "id": "second", "title": "The Second One"}
     monkeypatch.setitem(env.mod.PUZZLES, "second", other)
     ctx = Ctx(env)
-    await env.cog.secrethunt_start.callback(env.cog, ctx, PID)
-    await env.cog.secrethunt_start.callback(env.cog, ctx, "second")
+    await run(ctx, env.cog._apply_start(env.g, ctx.author, PID))
+    await run(ctx, env.cog._apply_start(env.g, ctx.author, "second"))
     titles = [m.embed.title for m in env.hall.sent]
     assert titles[0].endswith("Secrets of Wonderland") and titles[1:] == ["Easy \u00b7 The Late Rabbit", "Easy \u00b7 The Second One"]
 
@@ -872,8 +883,8 @@ async def test_a_wrong_answer_or_a_second_solve_is_not_announced(env):
 async def test_announce_command_sets_clears_and_shows_in_status(env):
     chat_ch = env.g.add_channel(400, "cuddle")
     ctx = Ctx(env)
-    await env.cog.secrethunt_announce.callback(env.cog, ctx, chat_ch)
+    await run(ctx, env.cog._apply_announce(env.g, ctx.author, chat_ch))
     assert await env.conf.announce_channel_id() == chat_ch.id and chat_ch.mention in ctx.out[-1]
     assert chat_ch.mention in (await env.cog._status_embed(env.g)).description
-    await env.cog.secrethunt_announce.callback(env.cog, ctx, None)
+    await run(ctx, env.cog._apply_announce(env.g, ctx.author, None))
     assert await env.conf.announce_channel_id() is None and "off" in ctx.out[-1]

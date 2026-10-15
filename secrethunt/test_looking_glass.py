@@ -13,6 +13,7 @@ from secrethunt import _testkit as tk
 from secrethunt import engine
 from secrethunt.constants import WATCH_EMOJI
 from secrethunt.puzzles import PUZZLES
+from secrethunt.settings_panel import PanelError
 
 LA = ZoneInfo("America/Los_Angeles")
 PID = "looking_glass"
@@ -316,6 +317,14 @@ async def test_each_variant_has_its_own_answer_so_one_solver_cannot_leak_it(env)
     assert len(set(GLASS["answers"])) == 5 and len(set(GLASS["rebuses"])) == 5
 
 
+async def run(ctx, coro):
+    """Await an _apply_* coroutine the way the panel does: its message (or PanelError text) is what the admin sees."""
+    try:
+        ctx.out.append(await coro)
+    except PanelError as exc:
+        ctx.out.append(str(exc))
+
+
 class Ctx:
     def __init__(self, env):
         self.guild, self.out = env.g, []
@@ -343,7 +352,7 @@ async def test_preview_shows_the_pointer_button_rebus_and_answer_for_every_varia
 async def test_the_riddle_poem_is_posted_pinned_and_hides_no_acrostic(env):
     ctx = Ctx(env)
     ch = env.chans[1]
-    await env.cog.secrethunt_poem.callback(env.cog, ctx, ch, PID)
+    await run(ctx, env.cog._apply_poem(env.g, ctx.author, ch, PID))
     poem = next(m for m in ch.sent if m.embed is not None and m.pinned and "Queen forgot" in (m.embed.title or ""))
     assert "mirror" not in poem.embed.description.lower()
     assert (await env.conf.poems())[str(ch.id)] == poem.id
@@ -357,7 +366,7 @@ async def test_status_counts_the_second_puzzle(env):
 
 async def test_setup_again_skips_rooms_that_already_have_the_glass(env):
     ctx = Ctx(env)
-    await env.cog.secrethunt_setup.callback(env.cog, ctx, PID, False)
+    await run(ctx, env.cog._apply_setup(env.g, ctx.author, PID, False))
     assert ctx.out[-1].count("already set up") == 5
     assert sum(1 for ch in env.chans for m in ch.sent if m.kw.get("view") is not None) == 5
 

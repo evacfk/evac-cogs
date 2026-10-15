@@ -540,3 +540,20 @@ def test_dropdown_descriptions_use_names_not_mentions():
     guild = SimpleNamespace(get_channel=lambda i: SimpleNamespace(name="general"), get_role=lambda i: None, get_member=lambda i: None)
     assert plain_value("<#5> and <@&6> and <@7>", guild) == "#general and @role and @user"
     assert plain_value("<#5>") == "#channel"
+
+
+async def test_min_multi_is_enforced_by_the_dropdown_and_many_item_actions_fit():
+    panel, store, owner = await make()
+    spec = next(x for x in panel.specs if x.key == "roles")
+    spec.min_multi = 2
+    await pick_setting(panel, owner, "roles")
+    assert child(panel, discord.ui.RoleSelect).min_values == 2
+    things = next(x for x in panel.specs if x.key == "items")
+    things.can_add, things.save, things.remove, things.fields, things.pick = False, None, None, (), None
+    things.item_actions = tuple(ItemAction(f"A{i}", things.item_actions[0].run) for i in range(5))
+    panel.tab = "Things"
+    await pick_setting(panel, owner, "items")
+    await panel._on_item(FakeInteraction(owner, ["x"]))
+    labels = [c.label for c in panel.children if isinstance(c, discord.ui.Button) and c.row == 3]
+    assert labels == ["A0", "A1", "A2", "A3", "A4"]
+    assert len(panel.to_components()) <= 5

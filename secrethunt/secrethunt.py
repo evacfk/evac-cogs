@@ -22,6 +22,8 @@ import discord
 from redbot.core import Config, commands
 
 from . import embeds, engine, views
+from . import panel as panel_specs
+from .settings_panel import PanelError, open_panel
 from .constants import (
     COG_VERSION, CONFIG_IDENTIFIER, DEFAULT_GUILD, DEFAULT_MEMBER, ICON_MAX_BYTES, POOL_MAX, POOL_MIN,
     TICK_SECONDS, TIER_ROLE_NAMES, WATCH_EMOJI,
@@ -550,8 +552,8 @@ class SecretHunt(commands.Cog):
     @commands.guild_only()
     @commands.admin_or_permissions(manage_guild=True)
     async def secrethunt(self, ctx):
-        """Secret hunts: status and setup."""
-        await ctx.send(embed=await self._status_embed(ctx.guild))
+        """Secret hunt control panel: pool, Hall, announcements, puzzles and reward roles."""
+        await open_panel(ctx, self, panel_specs.build_specs(), title="Secret hunt", intro=panel_specs.INTRO)
 
     @secrethunt.command(name="version")
     async def secrethunt_version(self, ctx):
@@ -577,14 +579,14 @@ class SecretHunt(commands.Cog):
             "Enabled": "yes" if await conf.enabled() else "no",
             "Test mode": "on (clues arrive in 30 seconds)" if await conf.test_mode() else "off",
             "Pool": ", ".join(f"<#{c}>" if self._lookup(guild, c) else f"**MISSING** `{c}`" for c in pool)
-                    or "not set (`channels`)",
+                    or "not set (open `.secrethunt`)",
             "Roles": "easy: none (by design), " + ", ".join(tier_roles),
             "Puzzle roles": ", ".join(
                 f"{PUZZLES[p]['title']}: {r.mention if r else 'MISSING'}"
                 for p, rid in (await conf.puzzle_roles()).items() if p in PUZZLES
                 for r in [guild.get_role(rid)]) or "none",
-            "Hall of Secrets": hall.mention if hall else "not set (`hall`)",
-            "Solve announcements": (lambda ch: ch.mention if ch else "off (`announce`)")(
+            "Hall of Secrets": hall.mention if hall else "not set (open `.secrethunt`)",
+            "Solve announcements": (lambda ch: ch.mention if ch else "off (open `.secrethunt`)")(
                 self._lookup(guild, await conf.announce_channel_id() or 0)),
         }
         for pid in await conf.published():
@@ -593,56 +595,67 @@ class SecretHunt(commands.Cog):
                 f"{started} started, {len(finishers.get(pid, []))} solved")
         return embeds.status_embed(COG_VERSION, lines)
 
-    @secrethunt.command(name="channels")
-    async def secrethunt_channels(self, ctx, *channels: Union[discord.TextChannel, discord.Thread]):
-        """Set the 2-5 channels or forum posts hunt objects hide in (variant 1 = the first). Run `setup` after."""
+    # ------------------------------------------------------------------ setup actions (used by the panel)
+
+    async def _apply_pool(self, guild, member, channels) -> str:
+        """Set the 2-5 channels or forum posts the hunt objects hide in (variant 1 = the first)."""
+        channels = list(channels or [])
         if not POOL_MIN <= len(channels) <= POOL_MAX or len({c.id for c in channels}) != len(channels):
-            return await ctx.send(f"Give me {POOL_MIN} to {POOL_MAX} different channels or forum posts.")
-        conf = self.config.guild(ctx.guild)
+            raise PanelError(f"Give me {POOL_MIN} to {POOL_MAX} different channels or forum posts.")
+        conf = self.config.guild(guild)
         await conf.pool.set([c.id for c in channels])
         await conf.objects.set({})  # the old objects no longer match the variants
-        await ctx.send("Pool set: " + ", ".join(c.mention for c in channels)
-                       + "\nRun `.secrethunt setup` to pin the objects. Changing the pool mid-puzzle moves "
-                         "people's hiding places, so do it between puzzles.")
+        return ("Pool set: " + ", ".join(c.mention for c in channels)
+                + ". Now set up each puzzle's objects under Puzzles. Changing the pool mid-puzzle moves "
+                  "people's hiding places, so do it between puzzles.")
 
-    @secrethunt.command(name="setup")
-    async def secrethunt_setup(self, ctx, puzzle_id: str = "late_rabbit", force: bool = False):
-        """Post and pin the puzzle's object in each pool channel (`setup <id> true` to redo them)."""
+    async def _apply_pool_text(self, guild, member, values: dict) -> str:
+        """The pool from pasted mentions or ids (forum posts are threads, which a dropdown may not offer)."""
+        found, bad = [], []
+        for token in (values.get("channels") or "").replace(",", " ").split():
+            digits = token[2:-1] if token.startswith("<#") and token.endswith(">") else token
+            channel = self._lookup(guild, int(digits)) if digits.isdigit() else None
+            if channel is None:
+                bad.append(token)
+            elif channel.id not in [c.id for c in found]:
+                found.append(channel)
+        if bad:
+            raise PanelError("I couldn't find: " + ", ".join(bad) + ". Nothing was changed.")
+        return await self._apply_pool(guild, member, found)
+
+    async def _apply_setup(self, guild, member, puzzle_id: str, force: bool = False) -> str:
+        """Post and pin the puzzle's object in each pool channel."""
         if puzzle_id not in PUZZLES:
-            return await ctx.send("Unknown puzzle. Known: " + ", ".join(PUZZLES))
-        if len(await self.config.guild(ctx.guild).pool()) < POOL_MIN:
-            return await ctx.send("Set the pool first: `.secrethunt channels #post1 #post2 #post3 #post4 #post5`")
-        await ctx.send("\n".join(await self._setup_objects(ctx.guild, puzzle_id, force)))
+            raise PanelError("Unknown puzzle. Known: " + ", ".join(PUZZLES))
+        if len(await self.config.guild(guild).pool()) < POOL_MIN:
+            raise PanelError("Set the pool first (Hunt tab).")
+        return "\n".join(await self._setup_objects(guild, puzzle_id, force))
 
-    @secrethunt.command(name="start")
-    async def secrethunt_start(self, ctx, puzzle_id: str):
+    async def _apply_start(self, guild, member, puzzle_id: str) -> str:
         """Make a puzzle's trigger word live. Earlier puzzles stay live too."""
         if puzzle_id not in PUZZLES:
-            return await ctx.send("Unknown puzzle. Known: " + ", ".join(PUZZLES))
-        conf = self.config.guild(ctx.guild)
+            raise PanelError("Unknown puzzle. Known: " + ", ".join(PUZZLES))
+        conf = self.config.guild(guild)
         async with conf.published() as published:
             if puzzle_id not in published:
                 published.append(puzzle_id)
         await conf.active.set(puzzle_id)
-        await self._refresh_intro(ctx.guild, create=True)
-        await self._refresh_hall(ctx.guild, puzzle_id, create=True)  # its Hall post exists from day one, in release order
-        await ctx.send(f"**{PUZZLES[puzzle_id]['title']}** is live (once the hunt is enabled).")
+        await self._refresh_intro(guild, create=True)
+        await self._refresh_hall(guild, puzzle_id, create=True)  # its Hall post exists from day one, in release order
+        return f"{PUZZLES[puzzle_id]['title']} is live (once the hunt is enabled)."
 
-    @secrethunt.command(name="poem")
-    async def secrethunt_poem(self, ctx, channel: Union[discord.TextChannel, discord.Thread] = None,
-                              puzzle_id: str = ""):
-        """Post the active puzzle's public poem (it hides the trigger word)."""
-        conf = self.config.guild(ctx.guild)
+    async def _apply_poem(self, guild, member, target, puzzle_id: str = "") -> str:
+        """Post a puzzle's public poem (it hides the trigger word) in `target` and pin it."""
+        conf = self.config.guild(guild)
         pid = puzzle_id or await conf.active()
         if pid not in PUZZLES:
-            return await ctx.send("No puzzle is started. Use `.secrethunt start late_rabbit` first.")
-        target = channel or ctx.channel
+            raise PanelError("No puzzle is started. Start one under Puzzles first.")
         try:
             posted = await target.send(embed=embeds.poem_embed(PUZZLES[pid]))
         except _DISCORD_ERRORS as err:
-            return await ctx.send(f"I could not post there ({type(err).__name__}).")
+            raise PanelError(f"I could not post there ({type(err).__name__}).")
         notes = []
-        async with self.config.guild(ctx.guild).poems() as poems:
+        async with self.config.guild(guild).poems() as poems:
             old = poems.get(str(target.id))
             if old:  # the previous poem in this channel comes down as the new one goes up
                 try:
@@ -656,64 +669,77 @@ class SecretHunt(commands.Cog):
                 poems.pop(str(target.id), None)
                 notes.append(f"Posted, but I could not pin it ({type(err).__name__}): I need Pin Messages here, "
                              "and a channel holds at most 50 pins.")
-        await self._refresh_intro(ctx.guild)  # it names the channels the poem is pinned in
+        await self._refresh_intro(guild)  # it names the channels the poem is pinned in
         if notes:
-            return await ctx.send(" ".join(notes))
-        if target.id != ctx.channel.id:
-            await ctx.tick()
+            raise PanelError(" ".join(notes))
+        return f"Poem posted and pinned in {target.mention}."
 
-    @secrethunt.command(name="enable")
-    async def secrethunt_enable(self, ctx):
-        """Turn the hunt on."""
-        conf = self.config.guild(ctx.guild)
+    async def _apply_enabled(self, guild, member, on: bool) -> str:
+        conf = self.config.guild(guild)
+        if not on:
+            await conf.enabled.set(False)
+            return "The hunt is off. Nobody's progress was lost."
         problems = []
         if len(await conf.pool()) < POOL_MIN:
-            problems.append("no channel pool (`channels`)")
+            problems.append("no channel pool")
         if not await conf.published():
-            problems.append("no puzzle started (`start`)")
+            problems.append("no puzzle started")
         if problems:
-            return await ctx.send("Not yet: " + "; ".join(problems))
+            raise PanelError("Not yet: " + "; ".join(problems) + ".")
         await conf.enabled.set(True)
-        await ctx.send("The hunt is on.")
+        return "The hunt is on."
 
-    @secrethunt.command(name="disable")
-    async def secrethunt_disable(self, ctx):
-        """Turn the hunt off (progress is kept)."""
-        await self.config.guild(ctx.guild).enabled.set(False)
-        await ctx.send("The hunt is off. Nobody's progress was lost.")
+    async def _apply_test_mode(self, guild, member, on: bool) -> str:
+        await self.config.guild(guild).test_mode.set(bool(on))
+        return f"Test mode {'on: the morning wait is 30 seconds' if on else 'off'}."
 
-    @secrethunt.command(name="testmode")
-    async def secrethunt_testmode(self, ctx, on_off: bool):
-        """In test mode the morning wait is 30 seconds, so you can run the whole chain yourself."""
-        await self.config.guild(ctx.guild).test_mode.set(on_off)
-        await ctx.send(f"Test mode {'on' if on_off else 'off'}.")
-
-    @secrethunt.command(name="hall")
-    async def secrethunt_hall(self, ctx, channel: Union[discord.TextChannel, discord.Thread] = None):
+    async def _apply_hall(self, guild, member, channel) -> str:
         """Set (or clear) the Hall of Secrets channel. Each puzzle gets one post there listing its solvers."""
-        conf = self.config.guild(ctx.guild)
+        conf = self.config.guild(guild)
         await conf.hall_channel_id.set(channel.id if channel else None)
         await conf.hall_intro.set(0)
         await conf.hall_messages.set({})  # the old posts live in the old channel; new ones are written on demand
-        await ctx.send(f"Hall of Secrets: {channel.mention}. Run `.secrethunt hallrefresh` to write the posts."
-                       if channel else "Hall of Secrets cleared.")
+        return (f"Hall of Secrets: {channel.mention}. Use Refresh Hall posts to write them." if channel
+                else "Hall of Secrets cleared.")
 
-    @secrethunt.command(name="announce")
-    async def secrethunt_announce(self, ctx, channel: Union[discord.TextChannel, discord.Thread] = None):
-        """Set (or clear) the channel that gets a one-line "X has solved <puzzle>" for every solve. It never pings."""
-        await self.config.guild(ctx.guild).announce_channel_id.set(channel.id if channel else None)
-        await ctx.send(f"Solves will be announced in {channel.mention}." if channel else "Solve announcements are off.")
+    async def _apply_announce(self, guild, member, channel) -> str:
+        """Set (or clear) the channel that gets a one-line "X has solved <puzzle>". It never pings."""
+        await self.config.guild(guild).announce_channel_id.set(channel.id if channel else None)
+        return f"Solves will be announced in {channel.mention}." if channel else "Solve announcements are off."
 
-    @secrethunt.command(name="hallrefresh")
-    async def secrethunt_hallrefresh(self, ctx):
+    async def _apply_hallrefresh(self, guild, member, _value=None) -> str:
         """Rewrite every puzzle's Hall of Secrets post from the saved solver lists (after a deleted post, say)."""
-        await self._refresh_intro(ctx.guild, create=True)
+        await self._refresh_intro(guild, create=True)
         done = 0
-        for pid in (await self.config.guild(ctx.guild).published()):  # release order
+        for pid in (await self.config.guild(guild).published()):  # release order
             if pid in PUZZLES:
-                await self._refresh_hall(ctx.guild, pid, create=True)
+                await self._refresh_hall(guild, pid, create=True)
                 done += 1
-        await ctx.send(f"Refreshed {done} Hall post{'s' if done != 1 else ''}.")
+        return f"Refreshed {done} Hall post{'s' if done != 1 else ''}."
+
+    async def _apply_preview(self, guild, member, puzzle_id: str) -> str:
+        """DM the admin every variant's clues and answer (spoilers, so it never goes in a channel)."""
+        puzzle = PUZZLES.get(puzzle_id)
+        pool = await self.config.guild(guild).pool()
+        if puzzle is None or len(pool) < POOL_MIN:
+            raise PanelError("Unknown puzzle, or the pool is not set yet.")
+        lines = [f"**{puzzle['title']}** trigger word: `{puzzle['trigger']}`"]
+        for v in range(len(pool)):
+            channel, hint = self._hint_for(guild, puzzle, pool, v)
+            answer = puzzle["answers"][v % len(puzzle["answers"])]
+            if "pointers" in puzzle:
+                pointer = engine.pointer_for(puzzle, channel.name, v) if channel is not None else None
+                button = puzzle["buttons"][v % len(puzzle["buttons"])]
+                rebus = puzzle["rebuses"][v % len(puzzle["rebuses"])]
+                lines.append(f"Variant {v + 1}: <#{pool[v]}>, pointer `{pointer}`, button `{button}`, "
+                             f"rebus {rebus}, answer `{answer}`")
+                continue
+            hint = hint[0] if hint else None
+            jumbled = engine.scramble(answer, f"{puzzle['id']}:{v}:final")
+            lines.append(f"Variant {v + 1}: <#{pool[v]}>, scrambled title `{hint}`, answer `{answer}`, jumbled `{jumbled}`")
+        if not await self._dm(member, "\n".join(lines)):
+            raise PanelError("I could not DM you.")
+        return "Sent you a DM with every variant and its answer."
 
     async def _tier_role(self, ctx, tier: str):
         """Validate a tier name for the role commands; returns (tier, role or None) or None after replying."""
@@ -727,43 +753,61 @@ class SecretHunt(commands.Cog):
         roles = await self.config.guild(ctx.guild).roles()
         return tier, ctx.guild.get_role(roles.get(tier) or 0)
 
-    @secrethunt.command(name="role")
-    async def secrethunt_role(self, ctx, tier: str, role: discord.Role = None):
-        """Set a tier's reward role (medium, hard or expert): pass an existing role, or omit it to create one."""
-        checked = await self._tier_role(ctx, tier)
-        if checked is None:
-            return
-        tier = checked[0]
-        if role is None:
-            try:
-                role = await ctx.guild.create_role(
-                    name=TIER_ROLE_NAMES[tier], hoist=True,
-                    mentionable=False, reason="Secret hunt reward role")
-            except _DISCORD_ERRORS as err:
-                return await ctx.send(f"I could not create the role ({type(err).__name__}); I need Manage Roles.")
-        async with self.config.guild(ctx.guild).roles() as roles:
+    async def _apply_tier_role(self, guild, member, tier: str, role) -> str:
+        """Set (or clear, with None) a tier's reward role: medium, hard or expert. Easy never has one."""
+        tier = (tier or "").lower()
+        if tier == "easy":
+            raise PanelError("Easy has no role or badge by design: its solvers are only listed in the Hall of Secrets.")
+        if tier not in TIER_ROLE_NAMES:
+            raise PanelError("Tier must be one of: " + ", ".join(TIER_ROLE_NAMES))
+        async with self.config.guild(guild).roles() as roles:
+            if role is None:
+                roles.pop(tier, None)
+                return f"{tier.title()} no longer has a reward role."
             roles[tier] = role.id
-        await ctx.send(f"{tier.title()} reward role: {role.mention}. Drag it where you want it in the role list, and "
-                       "keep it below my own top role so I can hand it out.")
+        return (f"{tier.title()} reward role: {role.mention}. Keep it below my own top role so I can hand it out.")
 
-    @secrethunt.command(name="puzzlerole")
-    async def secrethunt_puzzlerole(self, ctx, puzzle_id: str, role: discord.Role = None):
-        """Give one puzzle its own badge role (Medium and up): pass a role, or omit it to create one named for the puzzle."""
+    async def _apply_create_tier_roles(self, guild, member, _value=None) -> str:
+        """Create the default hoisted role for every tier that has none yet."""
+        made = []
+        for tier, name in TIER_ROLE_NAMES.items():
+            if guild.get_role((await self.config.guild(guild).roles()).get(tier) or 0) is not None:
+                continue
+            try:
+                role = await guild.create_role(name=name, hoist=True, mentionable=False, reason="Secret hunt reward role")
+            except _DISCORD_ERRORS as err:
+                raise PanelError(f"I could not create the role ({type(err).__name__}); I need Manage Roles.")
+            async with self.config.guild(guild).roles() as roles:
+                roles[tier] = role.id
+            made.append(role.mention)
+        return ("Created " + ", ".join(made) + ". Drag them where you want them and keep them below my top role."
+                if made else "Every tier already has a role.")
+
+    async def _apply_puzzle_role(self, guild, member, puzzle_id: str, role) -> str:
+        """Give one puzzle its own badge role (Medium and up); role None removes it."""
         puzzle = PUZZLES.get(puzzle_id)
         if puzzle is None:
-            return await ctx.send("Unknown puzzle. Known: " + ", ".join(PUZZLES))
+            raise PanelError("Unknown puzzle. Known: " + ", ".join(PUZZLES))
         if puzzle["tier"] == "easy":
-            return await ctx.send("Easy puzzles have no role or badge by design.")
-        if role is None:
-            try:
-                role = await ctx.guild.create_role(name=puzzle["title"], hoist=False, mentionable=False,
-                                                   reason="Secret hunt puzzle role")
-            except _DISCORD_ERRORS as err:
-                return await ctx.send(f"I could not create the role ({type(err).__name__}); I need Manage Roles.")
-        async with self.config.guild(ctx.guild).puzzle_roles() as roles:
+            raise PanelError("Easy puzzles have no role or badge by design.")
+        async with self.config.guild(guild).puzzle_roles() as roles:
+            if role is None:
+                roles.pop(puzzle_id, None)
+                return f"{puzzle['title']} no longer awards a badge role."
             roles[puzzle_id] = role.id
-        await ctx.send(f"**{puzzle['title']}** now awards {role.mention} to everyone who solves it from here on. "
-                       "Keep it below my top role. Earlier solvers do not get it retroactively.")
+        return (f"{puzzle['title']} now awards {role.mention} to everyone who solves it from here on. "
+                "Keep it below my top role. Earlier solvers do not get it retroactively.")
+
+    async def _apply_create_puzzle_role(self, guild, member, puzzle_id: str) -> str:
+        puzzle = PUZZLES.get(puzzle_id)
+        if puzzle is None or puzzle["tier"] == "easy":
+            raise PanelError("Only Medium and harder puzzles have a badge role.")
+        try:
+            role = await guild.create_role(name=puzzle["title"], hoist=False, mentionable=False,
+                                           reason="Secret hunt puzzle role")
+        except _DISCORD_ERRORS as err:
+            raise PanelError(f"I could not create the role ({type(err).__name__}); I need Manage Roles.")
+        return await self._apply_puzzle_role(guild, member, puzzle_id, role)
 
     @secrethunt.command(name="roleicon")
     async def secrethunt_roleicon(self, ctx, target: str):
@@ -773,14 +817,14 @@ class SecretHunt(commands.Cog):
             if PUZZLES[key]["tier"] == "easy":
                 return await ctx.send("Easy puzzles have no role or badge by design.")
             role = ctx.guild.get_role((await self.config.guild(ctx.guild).puzzle_roles()).get(key) or 0)
-            hint = f".secrethunt puzzlerole {key}"
+            hint = "`.secrethunt` (Roles tab)"
         else:
             checked = await self._tier_role(ctx, key)
             if checked is None:
                 return
-            role, hint = checked[1], f".secrethunt role {checked[0]}"
+            role, hint = checked[1], "`.secrethunt` (Roles tab)"
         if role is None:
-            return await ctx.send(f"Set the role first with `{hint}`.")
+            return await ctx.send(f"Set the role first in {hint}.")
         if not ctx.message.attachments:
             return await ctx.send("Attach a PNG or JPG with the command.")
         att = ctx.message.attachments[0]
@@ -812,28 +856,11 @@ class SecretHunt(commands.Cog):
     @secrethunt.command(name="preview")
     async def secrethunt_preview(self, ctx, puzzle_id: str = "late_rabbit"):
         """DM you every variant's clues and answer (spoilers, so it never goes in a channel)."""
-        puzzle = PUZZLES.get(puzzle_id)
-        pool = await self.config.guild(ctx.guild).pool()
-        if puzzle is None or len(pool) < POOL_MIN:
-            return await ctx.send("Unknown puzzle, or the pool is not set yet.")
-        lines = [f"**{puzzle['title']}** trigger word: `{puzzle['trigger']}`"]
-        for v in range(len(pool)):
-            channel, hint = self._hint_for(ctx.guild, puzzle, pool, v)
-            answer = puzzle["answers"][v % len(puzzle["answers"])]
-            if "pointers" in puzzle:
-                pointer = engine.pointer_for(puzzle, channel.name, v) if channel is not None else None
-                button = puzzle["buttons"][v % len(puzzle["buttons"])]
-                rebus = puzzle["rebuses"][v % len(puzzle["rebuses"])]
-                lines.append(f"Variant {v + 1}: <#{pool[v]}>, pointer `{pointer}`, button `{button}`, "
-                             f"rebus {rebus}, answer `{answer}`")
-                continue
-            hint = hint[0] if hint else None
-            jumbled = engine.scramble(answer, f"{puzzle['id']}:{v}:final")
-            lines.append(f"Variant {v + 1}: <#{pool[v]}>, scrambled title `{hint}`, answer `{answer}`, jumbled `{jumbled}`")
-        if await self._dm(ctx.author, "\n".join(lines)):
-            await ctx.tick()
-        else:
-            await ctx.send("I could not DM you.")
+        try:
+            await self._apply_preview(ctx.guild, ctx.author, puzzle_id)
+        except PanelError as err:
+            return await ctx.send(str(err))
+        await ctx.tick()
 
     @secrethunt.command(name="reset")
     async def secrethunt_reset(self, ctx, member: discord.Member, puzzle_id: str = "late_rabbit"):

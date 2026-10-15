@@ -84,6 +84,7 @@ class Spec:
     fields: Sequence[Field] = ()
     choices: Sequence[tuple] = ()                            # (label, value)
     multi: int = 1                                           # channel/role: how many may be picked
+    min_multi: int = 1                                       # channel/role: how many must be picked
     clearable: bool = False                                  # channel/role: allow "Clear"
     confirm: str = ""                                        # non-empty: ask before applying
     confirm_if: Optional[Callable[[Any], bool]] = None       # which values need the confirm (toggles: only On)
@@ -391,7 +392,8 @@ class SettingsPanel(discord.ui.View):
             current = self.values.get(spec.key)
             ids = [current] if isinstance(current, int) else list(current or [])
             ids = [i for i in ids if i][: spec.multi]
-            kwargs = dict(placeholder=f"Choose {spec.label.lower()}", min_values=1, max_values=max(1, spec.multi), row=2)
+            kwargs = dict(placeholder=f"Choose {spec.label.lower()}", min_values=max(1, min(spec.min_multi, spec.multi)),
+                          max_values=max(1, spec.multi), row=2)
             if ids:
                 dtype = discord.SelectDefaultValueType.channel if kind == "channel" else discord.SelectDefaultValueType.role
                 kwargs["default_values"] = [discord.SelectDefaultValue(id=i, type=dtype) for i in ids]
@@ -436,11 +438,14 @@ class SettingsPanel(discord.ui.View):
         chosen = self.item_id is not None
         adding = self.item_id == NEW_ITEM
         has_form = bool(spec.fields) or spec.pick is not None
+        used = 0
         if has_form and spec.save is not None:
             self._add_button("Add…" if adding else "Edit…", "primary", self._on_item_edit, row=3, disabled=not chosen)
+            used += 1
         if spec.remove is not None:
             self._add_button("Remove", "danger", self._on_item_remove, row=3, disabled=not chosen or adding)
-        for index, action in enumerate(list(spec.item_actions)[:3]):
+            used += 1
+        for index, action in enumerate(list(spec.item_actions)[: 5 - used]):
             self._add_button(action.label, action.style, self._make_item_action(index), row=3, disabled=not chosen or adding)
 
     def _add_pick_select(self) -> None:
