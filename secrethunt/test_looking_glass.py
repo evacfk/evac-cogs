@@ -386,54 +386,30 @@ async def test_both_puzzles_can_run_side_by_side(env):
     assert await press(env, m, ch, key) == GLASS["found"]
 
 
-# ---------------------------------------------------------------- the Easy "type something" nudge
+# ---------------------------------------------------------------- the Easy "you have to type" hint lives in the poem
 
 
-@pytest.fixture
-def footers(monkeypatch):
-    """Every footer text set on any embed (recorded, so it works with the repo stub and with real discord.py)."""
-    import discord
-    seen = []
-    original = getattr(discord.Embed, "set_footer", None)
-
-    def spy(self, text=None, **kw):
-        seen.append(text)
-        return original(self, text=text, **kw) if original else self
-
-    monkeypatch.setattr(discord.Embed, "set_footer", spy, raising=False)
-    return seen
+def _poem_text(puzzle):
+    return engine.normalize(" ".join(puzzle["poem"]))
 
 
-async def test_every_easy_poem_says_you_have_to_type_something_and_never_what(env, footers):
-    from secrethunt import constants
+def test_every_easy_poem_carries_its_typing_hint_inside_the_verse():
+    for pid, puzzle in PUZZLES.items():
+        if puzzle["tier"] != "easy":
+            continue
+        hint = puzzle["typing_hint"]
+        assert engine.normalize(hint) in _poem_text(puzzle), pid  # the phrase really is in the poem
+        assert engine.normalize(puzzle["trigger"]) not in engine.normalize(hint)  # and never gives the word away
+        assert not any(w in hint.lower() for w in ("react", "click", "press", "command", "prefix", "dot"))
+
+
+def test_no_poem_has_a_footer_telling_players_what_to_do():
     embeds = importlib.import_module("secrethunt.embeds")
-    for puzzle in PUZZLES.values():
-        if puzzle["tier"] == "easy":
-            footers.clear()
-            embeds.poem_embed(puzzle)
-            assert footers == [constants.EASY_NUDGE]
-    nudge = constants.EASY_NUDGE.lower()
-    assert all(p["trigger"].lower() not in nudge for p in PUZZLES.values())  # it never names the word
-    assert "`" not in nudge and "prefix" not in nudge and "command" not in nudge and "dot" not in nudge  # nor its shape
+    assert not hasattr(importlib.import_module("secrethunt.constants"), "EASY_NUDGE")
+    assert "typing" not in embeds.intro_embed([]).description
 
 
-async def test_medium_and_above_poems_get_no_nudge(env, footers):
-    embeds = importlib.import_module("secrethunt.embeds")
-    for tier in ("medium", "hard", "expert"):
-        embeds.poem_embed(dict(GLASS, tier=tier))
-    assert footers == []
-
-
-async def test_the_hall_intro_tells_easy_players_to_type_but_not_the_others(env):
-    embeds = importlib.import_module("secrethunt.embeds")
-    text = embeds.intro_embed([]).description
-    lines = text.splitlines()
-    assert "typing something" in next(line for line in lines if "**Easy:**" in line)
-    for tier in ("Medium", "Hard", "Expert"):
-        assert "typing" not in next(line for line in lines if f"**{tier}:**" in line)
-
-
-async def test_posting_an_easy_poem_carries_the_nudge(env, footers):
-    from secrethunt import constants
+async def test_the_posted_glass_poem_contains_the_hint(env):
     await env.cog._apply_poem(env.g, member(env, 1), env.chans[1], PID)
-    assert footers == [constants.EASY_NUDGE]
+    posted = next(m for m in env.chans[1].sent if m.embed is not None and "Queen forgot" in (m.embed.title or ""))
+    assert posted.pinned and "use your fingers" in posted.embed.description

@@ -6,11 +6,12 @@ LATE_RABBIT = {
     "tier": "easy",
     "trigger": "tick",           # the word the poem's first letters spell
     "poem_title": "Pinned to the Mad Hatter's table",
+    "typing_hint": "keys, not shouting",   # Easy poems carry the "you have to type" hint inside the verse (a test checks)
     "poem": [
         "Tea's gone cold, and nobody came.",
         "Idle clocks all read the same.",
         "Cheshire grins but won't say why.",
-        "Kettle's still whistling. So am I.",
+        "Keys, not shouting, will catch his eye.",
     ],
     # variant i hides its object in pool[i] and ends on answers[i]; the order of players is hashed, not chosen
     "answers": ["hatter", "dormouse", "flamingo", "jabberwock", "walrus"],
@@ -68,12 +69,13 @@ LOOKING_GLASS = {
     "trigger_kind": "riddle",    # the poem is a riddle whose answer is the trigger; every other puzzle spells it
     "trigger": "mirror",         # the answer to the poem's riddle
     "poem_title": "Hung where the Queen forgot it",
+    "typing_hint": "use your fingers",
     "poem": [
         "I never speak, yet I answer every word.",
         "I hold your face but I cannot keep it.",
         "My left is your right, and my right is your left.",
         "Walk in, and all the writing runs backwards.",
-        "Call me by my name, and I will let you through.",
+        "Call me by my name, but use your fingers; I am hard of hearing.",
     ],
     # variant i hides its object in pool[i]; the right button and the final answer also depend on the variant
     "answers": ["butterfly", "dragonfly", "horsefly", "firefly", "housefly"],
