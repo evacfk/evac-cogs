@@ -32,6 +32,8 @@ from redbot.core import Config, bank, commands
 from redbot.core.data_manager import cog_data_path
 
 from . import captcha, embeds, engine, imagegen, import_characters, storage, views
+from . import panel as panel_specs
+from .settings_panel import PanelError, open_panel
 from .constants import (
     ACTIVITY_TIMEZONE,
     COG_VERSION,
@@ -1168,91 +1170,71 @@ class CardCollect(commands.Cog):
     @card.command(name="settings")
     @commands.guild_only()
     async def card_settings(self, ctx: commands.Context):
-        """Show current cardcollect configuration."""
+        """Settings panel for admins; everyone else sees the current configuration."""
+        perms = getattr(ctx.author, "guild_permissions", None)
+        if perms is not None and (perms.administrator or perms.manage_guild):
+            await open_panel(ctx, self, panel_specs.build_specs(), title="Card Collect", intro=panel_specs.INTRO)
+            return
         guild_config = await self.config.guild(ctx.guild).all()
         await ctx.send(embed=embeds.settings_embed(guild_config, ctx.guild.name))
 
     # -- admin commands --------------------------------------------------
 
-    @card.command(name="setchannel")
-    @commands.guild_only()
-    @commands.admin_or_permissions(manage_guild=True)
-    async def card_setchannel(self, ctx: commands.Context, channel: discord.TextChannel):
-        """Set the channel drops post to."""
-        await self.config.guild(ctx.guild).channel_id.set(channel.id)
-        await ctx.send(f"Drops will post in {channel.mention}.")
+    # -- settings (the panel calls these; each returns the message to show or raises PanelError) --
 
-    @card.group(name="set", invoke_without_command=True)
-    @commands.guild_only()
-    @commands.admin_or_permissions(manage_guild=True)
-    async def card_set(self, ctx: commands.Context):
-        await ctx.send_help()
+    @staticmethod
+    def _whole(values, key, label, minimum, hint=""):
+        try:
+            number = int(str((values or {}).get(key, "")).strip())
+        except ValueError:
+            raise PanelError(f"{label} must be a whole number.")
+        if number < minimum:
+            raise PanelError(f"{label} must be at least {minimum}.{hint}")
+        return number
 
-    @card_set.command(name="claimquota")
-    async def card_set_claimquota(self, ctx: commands.Context, quota: int):
-        """Max real claims per member per day (resets at midnight Pacific). 0 = unlimited."""
-        if quota < 0:
-            await ctx.send("Quota can't be negative -- use 0 for unlimited.")
-            return
-        await self.config.guild(ctx.guild).claim_quota.set(quota)
-        await ctx.send(f"Daily claim quota set to {quota if quota > 0 else 'unlimited'}.")
+    async def _apply_channel(self, guild, member, channel) -> str:
+        if channel is None:
+            raise PanelError("Pick a channel for the drops.")
+        await self.config.guild(guild).channel_id.set(channel.id)
+        return f"Drops will post in {channel.mention}."
 
-    @card_set.command(name="dailyodds")
-    async def card_set_dailyodds(self, ctx: commands.Context, common: float, rare: float, epic: float, legendary: float):
-        """Odds for `.card daily`, in percent: `.card set dailyodds 75 20 4.5 0.5`."""
-        weights = {"common": common, "rare": rare, "epic": epic, "legendary": legendary}
-        if any(v < 0 for v in weights.values()) or sum(weights.values()) <= 0:
-            await ctx.send("Odds must be zero or more, and not all zero.")
-            return
-        await self.config.guild(ctx.guild).daily_weights.set(weights)
-        total = sum(weights.values())
-        await ctx.send("Daily pull odds: " + ", ".join(f"{t} {v / total * 100:g}%" for t, v in weights.items()))
-
-    @card_set.command(name="wrongguesses")
-    async def card_set_wrongguesses(self, ctx: commands.Context, count: int):
-        """How many wrong (but code-shaped) guesses a member gets per drop before
-        they're locked out of it. 0 = unlimited. Takes effect on the next drop."""
-        if count < 0:
-            await ctx.send("Can't be negative -- use 0 for unlimited guesses.")
-            return
-        await self.config.guild(ctx.guild).max_wrong_guesses.set(count)
-        await ctx.send(f"Wrong guesses per drop set to {count if count > 0 else 'unlimited'}.")
-
-    @card_set.command(name="dropexpiry")
-    async def card_set_dropexpiry(self, ctx: commands.Context, seconds: int):
-        """How long an unclaimed drop keeps accepting codes (at least 30s)."""
-        if seconds < 30:
-            await ctx.send("Drops need to stay claimable for at least 30 seconds.")
-            return
-        await self.config.guild(ctx.guild).drop_expiry_seconds.set(seconds)
-        await ctx.send(f"Drops now expire after {seconds} second(s) unclaimed. Takes effect on the next drop.")
-
-    @card_set.command(name="dropchance")
-    async def card_set_dropchance(self, ctx: commands.Context, percent: float):
-        """Chance (in percent) that a qualifying message triggers a drop, e.g. 1.5 = 1.5%."""
+    async def _apply_drop_rules(self, guild, member, values) -> str:
+        try:
+            percent = float(str((values or {}).get("chance", "")).strip())
+        except ValueError:
+            raise PanelError("Drop chance must be a number, like 1.5.")
         if not 0 < percent <= 100:
-            await ctx.send("Drop chance must be greater than 0 and at most 100 (percent).")
-            return
-        await self.config.guild(ctx.guild).drop_chance.set(percent / 100)
-        await ctx.send(f"Drop chance set to {percent:g}% per qualifying message.")
+            raise PanelError("Drop chance must be greater than 0 and at most 100 (percent).")
+        cooldown = self._whole(values, "cooldown", "Cooldown", 0, " Use 0 for none.")
+        expiry = self._whole(values, "expiry", "Drop expiry", 30, " Drops need to stay claimable for a while.")
+        wrong = self._whole(values, "wrong", "Wrong guesses", 0, " Use 0 for unlimited.")
+        penalty = self._whole(values, "penalty", "Lockout penalty", 0, " Use 0 for none.")
+        conf = self.config.guild(guild)
+        await conf.drop_chance.set(percent / 100)
+        await conf.drop_cooldown_seconds.set(cooldown)
+        await conf.drop_expiry_seconds.set(expiry)
+        await conf.max_wrong_guesses.set(wrong)
+        await conf.wrong_guess_penalty_seconds.set(penalty)
+        return (f"A qualifying message drops a card {percent:g}% of the time, at most once every {cooldown}s; "
+                f"drops expire after {expiry}s. Takes effect on the next drop.")
 
-    @card_set.command(name="dropcooldown")
-    async def card_set_dropcooldown(self, ctx: commands.Context, seconds: int):
-        """Minimum seconds between drops. 0 = no cooldown."""
-        if seconds < 0:
-            await ctx.send("Cooldown can't be negative -- use 0 for no cooldown.")
-            return
-        await self.config.guild(ctx.guild).drop_cooldown_seconds.set(seconds)
-        await ctx.send(f"Drop cooldown set to {seconds} second(s).")
+    async def _apply_claim_quota(self, guild, member, values) -> str:
+        quota = self._whole(values, "quota", "Quota", 0, " Use 0 for unlimited.")
+        await self.config.guild(guild).claim_quota.set(quota)
+        return f"Daily claim quota: {quota if quota > 0 else 'unlimited'} (resets at midnight Pacific)."
 
-    @card_set.command(name="wrongguesspenalty")
-    async def card_set_wrongguesspenalty(self, ctx: commands.Context, seconds: int):
-        """How long using up all their wrong guesses locks a member out of *winning* any drop. 0 = no penalty."""
-        if seconds < 0:
-            await ctx.send("Penalty can't be negative -- use 0 to disable it.")
-            return
-        await self.config.guild(ctx.guild).wrong_guess_penalty_seconds.set(seconds)
-        await ctx.send(f"Wrong-guess penalty set to {seconds} second(s).")
+    async def _apply_daily_odds(self, guild, member, values) -> str:
+        weights = {}
+        for tier in ("common", "rare", "epic", "legendary"):
+            try:
+                weights[tier] = float(str((values or {}).get(tier, "")).strip())
+            except ValueError:
+                raise PanelError(f"{tier.title()} must be a number.")
+        if any(v < 0 for v in weights.values()) or sum(weights.values()) <= 0:
+            raise PanelError("Odds must be zero or more, and not all zero.")
+        await self.config.guild(guild).daily_weights.set(weights)
+        total = sum(weights.values())
+        return "Daily pull odds: " + ", ".join(f"{t} {v / total * 100:g}%" for t, v in weights.items())
 
     @card.command(name="addcard")
     @commands.guild_only()
@@ -1576,7 +1558,7 @@ class CardCollect(commands.Cog):
         while tuning without needing to flip testmode on first."""
         channel_id = await self.config.guild(ctx.guild).channel_id()
         if channel_id is None:
-            await ctx.send("Set a drop channel first with `.card setchannel`.")
+            await ctx.send("Set a drop channel first in `.card settings`.")
             return
         channel = ctx.guild.get_channel(channel_id)
         if channel is None:

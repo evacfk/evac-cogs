@@ -172,17 +172,16 @@ def cog():
 
 
 @pytest.mark.asyncio
-async def test_settings_and_setchannel_commands(cog):
+async def test_settings_summary_and_channel_setting(cog):
     guild = FakeGuild(1)
     author = FakeMember(10, guild)
     channel = FakeChannel(100, guild)
     cog.bot.register_channel(channel)
     ctx = FakeCtx(author, guild, channel)
 
-    await cog.card.commands["setchannel"].callback(cog, ctx, channel)
-    assert "will post" in ctx.sent[-1].content
+    assert "will post" in await cog._apply_channel(guild, author, channel)
 
-    await cog.card.commands["settings"].callback(cog, ctx)
+    await cog.card.commands["settings"].callback(cog, ctx)  # a member without Manage Server gets the read-only summary
     embed = ctx.sent[-1].embeds[0]
     assert embed.title.startswith("cardcollect settings")
 
@@ -600,19 +599,15 @@ async def test_claim_quota_zero_means_unlimited_and_quota_command_reports_it(cog
 
 
 @pytest.mark.asyncio
-async def test_set_claimquota_command_updates_config(cog):
+async def test_claim_quota_setting_updates_config(cog):
+    from cardcollect.settings_panel import PanelError
+
     guild = FakeGuild(17)
     admin = FakeMember(170, guild)
-    channel = FakeChannel(1700, guild)
-    ctx = FakeCtx(admin, guild, channel)
-
-    await cog.card.commands["set"].commands["claimquota"].callback(cog, ctx, 15)
+    assert "15" in await cog._apply_claim_quota(guild, admin, {"quota": "15"})
     assert await cog.config.guild(guild).claim_quota() == 15
-    assert "15" in ctx.sent[-1].content
-
-    ctx2 = FakeCtx(admin, guild, channel)
-    await cog.card.commands["set"].commands["claimquota"].callback(cog, ctx2, -1)
-    assert "negative" in ctx2.sent[-1].content.lower()
+    with pytest.raises(PanelError):
+        await cog._apply_claim_quota(guild, admin, {"quota": "-1"})
     assert await cog.config.guild(guild).claim_quota() == 15  # unchanged
 
 
@@ -821,7 +816,7 @@ async def test_importpool_skips_characters_already_in_the_pool(cog):
 
 @pytest.mark.asyncio
 async def test_testdrop_reports_empty_pool_instead_of_silently_doing_nothing(cog):
-    """Live bug report: an admin ran .card setchannel then .card testdrop
+    """Live bug report: an admin set the drop channel then ran .card testdrop
     before adding any characters, and testdrop silently did nothing -- no
     error, no drop, no feedback at all. _post_drop's empty-pool guard used
     to be a bare `return`; it must now report why, and the command must
@@ -832,7 +827,7 @@ async def test_testdrop_reports_empty_pool_instead_of_silently_doing_nothing(cog
     cog.bot.register_channel(channel)
     ctx = FakeCtx(admin, guild, channel)
 
-    await cog.card.commands["setchannel"].callback(cog, ctx, channel)
+    await cog._apply_channel(guild, ctx.author, channel)
     messages_before = len(ctx.sent)
 
     await cog.card.commands["testdrop"].callback(cog, ctx)
@@ -866,7 +861,7 @@ async def test_first_ever_drop_not_blocked_by_monotonic_clock_sentinel(cog, monk
     cog.bot.register_channel(channel)
     ctx = FakeCtx(admin, guild, channel, attachments=[FakeAttachment(fake_art_bytes((40, 200, 90)))])
     await cog.card.commands["addcard"].callback(cog, ctx, "common", name_and_series="Kana | Some Anime")
-    await cog.card.commands["setchannel"].callback(cog, ctx, channel)
+    await cog._apply_channel(guild, ctx.author, channel)
     await cog.config.guild(guild).drop_chance.set(1.0)
     await cog.config.guild(guild).drop_cooldown_seconds.set(3600)  # larger than the pinned monotonic() value
 
@@ -901,7 +896,7 @@ async def test_concurrent_messages_never_chain_two_drops_past_the_cooldown(cog):
     cog.bot.register_channel(channel)
     ctx = FakeCtx(admin, guild, channel, attachments=[FakeAttachment(fake_art_bytes((90, 40, 200)))])
     await cog.card.commands["addcard"].callback(cog, ctx, "common", name_and_series="Nell | Some Anime")
-    await cog.card.commands["setchannel"].callback(cog, ctx, channel)
+    await cog._apply_channel(guild, ctx.author, channel)
     # guarantee a drop fires on every qualifying message, and never on
     # cooldown, so the *only* thing that can prevent a second drop is the
     # lock -- this isolates the race from should_drop's own randomness
@@ -1073,7 +1068,7 @@ async def test_ambient_drop_then_claim_end_to_end(cog):
     cog.bot.register_channel(channel)
     ctx = FakeCtx(admin, guild, channel, attachments=[FakeAttachment(fake_art_bytes())])
     await cog.card.commands["addcard"].callback(cog, ctx, "common", name_and_series="Ann | Anime")
-    await cog.card.commands["setchannel"].callback(cog, ctx, channel)
+    await cog._apply_channel(guild, ctx.author, channel)
     await cog.config.guild(guild).drop_chance.set(1.0)
     await cog.config.guild(guild).drop_size.set(1)
 
@@ -1632,36 +1627,31 @@ async def test_popup_survives_a_crash_in_claim_handling(cog, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_settings_commands_for_the_captcha_mechanic(cog):
+async def test_drop_rules_are_validated_together_and_saved(cog):
+    from cardcollect.settings_panel import PanelError
+
     guild = FakeGuild(214)
     admin = FakeMember(2140, guild)
     channel = FakeChannel(21400, guild)
-    set_cmds = cog.card.commands["set"].commands
+    assert "set" not in cog.card.commands, "the typed `.card set ...` setters moved into `.card settings`"
+    assert "setchannel" not in cog.card.commands
 
-    for removed in ("decoys", "decoycount"):
-        assert removed not in set_cmds, f"`.card set {removed}` belonged to the emoji mechanic and should be gone"
+    ok = {"chance": "2.5", "cooldown": "45", "expiry": "120", "wrong": "5", "penalty": "90"}
+    await cog._apply_drop_rules(guild, admin, ok)
+    conf = cog.config.guild(guild)
+    assert await conf.drop_chance() == pytest.approx(0.025)
+    assert (await conf.drop_cooldown_seconds(), await conf.drop_expiry_seconds(),
+            await conf.max_wrong_guesses(), await conf.wrong_guess_penalty_seconds()) == (45, 120, 5, 90)
+    await cog._apply_drop_rules(guild, admin, {**ok, "wrong": "0"})
+    assert await conf.max_wrong_guesses() == 0  # 0 = unlimited
+
+    for bad in ({**ok, "chance": "0"}, {**ok, "chance": "101"}, {**ok, "chance": "x"}, {**ok, "cooldown": "-1"},
+                {**ok, "expiry": "5"}, {**ok, "wrong": "-1"}, {**ok, "penalty": "-5"}, {**ok, "penalty": "1.5"}):
+        with pytest.raises(PanelError):
+            await cog._apply_drop_rules(guild, admin, bad)
+    assert await conf.drop_expiry_seconds() == 120  # a rejected form changes nothing
 
     ctx = FakeCtx(admin, guild, channel)
-    await set_cmds["wrongguesses"].callback(cog, ctx, 5)
-    assert await cog.config.guild(guild).max_wrong_guesses() == 5
-    await set_cmds["wrongguesses"].callback(cog, ctx, -1)
-    assert "negative" in ctx.sent[-1].content.lower()
-    assert await cog.config.guild(guild).max_wrong_guesses() == 5
-    await set_cmds["wrongguesses"].callback(cog, ctx, 0)
-    assert "unlimited" in ctx.sent[-1].content.lower()
-
-    await set_cmds["dropexpiry"].callback(cog, ctx, 120)
-    assert await cog.config.guild(guild).drop_expiry_seconds() == 120
-    await set_cmds["dropexpiry"].callback(cog, ctx, 5)
-    assert "30" in ctx.sent[-1].content
-    assert await cog.config.guild(guild).drop_expiry_seconds() == 120
-
-    await set_cmds["wrongguesspenalty"].callback(cog, ctx, 90)
-    assert await cog.config.guild(guild).wrong_guess_penalty_seconds() == 90
-    await set_cmds["wrongguesspenalty"].callback(cog, ctx, -5)
-    assert "negative" in ctx.sent[-1].content.lower()
-    assert await cog.config.guild(guild).wrong_guess_penalty_seconds() == 90
-
     await cog.card.commands["settings"].callback(cog, ctx)
     field_names = [f.name for f in ctx.sent[-1].embeds[0].fields]
     assert "Wrong guesses / drop" in field_names and "Drop expiry" in field_names
@@ -2123,9 +2113,9 @@ async def test_failed_flush_keeps_counts_for_retry(cog):
     assert sum(tracking["hourly_buckets"].values()) == 4
 
 
-def test_version_is_1_5_0():
+def test_version_is_1_6_0():
     from cardcollect.constants import COG_VERSION
-    assert COG_VERSION == "1.5.0"
+    assert COG_VERSION == "1.6.0"
 
 
 # --- search / show commands ---------------------------------------------------
@@ -2365,14 +2355,25 @@ async def test_daily_pull_empty_pool(cog):
 
 
 @pytest.mark.asyncio
-async def test_dailyodds_command(cog):
+async def test_daily_odds_and_claim_quota_settings(cog):
+    from cardcollect.settings_panel import PanelError
+
     guild = FakeGuild(76)
     author = FakeMember(77, guild)
-    channel = FakeChannel(760, guild)
-    ctx = FakeCtx(author, guild, channel)
-    await cog.card_set.commands["dailyodds"].callback(cog, ctx, 70.0, 25.0, 4.0, 1.0)
-    assert (await cog.config.guild(guild).daily_weights())["legendary"] == 1.0
-    assert "legendary 1%" in ctx.sent[-1].content
+    msg = await cog._apply_daily_odds(guild, author, {"common": "70", "rare": "25", "epic": "4", "legendary": "1"})
+    assert (await cog.config.guild(guild).daily_weights())["legendary"] == 1.0 and "legendary 1%" in msg
+    for bad in ({"common": "-1", "rare": "1", "epic": "1", "legendary": "1"},
+                {"common": "0", "rare": "0", "epic": "0", "legendary": "0"},
+                {"common": "x", "rare": "1", "epic": "1", "legendary": "1"}, {}):
+        with pytest.raises(PanelError):
+            await cog._apply_daily_odds(guild, author, bad)
+    assert (await cog.config.guild(guild).daily_weights())["common"] == 70.0
+    await cog._apply_claim_quota(guild, author, {"quota": "0"})
+    assert await cog.config.guild(guild).claim_quota() == 0
+    with pytest.raises(PanelError):
+        await cog._apply_claim_quota(guild, author, {"quota": "-3"})
+    with pytest.raises(PanelError):
+        await cog._apply_channel(guild, author, None)
 
 
 @pytest.mark.asyncio
