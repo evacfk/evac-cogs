@@ -1,6 +1,7 @@
 """All defaults and lookup tables for afterdark -- no discord/redbot imports."""
 
-VERSION = "1.8.0"
+VERSION = "1.8.1"
+CHANNEL_PREFIX = "🤖・"   # every bot-made channel starts like this, matching the other bot channels
 BUILD = "afterdark build: feeds-v1 (interests, channels and Reddit/Telegram feeds are set up together from .afterdark)"
 
 CONFIG_IDENTIFIER = 7316482950

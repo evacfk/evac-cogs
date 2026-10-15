@@ -213,7 +213,7 @@ def build_specs():
              fmt=_category_fmt, clearable=True, channel_types=("category",),
              help="`discover` may create new age-restricted channels here. Unset = it never creates one."),
         Spec("prefix", "New channel name prefix", "Discovery", "modal", get=_conf("new_channel_prefix"), apply=_prefix_apply,
-             fields=(Field("prefix", "Prefix (blank clears it)", value=lambda v: v or "", required=False, max_length=20, placeholder="\U0001F51E・"),),
+             fields=(Field("prefix", "Prefix (blank = default)", value=lambda v: v or "", required=False, max_length=20, placeholder="\U0001F916・"),),
              fmt=lambda v, g: f"`{v}`" if v else "none"),
         Spec("denied", "Denied in discover", "Discovery", "collection", get=_denied, remove=_undeny, can_add=False,
              help="Remove = let that subreddit be suggested again."),

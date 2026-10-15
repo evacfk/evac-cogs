@@ -13,7 +13,7 @@ reports, previews, testing, member commands) stay typed.
 ### Community & access
 | Cog | Ver | What it does | Settings panel | Version probe |
 |---|---|---|---|---|
-| `afterdark` | 1.8.0 | Gated Rabbit Hole access: rules panel with interest buttons, mod-approved invitations, random drops, inactivity cleanup, exclude list. | `.afterdark` | `.afterdark version` |
+| `afterdark` | 1.8.1 | Gated Rabbit Hole access: rules panel with interest buttons, mod-approved invitations, random drops, inactivity cleanup, exclude list. | `.afterdark` | `.afterdark version` |
 | `secrethunt` | 1.8.0 | WoW-style secret hunts: personalised puzzles in forum posts, Hall of Secrets, tier badge roles. Members use `.secrets`. | `.secrethunt` | `.secrethunt version` |
 | `lurker` | 2.5.0 | Auto-hides inactive members behind a Lurker role; mod reports; year-club roles (`.yearclub`). | `.lurkerset` | `.lurkerversion` |
 | `rejoinwatch` | 1.1.0 | Tracks voluntary leaves, warns rejoiners, flags repeat leavers to mods with a ban button. | `.rejoinwatch` | `.rejoinwatch settings` |

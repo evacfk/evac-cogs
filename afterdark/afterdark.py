@@ -1618,7 +1618,7 @@ class AfterDark(commands.Cog):
             member: discord.PermissionOverwrite(view_channel=True, read_message_history=True, add_reactions=True),
         }
         try:
-            return await guild.create_text_channel(slug, category=category, nsfw=True, overwrites=overwrites,
+            return await guild.create_text_channel(C.CHANNEL_PREFIX + slug, category=category, nsfw=True, overwrites=overwrites,
                                                    reason=f"AfterDark: new interest channel (by {member})")
         except (discord.Forbidden, discord.HTTPException) as exc:
             raise PanelError(f"I couldn't create the channel: {exc}")

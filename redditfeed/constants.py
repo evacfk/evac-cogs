@@ -1,5 +1,7 @@
 """Config defaults and lookup tables for redditfeed. No discord/redbot imports."""
 
+DEFAULT_CHANNEL_PREFIX = "🤖・"   # every bot-made channel starts like this, matching the other bot channels
+
 # -- Config defaults -----------------------------------------------------
 
 DEFAULT_POLL_INTERVAL_SECONDS = 120

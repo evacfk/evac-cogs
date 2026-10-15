@@ -174,7 +174,7 @@ def build_specs():
              fmt=_category_fmt, clearable=True, channel_types=("category",),
              help="Where mapping a topic creates its channel. Without one, map topics to existing channels."),
         Spec("prefix", "Channel name prefix", "Connection", "modal", get=_conf("name_prefix"), apply=_prefix_apply,
-             fields=(Field("prefix", "Prefix (blank clears it)", value=lambda v: v or "", required=False, max_length=40, placeholder="tg-"),),
+             fields=(Field("prefix", "Prefix (blank = default)", value=lambda v: v or "", required=False, max_length=40, placeholder="🤖・"),),
              fmt=lambda v, g: f"`{v}`" if v else "none"),
         Spec("view_roles", "Roles that can see new channels", "Connection", "role", get=_conf("view_role_ids"), apply=_view_roles_apply,
              multi=25, clearable=True,

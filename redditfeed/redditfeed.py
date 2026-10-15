@@ -54,7 +54,7 @@ class RedditFeed(DashboardIntegration, commands.Cog):
             posted_map={},           # feed message id -> {sub, pid, ch, ts}, for the X log line
             learned_topics={},       # topic word -> channel id, learned from approvals in `discover`
             new_channel_category_id=None,   # where `discover` may create channels (unset = never create)
-            new_channel_prefix="",   # e.g. "🔞・"
+            new_channel_prefix=constants.DEFAULT_CHANNEL_PREFIX,
             redgifs_mode=constants.REDGIFS_UPLOAD,   # upload the clip so it plays inline, or post the bare link
         )
         self.source: RedditSource = FallbackSource(
@@ -873,10 +873,10 @@ class RedditFeed(DashboardIntegration, commands.Cog):
         return f"`discover` may create new channels in {getattr(category, 'name', None) or category.id}."
 
     async def _apply_prefix(self, guild, member, prefix: str) -> str:
-        """Text put in front of new channel names. Blank clears it."""
-        value = (prefix or "").strip()
+        """Text put in front of new channel names. Blank goes back to the default."""
+        value = (prefix or "").strip() or constants.DEFAULT_CHANNEL_PREFIX
         await self.config.new_channel_prefix.set(value)
-        return f"New channel names will start with `{value}`." if value else "New channel names get no prefix."
+        return f"New channel names will start with `{value}`."
 
     async def _apply_polling(self, guild, member, values: dict) -> str:
         """The shared poll interval and the pause between individual subreddit requests."""
@@ -1183,7 +1183,7 @@ class RedditFeed(DashboardIntegration, commands.Cog):
             "channels": channels,
             "learned": await self.config.learned_topics(),
             "can_create": bool(guild is not None and category_id and guild.get_channel(category_id) is not None),
-            "prefix": await self.config.new_channel_prefix(),
+            "prefix": await self.config.new_channel_prefix() or constants.DEFAULT_CHANNEL_PREFIX,
         }
 
     async def _run_discovery(

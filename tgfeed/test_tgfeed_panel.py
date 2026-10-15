@@ -206,7 +206,7 @@ async def test_prefix_and_view_roles(tmp_path):
     assert await cog.config.name_prefix() == "tg-"
     modal.boxes["prefix"]._value = ""
     await modal.on_submit(Click(admin))
-    assert await cog.config.name_prefix() == ""
+    assert await cog.config.name_prefix() == "🤖・"
     await go(p, admin, "Connection", "view_roles")
     sel = child(p, discord.ui.RoleSelect)
     assert sel.max_values == 25

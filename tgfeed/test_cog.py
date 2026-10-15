@@ -534,7 +534,7 @@ async def test_simple_settings_save_clear_and_clamp(tmp_path):
     await cog._apply_category(None, ME, None)
     assert await cog.config.category_id() is None
     assert "Prefix: `tg-`" == await cog._apply_prefix(None, ME, "  tg- ")
-    assert "cleared" in await cog._apply_prefix(None, ME, "")
+    assert "🤖・" in await cog._apply_prefix(None, ME, "")
     await cog._apply_view_roles(None, ME, [SimpleNamespace(id=9), 12])
     assert await cog.config.view_role_ids() == [9, 12]
     assert "only" in await cog._apply_view_roles(None, ME, [])

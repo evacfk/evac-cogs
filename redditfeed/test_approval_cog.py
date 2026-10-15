@@ -598,7 +598,8 @@ async def test_simple_settings_save_and_clear():
     assert await cog.config.new_channel_category_id() is None
     assert "start with" in await cog._apply_prefix(GUILD, ME, "  X ")
     assert await cog.config.new_channel_prefix() == "X"
-    assert "no prefix" in await cog._apply_prefix(GUILD, ME, "")
+    assert "🤖・" in await cog._apply_prefix(GUILD, ME, "")
+    assert await cog.config.new_channel_prefix() == "🤖・"   # blank goes back to the default
     await cog._apply_polling(GUILD, ME, {"interval": "5", "stagger": "-3"})
     assert await cog.config.poll_interval_seconds() == constants.MIN_POLL_INTERVAL_SECONDS
     assert await cog.config.stagger_seconds() == constants.MIN_STAGGER_SECONDS

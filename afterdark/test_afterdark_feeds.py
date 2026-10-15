@@ -134,7 +134,7 @@ async def test_new_channel_needs_category_then_is_created(f):
         await save(f, None, {"reddit": "a", "new_channel": "My Chan"})
     await set_cfg(f, interest_category_id=CAT)
     msg = await save(f, None, {"reddit": "a", "new_channel": "My Chan"})
-    assert f.created[0].name == "my-chan" and f.reddit.config.mappings.data["a"]["channel_ids"] == [f.created[0].id]
+    assert f.created[0].name == "\U0001F916・my-chan" and f.reddit.config.mappings.data["a"]["channel_ids"] == [f.created[0].id]
     assert "Created" in msg
 
 

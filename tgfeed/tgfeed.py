@@ -53,7 +53,7 @@ class TGFeed(commands.Cog):
             x_button=True,
             log_channel_id=constants.DEFAULT_LOG_CHANNEL_ID,
             category_id=None,               # where `map` creates a channel when none is given
-            name_prefix="",
+            name_prefix=constants.DEFAULT_CHANNEL_PREFIX,
             view_role_ids=[],               # extra roles that can see channels `map` creates (default: nobody but the creator)
             rate_log=[],                    # download timestamps, last 24h
             flood_events=[],                # FloodWait timestamps, last 24h
@@ -361,10 +361,10 @@ class TGFeed(commands.Cog):
         return f"New topic channels will be created in {getattr(category, 'name', None) or category.id}."
 
     async def _apply_prefix(self, guild, member, prefix: str) -> str:
-        """Text put in front of the names of channels created for topics (empty clears it)."""
-        prefix = (prefix or "").strip()
+        """Text put in front of the names of channels created for topics (empty goes back to the default)."""
+        prefix = (prefix or "").strip() or constants.DEFAULT_CHANNEL_PREFIX
         await self.config.name_prefix.set(prefix)
-        return f"Prefix: `{prefix}`" if prefix else "Prefix cleared."
+        return f"Prefix: `{prefix}`"
 
     async def _apply_view_roles(self, guild, member, roles) -> str:
         """Extra roles that can see channels created from now on (empty = just the person who mapped them)."""
@@ -443,7 +443,7 @@ class TGFeed(commands.Cog):
         category = guild.get_channel(category_id) if category_id else None
         if category is None:
             raise PanelError("Set a category first (Connection tab), or map this topic to an existing channel (Edit).")
-        prefix = await self.config.name_prefix()
+        prefix = await self.config.name_prefix() or constants.DEFAULT_CHANNEL_PREFIX
         name = engine.slugify_channel_name(topic.title, prefix, topic.id)
         overwrites = {
             guild.default_role: discord.PermissionOverwrite(view_channel=False),

@@ -1,5 +1,7 @@
 """Config defaults and lookup tables for tgfeed. No discord/redbot/telethon imports."""
 
+DEFAULT_CHANNEL_PREFIX = "🤖・"   # every bot-made channel starts like this, matching the other bot channels
+
 BUILD = "tg-v4 (control panel)"
 
 # -- Environment / files ---------------------------------------------------------
