@@ -15,6 +15,9 @@ from redbot.core.data_manager import cog_data_path
 from redbot.core.bot import Red
 from discord.ext import tasks
 
+from . import panel as panel_specs
+from .settings_panel import PanelError, open_panel
+
 MIN_PIECE_COUNT = 2
 MAX_PIECE_COUNT = 25
 DEFAULT_PIECE_COUNT = 9  # used when no per-server default and no per-image size is set
@@ -42,7 +45,7 @@ class Puzzle(commands.Cog):
     Two claim modes: normal (first reaction wins the piece) or shared
     mode (everyone who reacts within a configurable window gets credit,
     so a single piece can have multiple claimants). Either way, a round
-    ends once enough people (`[p]puzzle setwinners`) have each collected
+    ends once enough people (the winners setting in `[p]puzzle`) have each collected
     every distinct piece, at which point the full image is posted, the
     winners are announced, and the cog automatically starts a new puzzle
     from a random, not-yet-used image in the pool (never immediately
@@ -54,7 +57,7 @@ class Puzzle(commands.Cog):
     per person across every round.
     """
 
-    __version__ = "1.6.1"
+    __version__ = "1.7.0"
 
     def __init__(self, bot: Red):
         self.bot = bot
@@ -76,7 +79,7 @@ class Puzzle(commands.Cog):
             "winners_count": 1,
             "active": None,
             # default piece count for images added WITHOUT an explicit size.
-            # None means "use DEFAULT_PIECE_COUNT". Set via [p]puzzle setpieces;
+            # None means "use DEFAULT_PIECE_COUNT". Set in the [p]puzzle panel;
             # only takes effect for images added (and puzzles started) after
             # it's set.
             "next_piece_count": None,
@@ -672,7 +675,7 @@ class Puzzle(commands.Cog):
         The piece layout is whatever was stored on the pool image when it
         was added (either its own explicit size, or the server's
         `next_piece_count` default at that time) — it's locked in here and
-        won't change even if `[p]puzzle setpieces` is run again later while
+        won't change even if the default piece count is changed again later while
         this round is in progress."""
         pool = await self.config.guild(guild).pool()
         meta = pool.get(str(image_id))
@@ -1243,10 +1246,142 @@ class Puzzle(commands.Cog):
     # commands
     # ------------------------------------------------------------------ #
 
-    @commands.group()
+    # ---------- settings (the panel calls these) ----------
+
+    async def _apply_channel(self, guild, member, channel) -> str:
+        if channel is None:
+            raise PanelError("The puzzle channel is required.")
+        await self.config.guild(guild).channel_id.set(channel.id)
+        return f"Puzzle pieces will be posted in {channel.mention}."
+
+    async def _apply_interval(self, guild, member, values) -> str:
+        try:
+            low = float(values["min_hours"])
+            high = float(values["max_hours"])
+        except (KeyError, TypeError, ValueError):
+            raise PanelError("Both boxes need a number of hours, like 4 and 8.")
+        if low <= 0 or high <= 0:
+            raise PanelError("Both values must be greater than 0.")
+        if high < low:
+            low, high = high, low
+        conf = self.config.guild(guild)
+        await conf.interval_min_hours.set(low)
+        await conf.interval_max_hours.set(high)
+        return f"New pieces will post at a random interval between {low:g} and {high:g} hour(s)."
+
+    async def _apply_reward_role(self, guild, member, role) -> str:
+        await self.config.guild(guild).reward_role_id.set(role.id if role else None)
+        return f"Winners will be given the {role.name} role." if role else "Winner role cleared."
+
+    async def _apply_emoji(self, guild, member, values) -> str:
+        emoji = str((values or {}).get("emoji") or "").strip()
+        if not emoji or len(emoji) > 64 or " " in emoji:
+            raise PanelError("Enter one emoji (a custom emoji is written like <:name:123456>).")
+        await self.config.guild(guild).claim_emoji.set(emoji)
+        return f"Claim emoji set to {emoji}."
+
+    async def _apply_winners(self, guild, member, values) -> str:
+        try:
+            count = int(float(values["count"]))
+        except (KeyError, TypeError, ValueError):
+            raise PanelError("Enter a whole number.")
+        if count < 1:
+            raise PanelError("Must be at least 1.")
+        await self.config.guild(guild).winners_count.set(count)
+        return (f"The puzzle will end (posting the full image and picking a new one) once "
+                f"{count} winner(s) have collected every piece.")
+
+    async def _apply_default_pieces(self, guild, member, values) -> str:
+        try:
+            count = int(float(values["count"]))
+        except (KeyError, TypeError, ValueError):
+            raise PanelError("Enter a whole number.")
+        if count < MIN_PIECE_COUNT or count > MAX_PIECE_COUNT:
+            raise PanelError(f"Piece count must be between {MIN_PIECE_COUNT} and {MAX_PIECE_COUNT}.")
+        await self.config.guild(guild).next_piece_count.set(count)
+        return (f"Images added from now on (without their own size) will use {count} pieces. "
+                "Existing pool images and the current puzzle are unaffected.")
+
+    async def _apply_shared_mode(self, guild, member, on) -> str:
+        conf = self.config.guild(guild)
+        await conf.shared_mode.set(bool(on))
+        if on:
+            window = await conf.shared_window_minutes()
+            return f"Shared mode is ON. New pieces stay claimable by everyone for {window:g} minute(s)."
+        return "Shared mode is OFF. New pieces go back to first-come-first-claimed."
+
+    async def _apply_shared_window(self, guild, member, values) -> str:
+        try:
+            minutes = float(values["minutes"])
+        except (KeyError, TypeError, ValueError):
+            raise PanelError("Enter a number of minutes.")
+        if not 0 < minutes <= 60:
+            raise PanelError("Must be greater than 0 and at most 60 minutes.")
+        await self.config.guild(guild).shared_window_minutes.set(minutes)
+        return f"New shared-mode pieces will stay claimable for {minutes:g} minute(s)."
+
+    async def _apply_announce_channel(self, guild, member, channel) -> str:
+        await self.config.guild(guild).announce_channel_id.set(channel.id if channel else None)
+        if channel:
+            return f"Puzzle completions will also be announced in {channel.mention}."
+        return "Announcement channel cleared. Completions only post in the puzzle channel."
+
+    async def _apply_live_status(self, guild, member, channel) -> str:
+        """A channel posts a self-updating status message there; no channel stops refreshing it."""
+        conf = self.config.guild(guild)
+        if channel is None:
+            await conf.live_status_channel_id.set(None)
+            await conf.live_status_message_id.set(None)
+            return "Live status turned off. The last posted message is left as-is."
+        embed = await self._render_status_embed(guild, await self._get_active(guild))
+        try:
+            message = await channel.send(embed=embed)
+        except discord.HTTPException as e:
+            raise PanelError(f"Couldn't post the status message in {channel.mention}: {e}")
+        await conf.live_status_channel_id.set(channel.id)
+        await conf.live_status_message_id.set(message.id)
+        return f"Live status posted in {channel.mention}. It updates as pieces are claimed."
+
+    async def _apply_low_pool(self, guild, member, values) -> str:
+        try:
+            count = int(float(values["count"]))
+        except (KeyError, TypeError, ValueError):
+            raise PanelError("Enter a whole number.")
+        if count < 0:
+            raise PanelError("Must be 0 or more.")
+        await self.config.guild(guild).low_pool_threshold.set(count)
+        if count == 0:
+            return "Low-pool warnings are off."
+        return f"I'll warn when {count} or fewer unplayed image(s) remain after a puzzle starts."
+
+    async def _apply_alert_channel(self, guild, member, channel) -> str:
+        await self.config.guild(guild).alert_channel_id.set(channel.id if channel else None)
+        if channel:
+            return f"Low-pool warnings will go to {channel.mention}."
+        return "Alert channel cleared; warnings go to the puzzle channel."
+
+    async def _apply_payout(self, guild, member, values) -> str:
+        try:
+            amount = int(float(values["amount"]))
+        except (KeyError, TypeError, ValueError):
+            raise PanelError("Enter a whole number.")
+        if amount < 0:
+            raise PanelError("Must be 0 or more.")
+        await self.config.guild(guild).win_payout.set(amount)
+        if amount == 0:
+            return "Win payouts are off."
+        currency = await bank.get_currency_name(guild)
+        return f"Every winner will earn {amount:,} {currency} when a puzzle is won."
+
+    @commands.group(invoke_without_command=True)
     @commands.guild_only()
     async def puzzle(self, ctx: commands.Context):
-        """Image-reveal puzzle game commands."""
+        """Image-reveal puzzle game. Admins: opens the settings panel. Everyone else: the command list."""
+        perms = ctx.author.guild_permissions
+        if perms.administrator or perms.manage_guild:
+            await open_panel(ctx, self, panel_specs.build_specs(), title="Puzzle", intro=panel_specs.INTRO)
+            return
+        await ctx.send_help(ctx.command)
 
     @puzzle.command(name="version")
     async def puzzle_version(self, ctx: commands.Context):
@@ -1263,7 +1398,7 @@ class Puzzle(commands.Cog):
         - a piece count, e.g. `7` (2-25 pieces, auto-arranged into rows)
         - an explicit grid, e.g. `4x4` (each side 2-10, an exact rectangle)
 
-        If omitted, uses the server's default from `[p]puzzle setpieces`
+        If omitted, uses the server's default from the default piece count in `[p]puzzle`
         (or 9 pieces if that's never been set).
 
         Images that are byte-for-byte identical to one already in the pool
@@ -1339,109 +1474,6 @@ class Puzzle(commands.Cog):
             resumed = await self._resume_if_paused(ctx.guild, quiet_channel_id=ctx.channel.id)
             if resumed is not None:
                 await ctx.send(f"The game had paused with an empty pool, so I started it again with image #{resumed}.")
-
-    @puzzle.command(name="setpieces")
-    @checks.admin_or_permissions(manage_guild=True)
-    async def puzzle_setpieces(self, ctx: commands.Context, count: int):
-        """Set the default piece count for images added to the pool
-        WITHOUT an explicit size.
-
-        This only affects images added after this command runs, and (via
-        those images) whichever puzzle starts next — it never changes an
-        image or puzzle that already exists. To size one image
-        differently, give `[p]puzzle addimage` its own size instead.
-        """
-        if count < MIN_PIECE_COUNT or count > MAX_PIECE_COUNT:
-            await ctx.send(f"Piece count must be between {MIN_PIECE_COUNT} and {MAX_PIECE_COUNT}.")
-            return
-        await self.config.guild(ctx.guild).next_piece_count.set(count)
-        await ctx.send(
-            f"Images added from now on (without their own size) will use {count} pieces. "
-            "Existing pool images and the current puzzle, if any, are unaffected."
-        )
-
-    @puzzle.command(name="setsharedmode")
-    @checks.admin_or_permissions(manage_guild=True)
-    async def puzzle_setsharedmode(self, ctx: commands.Context, on_off: bool):
-        """Turn shared-credit mode on or off.
-
-        When on, everyone who reacts to a piece within the claim window
-        (see `[p]puzzle setsharedwindow`) gets credit for it, not just the
-        first person -- so a round can end with multiple simultaneous
-        winners more easily. When off (the default), it's back to
-        first-come-first-claimed.
-
-        Only affects pieces posted AFTER this changes -- a piece already
-        posted keeps whatever mode was active when it went up.
-        """
-        await self.config.guild(ctx.guild).shared_mode.set(on_off)
-        if on_off:
-            window = await self.config.guild(ctx.guild).shared_window_minutes()
-            await ctx.send(
-                f"Shared mode is now ON. New pieces will stay claimable by everyone for {window} minute(s)."
-            )
-        else:
-            await ctx.send("Shared mode is now OFF. New pieces go back to first-come-first-claimed.")
-
-    @puzzle.command(name="setsharedwindow")
-    @checks.admin_or_permissions(manage_guild=True)
-    async def puzzle_setsharedwindow(self, ctx: commands.Context, minutes: float):
-        """Set how many minutes a piece stays open for shared credit.
-
-        Only matters when shared mode is on (`[p]puzzle setsharedmode`),
-        and only affects pieces posted after this changes.
-        """
-        if minutes <= 0 or minutes > 60:
-            await ctx.send("Must be greater than 0 and at most 60 minutes.")
-            return
-        await self.config.guild(ctx.guild).shared_window_minutes.set(minutes)
-        await ctx.send(f"New shared-mode pieces will stay claimable for {minutes} minute(s).")
-
-    @puzzle.command(name="setannouncechannel")
-    @checks.admin_or_permissions(manage_guild=True)
-    async def puzzle_setannouncechannel(self, ctx: commands.Context, channel: Optional[discord.TextChannel] = None):
-        """Set (or clear, if no channel given) a channel where puzzle
-        completions are ALSO posted, in addition to the channel pieces are
-        collected in. Useful when the collection channel is busy enough
-        that a completion announcement gets buried quickly.
-        """
-        await self.config.guild(ctx.guild).announce_channel_id.set(channel.id if channel else None)
-        if channel:
-            await ctx.send(f"Puzzle completions will also be announced in {channel.mention}.")
-        else:
-            await ctx.send("Announcement channel cleared \N{EM DASH} completions will only post in the collection channel.")
-
-    @puzzle.group(name="livestatus")
-    async def puzzle_livestatus(self, ctx: commands.Context):
-        """Manage the auto-updating live puzzle status message."""
-
-    @puzzle_livestatus.command(name="enable")
-    @checks.admin_or_permissions(manage_guild=True)
-    async def puzzle_livestatus_enable(self, ctx: commands.Context, channel: Optional[discord.TextChannel] = None):
-        """Post a status message in `channel` (or the current channel) that
-        automatically updates with live standings every time a piece is
-        claimed, so people don't have to keep running `[p]puzzle status`.
-        """
-        channel = channel or ctx.channel
-        active = await self._get_active(ctx.guild)
-        embed = await self._render_status_embed(ctx.guild, active)
-        try:
-            message = await channel.send(embed=embed)
-        except discord.HTTPException as e:
-            await ctx.send(f"Couldn't post the status message: {e}")
-            return
-        await self.config.guild(ctx.guild).live_status_channel_id.set(channel.id)
-        await self.config.guild(ctx.guild).live_status_message_id.set(message.id)
-        await ctx.send(f"Live status enabled in {channel.mention}. It'll update automatically as pieces are claimed.")
-
-    @puzzle_livestatus.command(name="disable")
-    @checks.admin_or_permissions(manage_guild=True)
-    async def puzzle_livestatus_disable(self, ctx: commands.Context):
-        """Stop auto-updating the live status message. The last posted
-        message is left in place as-is, just no longer refreshed."""
-        await self.config.guild(ctx.guild).live_status_channel_id.set(None)
-        await self.config.guild(ctx.guild).live_status_message_id.set(None)
-        await ctx.send("Live status tracking disabled. The last posted message is left as-is.")
 
     @puzzle.command(name="leaderboard", aliases=["lb"])
     async def puzzle_leaderboard(self, ctx: commands.Context):
@@ -1699,7 +1731,7 @@ class Puzzle(commands.Cog):
     async def puzzle_start(self, ctx: commands.Context):
         """Start the puzzle rotation with a random image from the pool."""
         if await self.config.guild(ctx.guild).channel_id() is None:
-            await ctx.send("Set a channel first with `[p]puzzle setchannel #channel`.")
+            await ctx.send("Set a channel first: run `[p]puzzle` and pick the puzzle channel.")
             return
 
         active = await self._get_active(ctx.guild)
@@ -1772,7 +1804,7 @@ class Puzzle(commands.Cog):
         of pieces to post.
         """
         if await self.config.guild(ctx.guild).channel_id() is None:
-            await ctx.send("Set a channel first with `[p]puzzle setchannel #channel`.")
+            await ctx.send("Set a channel first: run `[p]puzzle` and pick the puzzle channel.")
             return
         if seconds < 3:
             await ctx.send("Use at least 3 seconds between pieces, to stay clear of Discord rate limits.")
@@ -1894,107 +1926,6 @@ class Puzzle(commands.Cog):
             await ctx.send(text, file=discord.File(buf, filename="progress.png"))
         else:
             await ctx.send(text)
-
-    @puzzle.command(name="setchannel")
-    @checks.admin_or_permissions(manage_guild=True)
-    async def puzzle_setchannel(self, ctx: commands.Context, channel: discord.TextChannel):
-        """Set the channel puzzle pieces are posted to."""
-        await self.config.guild(ctx.guild).channel_id.set(channel.id)
-        await ctx.send(f"Puzzle pieces will be posted in {channel.mention}.")
-
-    @puzzle.command(name="setinterval")
-    @checks.admin_or_permissions(manage_guild=True)
-    async def puzzle_setinterval(self, ctx: commands.Context, min_hours: float, max_hours: float):
-        """Set the random range (in hours) between piece postings.
-
-        Each piece picks a fresh random wait within this range rather than a
-        fixed interval, so the schedule can't be predicted and camped.
-        Example: `[p]puzzle setinterval 4 8` posts every 4-8 hours at random.
-        A currently running puzzle picks up the new range on its next post.
-        """
-        if min_hours <= 0 or max_hours <= 0:
-            await ctx.send("Both values must be greater than 0.")
-            return
-        if max_hours < min_hours:
-            min_hours, max_hours = max_hours, min_hours
-        await self.config.guild(ctx.guild).interval_min_hours.set(min_hours)
-        await self.config.guild(ctx.guild).interval_max_hours.set(max_hours)
-        await ctx.send(f"New pieces will post at a random interval between {min_hours} and {max_hours} hour(s).")
-
-    @puzzle.command(name="setrole")
-    @checks.admin_or_permissions(manage_guild=True)
-    async def puzzle_setrole(self, ctx: commands.Context, role: Optional[discord.Role] = None):
-        """Set (or clear, if no role given) a role awarded to puzzle winners."""
-        await self.config.guild(ctx.guild).reward_role_id.set(role.id if role else None)
-        if role:
-            await ctx.send(f"Winners will be given the {role.name} role.")
-        else:
-            await ctx.send("Winner role cleared.")
-
-    @puzzle.command(name="setemoji")
-    @checks.admin_or_permissions(manage_guild=True)
-    async def puzzle_setemoji(self, ctx: commands.Context, emoji: str):
-        """Set the emoji used to claim pieces."""
-        await self.config.guild(ctx.guild).claim_emoji.set(emoji)
-        await ctx.send(f"Claim emoji set to {emoji}.")
-
-    @puzzle.command(name="setwinners")
-    @checks.admin_or_permissions(manage_guild=True)
-    async def puzzle_setwinners(self, ctx: commands.Context, count: int):
-        """Set how many people need to complete the full set before the
-        puzzle ends, posts the completed image, and moves on to the next
-        random image in the pool. Defaults to 1.
-        """
-        if count < 1:
-            await ctx.send("Must be at least 1.")
-            return
-        await self.config.guild(ctx.guild).winners_count.set(count)
-        await ctx.send(
-            f"The puzzle will now end (posting the full image and picking a new one) once "
-            f"{count} winner(s) have collected every piece."
-        )
-
-    @puzzle.command(name="setlowpool")
-    @checks.admin_or_permissions(manage_guild=True)
-    async def puzzle_setlowpool(self, ctx: commands.Context, count: int):
-        """Warn when this many unplayed images (or fewer) remain after a new
-        puzzle starts. Since won images are retired for good, this is the
-        heads-up to add more. 0 turns the warning off."""
-        if count < 0:
-            await ctx.send("Must be 0 or more.")
-            return
-        await self.config.guild(ctx.guild).low_pool_threshold.set(count)
-        if count == 0:
-            await ctx.send("Low-pool warnings are off.")
-        else:
-            await ctx.send(f"I'll warn when {count} or fewer unplayed image(s) remain after a puzzle starts.")
-
-    @puzzle.command(name="setpayout")
-    @checks.admin_or_permissions(manage_guild=True)
-    async def puzzle_setpayout(self, ctx: commands.Context, amount: int):
-        """Set the economy credits paid to every winner when a puzzle is
-        won (all winners get the full amount, including in shared mode).
-        0 turns payouts off. Default 20000."""
-        if amount < 0:
-            await ctx.send("Must be 0 or more.")
-            return
-        await self.config.guild(ctx.guild).win_payout.set(amount)
-        if amount == 0:
-            await ctx.send("Win payouts are off.")
-        else:
-            currency = await bank.get_currency_name(ctx.guild)
-            await ctx.send(f"Every winner will now earn {amount:,} {currency} when a puzzle is won.")
-
-    @puzzle.command(name="setalertchannel")
-    @checks.admin_or_permissions(manage_guild=True)
-    async def puzzle_setalertchannel(self, ctx: commands.Context, channel: Optional[discord.TextChannel] = None):
-        """Set (or clear, if no channel given) where low-pool warnings go.
-        With none set they're posted in the puzzle channel."""
-        await self.config.guild(ctx.guild).alert_channel_id.set(channel.id if channel else None)
-        if channel:
-            await ctx.send(f"Low-pool warnings will go to {channel.mention}.")
-        else:
-            await ctx.send("Alert channel cleared; warnings will go to the puzzle channel.")
 
     @puzzle.command(name="settings")
     async def puzzle_settings(self, ctx: commands.Context):

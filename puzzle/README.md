@@ -21,18 +21,16 @@ folder into wherever your other local Red cogs live, then in Discord:
 
 ## Setup
 
-1. `[p]puzzle setchannel #your-channel` — where pieces get posted.
+1. `[p]puzzle` (admins) — opens the settings panel. Pick the puzzle channel
+   first: that's where pieces get posted.
 2. `[p]puzzle addimage 4x4` with one or more images attached — slices each
    and adds it to the pool (repeat for as many images as you want, ~10 is a
    good starting pool). See *Sizing* below for the size options.
-3. `[p]puzzle setinterval 4 8` — random range (in hours) between piece
-   postings, re-rolled after every post so the schedule can't be camped
-   (optional, defaults to 4-8).
-4. `[p]puzzle setwinners 3` — how many people need to complete the full set
-   before the round ends and moves on (optional, defaults to 1).
-5. `[p]puzzle setrole @Puzzle Champ` — rotating "current champion" role: given
-   to each puzzle's winner(s) and automatically taken away from whoever held
-   it before, so it always reflects the most recent winner(s) (optional).
+3. In the panel, optionally set the posting interval (random range in hours,
+   re-rolled after every post so the schedule can't be camped; defaults to
+   4-8), how many winners end a round (defaults to 1), and the winner role:
+   a rotating "current champion" role given to each puzzle's winner(s) and
+   automatically taken away from whoever held it before.
 6. `[p]puzzle start` — starts the rotation. From here it runs itself:
    finishing a puzzle automatically kicks off the next random one from the
    pool.
@@ -44,7 +42,7 @@ folder into wherever your other local Red cogs live, then in Discord:
 - a **piece count**, e.g. `7` — 2 to 25 pieces, auto-arranged into rows, or
 - an explicit **grid**, e.g. `4x4` — each side 2 to 10, an exact rectangle.
 
-Leave it out and the server default is used: whatever `[p]puzzle setpieces`
+Leave it out and the server default is used: whatever the panel's default piece count
 set, or 9 pieces if that was never set. All images attached to one
 `addimage` command share the same size, and different images in the pool can
 have different sizes. Byte-for-byte duplicates of an image already in the
@@ -96,37 +94,24 @@ Everything is under `[p]puzzle`. "Admin" means admin or Manage Server.
   can watch the flow (pieces, claiming, win announcement) play out quickly.
   Uses the active puzzle if one's running, otherwise starts one from the
   pool. Runs indefinitely (auto-continuing through new puzzles) until you
-  run `[p]puzzle teststop` — ignores `setinterval` the whole time.
+  run `[p]puzzle teststop` — ignores the posting interval the whole time.
 - `[p]puzzle teststop` (admin) — cancel an in-progress test run.
 
-**Settings** (all admin; `[p]puzzle settings` shows the current values)
+**Settings** (admin; `[p]puzzle` opens the panel, `[p]puzzle settings` prints a summary)
 
-- `[p]puzzle setchannel <#channel>` — where pieces are posted and claimed.
-- `[p]puzzle setinterval <min_hours> <max_hours>` — random posting range.
-- `[p]puzzle setwinners <count>` — how many completions end a round.
-- `[p]puzzle setrole [role]` — rotating champion role; omit role to clear it.
-- `[p]puzzle setemoji <emoji>` — the claim reaction, defaults to 🧩.
-- `[p]puzzle setpieces <count>` — default piece count (2-25) for images added
-  without an explicit size. Only affects images added afterwards.
-- `[p]puzzle setsharedmode <on|off>` — shared-credit mode, see below.
-- `[p]puzzle setsharedwindow <minutes>` — how long a piece stays open in
-  shared mode (greater than 0, up to 60; defaults to 1).
-- `[p]puzzle setpayout <amount>` — economy credits paid to every winner when
-  a puzzle is won, including all winners in shared mode (default 20000, `0`
-  turns it off).
-- `[p]puzzle setlowpool <count>` — warn when this many unplayed images (or
-  fewer) remain after a puzzle starts (default 2, `0` turns it off).
-- `[p]puzzle setalertchannel [#channel]` — where those warnings go; omit the
-  channel to fall back to the puzzle channel.
-- `[p]puzzle setannouncechannel [#channel]` — also post every puzzle
-  completion in this channel, for when the collection channel is busy enough
-  to bury it. Omit the channel to clear it.
-- `[p]puzzle livestatus enable [#channel]` — post a status message (in the
-  given channel, or the current one) that updates itself with live standings
-  every time a piece is claimed, so nobody has to keep running
-  `[p]puzzle status`.
-- `[p]puzzle livestatus disable` — stop refreshing it; the last message is left
-  in place as-is.
+- **Round:** puzzle channel, posting interval, winners needed to end a round,
+  winner role, claim emoji (defaults to 🧩), and the default piece count
+  (2-25) for images added without an explicit size (only affects images added
+  afterwards).
+- **Sharing & status:** shared-credit mode and its window (greater than 0, up
+  to 60 minutes; defaults to 1), an announcement channel that also receives
+  every completion post, and the live status message (pick a channel and it
+  posts a standings message that updates on every claim; clear it to stop
+  refreshing, the last message is left in place).
+- **Pool & rewards:** low-pool warning threshold (default 2, `0` = off), the
+  channel those warnings go to (defaults to the puzzle channel), and the win
+  payout paid to every winner including all winners in shared mode (default
+  20000, `0` = off).
 
 ## How it behaves right now
 
@@ -137,7 +122,7 @@ Everything is under `[p]puzzle`. "Admin" means admin or Manage Server.
   runs out of pieces to post on its own; it keeps going until enough people
   finish.
 - **Timing**: the wait before each piece is a fresh random value within
-  `[p]puzzle setinterval`'s range, re-rolled after every single post — not a
+  the panel's interval range, re-rolled after every single post — not a
   fixed countdown — so nobody can predict the next spawn and camp the
   channel for it. The background loop checks its timers every 5 minutes, so
   posts can land up to about that much after their exact due time.
@@ -148,13 +133,13 @@ Everything is under `[p]puzzle`. "Admin" means admin or Manage Server.
   can't burn it for everyone else. Everyone builds their own
   collection independently — claiming a piece doesn't take it away from
   anyone else's future chances, since the same position can be posted again.
-- **Claiming (shared mode)**: with `[p]puzzle setsharedmode on`, everyone who
+- **Claiming (shared mode)**: with shared mode (in the panel), everyone who
   reacts within the claim window gets credit for the piece, not just the
   first person, so a round can end with several simultaneous winners more
   easily. Only affects pieces posted after the switch; a piece already up
   keeps the mode it was posted under.
 - **Winning**: a person completes the puzzle once their collection contains
-  every distinct piece position at least once. `[p]puzzle setwinners`
+  every distinct piece position at least once. the winners setting
   controls how many different people need to finish before the round ends —
   default is 1 (first to finish ends it immediately). Once that many people
   have finished, the full image posts, all winners are announced together
