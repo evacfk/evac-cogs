@@ -124,6 +124,9 @@ def test_cog_entries_cap_a_long_command_list():
 def test_seed_connects_wondercoins_to_gambling_and_heists():
     text = " ".join(e.text for e in engine.seed_entries(seed.ROWS))
     assert "What you can do with wondercoins" in text and "heist" in text.lower() and "#wondercasino" in text
+    # Only say what the guide or the cog itself says: nothing invented about how heists or fishing work.
+    assert "group" not in text.lower().split("heist", 1)[1][:80]
+    assert "bait shop" not in text.split("What you can do with wondercoins", 1)[1].split("Run commands in", 1)[0]
 
 
 def test_alias_entries_say_what_the_shortcut_runs():

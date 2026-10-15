@@ -503,4 +503,4 @@ async def test_version_probe(kb):
     cog, guild, assistant, ch = build(kb)
     ctx = FakeCtx(guild)
     await cog.kb_version.callback(cog, ctx)
-    assert ctx.sent[-1] == "WonderKB v1.1.0"
+    assert ctx.sent[-1] == "WonderKB v1.1.1"

@@ -5,7 +5,7 @@
     "end_user_data_statement": "Stores per guild: the list of source channels, the mod-chat channel, sync timing, and short hashes of recently logged questions. Knowledge text is written into the Assistant cog's embedding store, which holds public channel text and any answers a mod adds by hand. Nothing about individual members is stored.",
     "install_msg": "Needs the Assistant cog loaded with an API key. Run `[p]load wonderkb`, then `[p]kb status` and `[p]kb sync`.",
     "author": ["evacfk"],
-    "version": "1.1.0",
+    "version": "1.1.1",
     "requirements": [],
     "tags": ["assistant", "knowledge", "help", "ai"],
     "min_bot_version": "3.5.0",

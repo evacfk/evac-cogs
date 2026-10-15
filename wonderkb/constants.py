@@ -1,6 +1,6 @@
 """Fixed values for wonderkb. No discord/redbot imports here."""
 
-COG_VERSION = "1.1.0"
+COG_VERSION = "1.1.1"
 CONFIG_ID = 0x574B42  # "WKB"
 
 AUTO_PREFIX = "kb:"       # entries this cog owns and may rewrite or delete
