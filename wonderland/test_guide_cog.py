@@ -599,10 +599,10 @@ async def test_start_page_names_a_channel_it_cannot_link(mod):
 
 async def test_casino_page_points_to_the_hub_button(mod):
     guild = FakeGuild([FakeChannel(9, "🎰・wondercasino")])
-    cog = make(mod, commands={"gamble", "heist"})
+    cog = make(mod, commands={"gamble"})
     text = cog.render("casino", guild, False, member=types.SimpleNamespace(id=5)).description
     assert "<#9>" in text and "Open a Table" in text
-    assert "team up" not in text and "mostly a solo game" in text
+    assert "team up" not in text
 
 
 async def test_published_start_page_is_public_and_first(mod):

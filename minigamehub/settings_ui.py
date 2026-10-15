@@ -1,6 +1,5 @@
-"""Dropdown-driven settings UI for `.minigamehub settings`, styled after the
-heist cog's "Select a parameter... -> Set Value" flow (the screenshot that
-prompted this). Covers the common scalar/range fields per game type;
+"""Dropdown-driven settings UI for `.minigamehub settings`: a "Select a
+parameter... -> Set Value" flow. Covers the common scalar/range fields per game type;
 lootdrop/boss's scenario pools and boss's difficulty tiers stay on their
 existing dedicated commands (`scenario`/`bossscenario` CRUD, `game boss
 tier`) since those are larger free-form JSON blobs, not a good fit for a

@@ -55,17 +55,6 @@ def duel_lines(data: Optional[dict], currency: str = "coins") -> list[str]:
     return [f"{wins:,} won, {losses:,} lost ({pct(wins, wins + losses)}) · net {sign}{abs(net):,} {currency}"]
 
 
-def heist_lines(data: Optional[dict]) -> list[str]:
-    if not data:
-        return []
-    stats = data.get("stats") or {}
-    ok, fail, caught = _int(stats.get("success")), _int(stats.get("fail")), _int(stats.get("caught"))
-    if not ok and not fail and not caught:
-        return []
-    line = f"Level {_int(data.get('level')) or 1} · {ok:,} pulled off, {fail:,} failed, {caught:,} times caught"
-    return [line]
-
-
 def casino_lines(data: Optional[dict]) -> list[str]:
     if not data:
         return []
@@ -150,7 +139,6 @@ def build_sections(raw: dict, currency: str = "coins") -> list[tuple[str, list[s
     order = [
         ("\N{GAME DIE} Chat minigames", minigame_lines(raw.get("minigames"))),
         ("\N{CROSSED SWORDS} Duels", duel_lines(raw.get("duel"), currency)),
-        ("\N{MONEY BAG} Heists", heist_lines(raw.get("heist"))),
         ("\N{SLOT MACHINE} Casino", casino_lines(raw.get("casino"))),
         ("\N{PLAYING CARD BLACK JOKER} Cards", card_lines(raw.get("cards"))),
         ("\N{JIGSAW PUZZLE PIECE} Server puzzle", puzzle_lines(raw.get("puzzle"))),

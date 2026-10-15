@@ -22,8 +22,7 @@ from redbot.core.bot import Red
 #   }
 #
 # "personal": every player gets their own thread, reused across sessions
-#             (same thread .gamble already manages). Heist and Gamble itself
-#             live here.
+#             (same thread .gamble already manages). Gamble itself lives here.
 # "shared":   one live thread per game at a time, guild-wide. The first
 #             click creates it and starts the game; every subsequent click
 #             on that button while the session is still live routes the
@@ -57,12 +56,6 @@ DEFAULT_GAMES = {
         "label": "Wonderjack",
         "command": "wonderjack table",
         "mode": "shared",
-    },
-    "heist": {
-        "emoji": "\U0001F3E6",  # 🏦
-        "label": "Heist",
-        "command": "heist start",
-        "mode": "personal",
     },
     "payday": {
         "emoji": "\U0001F4B5",  # 💵
@@ -104,7 +97,7 @@ SEEDED_FLAGSHIPS = {
 # Flagship keys get a dedicated, always-visible button on row 0 instead of
 # being buried in the "More games…" dropdown. Order here also drives the
 # button order (see HubView) — profile, balance, payday, "Open a Table",
-# then "Active Tables". Everything else (Wonderjack, Heist, ...) lives in
+# then "Active Tables". Everything else (Wonderjack, ...) lives in
 # the "More games…" dropdown.
 FLAGSHIP_KEYS = ("profile", "balance", "payday", "gamble")
 
@@ -422,6 +415,9 @@ class GambleThreads(commands.Cog):
             for guild in self.bot.guilds:
                 changed = False
                 async with self.config.guild(guild).games() as games:
+                    # Drop hub buttons for games that no longer exist on this bot.
+                    if games.pop("heist", None) is not None:
+                        changed = True
                     for key, spec in SEEDED_FLAGSHIPS.items():
                         if key in games:
                             continue
@@ -983,7 +979,7 @@ class GambleThreads(commands.Cog):
     async def show_active_sessions(self, interaction: discord.Interaction):
         """Lists every currently-open gambling table — shared (e.g. the
         Wonderjack blackjack table) and personal (each player's own table,
-        opened via Heist/Open a Table) alike."""
+        opened via Open a Table) alike."""
         guild = interaction.guild
         sessions = await self.config.guild(guild).shared_sessions()
         personal = await self.config.guild(guild).active_threads()

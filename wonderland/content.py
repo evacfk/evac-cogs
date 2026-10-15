@@ -72,7 +72,6 @@ PAGES = (
         Entry(".payouts", "what the slot machine pays", requires=("payouts",)),
         Entry(".duel @user <bet>", "challenge someone to a best-of-3 duel", requires=("duel",)),
         Entry(".duelstats [@user]", "a duel record", requires=("duelstats",)),
-        Entry(".heist", "pull a heist (mostly a solo game)", requires=("heist",)),
     )),
     Page("games", "🎮", "Games & Activities", "Things to do when you want to play.", (
         Entry(".fish", "go fishing", requires=("fish",)),

@@ -42,7 +42,7 @@ class MyStats(commands.Cog):
     @commands.guild_only()
     @commands.cooldown(1, COOLDOWN_SECONDS, commands.BucketType.user)
     async def mystats(self, ctx: commands.Context, member: Optional[discord.Member] = None):
-        """Your record across every game: minigames, duels, heists, casino, cards, puzzle, Verdict and more."""
+        """Your record across every game: minigames, duels, casino, cards, puzzle, Verdict and more."""
         member = member or ctx.author
         async with ctx.typing():
             embed = await self.build_embed(ctx, member)

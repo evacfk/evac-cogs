@@ -24,11 +24,6 @@ async def _duel(bot, member) -> Optional[dict]:
     return None if cog is None else await cog.config.member(member).all()
 
 
-async def _heist(bot, member) -> Optional[dict]:
-    cog = bot.get_cog("Heist")
-    return None if cog is None else await cog.config.user(member).all()
-
-
 async def _casino(bot, member) -> Optional[dict]:
     cog = bot.get_cog("Casino")
     if cog is None:
@@ -85,7 +80,6 @@ async def _lottery(bot, member) -> Optional[dict]:
 READERS: dict[str, Callable[[Any, Any], Awaitable[Optional[dict]]]] = {
     "minigames": _minigames,
     "duel": _duel,
-    "heist": _heist,
     "casino": _casino,
     "cards": _cards,
     "puzzle": _puzzle,

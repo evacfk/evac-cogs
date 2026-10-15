@@ -32,12 +32,6 @@ def test_duels_net_sign_and_rate():
     assert engine.duel_lines({"wins": 0, "losses": 0}) == []
 
 
-def test_heist_defaults_to_level_one_and_hides_when_never_played():
-    assert engine.heist_lines({"stats": {"success": 0, "fail": 0, "caught": 0}, "level": 1}) == []
-    assert engine.heist_lines({"stats": {"success": 4, "fail": 2, "caught": 1}, "level": 3}) == [
-        "Level 3 · 4 pulled off, 2 failed, 1 times caught"]
-
-
 def test_casino_totals_and_top_three_games():
     data = {"Played": {"Dice": 10, "Blackjack": 5, "War": 1, "Coin": 7, "Craps": 0},
             "Won": {"Dice": 6, "Blackjack": 1, "War": 0, "Coin": 3, "Craps": 0}}
@@ -78,7 +72,7 @@ def test_garbage_numbers_never_crash():
 
 def test_build_sections_skips_empty_and_keeps_order():
     raw = {"duel": {"wins": 1, "losses": 0, "coins_won": 10, "coins_lost": 0}, "bumps": {"total_bumps": 2},
-           "heist": None, "casino": {"Played": {}, "Won": {}}}
+           "casino": {"Played": {}, "Won": {}}}
     titles = [t for t, _ in engine.build_sections(raw)]
     assert titles == ["\N{CROSSED SWORDS} Duels", "\N{PUBLIC ADDRESS LOUDSPEAKER} Bumps"]
 

@@ -69,11 +69,9 @@ async def test_minigames_duel_verdict_bumps_read_member_config():
     assert out["bumps"] == {"total_bumps": 7}
 
 
-async def test_heist_and_lottery_read_user_config_not_member():
-    heist = types.SimpleNamespace(config=Config(user={"stats": {"success": 1}, "level": 2}))
+async def test_lottery_reads_user_config_not_member():
     lot = types.SimpleNamespace(config=Config(user={"tickets": {"x": 3}}))
-    out = await sources.gather(Bot(Heist=heist, Lottery=lot), MEMBER)
-    assert heist.config.asked == ["user"] and out["heist"]["level"] == 2
+    out = await sources.gather(Bot(Lottery=lot), MEMBER)
     assert lot.config.asked == ["user"] and out["lottery"] == {"tickets": {"x": 3}}
 
 
