@@ -11,8 +11,12 @@ from discord.ext import tasks
 from redbot.core import Config, bank, commands, errors
 
 from . import engine
+from . import panel as panel_specs
+from .settings_panel import PanelError, open_panel
 
 log = logging.getLogger("red.evac-cogs.bumpreward")
+
+COG_VERSION = "1.1.0"  # bumped on every deploy so `.bumpreward version` can confirm the new build is live
 
 DEFAULT_ROLE_ID = 461511961494945812  # Bumper role pinged on reminders
 SEEN_LIMIT = 100
@@ -368,7 +372,7 @@ class BumpReward(commands.Cog):
     @commands.guild_only()
     async def bumpreward(self, ctx: commands.Context):
         """Bump rewards: leaderboards and (for mods) settings."""
-        await ctx.send_help()
+        await ctx.send_help(ctx.command)
 
     @bumpreward.command(name="top")
     async def br_top(self, ctx: commands.Context, period: str = "all"):
@@ -417,7 +421,11 @@ class BumpReward(commands.Cog):
     @bumpreward.command(name="settings")
     @commands.mod_or_permissions(manage_guild=True)
     async def br_settings(self, ctx: commands.Context):
-        """Show current settings."""
+        """Admins: open the settings panel. Mods: print the current settings."""
+        perms = ctx.author.guild_permissions
+        if perms.administrator or perms.manage_guild:
+            await open_panel(ctx, self, panel_specs.build_specs(), title="Bump rewards", intro=panel_specs.INTRO)
+            return
         g = await self.config.guild(ctx.guild).all()
         embed = discord.Embed(title="bumpreward settings", color=discord.Color.blurple())
         embed.add_field(name="Enabled", value=str(g["enabled"]))
@@ -431,76 +439,86 @@ class BumpReward(commands.Cog):
         embed.add_field(name="Mode", value=self._mode_text(g["mode"]))
         await ctx.send(embed=embed)
 
-    @bumpreward.command(name="enabled")
-    @commands.mod_or_permissions(manage_guild=True)
-    async def br_enabled(self, ctx: commands.Context, value: bool):
-        """Turn rewards, reminders and the daily board on or off."""
-        if value and not await self.config.guild(ctx.guild).channel_id():
-            return await ctx.send("Set the bump channel first: `bumpreward channel #channel`.")
-        await self.config.guild(ctx.guild).enabled.set(value)
-        await ctx.send(f"bumpreward is now **{'on' if value else 'off'}**.")
+    @bumpreward.command(name="version")
+    async def br_version(self, ctx: commands.Context):
+        """Show the running build (deploy probe)."""
+        await ctx.send(f"bumpreward v{COG_VERSION}")
 
-    @bumpreward.command(name="channel")
-    @commands.mod_or_permissions(manage_guild=True)
-    async def br_channel(self, ctx: commands.Context, channel: discord.TextChannel):
-        """Set the bump channel. Bumps anywhere else are ignored."""
-        await self.config.guild(ctx.guild).channel_id.set(channel.id)
-        await ctx.send(f"Bump channel set to {channel.mention}.")
+    # ---------- settings (the panel calls these) ----------
 
-    @bumpreward.command(name="role")
-    @commands.mod_or_permissions(manage_guild=True)
-    async def br_role(self, ctx: commands.Context, role: discord.Role = None):
-        """Set the role pinged on reminders (omit to disable pings)."""
-        await self.config.guild(ctx.guild).role_id.set(role.id if role else None)
-        await ctx.send(f"Reminder role: {role.mention if role else 'none'}.", allowed_mentions=discord.AllowedMentions.none())
+    async def _apply_enabled(self, guild, member, on) -> str:
+        if on and not await self.config.guild(guild).channel_id():
+            raise PanelError("Pick the bump channel first.")
+        await self.config.guild(guild).enabled.set(bool(on))
+        return f"bumpreward is now {'on' if on else 'off'}."
 
-    @bumpreward.command(name="reward")
-    @commands.mod_or_permissions(manage_guild=True)
-    async def br_reward(self, ctx: commands.Context, minimum: int, maximum: int):
-        """Set the base reward range (before the in-a-row bonus)."""
+    async def _apply_channel(self, guild, member, channel) -> str:
+        if channel is None:
+            raise PanelError("The bump channel is required.")
+        await self.config.guild(guild).channel_id.set(channel.id)
+        return f"Bump channel set to {channel.mention}."
+
+    async def _apply_role(self, guild, member, role) -> str:
+        await self.config.guild(guild).role_id.set(role.id if role else None)
+        return f"Reminder role: {role.name}." if role else "Reminder role: none (no pings)."
+
+    async def _apply_reward(self, guild, member, values) -> str:
+        try:
+            minimum = int(float(values["min"]))
+            maximum = int(float(values["max"]))
+        except (KeyError, TypeError, ValueError):
+            raise PanelError("Both boxes need a whole number.")
         if minimum < 0 or maximum < 0:
-            return await ctx.send("Rewards can't be negative.")
+            raise PanelError("Rewards can't be negative.")
         lo, hi = sorted((minimum, maximum))
-        await self.config.guild(ctx.guild).min_reward.set(lo)
-        await self.config.guild(ctx.guild).max_reward.set(hi)
-        await ctx.send(f"Base reward is now {lo:,}–{hi:,}.")
+        conf = self.config.guild(guild)
+        await conf.min_reward.set(lo)
+        await conf.max_reward.set(hi)
+        return f"Base reward is now {lo:,}–{hi:,}."
 
-    @bumpreward.command(name="streak")
-    @commands.mod_or_permissions(manage_guild=True)
-    async def br_streak(self, ctx: commands.Context, percent_per_bump: int, max_steps: int):
-        """Set the bonus for bumps in a row: extra % per bump, and how many bumps it keeps growing."""
-        if percent_per_bump < 0 or max_steps < 0:
-            return await ctx.send("Values can't be negative.")
-        await self.config.guild(ctx.guild).streak_bonus_pct.set(percent_per_bump)
-        await self.config.guild(ctx.guild).streak_max.set(max_steps)
-        await ctx.send(f"Bonus: +{percent_per_bump}% per bump in a row, capped at +{percent_per_bump * max_steps}%.")
+    async def _apply_streak(self, guild, member, values) -> str:
+        try:
+            pct = int(float(values["pct"]))
+            steps = int(float(values["steps"]))
+        except (KeyError, TypeError, ValueError):
+            raise PanelError("Both boxes need a whole number.")
+        if pct < 0 or steps < 0:
+            raise PanelError("Values can't be negative.")
+        conf = self.config.guild(guild)
+        await conf.streak_bonus_pct.set(pct)
+        await conf.streak_max.set(steps)
+        return f"Bonus: +{pct}% per bump in a row, capped at +{pct * steps}%."
 
-    @bumpreward.command(name="reminders")
-    @commands.mod_or_permissions(manage_guild=True)
-    async def br_reminders(self, ctx: commands.Context, value: bool):
-        """Turn this cog's bump reminders on/off. Off = rewards only; use Disboard's own `/reminder` instead."""
-        async with self._locks[ctx.guild.id]:
-            conf = self.config.guild(ctx.guild)
-            await conf.reminders_enabled.set(value)
-            if not value:
+    async def _apply_reminders(self, guild, member, on) -> str:
+        async with self._locks[guild.id]:
+            conf = self.config.guild(guild)
+            await conf.reminders_enabled.set(bool(on))
+            if not on:
                 await conf.reminded.set(True)
-                task = self._timers.pop(ctx.guild.id, None)
+                task = self._timers.pop(guild.id, None)
                 if task is not None:
                     task.cancel()
-        await ctx.send(f"Reminders are now **{'on' if value else 'off'}**. Rewards and boards are unaffected.")
+        return f"Reminders are now {'on' if on else 'off'}. Rewards and boards are unaffected."
 
-    @bumpreward.command(name="lead")
-    @commands.mod_or_permissions(manage_guild=True)
-    async def br_lead(self, ctx: commands.Context, seconds: int):
-        """Set how many seconds before the server is bumpable the single reminder is sent (0 = exactly when ready)."""
+    async def _apply_lead(self, guild, member, values) -> str:
+        try:
+            seconds = int(float(values["seconds"]))
+        except (KeyError, TypeError, ValueError):
+            raise PanelError("Enter a whole number of seconds.")
         if not 0 <= seconds <= engine.MAX_LEAD_SECONDS:
-            return await ctx.send(f"Seconds must be between 0 and {engine.MAX_LEAD_SECONDS}.")
-        async with self._locks[ctx.guild.id]:
-            await self.config.guild(ctx.guild).reminder_lead_seconds.set(seconds)
-            if not await self.config.guild(ctx.guild).reminded():
-                self._arm(ctx.guild)
-        await ctx.send(f"Reminder will be sent **{seconds}s** before the server can be bumped." if seconds
-                       else "Reminder will be sent exactly when the server can be bumped.")
+            raise PanelError(f"Seconds must be between 0 and {engine.MAX_LEAD_SECONDS}.")
+        async with self._locks[guild.id]:
+            await self.config.guild(guild).reminder_lead_seconds.set(seconds)
+            if not await self.config.guild(guild).reminded():
+                self._arm(guild)
+        return (f"Reminder will be sent {seconds}s before the server can be bumped." if seconds
+                else "Reminder will be sent exactly when the server can be bumped.")
+
+    async def _apply_mode(self, guild, member, mode) -> str:
+        if mode not in ("free", "pro"):
+            raise PanelError("Pick Free or Pro.")
+        await self.config.guild(guild).mode.set(mode)
+        return f"Mode set to {self._mode_text(mode)}. Applies from the next bump."
 
     @staticmethod
     def _mode_text(mode: str) -> str:
@@ -509,19 +527,6 @@ class BumpReward(commands.Cog):
             fast = engine.format_duration(engine.PRO_FAST_COOLDOWN_SECONDS)
             return f"Pro — {fast} between bumps while under {engine.PRO_FAST_BUMP_LIMIT} bumps in 24h, otherwise {slow}"
         return f"Free — {slow} between bumps"
-
-    @bumpreward.command(name="mode")
-    @commands.mod_or_permissions(manage_guild=True)
-    async def br_mode(self, ctx: commands.Context, mode: str = None):
-        """Show or set the server mode: `mode`, `mode free` or `mode pro` (DISBOARD Pro)."""
-        conf = self.config.guild(ctx.guild)
-        if mode is None:
-            return await ctx.send(f"Mode: {self._mode_text(await conf.mode())}.")
-        m = mode.lower()
-        if m not in ("free", "pro"):
-            return await ctx.send("Use `mode`, `mode free` or `mode pro`.")
-        await conf.mode.set(m)
-        await ctx.send(f"Mode set to **{self._mode_text(m)}**. Applies from the next bump.")
 
     @bumpreward.command(name="debug")
     @commands.mod_or_permissions(manage_guild=True)

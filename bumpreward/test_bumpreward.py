@@ -353,12 +353,12 @@ async def test_latency_compensation_uses_reply_timestamp(env):
     assert abs((await env.conf.all())["next_bump_at"] - (time.time() + 7200 - 5)) < 1.5
 
 
-async def test_lead_command_validates_sets_and_rearms(env):
-    ctx = make_ctx(env)
-    await env.cog.br_lead(ctx, 30)
+async def test_lead_setting_validates_sets_and_rearms(env):
+    await env.cog._apply_lead(env.guild, None, {"seconds": "30"})
     assert (await env.conf.all())["reminder_lead_seconds"] == 30
-    await env.cog.br_lead(ctx, 500)
-    assert "between 0 and" in ctx.sent[-1][0][0]
+    for bad in ("500", "-1", "x"):
+        with pytest.raises(br.PanelError):
+            await env.cog._apply_lead(env.guild, None, {"seconds": bad})
     assert (await env.conf.all())["reminder_lead_seconds"] == 30
     assert not hasattr(br.BumpReward, "br_warning")
 
@@ -446,19 +446,15 @@ async def test_switching_to_pro_uses_bumps_recorded_while_free(env):
     assert abs((await env.conf.all())["next_bump_at"] - (time.time() + 7200)) < 5
 
 
-async def test_mode_command(env):
-    ctx = make_ctx(env)
-    await env.cog.br_mode(ctx)
-    assert "Free" in ctx.sent[-1][0][0] and "2h" in ctx.sent[-1][0][0]
-    await env.cog.br_mode(ctx, "pro")
+async def test_mode_setting(env):
+    assert "Free" in env.cog._mode_text((await env.conf.all())["mode"])
+    msg = await env.cog._apply_mode(env.guild, None, "pro")
     assert (await env.conf.all())["mode"] == "pro"
-    assert "Pro" in ctx.sent[-1][0][0] and "30m" in ctx.sent[-1][0][0] and "12" in ctx.sent[-1][0][0]
-    await env.cog.br_mode(ctx)
-    assert "Pro" in ctx.sent[-1][0][0]
-    await env.cog.br_mode(ctx, "FREE")
+    assert "Pro" in msg and "30m" in msg and "12" in msg
+    await env.cog._apply_mode(env.guild, None, "free")
     assert (await env.conf.all())["mode"] == "free"
-    await env.cog.br_mode(ctx, "gold")
-    assert "Use `mode" in ctx.sent[-1][0][0]
+    with pytest.raises(br.PanelError):
+        await env.cog._apply_mode(env.guild, None, "gold")
     assert (await env.conf.all())["mode"] == "free"
 
 
@@ -502,8 +498,7 @@ async def test_seed_makes_next_bump_use_slow_cooldown(env):
 
 
 async def test_reminders_off_pays_but_never_reminds(env):
-    ctx = make_ctx(env)
-    await env.cog.br_reminders(ctx, False)
+    await env.cog._apply_reminders(env.guild, None, False)
     await env.cog._handle(make_msg(env.guild, mid=800))
     g = await env.conf.all()
     assert env.bank.deposits == [(42, 100)]
@@ -511,7 +506,7 @@ async def test_reminders_off_pays_but_never_reminds(env):
     assert "reminder" not in env.guild.channel.sent[0]["embed"].description
     await env.cog._tick_guild(env.guild)
     assert len(env.guild.channel.sent) == 1                # just the reward message
-    await env.cog.br_reminders(ctx, True)
+    await env.cog._apply_reminders(env.guild, None, True)
     await env.cog._handle(make_msg(env.guild, mid=801))
     assert (await env.conf.all())["reminded"] is False
 
@@ -546,3 +541,64 @@ async def test_components_v2_bump_message_is_detected_and_paid(env):
 async def test_components_v2_non_bump_text_is_ignored(env):
     await env.cog._handle(make_msg(env.guild, mid=322, text="Something else\nentirely", v2=True))
     assert env.bank.deposits == []
+
+
+# ------------------------------------------------------------ settings (the panel's apply methods)
+
+async def test_enable_needs_a_channel_and_channel_role_are_saved(env):
+    await env.conf.channel_id.set(None)
+    await env.conf.enabled.set(False)
+    with pytest.raises(br.PanelError):
+        await env.cog._apply_enabled(env.guild, None, True)
+    assert await env.conf.enabled() is False
+    with pytest.raises(br.PanelError):
+        await env.cog._apply_channel(env.guild, None, None)
+    chan = SimpleNamespace(id=77, mention="<#77>")
+    await env.cog._apply_channel(env.guild, None, chan)
+    assert "on" in await env.cog._apply_enabled(env.guild, None, True) and await env.conf.enabled() is True
+    assert "off" in await env.cog._apply_enabled(env.guild, None, False)
+    await env.cog._apply_role(env.guild, None, SimpleNamespace(id=5, name="Bumpers"))
+    assert await env.conf.role_id() == 5
+    await env.cog._apply_role(env.guild, None, None)
+    assert await env.conf.role_id() is None
+
+
+async def test_reward_and_streak_settings(env):
+    for bad in ({"min": "-1", "max": "5"}, {"min": "x", "max": "5"}, {}):
+        with pytest.raises(br.PanelError):
+            await env.cog._apply_reward(env.guild, None, bad)
+    await env.cog._apply_reward(env.guild, None, {"min": "900", "max": "300"})   # swapped like before
+    g = await env.conf.all()
+    assert (g["min_reward"], g["max_reward"]) == (300, 900)
+    for bad in ({"pct": "-1", "steps": "2"}, {"pct": "5", "steps": "-1"}, {"pct": "a", "steps": "1"}):
+        with pytest.raises(br.PanelError):
+            await env.cog._apply_streak(env.guild, None, bad)
+    await env.cog._apply_streak(env.guild, None, {"pct": "20", "steps": "3"})
+    g = await env.conf.all()
+    assert (g["streak_bonus_pct"], g["streak_max"]) == (20, 3)
+
+
+async def test_settings_opens_the_panel_for_admins_and_prints_for_mods(env, monkeypatch):
+    opened = []
+
+    async def fake_open(ctx, cog, specs, *, title, intro=""):
+        opened.append((title, [s.key for s in specs]))
+    monkeypatch.setattr(br, "open_panel", fake_open)
+    ctx = make_ctx(env)
+    ctx.author = SimpleNamespace(guild_permissions=SimpleNamespace(administrator=False, manage_guild=True))
+    await env.cog.br_settings(ctx)
+    assert opened == [("Bump rewards", ["enabled", "channel", "role", "mode", "reward", "streak", "reminders", "lead"])]
+    ctx = make_ctx(env)
+    ctx.author = SimpleNamespace(guild_permissions=SimpleNamespace(administrator=False, manage_guild=False))
+    await env.cog.br_settings(ctx)
+    assert len(opened) == 1 and ctx.sent[-1][1]["embed"].title == "bumpreward settings"
+
+
+async def test_version_probe_and_removed_setters(env):
+    ctx = make_ctx(env)
+    await env.cog.br_version(ctx)
+    assert ctx.sent[-1][0][0] == f"bumpreward v{br.COG_VERSION}"
+    for gone in ("br_enabled", "br_channel", "br_role", "br_reward", "br_streak", "br_reminders", "br_lead", "br_mode"):
+        assert not hasattr(br.BumpReward, gone)
+    for kept in ("br_top", "br_status", "br_settings", "br_debug", "br_replay", "br_seed", "br_nexttimer", "br_version"):
+        assert hasattr(br.BumpReward, kept)
