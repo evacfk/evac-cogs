@@ -4,6 +4,9 @@ from datetime import datetime, timezone, timedelta
 from redbot.core import commands, Config
 from redbot.core.bot import Red
 
+from . import panel as panel_specs
+from ..settings_panel import PanelError, open_panel
+
 MAX_RETRIES = 8
 DELETE_DELAY = 2.0  # seconds between individual deletes
 
@@ -107,22 +110,23 @@ class IntroCleanup(commands.Cog):
     # ------------------------------------------------------------------
 
     @commands.group(name="introcleanup", aliases=["ic"], invoke_without_command=True)
+    @commands.guild_only()
     @commands.admin_or_permissions(manage_guild=True)
     async def introcleanup(self, ctx: commands.Context):
-        """Manage the IntroCleanup cog."""
-        await ctx.send_help(ctx.command)
+        """Open the IntroCleanup settings panel. Also: settings, sweep."""
+        await open_panel(ctx, self, panel_specs.build_specs(), title="IntroCleanup", intro=panel_specs.INTRO)
 
-    @introcleanup.command(name="setchannel")
-    async def setchannel(self, ctx: commands.Context, channel: discord.TextChannel):
-        """Set the intros channel to watch."""
-        await self.config.guild(ctx.guild).intros_channel_id.set(channel.id)
-        await ctx.send(f"✅ Intros channel set to {channel.mention}.")
+    # ---------- settings (the panel calls these) ----------
 
-    @introcleanup.command(name="setlog")
-    async def setlog(self, ctx: commands.Context, channel: discord.TextChannel):
-        """Set the mod log channel for cleanup events."""
-        await self.config.guild(ctx.guild).log_channel_id.set(channel.id)
-        await ctx.send(f"✅ Log channel set to {channel.mention}.")
+    async def _apply_intros_channel(self, guild, member, channel) -> str:
+        if channel is None:
+            raise PanelError("The intros channel is required.")
+        await self.config.guild(guild).intros_channel_id.set(channel.id)
+        return f"Intros channel set to {channel.mention}."
+
+    async def _apply_log_channel(self, guild, member, channel) -> str:
+        await self.config.guild(guild).log_channel_id.set(channel.id if channel else None)
+        return f"Log channel set to {channel.mention}." if channel else "Log channel cleared: cleanups aren't logged."
 
     @introcleanup.command(name="settings")
     async def settings(self, ctx: commands.Context):
@@ -155,7 +159,7 @@ class IntroCleanup(commands.Cog):
         log_id = await self.config.guild(ctx.guild).log_channel_id()
 
         if not intros_id:
-            return await ctx.send("❌ No intros channel configured. Use `.introcleanup setchannel #channel` first.")
+            return await ctx.send("❌ No intros channel configured. Open `.introcleanup` and pick the intros channel first.")
 
         intros_channel = ctx.guild.get_channel(intros_id)
         if not intros_channel:

@@ -39,8 +39,10 @@ def test_modal_builds_one_input_per_question_within_discord_limits():
 def test_group_uses_invoke_without_command_and_subcommands_exist():
     from wonderland.introform.introform import IntroForm
 
-    for name in ("setchannel", "panel", "enforce", "settings"):
+    for name in ("panel", "settings", "prune", "_apply_channel", "_apply_enforce"):
         assert hasattr(IntroForm, name)
+    for gone in ("setchannel", "enforce"):
+        assert not hasattr(IntroForm, gone)
 
 
 def test_find_views_build_under_the_stub():

@@ -8,6 +8,8 @@ from redbot.core import commands, Config
 from redbot.core.bot import Red
 
 from . import embeds, engine
+from . import panel as panel_specs
+from ..settings_panel import PanelError, open_panel
 from .constants import (
     BTN_DELETE_ID,
     BTN_FIND_ID,
@@ -365,22 +367,33 @@ class IntroForm(commands.Cog):
     @commands.guild_only()
     @commands.admin_or_permissions(manage_guild=True)
     async def introform(self, ctx: commands.Context):
-        """Manage the IntroForm cog."""
-        await ctx.send_help(ctx.command)
+        """Open the IntroForm settings panel. Also: panel, prune, settings."""
+        await open_panel(ctx, self, panel_specs.build_specs(), title="IntroForm", intro=panel_specs.INTRO)
 
-    @introform.command(name="setchannel")
-    async def setchannel(self, ctx: commands.Context, channel: discord.TextChannel):
+    # ---------- settings (the panel calls these) ----------
+
+    async def _apply_channel(self, guild, member, channel) -> str:
         """Set the intros channel and post the form panel there."""
-        await self.config.guild(ctx.guild).channel_id.set(channel.id)
-        await self.config.guild(ctx.guild).panel_message_id.set(None)
+        if channel is None:
+            raise PanelError("The intros channel is required.")
+        conf = self.config.guild(guild)
+        await conf.channel_id.set(channel.id)
+        await conf.panel_message_id.set(None)
         try:
-            msg = await self.refresh_panel(ctx.guild)
+            msg = await self.refresh_panel(guild)
         except _DISCORD_ERRORS:
-            return await ctx.send(
-                f"⚠️ Channel set to {channel.mention}, but I couldn't post the panel there. "
-                "Check that I can view, send messages, embed links and manage messages in it."
-            )
-        await ctx.send(f"✅ Intros channel set to {channel.mention}. Panel posted: {msg.jump_url}")
+            return (f"⚠️ Channel set to {channel.mention}, but I couldn't post the panel there. "
+                    "Check that I can view, send messages, embed links and manage messages in it.")
+        return f"Intros channel set to {channel.mention}. Panel posted: {msg.jump_url}"
+
+    async def _apply_enforce(self, guild, member, on) -> str:
+        await self.config.guild(guild).enforce.set(bool(on))
+        try:
+            await self.refresh_panel(guild)
+        except _DISCORD_ERRORS:
+            return (f"Free-form message removal is now {'on' if on else 'off'}, but I couldn't refresh the panel "
+                    "message. Check my permissions in the intros channel.")
+        return f"Free-form message removal is now {'on' if on else 'off'}."
 
     @introform.command(name="panel")
     async def panel(self, ctx: commands.Context):
@@ -390,15 +403,8 @@ class IntroForm(commands.Cog):
         except _DISCORD_ERRORS:
             return await ctx.send("❌ I couldn't post the panel. Check my permissions in the intros channel.")
         if msg is None:
-            return await ctx.send("❌ No intros channel set. Use `introform setchannel #channel` first.")
+            return await ctx.send("❌ No intros channel set. Open `.introform` and pick the intros channel first.")
         await ctx.send(f"✅ Panel posted: {msg.jump_url}")
-
-    @introform.command(name="enforce")
-    async def enforce(self, ctx: commands.Context, on_off: bool):
-        """Turn deletion of free-form messages (from non-mods) in the intros channel on or off."""
-        await self.config.guild(ctx.guild).enforce.set(on_off)
-        await self.refresh_panel(ctx.guild)
-        await ctx.send(f"✅ Free-form message removal is now **{'on' if on_off else 'off'}**.")
 
     @introform.command(name="prune")
     async def prune(self, ctx: commands.Context, confirm: bool = False):
