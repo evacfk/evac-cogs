@@ -23,8 +23,9 @@ import discord
 from redbot.core import Config, commands
 from redbot.core.bot import Red
 
-from . import constants, engine, pipeline, transcode
+from . import constants, engine, panel as panel_specs, pipeline, transcode
 from .models import GroupInfo, TopicMapping, TopicStats
+from .settings_panel import PanelError, open_panel
 from .source import SourceAuthError, SourceError, SourceFlood, TelethonSource
 from .views import FeedPostView
 
@@ -33,6 +34,8 @@ log = logging.getLogger("red.tgfeed")
 
 class TGFeed(commands.Cog):
     """Telegram forum group -> Discord channels, media only."""
+
+    _topics_cache = None   # (timestamp, [TopicInfo]) from the last explicit "Load Telegram topics"
 
     def __init__(self, bot: Red, source_factory=None):
         self.bot = bot
@@ -234,7 +237,7 @@ class TGFeed(commands.Cog):
             await self.config.paused.set(True)
             await self.config.pause_reason.set("Telegram rate-limited the account repeatedly")
             await self._log("⛔ tgfeed: Telegram rate-limited the account 3 times in 24h, so the feed is **paused** to protect it. "
-                            "Lower `.tgfeed limits` / raise `.tgfeed interval`, then `.tgfeed resume`.")
+                            "Lower the caps / raise the poll interval in `.tgfeed` (Pace & posts), then turn the feed back on in Connection.")
         elif seconds >= constants.FLOOD_NOTIFY_THRESHOLD:
             await self._log(f"⚠️ tgfeed: Telegram asked us to wait {seconds}s; backing off until then.")
 
@@ -247,7 +250,7 @@ class TGFeed(commands.Cog):
         self._last_cycle = {"error": reason}
         if reason not in self._notified:
             self._notified.add(reason)
-            await self._log(f"⛔ tgfeed paused: {reason} Fix it, then `.tgfeed resume`.")
+            await self._log(f"⛔ tgfeed paused: {reason} Fix it, then turn the feed back on in `.tgfeed` (Connection).")
 
     async def _log(self, text: str) -> None:
         channel_id = await self.config.log_channel_id()
@@ -286,23 +289,30 @@ class TGFeed(commands.Cog):
         await interaction.response.send_message("Removed.", ephemeral=True)
         await self._log(f"\u2716\ufe0f {interaction.user.display_name} removed a feed post in <#{channel_id}>.")
 
-    # -- Command helpers ---------------------------------------------------------------------------
+    # -- Telegram helpers (they raise PanelError, which the panel shows to the admin) ---------------
 
-    async def _connected_source(self, ctx):
-        """The live source, or None after telling the mod what is wrong."""
+    async def _connected_source(self):
         try:
             source = self._get_source()
             await source.connect()
             return source
         except SourceError as exc:
-            await ctx.send(f"Telegram isn't reachable: {exc}")
-            return None
+            raise PanelError(f"Telegram isn't reachable: {exc}")
 
-    async def _group_or_say(self, ctx) -> Optional[GroupInfo]:
+    async def _telegram(self, call):
+        """Await `call()` (a source call), turning Telegram trouble into a PanelError."""
+        try:
+            return await call()
+        except SourceFlood as flood:
+            await self._handle_flood(flood.seconds)
+            raise PanelError(f"Telegram asked us to wait {flood.seconds}s. Try again later.")
+        except SourceError as exc:
+            raise PanelError(str(exc))
+
+    async def _group_or_raise(self) -> GroupInfo:
         raw = await self.config.group()
         if not raw:
-            await ctx.send("No group set. Use `.tgfeed group <invite link>` first.")
-            return None
+            raise PanelError("No group set. Set the Telegram group in the Connection tab first.")
         return GroupInfo(**raw)
 
     async def _find_mapped(self, arg: str):
@@ -314,232 +324,216 @@ class TGFeed(commands.Cog):
         hits = [m for m in maps if m.title.strip().lower() == text.lower()]
         return hits[0] if len(hits) == 1 else None
 
-    # -- Command tree --------------------------------------------------------------------------------
+    async def _mapped_or_raise(self, arg: str) -> TopicMapping:
+        mapping = await self._find_mapped(arg)
+        if mapping is None:
+            raise PanelError("That topic isn't mapped.")
+        return mapping
+
+    # -- Changes the panel makes (each returns the message to show, or raises PanelError) ---------------
+
+    async def _apply_group(self, guild, member, link: str) -> str:
+        """Set the Telegram group (an invite or t.me link of a group this account is already in)."""
+        link = (link or "").strip()
+        if not link:
+            raise PanelError("Paste an invite or t.me link of a group this Telegram account is already in.")
+        source = await self._connected_source()
+        info = await self._telegram(lambda: source.resolve_group(link))
+        if not info.is_forum:
+            raise PanelError(f"**{info.title}** isn't a forum-style group (it has no topics), so there is nothing to split into channels.")
+        current = await self.config.group()
+        if current and current.get("id") != info.id and await self.config.mappings():
+            raise PanelError("Topics from another group are still mapped. Unmap them first (Topics tab).")
+        await self.config.group.set({"id": info.id, "title": info.title, "username": info.username, "is_forum": True})
+        self._topics_cache = None
+        try:
+            topics = await source.list_topics(info)
+        except SourceError:
+            topics = []
+        return f"Group set: **{info.title}**, {len(topics)} topics. Next: pick a category here, then map topics in the Topics tab."
+
+    async def _apply_category(self, guild, member, category) -> str:
+        """Category where new topic channels are created (None clears it)."""
+        if category is None:
+            await self.config.category_id.set(None)
+            return "No category set: map topics to an existing channel, or set a category first."
+        await self.config.category_id.set(category.id)
+        return f"New topic channels will be created in {getattr(category, 'name', None) or category.id}."
+
+    async def _apply_prefix(self, guild, member, prefix: str) -> str:
+        """Text put in front of the names of channels created for topics (empty clears it)."""
+        prefix = (prefix or "").strip()
+        await self.config.name_prefix.set(prefix)
+        return f"Prefix: `{prefix}`" if prefix else "Prefix cleared."
+
+    async def _apply_view_roles(self, guild, member, roles) -> str:
+        """Extra roles that can see channels created from now on (empty = just the person who mapped them)."""
+        ids = [getattr(r, "id", r) for r in (roles or [])]
+        await self.config.view_role_ids.set(ids)
+        return ("New topic channels will also be visible to: " + ", ".join(f"<@&{i}>" for i in ids) + ". Existing channels keep their permissions."
+                if ids else "New topic channels will be visible only to the person who maps them (and admins).")
+
+    async def _apply_log_channel(self, guild, member, channel) -> str:
+        """Where removals and Telegram warnings are logged."""
+        if channel is None:
+            raise PanelError("Pick a channel.")
+        await self.config.log_channel_id.set(channel.id)
+        return f"Logging to {getattr(channel, 'mention', channel.id)}."
+
+    async def _apply_x_button(self, guild, member, on: bool) -> str:
+        await self.config.x_button.set(bool(on))
+        return f"X button {'on' if on else 'off'} for new posts."
+
+    async def _apply_throttle(self, guild, member, values: dict) -> str:
+        """Poll interval, the pause between downloads, and the hourly/daily download caps (all clamped to safe minimums)."""
+        try:
+            interval = int(float(values["interval"]))
+            low, high = float(values["gap_min"]), float(values["gap_max"])
+            per_hour, per_day = int(float(values["per_hour"])), int(float(values["per_day"]))
+        except (KeyError, TypeError, ValueError):
+            raise PanelError("Every box needs a plain number.")
+        interval = max(constants.MIN_POLL_INTERVAL_SECONDS, interval)
+        low = max(constants.MIN_FILE_GAP_SECONDS, low)
+        high = max(low, high)
+        per_hour = max(constants.MIN_FILES_PER_HOUR, per_hour)
+        per_day = max(per_hour, per_day)
+        await self.config.poll_interval_seconds.set(interval)
+        await self.config.file_gap_min.set(low)
+        await self.config.file_gap_max.set(high)
+        await self.config.max_per_hour.set(per_hour)
+        await self.config.max_per_day.set(per_day)
+        return (f"Polling about every {interval}s, downloads {low:g}-{high:g}s apart, "
+                f"caps {per_hour} files/hour and {per_day}/day.")
+
+    async def _apply_running(self, guild, member, on: bool) -> str:
+        """On = resume everything (no catch-up skipping), Off = pause everything."""
+        if on:
+            await self.config.paused.set(False)
+            await self.config.pause_reason.set(None)
+            await self.config.cooldown_until.set(0.0)
+            self._notified.clear()
+            return "tgfeed is running."
+        await self.config.paused.set(True)
+        await self.config.pause_reason.set("paused by a moderator")
+        return "tgfeed paused."
+
+    async def _apply_resume_skip(self, guild, member, _value=None) -> str:
+        """Resume and jump every topic to 'now': nothing posted while the feed was off is caught up."""
+        group = await self._group_or_raise()
+        source = await self._connected_source()
+        cursor = await self._telegram(lambda: source.latest_id(group))
+        async with self.config.mappings() as stored:
+            for raw in stored.values():
+                raw["cursor"] = max(int(raw.get("cursor") or 0), cursor)
+        await self._apply_running(guild, member, True)
+        return "tgfeed is running. Skipped everything posted while it was off."
+
+    async def _apply_load_topics(self, guild, member, _value=None) -> str:
+        """Fetch the group's topics from Telegram so the Topics tab can list the unmapped ones too."""
+        group = await self._group_or_raise()
+        source = await self._connected_source()
+        topics = await self._telegram(lambda: source.list_topics(group))
+        self._topics_cache = (time.time(), list(topics))
+        return f"Loaded {len(topics)} topics."
+
+    async def _create_topic_channel(self, guild, member, topic):
+        """A new text channel for one topic, visible only to the person who maps it
+        (plus the bot, and any roles added under 'Roles that can see new channels')."""
+        category_id = await self.config.category_id()
+        category = guild.get_channel(category_id) if category_id else None
+        if category is None:
+            raise PanelError("Set a category first (Connection tab), or map this topic to an existing channel (Edit).")
+        prefix = await self.config.name_prefix()
+        name = engine.slugify_channel_name(topic.title, prefix, topic.id)
+        overwrites = {
+            guild.default_role: discord.PermissionOverwrite(view_channel=False),
+            guild.me: discord.PermissionOverwrite(view_channel=True, send_messages=True, attach_files=True, read_message_history=True),
+            member: discord.PermissionOverwrite(view_channel=True, read_message_history=True),
+        }
+        for role_id in await self.config.view_role_ids():
+            role = guild.get_role(role_id)
+            if role is not None:
+                overwrites[role] = discord.PermissionOverwrite(view_channel=True, read_message_history=True)
+        try:
+            return await guild.create_text_channel(
+                name, category=category, overwrites=overwrites, reason=f"tgfeed: Telegram topic {topic.id}",
+            )
+        except (discord.Forbidden, discord.HTTPException) as exc:
+            raise PanelError(f"I couldn't create the channel: {exc}")
+
+    async def _apply_map(self, guild, member, topic: str, channel=None) -> str:
+        """Map ONE topic (id or exact title). With a channel, use that existing channel (and re-point the topic if
+        it is already mapped); without one, create a new channel in the category, visible only to you."""
+        group = await self._group_or_raise()
+        source = await self._connected_source()
+        topics = await self._telegram(lambda: source.list_topics(group))
+        found, reason = engine.resolve_topic(topic, topics)
+        if found is None:
+            raise PanelError(reason)
+        maps = await self.config.mappings()
+        existing = maps.get(str(found.id))
+        if existing is not None and channel is None:
+            raise PanelError(f"**{found.title}** is already mapped to <#{existing['channel_id']}>. Edit it to point at another channel, or Remove it first.")
+        if channel is not None:
+            for key, raw in maps.items():
+                if raw["channel_id"] == channel.id and key != str(found.id):
+                    raise PanelError(f"{getattr(channel, 'mention', channel.id)} already receives another topic. One topic per channel.")
+            if existing is not None:
+                async with self.config.mappings() as stored:
+                    if str(found.id) in stored:
+                        stored[str(found.id)]["channel_id"] = channel.id
+                return f"**{found.title}** now goes to {getattr(channel, 'mention', channel.id)}."
+        cursor = await self._telegram(lambda: source.latest_id(group))
+        if channel is None:
+            channel = await self._create_topic_channel(guild, member, found)
+        mapping = TopicMapping(topic_id=found.id, title=found.title, channel_id=channel.id, cursor=cursor, added_ts=time.time())
+        async with self.config.mappings() as stored:
+            stored[str(found.id)] = mapping.to_dict()
+        return f"Mapped **{found.title}** \u2192 {getattr(channel, 'mention', channel.id)}. Only new posts from now on."
+
+    async def _apply_unmap(self, guild, member, topic: str) -> str:
+        """Stop mirroring a topic (the Discord channel is left alone)."""
+        mapping = await self._mapped_or_raise(topic)
+        async with self.config.mappings() as stored:
+            stored.pop(str(mapping.topic_id), None)
+        return f"Unmapped **{mapping.title}**. Its channel <#{mapping.channel_id}> is untouched."
+
+    async def _apply_pause_topic(self, guild, member, topic: str) -> str:
+        mapping = await self._mapped_or_raise(topic)
+        async with self.config.mappings() as stored:
+            if str(mapping.topic_id) in stored:
+                stored[str(mapping.topic_id)]["paused"] = True
+        return f"Paused **{mapping.title}**."
+
+    async def _apply_resume_topic(self, guild, member, topic: str) -> str:
+        """Resume one topic from now (posts made while it was paused are not backfilled)."""
+        mapping = await self._mapped_or_raise(topic)
+        group = await self._group_or_raise()
+        source = await self._connected_source()
+        cursor = await self._telegram(lambda: source.latest_id(group))
+        async with self.config.mappings() as stored:
+            if str(mapping.topic_id) in stored:
+                stored[str(mapping.topic_id)]["paused"] = False
+                stored[str(mapping.topic_id)]["cursor"] = cursor
+        return f"Resumed **{mapping.title}** from now."
+
+    # -- Commands --------------------------------------------------------------------------------------------
 
     @commands.group(name="tgfeed", invoke_without_command=True)
     @commands.guild_only()
-    @commands.mod_or_permissions(manage_guild=True)
+    @commands.admin_or_permissions(manage_guild=True)
     async def tgfeed(self, ctx: commands.Context) -> None:
-        """Mirror a Telegram forum group's photos and videos into Discord."""
-        await ctx.send_help(ctx.command)
+        """Telegram feed control panel: group, topics, channels and pacing."""
+        await open_panel(ctx, self, panel_specs.build_specs(), title="Telegram feed", intro=panel_specs.INTRO)
 
     @tgfeed.command(name="version")
     async def tgfeed_version(self, ctx: commands.Context) -> None:
         """Version-probe command -- confirms a deploy actually took."""
         await ctx.send(f"tgfeed build: {constants.BUILD}")
 
-    @tgfeed.command(name="group")
-    async def tgfeed_group(self, ctx: commands.Context, link: str) -> None:
-        """Set the Telegram group (an invite or t.me link of a group this account is already in)."""
-        source = await self._connected_source(ctx)
-        if source is None:
-            return
-        try:
-            info = await source.resolve_group(link)
-        except SourceFlood as flood:
-            await self._handle_flood(flood.seconds)
-            await ctx.send(f"Telegram asked us to wait {flood.seconds}s. Try again later.")
-            return
-        except SourceError as exc:
-            await ctx.send(str(exc))
-            return
-        if not info.is_forum:
-            await ctx.send(f"**{info.title}** isn't a forum-style group (it has no topics), so there is nothing to split into channels.")
-            return
-        current = await self.config.group()
-        if current and current.get("id") != info.id and await self.config.mappings():
-            await ctx.send("Topics from another group are still mapped. `.tgfeed unmap` them first.")
-            return
-        await self.config.group.set({"id": info.id, "title": info.title, "username": info.username, "is_forum": True})
-        try:
-            topics = await source.list_topics(info)
-        except SourceError:
-            topics = []
-        await ctx.send(f"Group set: **{info.title}**, {len(topics)} topics. Next: `.tgfeed category <category>`, `.tgfeed topics`, then `.tgfeed map <topic>` for each one you want.")
-
-    @tgfeed.command(name="topics")
-    async def tgfeed_topics(self, ctx: commands.Context) -> None:
-        """List the group's topics and where each one goes."""
-        group = await self._group_or_say(ctx)
-        source = await self._connected_source(ctx) if group else None
-        if source is None:
-            return
-        try:
-            topics = await source.list_topics(group)
-        except SourceFlood as flood:
-            await self._handle_flood(flood.seconds)
-            await ctx.send(f"Telegram asked us to wait {flood.seconds}s. Try again later.")
-            return
-        except SourceError as exc:
-            await ctx.send(str(exc))
-            return
-        maps = await self.config.mappings()
-        lines = []
-        for topic in topics:
-            raw = maps.get(str(topic.id))
-            where = f"<#{raw['channel_id']}>" + (" (paused)" if raw.get("paused") else "") if raw else "not mapped"
-            lines.append(f"`{topic.id}` {topic.title} → {where}")
-        for chunk in engine.chunk_lines(lines or ["No topics found."]):
-            await ctx.send(chunk, allowed_mentions=discord.AllowedMentions.none())
-
-    async def _create_topic_channel(self, ctx, topic):
-        """A new text channel for one topic, visible only to the person running the
-        command (plus the bot, and any roles added with `viewrole`)."""
-        category_id = await self.config.category_id()
-        category = ctx.guild.get_channel(category_id) if category_id else None
-        if category is None:
-            await ctx.send("Set a category first (`.tgfeed category <category>`), or give me an existing channel: `.tgfeed map <topic> #channel`.")
-            return None
-        prefix = await self.config.name_prefix()
-        name = engine.slugify_channel_name(topic.title, prefix, topic.id)
-        overwrites = {
-            ctx.guild.default_role: discord.PermissionOverwrite(view_channel=False),
-            ctx.guild.me: discord.PermissionOverwrite(view_channel=True, send_messages=True, attach_files=True, read_message_history=True),
-            ctx.author: discord.PermissionOverwrite(view_channel=True, read_message_history=True),
-        }
-        for role_id in await self.config.view_role_ids():
-            role = ctx.guild.get_role(role_id)
-            if role is not None:
-                overwrites[role] = discord.PermissionOverwrite(view_channel=True, read_message_history=True)
-        try:
-            return await ctx.guild.create_text_channel(
-                name, category=category, overwrites=overwrites, reason=f"tgfeed: Telegram topic {topic.id}",
-            )
-        except (discord.Forbidden, discord.HTTPException) as exc:
-            await ctx.send(f"I couldn't create the channel: {exc}")
-            return None
-
-    @tgfeed.command(name="map")
-    async def tgfeed_map(self, ctx: commands.Context, topic: str, channel: Optional[discord.TextChannel] = None) -> None:
-        """Map ONE topic (id or exact title; quote titles with spaces). Give a channel to use an
-        existing one, or leave it out and I create a new channel in the `category`, visible only to you."""
-        group = await self._group_or_say(ctx)
-        source = await self._connected_source(ctx) if group else None
-        if source is None:
-            return
-        try:
-            topics = await source.list_topics(group)
-            found, reason = engine.resolve_topic(topic, topics)
-            if found is None:
-                await ctx.send(reason)
-                return
-            maps = await self.config.mappings()
-            if str(found.id) in maps:
-                await ctx.send(f"**{found.title}** is already mapped to <#{maps[str(found.id)]['channel_id']}>. `.tgfeed unmap` it first to change that.")
-                return
-            if channel is not None:
-                for raw in maps.values():
-                    if raw["channel_id"] == channel.id:
-                        await ctx.send(f"{channel.mention} already receives another topic. One topic per channel.")
-                        return
-            cursor = await source.latest_id(group)
-        except SourceFlood as flood:
-            await self._handle_flood(flood.seconds)
-            await ctx.send(f"Telegram asked us to wait {flood.seconds}s. Try again later.")
-            return
-        except SourceError as exc:
-            await ctx.send(str(exc))
-            return
-        if channel is None:
-            channel = await self._create_topic_channel(ctx, found)
-            if channel is None:
-                return
-        mapping = TopicMapping(topic_id=found.id, title=found.title, channel_id=channel.id, cursor=cursor, added_ts=time.time())
-        async with self.config.mappings() as stored:
-            stored[str(found.id)] = mapping.to_dict()
-        await ctx.send(f"Mapped **{found.title}** \u2192 {channel.mention}. Only new posts from now on.")
-
-    @tgfeed.command(name="unmap")
-    async def tgfeed_unmap(self, ctx: commands.Context, topic: str) -> None:
-        """Stop mirroring a topic (the Discord channel is left alone)."""
-        mapping = await self._find_mapped(topic)
-        if mapping is None:
-            await ctx.send("That topic isn't mapped.")
-            return
-        async with self.config.mappings() as stored:
-            stored.pop(str(mapping.topic_id), None)
-        await ctx.send(f"Unmapped **{mapping.title}**. Its channel <#{mapping.channel_id}> is untouched.")
-
-    @tgfeed.command(name="pausetopic")
-    async def tgfeed_pausetopic(self, ctx: commands.Context, topic: str) -> None:
-        """Pause one topic."""
-        mapping = await self._find_mapped(topic)
-        if mapping is None:
-            await ctx.send("That topic isn't mapped.")
-            return
-        async with self.config.mappings() as stored:
-            stored[str(mapping.topic_id)]["paused"] = True
-        await ctx.send(f"Paused **{mapping.title}**.")
-
-    @tgfeed.command(name="resumetopic")
-    async def tgfeed_resumetopic(self, ctx: commands.Context, topic: str) -> None:
-        """Resume one topic from now (posts made while it was paused are not backfilled)."""
-        mapping = await self._find_mapped(topic)
-        group = await self._group_or_say(ctx) if mapping else None
-        if mapping is None:
-            await ctx.send("That topic isn't mapped.")
-            return
-        source = await self._connected_source(ctx) if group else None
-        if source is None:
-            return
-        try:
-            cursor = await source.latest_id(group)
-        except SourceError as exc:
-            await ctx.send(str(exc))
-            return
-        async with self.config.mappings() as stored:
-            stored[str(mapping.topic_id)]["paused"] = False
-            stored[str(mapping.topic_id)]["cursor"] = cursor
-        await ctx.send(f"Resumed **{mapping.title}** from now.")
-
-    @tgfeed.command(name="pause")
-    async def tgfeed_pause(self, ctx: commands.Context) -> None:
-        """Pause everything."""
-        await self.config.paused.set(True)
-        await self.config.pause_reason.set("paused by a moderator")
-        await ctx.send("tgfeed paused. `.tgfeed resume` to continue.")
-
-    @tgfeed.command(name="resume")
-    async def tgfeed_resume(self, ctx: commands.Context, mode: str = "") -> None:
-        """Resume everything. `.tgfeed resume skip` also jumps every topic to 'now' (no catch-up of what was missed)."""
-        if mode.lower() == "skip":
-            group = await self._group_or_say(ctx)
-            source = await self._connected_source(ctx) if group else None
-            if source is None:
-                return
-            try:
-                cursor = await source.latest_id(group)
-            except SourceError as exc:
-                await ctx.send(str(exc))
-                return
-            async with self.config.mappings() as stored:
-                for raw in stored.values():
-                    raw["cursor"] = max(int(raw.get("cursor") or 0), cursor)
-        await self.config.paused.set(False)
-        await self.config.pause_reason.set(None)
-        await self.config.cooldown_until.set(0.0)
-        self._notified.clear()
-        await ctx.send("tgfeed resumed." + (" Skipped everything posted while it was off." if mode.lower() == "skip" else ""))
-
-    @tgfeed.command(name="list")
-    async def tgfeed_list(self, ctx: commands.Context) -> None:
-        """Mapped topics."""
-        maps = [TopicMapping.from_dict(r) for r in (await self.config.mappings()).values()]
-        if not maps:
-            await ctx.send("Nothing mapped yet.")
-            return
-        lines = []
-        for m in sorted(maps, key=lambda m: m.topic_id):
-            last = f"<t:{int(m.last_post_ts)}:R>" if m.last_post_ts else "never"
-            flag = " (paused)" if m.paused else ""
-            err = f" ⚠ {m.last_error}" if m.last_error else ""
-            lines.append(f"`{m.topic_id}` {m.title} → <#{m.channel_id}>{flag}: {m.posted_total} files, last {last}{err}")
-        for chunk in engine.chunk_lines(lines):
-            await ctx.send(chunk, allowed_mentions=discord.AllowedMentions.none())
-
     @tgfeed.command(name="status")
     async def tgfeed_status(self, ctx: commands.Context) -> None:
-        """Connection, throttle and last-cycle summary."""
+        """Connection, throttle, last-cycle summary and the mapped topics."""
         now = time.time()
         group = await self.config.group()
         stamps = await self.config.rate_log()
@@ -569,65 +563,19 @@ class TGFeed(commands.Cog):
                     f"Last cycle{ago}: posted {c['posted_files']} files in {c['posted_messages']} messages, shrunk {c['shrunk']}, "
                     f"skipped {c['skipped_oversize']} too big / {c['skipped_too_long']} unshrinkable / {c['skipped_failed']} failed, errors {c['errors']}"
                 )
-        await ctx.send("\n".join(lines), allowed_mentions=discord.AllowedMentions.none())
+        mapped = await self._mapped_lines()
+        if mapped:
+            lines.append("")
+            lines.extend(mapped)
+        for chunk in engine.chunk_lines(lines):
+            await ctx.send(chunk, allowed_mentions=discord.AllowedMentions.none())
 
-    @tgfeed.command(name="interval")
-    async def tgfeed_interval(self, ctx: commands.Context, seconds: int) -> None:
-        """Seconds between polls (jittered, minimum 120)."""
-        seconds = max(constants.MIN_POLL_INTERVAL_SECONDS, seconds)
-        await self.config.poll_interval_seconds.set(seconds)
-        await ctx.send(f"Polling about every {seconds}s.")
-
-    @tgfeed.command(name="gap")
-    async def tgfeed_gap(self, ctx: commands.Context, low: float, high: float) -> None:
-        """Random pause range (seconds) between two downloads."""
-        low = max(constants.MIN_FILE_GAP_SECONDS, low)
-        high = max(low, high)
-        await self.config.file_gap_min.set(low)
-        await self.config.file_gap_max.set(high)
-        await ctx.send(f"Downloads are spaced {low}-{high}s apart.")
-
-    @tgfeed.command(name="limits")
-    async def tgfeed_limits(self, ctx: commands.Context, per_hour: int, per_day: int) -> None:
-        """Download caps per rolling hour and day (hour cap minimum 10)."""
-        per_hour = max(constants.MIN_FILES_PER_HOUR, per_hour)
-        per_day = max(per_hour, per_day)
-        await self.config.max_per_hour.set(per_hour)
-        await self.config.max_per_day.set(per_day)
-        await ctx.send(f"Caps: {per_hour} files/hour, {per_day} files/day.")
-
-    @tgfeed.command(name="xbutton")
-    async def tgfeed_xbutton(self, ctx: commands.Context, state: str) -> None:
-        """Turn the mod-only X under posts on or off."""
-        if state.lower() not in ("on", "off"):
-            await ctx.send("Say `on` or `off`.")
-            return
-        await self.config.x_button.set(state.lower() == "on")
-        await ctx.send(f"X button {state.lower()} for new posts.")
-
-    @tgfeed.command(name="logchannel")
-    async def tgfeed_logchannel(self, ctx: commands.Context, channel: discord.TextChannel) -> None:
-        """Where removals and Telegram warnings are logged."""
-        await self.config.log_channel_id.set(channel.id)
-        await ctx.send(f"Logging to {channel.mention}.")
-
-    @tgfeed.command(name="category")
-    async def tgfeed_category(self, ctx: commands.Context, category: discord.CategoryChannel) -> None:
-        """Category where `map` creates channels."""
-        await self.config.category_id.set(category.id)
-        await ctx.send(f"`map` will create channels in **{category.name}**.")
-
-    @tgfeed.command(name="prefix")
-    async def tgfeed_prefix(self, ctx: commands.Context, *, prefix: str = "") -> None:
-        """Text put in front of channel names `map` creates (empty clears it)."""
-        await self.config.name_prefix.set(prefix.strip())
-        await ctx.send(f"Prefix: `{prefix.strip()}`" if prefix.strip() else "Prefix cleared.")
-
-    @tgfeed.command(name="viewrole")
-    async def tgfeed_viewrole(self, ctx: commands.Context, *roles: discord.Role) -> None:
-        """Extra roles that can see channels `map` creates from now on (replaces the list; none = just you). Existing channels: change their permissions in Discord."""
-        if roles:
-            await self.config.view_role_ids.set([r.id for r in roles])
-        current = await self.config.view_role_ids()
-        await ctx.send("Created channels are visible to: " + (", ".join(f"<@&{i}>" for i in current) or "nobody but the person who mapped them (and admins)"),
-                       allowed_mentions=discord.AllowedMentions.none())
+    async def _mapped_lines(self) -> list:
+        maps = [TopicMapping.from_dict(r) for r in (await self.config.mappings()).values()]
+        lines = []
+        for m in sorted(maps, key=lambda m: m.topic_id):
+            last = f"<t:{int(m.last_post_ts)}:R>" if m.last_post_ts else "never"
+            flag = " (paused)" if m.paused else ""
+            err = f" \u26a0 {m.last_error}" if m.last_error else ""
+            lines.append(f"`{m.topic_id}` {m.title} \u2192 <#{m.channel_id}>{flag}: {m.posted_total} files, last {last}{err}")
+        return lines

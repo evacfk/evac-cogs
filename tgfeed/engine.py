@@ -173,7 +173,7 @@ def resolve_topic(arg: str, topics: Sequence[TopicInfo]):
     if len(matches) == 1:
         return matches[0], None
     if not matches:
-        return None, f"No topic titled \"{text}\". `.tgfeed topics` lists them."
+        return None, f"No topic titled \"{text}\". Press Load topics in `.tgfeed` (Topics tab) to see them."
     return None, "More than one topic has that title; use its id instead."
 
 

@@ -10,6 +10,7 @@ import pytest
 
 from tgfeed import tgfeed as tg_module
 from tgfeed.models import MediaItem, TopicMapping
+from tgfeed.settings_panel import PanelError
 from tgfeed.source import SourceAuthError, SourceFlood
 from tgfeed.tgfeed import TGFeed
 
@@ -347,11 +348,13 @@ def test_module_imports_and_defines_the_cog_and_commands():
     from tgfeed import tgfeed
 
     assert hasattr(tgfeed, "TGFeed")
-    for name in ("tgfeed_version", "tgfeed_group", "tgfeed_topics", "tgfeed_map", "tgfeed_unmap",
-                 "tgfeed_pausetopic", "tgfeed_resumetopic", "tgfeed_pause", "tgfeed_resume", "tgfeed_list",
-                 "tgfeed_status", "tgfeed_interval", "tgfeed_gap", "tgfeed_limits", "tgfeed_xbutton",
-                 "tgfeed_logchannel", "tgfeed_category", "tgfeed_prefix", "tgfeed_viewrole"):
+    for name in ("tgfeed", "tgfeed_version", "tgfeed_status"):
         assert hasattr(TGFeed, name), name
+    # the old typed setters live in the panel now
+    for name in ("tgfeed_group", "tgfeed_topics", "tgfeed_map", "tgfeed_unmap", "tgfeed_pausetopic", "tgfeed_resumetopic",
+                 "tgfeed_pause", "tgfeed_resume", "tgfeed_list", "tgfeed_interval", "tgfeed_gap", "tgfeed_limits",
+                 "tgfeed_xbutton", "tgfeed_logchannel", "tgfeed_category", "tgfeed_prefix", "tgfeed_viewrole"):
+        assert not hasattr(TGFeed, name), name
 
 
 def test_mapall_is_gone():
@@ -389,17 +392,20 @@ class FakeGuild:
         return chan
 
 
-class MapCtx:
-    def __init__(self, guild):
-        self.guild, self.sent, self.author = guild, [], "ME"
-
-    async def send(self, content=None, **kw):
-        self.sent.append(content)
+ME = "ME"
 
 
 def cbk(name):
     cmd = getattr(TGFeed, name)
     return getattr(cmd, "callback", None) or cmd.func
+
+
+async def run(coro):
+    """Await an _apply_* coroutine the way the panel does and return what the admin would see."""
+    try:
+        return await coro
+    except PanelError as exc:
+        return str(exc)
 
 
 @pytest.fixture
@@ -421,8 +427,7 @@ TOPICS = [TopicInfo(7, "Cats"), TopicInfo(8, "Dogs")]
 async def test_map_one_topic_creates_a_channel_only_the_creator_can_see(tmp_path, overwrite_stub):
     cog = map_cog(tmp_path, TOPICS, category_id=55, name_prefix="tg-")
     guild = FakeGuild()
-    ctx = MapCtx(guild)
-    await cbk("tgfeed_map")(cog, ctx, "Cats")
+    await run(cog._apply_map(guild, ME, "Cats"))
     assert len(guild.created) == 1 and guild.created[0].name == "tg-cats" and guild.created[0].category.id == 55
     ow = guild.created[0].overwrites
     assert ow["EVERYONE"] == {"view_channel": False}
@@ -437,7 +442,7 @@ async def test_extra_view_roles_are_added_only_when_configured(tmp_path, overwri
     guild = FakeGuild()
     role = type('Role', (), {'id': 9})()
     guild.roles[9] = role
-    await cbk("tgfeed_map")(cog, MapCtx(guild), "7")
+    await run(cog._apply_map(guild, ME, "7"))
     assert role in guild.created[0].overwrites
 
 
@@ -450,35 +455,31 @@ async def test_default_config_grants_no_roles_access():
 async def test_map_to_an_existing_channel_creates_nothing(tmp_path, overwrite_stub):
     cog = map_cog(tmp_path, TOPICS)
     guild = FakeGuild()
-    await cbk("tgfeed_map")(cog, MapCtx(guild), "Dogs", SimpleNamespace(id=321, mention="<#321>"))
+    await run(cog._apply_map(guild, ME, "Dogs", SimpleNamespace(id=321, mention="<#321>")))
     assert guild.created == [] and (await cog.config.mappings())["8"]["channel_id"] == 321
 
 
 async def test_map_without_a_category_or_channel_asks_for_one(tmp_path, overwrite_stub):
     cog = map_cog(tmp_path, TOPICS)
-    ctx = MapCtx(FakeGuild())
-    await cbk("tgfeed_map")(cog, ctx, "Cats")
-    assert "category" in ctx.sent[0] and await cog.config.mappings() == {}
+    msg = await run(cog._apply_map(FakeGuild(), ME, "Cats"))
+    assert "category" in msg and await cog.config.mappings() == {}
 
 
 async def test_map_refuses_a_topic_that_is_already_mapped_and_a_shared_channel(tmp_path, overwrite_stub):
     cog = map_cog(tmp_path, TOPICS, category_id=55)
     guild = FakeGuild()
-    await cbk("tgfeed_map")(cog, MapCtx(guild), "Cats")
-    ctx = MapCtx(guild)
-    await cbk("tgfeed_map")(cog, ctx, "Cats")
-    assert "already mapped" in ctx.sent[0] and len(guild.created) == 1
-    ctx2 = MapCtx(guild)
-    await cbk("tgfeed_map")(cog, ctx2, "Dogs", SimpleNamespace(id=700, mention="<#700>"))
-    assert "already receives" in ctx2.sent[0] and "8" not in await cog.config.mappings()
+    await run(cog._apply_map(guild, ME, "Cats"))
+    msg = await run(cog._apply_map(guild, ME, "Cats"))
+    assert "already mapped" in msg and len(guild.created) == 1
+    msg2 = await run(cog._apply_map(guild, ME, "Dogs", SimpleNamespace(id=700, mention="<#700>")))
+    assert "already receives" in msg2 and "8" not in await cog.config.mappings()
 
 
 async def test_map_unknown_topic_says_so(tmp_path, overwrite_stub):
     cog = map_cog(tmp_path, TOPICS, category_id=55)
     guild = FakeGuild()
-    ctx = MapCtx(guild)
-    await cbk("tgfeed_map")(cog, ctx, "Nope")
-    assert "No topic titled" in ctx.sent[0] and guild.created == []
+    msg = await run(cog._apply_map(guild, ME, "Nope"))
+    assert "No topic titled" in msg and guild.created == []
 
 
 async def test_version_probe_text():
@@ -492,4 +493,160 @@ async def test_version_probe_text():
     ctx = Ctx()
     cmd = TGFeed.tgfeed_version
     await (getattr(cmd, "callback", None) or cmd.func)(object.__new__(TGFeed), ctx)
-    assert ctx.sent == ["tgfeed build: tg-v3 (slash-safe channel names)"]
+    assert ctx.sent == ["tgfeed build: tg-v4 (control panel)"]
+
+
+# -- the panel's apply methods -------------------------------------------------------------------------------
+
+class GroupSource(MapSource):
+    def __init__(self, topics, info, latest=500):
+        super().__init__(topics, latest)
+        self.info = info
+
+    async def resolve_group(self, link):
+        return self.info
+
+
+def group_cog(tmp_path, info, topics=(), **cfg):
+    cog = make(tmp_path, mappings={}, group={}, **cfg)
+    cog._source = GroupSource(list(topics), info)
+    return cog
+
+
+async def test_group_must_be_a_forum_and_blocks_a_switch_while_topics_are_mapped(tmp_path):
+    from tgfeed.models import GroupInfo
+    cog = group_cog(tmp_path, GroupInfo(1, "Plain chat", None, False))
+    assert "isn't a forum" in await run(cog._apply_group(None, ME, "https://t.me/x")) and await cog.config.group() == {}
+    assert "Paste an invite" in await run(cog._apply_group(None, ME, "  "))
+    cog = group_cog(tmp_path, GroupInfo(2, "Forum", "forum", True), TOPICS)
+    msg = await cog._apply_group(None, ME, "https://t.me/forum")
+    assert "2 topics" in msg and (await cog.config.group())["id"] == 2
+    await cog.config.mappings.set({"7": TopicMapping(topic_id=7, title="Cats", channel_id=100).to_dict()})
+    cog._source.info = GroupInfo(3, "Other forum", None, True)
+    assert "still mapped" in await run(cog._apply_group(None, ME, "https://t.me/other"))
+    assert (await cog.config.group())["id"] == 2
+
+
+async def test_simple_settings_save_clear_and_clamp(tmp_path):
+    cog = make(tmp_path)
+    assert "Telegram" in await cog._apply_category(None, ME, SimpleNamespace(id=55, name="Telegram"))
+    assert await cog.config.category_id() == 55
+    await cog._apply_category(None, ME, None)
+    assert await cog.config.category_id() is None
+    assert "Prefix: `tg-`" == await cog._apply_prefix(None, ME, "  tg- ")
+    assert "cleared" in await cog._apply_prefix(None, ME, "")
+    await cog._apply_view_roles(None, ME, [SimpleNamespace(id=9), 12])
+    assert await cog.config.view_role_ids() == [9, 12]
+    assert "only" in await cog._apply_view_roles(None, ME, [])
+    assert await cog.config.view_role_ids() == []
+    assert "Pick a channel" in await run(cog._apply_log_channel(None, ME, None))
+    await cog._apply_log_channel(None, ME, SimpleNamespace(id=31, mention="<#31>"))
+    assert await cog.config.log_channel_id() == 31
+    await cog._apply_x_button(None, ME, False)
+    assert await cog.config.x_button() is False
+
+
+async def test_throttle_clamps_to_safe_minimums_and_rejects_junk(tmp_path):
+    cog = make(tmp_path)
+    await cog._apply_throttle(None, ME, {"interval": "10", "gap_min": "0.5", "gap_max": "0.1", "per_hour": "3", "per_day": "1"})
+    c = cog.config
+    assert await c.poll_interval_seconds() == 120 and await c.file_gap_min() == 2.0 and await c.file_gap_max() == 2.0
+    assert await c.max_per_hour() == 10 and await c.max_per_day() == 10
+    await cog._apply_throttle(None, ME, {"interval": "600", "gap_min": "6", "gap_max": "15", "per_hour": "40", "per_day": "300"})
+    assert (await c.poll_interval_seconds(), await c.file_gap_min(), await c.file_gap_max(), await c.max_per_hour(), await c.max_per_day()) == (600, 6.0, 15.0, 40, 300)
+    assert "plain number" in await run(cog._apply_throttle(None, ME, {"interval": "soon", "gap_min": "1", "gap_max": "2", "per_hour": "1", "per_day": "1"}))
+    assert await c.poll_interval_seconds() == 600
+
+
+async def test_running_toggle_pauses_and_resumes_and_clears_the_cooldown(tmp_path):
+    cog = make(tmp_path, paused=True, pause_reason="auth", cooldown_until=NOW + 999)
+    cog._notified.add("x")
+    await cog._apply_running(None, ME, True)
+    assert await cog.config.paused() is False and await cog.config.pause_reason() is None
+    assert await cog.config.cooldown_until() == 0.0 and not cog._notified
+    await cog._apply_running(None, ME, False)
+    assert await cog.config.paused() is True and await cog.config.pause_reason() == "paused by a moderator"
+
+
+async def test_resume_and_skip_jumps_every_topic_to_now(tmp_path):
+    cog = make(tmp_path, paused=True, mapping_cursor=5)
+    cog._source = MapSource([], latest=900)
+    assert "Skipped" in await cog._apply_resume_skip(None, ME)
+    assert (await cog.config.mappings())["7"]["cursor"] == 900 and await cog.config.paused() is False
+
+
+async def test_resume_and_skip_needs_a_group(tmp_path):
+    cog = make(tmp_path, paused=True, group={})
+    assert "No group set" in await run(cog._apply_resume_skip(None, ME))
+    assert await cog.config.paused() is True
+
+
+async def test_load_topics_caches_the_list_for_the_panel(tmp_path):
+    from tgfeed import panel
+    cog = map_cog(tmp_path, TOPICS, group=GROUP)
+    assert cog._topics_cache is None and await panel._topics(cog, None) == []
+    assert "Loaded 2" in await cog._apply_load_topics(None, ME)
+    items = await panel._topics(cog, None)
+    assert [(i[0], i[1], i[2]) for i in items] == [("7", "Cats", "not mapped"), ("8", "Dogs", "not mapped")]
+
+
+async def test_telegram_flood_during_a_panel_action_is_a_clean_refusal(tmp_path):
+    class Flooded(MapSource):
+        async def list_topics(self, group):
+            raise SourceFlood(42)
+
+    cog = map_cog(tmp_path, TOPICS, group=GROUP)
+    cog._source = Flooded([])
+    assert "wait 42s" in await run(cog._apply_load_topics(None, ME))
+    assert await cog.config.cooldown_until() > 0
+
+
+async def test_map_to_a_channel_repoints_an_already_mapped_topic_and_keeps_the_cursor(tmp_path, overwrite_stub):
+    cog = map_cog(tmp_path, TOPICS, group=GROUP, category_id=55)
+    guild = FakeGuild()
+    await cog._apply_map(guild, ME, "Cats")
+    msg = await cog._apply_map(guild, ME, "7", SimpleNamespace(id=321, mention="<#321>"))
+    assert "now goes to <#321>" in msg
+    m = (await cog.config.mappings())["7"]
+    assert m["channel_id"] == 321 and m["cursor"] == 500 and len(guild.created) == 1
+
+
+async def test_unmap_pause_and_resume_a_topic(tmp_path):
+    cog = make(tmp_path)
+    cog._source = MapSource([], latest=777)
+    assert "Paused" in await cog._apply_pause_topic(None, ME, "7")
+    assert (await cog.config.mappings())["7"]["paused"] is True
+    assert "Resumed" in await cog._apply_resume_topic(None, ME, "Cats")
+    m = (await cog.config.mappings())["7"]
+    assert m["paused"] is False and m["cursor"] == 777
+    assert "isn't mapped" in await run(cog._apply_pause_topic(None, ME, "99"))
+    assert "Unmapped" in await cog._apply_unmap(None, ME, "7")
+    assert await cog.config.mappings() == {}
+    assert "isn't mapped" in await run(cog._apply_unmap(None, ME, "7"))
+
+
+async def test_status_lists_the_mapped_topics(tmp_path):
+    class Ctx:
+        def __init__(self):
+            self.sent = []
+
+        async def send(self, text, **kw):
+            self.sent.append(text)
+
+    ctx = Ctx()
+    cog = make(tmp_path)
+    await cbk("tgfeed_status")(cog, ctx)
+    text = "\n".join(ctx.sent)
+    assert "Group: Test Group" in text and "`7` Cats → <#100>" in text
+
+
+async def test_group_command_opens_the_panel(tmp_path, monkeypatch):
+    opened = {}
+
+    async def fake_open(ctx, cog, specs, *, title, intro=""):
+        opened.update(ctx=ctx, cog=cog, title=title, n=len(specs))
+
+    monkeypatch.setattr(tg_module, "open_panel", fake_open)
+    cog = make(tmp_path)
+    await cbk("tgfeed")(cog, "CTX")
+    assert opened["ctx"] == "CTX" and opened["title"] == "Telegram feed" and opened["n"] > 5

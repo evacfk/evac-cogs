@@ -1,6 +1,6 @@
 """Config defaults and lookup tables for tgfeed. No discord/redbot/telethon imports."""
 
-BUILD = "tg-v3 (slash-safe channel names)"
+BUILD = "tg-v4 (control panel)"
 
 # -- Environment / files ---------------------------------------------------------
 ENV_API_ID = "TG_API_ID"
