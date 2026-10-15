@@ -14,10 +14,13 @@ SRC = (ROOT / "serverpulse.py").read_text(encoding="utf-8")
 
 EXPECTED_COMMANDS = {
     "pulse", "version", "day", "week", "month", "hours", "hour", "heatmap", "best", "channels", "channel", "top",
-    "anomalies", "members", "export", "board", "start", "stop", "refresh", "digest", "weekly", "monthly", "now",
-    "backfill", "status", "resume", "cancel", "ignore", "unignore", "ignored", "set", "modchannel", "modrole",
-    "commands", "settings",
-    "recap", "auto", "voice", "note", "exclude", "include", "cap", "reactions", "model",
+    "anomalies", "members", "export", "board", "digest", "now", "backfill", "status", "resume", "cancel",
+    "settings", "recap", "retention", "sources", "joinlog", "test", "guilds", "add", "remove",
+}
+# setters that moved into the `.pulse settings` panel
+REMOVED_COMMANDS = {
+    "start", "stop", "refresh", "weekly", "monthly", "ignore", "unignore", "ignored", "modchannel", "modrole", "commands",
+    "auto", "voice", "note", "exclude", "include", "cap", "reactions", "model", "source",
 }
 
 
@@ -29,7 +32,7 @@ def test_module_imports_and_defines_the_cog():
 
 def test_every_command_group_uses_invoke_without_command():
     groups = re.findall(r"\.group\(([^)]*)\)", SRC)
-    assert len(groups) >= 5  # pulse, board, digest, backfill, set
+    assert len(groups) >= 5  # pulse, board, digest, recap, backfill, joinlog, guilds
     for args in groups:
         assert "invoke_without_command=True" in args, args
 
@@ -37,6 +40,12 @@ def test_every_command_group_uses_invoke_without_command():
 def test_all_documented_commands_exist():
     names = set(re.findall(r'(?:commands|pulse|pulse_\w+)\.(?:group|command)\(name="(\w+)"', SRC))
     assert EXPECTED_COMMANDS <= names, EXPECTED_COMMANDS - names
+
+
+def test_setter_commands_moved_into_the_panel():
+    names = set(re.findall(r'(?:commands|pulse|pulse_\w+)\.(?:group|command)\(name="(\w+)"', SRC))
+    assert not (REMOVED_COMMANDS & names), REMOVED_COMMANDS & names
+    assert 'name="settings", aliases=["set"]' in SRC
 
 
 def test_command_names_do_not_collide_with_other_repo_cogs():

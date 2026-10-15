@@ -262,7 +262,7 @@ async def test_no_highlights_channel_is_explained(tmp_path, monkeypatch, clock):
     w = await make_world(tmp_path, monkeypatch)
     w.guild.text_channels = [w.modchat]  # nothing called "cuddle", nothing configured
     await w.cog._recap_run(w.guild, w.modchat, w.resolved)
-    assert "recap source #cuddle" in w.modchat.sent[0].content and not w.calls
+    assert "settings` → Recap" in w.modchat.sent[0].content and not w.calls
 
 
 async def test_a_configured_source_beats_the_cuddle_fallback(tmp_path, monkeypatch, clock):
@@ -473,7 +473,7 @@ async def test_approve_without_a_post_channel_asks_for_one_and_keeps_the_draft(t
     await w.cog.config.guild(w.guild).recap.set(cfg)
     i = press(w, w.draft, "approve")
     await w.cog.on_interaction(i)
-    assert "recap channel #channel" in i.response.calls[0][1] and i.response.calls[0][2]["ephemeral"]
+    assert "Set one in `.pulse settings`" in i.response.calls[0][1] and i.response.calls[0][2]["ephemeral"]
     assert len((await recap_cfg(w))["pending"]) == 1 and not w.announce.sent
 
 
@@ -611,75 +611,88 @@ async def test_recap_command_rejects_a_bad_week_and_accepts_the_usual_ones(tmp_p
     assert len(w.calls) == 1
 
 
-async def test_settings_commands_store_clean_values(tmp_path, monkeypatch, clock):
+async def test_recap_options_are_validated_and_stored(tmp_path, monkeypatch, clock):
+    from serverpulse.settings_panel import PanelError
     w = await make_world(tmp_path, monkeypatch)
-    ctx = Ctx(w)
-    cog = w.cog
-    await cog.pulse_recap_source.func(cog, ctx, w.announce)
-    await cog.pulse_recap_channel.func(cog, ctx, w.cuddle)
-    await cog.pulse_recap_cap.func(cog, ctx, 500)
-    await cog.pulse_recap_reactions.func(cog, ctx, 0)
-    await cog.pulse_recap_model.func(cog, ctx, "claude-opus-5-5")
-    await cog.pulse_recap_model.func(cog, ctx, "bad name!!")
+    cog, g = w.cog, w.guild
+    await cog._apply_recap_channel(g, None, "source", w.announce)
+    await cog._apply_recap_channel(g, None, "post", w.cuddle)
+    ok = {"model": "claude-opus-5-5", "drafts": "30", "reactions": "1"}
+    await cog._apply_recap_options(g, None, ok)
     cfg = await recap_cfg(w)
     assert (cfg["source_channel"], cfg["post_channel"]) == (300, 100)
     assert cfg["max_drafts_week"] == 30 and cfg["min_reactions"] == 1 and cfg["model"] == "claude-opus-5-5"
-    assert any("doesn't look like a model name" in (c or "") for c, _ in ctx.sent)
+    for bad in ({**ok, "model": "bad name!!"}, {**ok, "drafts": "31"}, {**ok, "drafts": "0"}, {**ok, "reactions": "101"},
+                {**ok, "reactions": "x"}, {**ok, "drafts": ""}):
+        with pytest.raises(PanelError):
+            await cog._apply_recap_options(g, None, bad)
+    assert (await recap_cfg(w))["max_drafts_week"] == 30
+    with pytest.raises(PanelError):
+        await cog._apply_recap_channel(g, None, "post", None)
+    await cog._apply_recap_channel(g, None, "source", None)  # back to the "cuddle" fallback
+    assert (await recap_cfg(w))["source_channel"] is None
 
 
 async def test_turning_auto_on_skips_the_stale_backlog(tmp_path, monkeypatch, clock):
     w = await make_world(tmp_path, monkeypatch)
-    await w.cog.pulse_recap_auto.func(w.cog, Ctx(w), True)
+    await w.cog._apply_recap_auto(w.guild, None, True)
     cfg = await recap_cfg(w)
     assert cfg["auto"] and cfg["last"] == engine.weekly_due(models.local_dt(clock()))[0]
-    await w.cog.pulse_recap_auto.func(w.cog, Ctx(w), False)
+    await w.cog._apply_recap_auto(w.guild, None, False)
     assert not (await recap_cfg(w))["auto"]
 
 
-async def test_voice_command_adds_sets_shows_clears_and_enforces_the_limit(tmp_path, monkeypatch, clock):
+async def test_voice_is_saved_cleared_and_a_long_saved_voice_is_not_truncated(tmp_path, monkeypatch, clock):
+    from serverpulse.constants import RECAP_VOICE_MAX
+    from serverpulse.panel import VOICE_FIELD_MAX
+    from serverpulse.settings_panel import PanelError
     w = await make_world(tmp_path, monkeypatch)
-    ctx, cog = Ctx(w), w.cog
-    voice = cog.pulse_recap_voice.func
-    await voice(cog, ctx, "show")
-    assert "No voice saved" in ctx.sent[-1][0]
-    await voice(cog, ctx, "add", text="first announcement")
-    await voice(cog, ctx, "add", text="second announcement")
+    cog, g = w.cog, w.guild
+    await cog._apply_recap_voice(g, None, {"voice": "  first announcement\n\nsecond announcement "})
     assert (await recap_cfg(w))["voice"] == "first announcement\n\nsecond announcement"
-    await voice(cog, ctx, "show")
-    assert "first announcement" in ctx.sent[-1][0]
-    await voice(cog, ctx, "set", text="only this")
-    assert (await recap_cfg(w))["voice"] == "only this"
-    await voice(cog, ctx, "add", text="x" * 7000)
-    assert "limit" in ctx.sent[-1][0] and (await recap_cfg(w))["voice"] == "only this"
-    await voice(cog, ctx, "wibble", text="x")
-    assert "Use `voice add" in ctx.sent[-1][0]
-    await voice(cog, ctx, "clear")
+    with pytest.raises(PanelError):
+        await cog._apply_recap_voice(g, None, {"voice": "x" * (RECAP_VOICE_MAX + 1)})
+    long = "y" * 5000  # saved earlier through the old command: more than a form can show
+    cfg = await recap_cfg(w)
+    cfg["voice"] = long
+    await cog.config.guild(g).recap.set(cfg)
+    msg = await cog._apply_recap_voice(g, None, {"voice": long[:VOICE_FIELD_MAX]})  # the untouched prefill comes back
+    assert "left as it is" in msg and (await recap_cfg(w))["voice"] == long
+    await cog._apply_recap_voice(g, None, {"voice": ""})
     assert (await recap_cfg(w))["voice"] == ""
 
 
-async def test_note_command_sets_shows_and_clears(tmp_path, monkeypatch, clock):
+async def test_note_is_saved_clipped_and_cleared(tmp_path, monkeypatch, clock):
     w = await make_world(tmp_path, monkeypatch)
-    ctx, cog = Ctx(w), w.cog
-    await cog.pulse_recap_note.func(cog, ctx, text="Movie night was great")
+    cog, g = w.cog, w.guild
+    await cog._apply_recap_note(g, None, {"note": "Movie night was great"})
     assert (await recap_cfg(w))["notes"] == "Movie night was great"
-    await cog.pulse_recap_note.func(cog, ctx, text="")
-    assert "Movie night was great" in ctx.sent[-1][0]
-    await cog.pulse_recap_note.func(cog, ctx, text="clear")
+    await cog._apply_recap_note(g, None, {"note": "z" * 900})
+    assert len((await recap_cfg(w))["notes"]) == 600
+    await cog._apply_recap_note(g, None, {"note": ""})
     assert (await recap_cfg(w))["notes"] == ""
 
 
-async def test_exclude_and_include_members(tmp_path, monkeypatch, clock):
+async def test_excluded_members_come_from_mentions_or_ids_without_duplicates(tmp_path, monkeypatch, clock):
     w = await make_world(tmp_path, monkeypatch)
-    ctx, cog = Ctx(w), w.cog
-    user = SimpleNamespace(id=11)
-    await cog.pulse_recap_exclude.func(cog, ctx, user)
-    await cog.pulse_recap_exclude.func(cog, ctx, user)
-    assert (await recap_cfg(w))["excluded_users"] == [11]  # no duplicates
+    cog, g = w.cog, w.guild
+    await cog._apply_recap_excluded(g, None, {"users": "<@11> 11"})
+    assert (await recap_cfg(w))["excluded_users"] == []  # 11 is too short to be a Discord ID: ignored
+    uid = 123456789012345678
+    await cog._apply_recap_excluded(g, None, {"users": f"<@{uid}> {uid}"})
+    assert (await recap_cfg(w))["excluded_users"] == [uid]
+    await cog._apply_recap_excluded(g, None, {"users": ""})
+    assert (await recap_cfg(w))["excluded_users"] == []
+
+
+async def test_excluded_members_are_left_out_of_what_claude_reads(tmp_path, monkeypatch, clock):
+    w = await make_world(tmp_path, monkeypatch)
+    cfg = await recap_cfg(w)
+    cfg["excluded_users"] = [11]
+    await w.cog.config.guild(w.guild).recap.set(cfg)
     await w.cog._recap_run(w.guild, w.modchat, w.resolved)
     sent_to_claude = w.calls[0][1]["messages"][0]["content"]
     assert "best joke" not in sent_to_claude and "we did it" in sent_to_claude  # user 11 wrote the joke
-    await cog.pulse_recap_include.func(cog, ctx, user)
-    assert (await recap_cfg(w))["excluded_users"] == []
 
 
 async def test_status_shows_what_is_missing(tmp_path, monkeypatch, clock):

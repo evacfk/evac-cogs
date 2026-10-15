@@ -627,7 +627,7 @@ def sources_embed(sources: list[tuple[str, dict]], label: str, tracking_since: f
             f"active wk2 {_pc(*s['active_week2'])} · still here {_pc(s['still_here'], s['joined'])}"
         )
     e.description = clip("\n".join(lines), 4000)
-    return _footer(e, f"{label} · rename a code with `.pulse set source <code> <name>`")
+    return _footer(e, f"{label} · rename a code in `.pulse settings` → Recap")
 
 
 def joinlog_embed(result: dict):
@@ -684,7 +684,7 @@ def recap_draft_embed(pending: dict, *, used: int, cap: int, post_channel_id: in
     e = _embed(title, pending["public"], color)
     _recap_fields(e, pending, mods=True)
     if state == "draft":
-        where = f"<#{post_channel_id}>" if post_channel_id else "**no channel set yet** (`.pulse digest recap channel #channel`)"
+        where = f"<#{post_channel_id}>" if post_channel_id else "**no channel set yet** (`.pulse settings` → Recap)"
         e.add_field(name="Approve posts to", value=where, inline=False)
     foot = [f"Draft {used}/{cap} this week"]
     n = int(pending["facts"].get("highlight_messages_scanned") or 0)

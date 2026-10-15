@@ -55,6 +55,8 @@ from .constants import (
     USER_RETENTION_DAYS,
     WEEKDAY_NAMES,
 )
+from .settings_panel import PanelError, open_panel
+from . import panel as panel_specs
 from .tracker import GuildTracker, should_count
 
 try:
@@ -637,7 +639,7 @@ class ServerPulse(commands.Cog):
     @commands.group(name="pulse", aliases=["activity"], invoke_without_command=True)
     @commands.guild_only()
     async def pulse(self, ctx: commands.Context):
-        """Server activity at a glance. See `.pulse day|week|month|hours|hour|heatmap|best|channels|top|anomalies|retention|sources|joinlog|export`."""
+        """Server activity at a glance. See `.pulse day|week|month|hours|hour|heatmap|best|channels|top|anomalies|retention|sources|joinlog|export`; setup is `.pulse settings`."""
         prep = await self._prepare(ctx.guild)
         if await self._no_data(ctx, prep):
             return
@@ -913,24 +915,16 @@ class ServerPulse(commands.Cog):
 
     @pulse.group(name="joinlog", invoke_without_command=True)
     async def pulse_joinlog(self, ctx: commands.Context):
-        """Rebuild past joins from your join/leave log channel(s). `.pulse joinlog set #joins [#leaves]`, `test`, `backfill [days=120]`."""
+        """Rebuild past joins from your join/leave log channel(s). `.pulse joinlog test`, `backfill [days=120]` (set the channels in `.pulse settings`)."""
         cfg = await self.config.guild(ctx.guild).joinlog()
         j, l = cfg.get("join_channel"), cfg.get("leave_channel")
         if not j:
-            await ctx.send("No log channel set. `.pulse joinlog set #join-log [#leave-log]` (one channel if both are logged together).")
+            await ctx.send("No log channel set. Pick it in `.pulse settings` → Join log (one channel if both are logged together).")
             return
         await ctx.send(
             f"Joins read from <#{j}>, leaves from <#{l or j}>. Check parsing with `.pulse joinlog test`, "
             "then rebuild with `.pulse joinlog backfill 120`."
         )
-
-    @pulse_joinlog.command(name="set")
-    async def pulse_joinlog_set(self, ctx: commands.Context, join_channel: discord.TextChannel, leave_channel: discord.TextChannel | None = None):
-        """Where your bot logs joins (and leaves, if a different channel)."""
-        await self.config.guild(ctx.guild).joinlog.set(
-            {"join_channel": join_channel.id, "leave_channel": leave_channel.id if leave_channel else None}
-        )
-        await self._ack(ctx)
 
     def _parse_log_message(self, m, *, channel_kind: str | None) -> tuple[str | None, int | None]:
         """(kind, user id) for one log message. channel_kind is 'join'/'leave' when the channel only logs one."""
@@ -965,7 +959,7 @@ class ServerPulse(commands.Cog):
         """Show how the last few log messages are read (run this before backfilling)."""
         chans = await self._log_channels(ctx.guild)
         if not chans:
-            await ctx.send("Set the log channel first: `.pulse joinlog set #join-log [#leave-log]`.")
+            await ctx.send("Set the log channel first in `.pulse settings` → Join log.")
             return
         rows = []
         for channel, kind in chans:
@@ -982,7 +976,7 @@ class ServerPulse(commands.Cog):
         guild = ctx.guild
         chans = await self._log_channels(guild)
         if not chans:
-            await ctx.send("Set the log channel first: `.pulse joinlog set #join-log [#leave-log]`.")
+            await ctx.send("Set the log channel first in `.pulse settings` → Join log.")
             return
         if guild.id in self._joinlog_running:
             await ctx.send("A join-log rebuild is already running.")
@@ -1096,38 +1090,12 @@ class ServerPulse(commands.Cog):
 
     @pulse.group(name="board", invoke_without_command=True)
     async def pulse_board(self, ctx: commands.Context):
-        """Self-updating live board. `.pulse board start|stop|refresh`."""
+        """Live board status. Start, move or stop it in `.pulse settings`."""
         board = await self.config.guild(ctx.guild).board()
         if board.get("channel_id"):
-            await ctx.send(f"Live board is running in <#{board['channel_id']}> (updates every {BOARD_INTERVAL_MINUTES} min). `.pulse board stop` removes it.")
+            await ctx.send(f"Live board is running in <#{board['channel_id']}> (updates every {BOARD_INTERVAL_MINUTES} min). Stop it in `.pulse settings` → Live board.")
         else:
-            await ctx.send("No live board. `.pulse board start` posts one here and keeps it updated.")
-
-    @pulse_board.command(name="start")
-    async def pulse_board_start(self, ctx: commands.Context, channel: discord.TextChannel | None = None):
-        """Post the live board in this (or the given) channel."""
-        target = channel or ctx.channel
-        gconf = self.config.guild(ctx.guild)
-        old = await gconf.board()
-        if old.get("channel_id") and old.get("message_id"):
-            await self._delete_board_message(ctx.guild, old)
-        await gconf.board.set({"channel_id": target.id, "message_id": None})
-        await self._update_board(ctx.guild)
-        await self._ack(ctx)
-
-    @pulse_board.command(name="stop")
-    async def pulse_board_stop(self, ctx: commands.Context):
-        """Stop and delete the live board."""
-        gconf = self.config.guild(ctx.guild)
-        await self._delete_board_message(ctx.guild, await gconf.board())
-        await gconf.board.set({"channel_id": None, "message_id": None})
-        await self._ack(ctx)
-
-    @pulse_board.command(name="refresh")
-    async def pulse_board_refresh(self, ctx: commands.Context):
-        """Update the board right now."""
-        await self._update_board(ctx.guild)
-        await self._ack(ctx)
+            await ctx.send("No live board. Pick a channel in `.pulse settings` → Live board and it posts one and keeps it updated.")
 
     async def _delete_board_message(self, guild: discord.Guild, board: dict) -> None:
         channel = guild.get_channel_or_thread(board.get("channel_id") or 0)
@@ -1165,33 +1133,14 @@ class ServerPulse(commands.Cog):
 
     @pulse.group(name="digest", invoke_without_command=True)
     async def pulse_digest(self, ctx: commands.Context):
-        """Scheduled summaries in the mod channel. `.pulse digest weekly|monthly on|off`, `.pulse digest now weekly|monthly`, `.pulse digest recap`."""
+        """Scheduled summaries in the mod channel. `.pulse digest now weekly|monthly`, `.pulse digest recap`; turn them on or off in `.pulse settings`."""
         gconf = self.config.guild(ctx.guild)
         w, m = await gconf.digest_weekly(), await gconf.digest_monthly()
         await ctx.send(
             f"Weekly (Mondays 9am Pacific): **{'on' if w['enabled'] else 'off'}** · Monthly (1st, 9am Pacific): **{'on' if m['enabled'] else 'off'}**\n"
-            "Change with `.pulse digest weekly on|off` / `.pulse digest monthly on|off`; preview with `.pulse digest now weekly|monthly`.\n"
-            "Community recap written by Claude for you to approve: `.pulse digest recap` (setup and options: `.pulse digest recap status`)."
+            "Turn them on or off in `.pulse settings` → Digests; preview with `.pulse digest now weekly|monthly`.\n"
+            "Community recap written by Claude for you to approve: `.pulse digest recap` (setup and options: `.pulse settings` → Recap)."
         )
-
-    async def _toggle_digest(self, ctx: commands.Context, name: str, due, enabled: bool):
-        gconf = self.config.guild(ctx.guild)
-        cfg = await getattr(gconf, name)()
-        cfg["enabled"] = enabled
-        if enabled:
-            cfg["last"] = due(models.local_dt(time.time()))[0]  # next digest is the *next* due one, not a stale backlog
-        await getattr(gconf, name).set(cfg)
-        await self._ack(ctx)
-
-    @pulse_digest.command(name="weekly")
-    async def pulse_digest_weekly(self, ctx: commands.Context, state: bool):
-        """Turn the weekly digest on or off."""
-        await self._toggle_digest(ctx, "digest_weekly", engine.weekly_due, state)
-
-    @pulse_digest.command(name="monthly")
-    async def pulse_digest_monthly(self, ctx: commands.Context, state: bool):
-        """Turn the monthly digest on or off."""
-        await self._toggle_digest(ctx, "digest_monthly", engine.monthly_due, state)
 
     @pulse_digest.command(name="now")
     async def pulse_digest_now(self, ctx: commands.Context, kind: str = "weekly"):
@@ -1324,7 +1273,7 @@ class ServerPulse(commands.Cog):
             r = await self.config.guild(guild).recap()
             source = self._recap_source(guild, r)
             if source is None:
-                raise recap.RecapError("I don't know which channel to read. Set it with `.pulse digest recap source #cuddle`.")
+                raise recap.RecapError("I don't know which channel to read. Set it in `.pulse settings` → Recap.")
             await self._recap_precheck(r)  # fail before spending minutes reading history
             placeholder = await channel.send(
                 f"✍️ Reading the week in {source.mention} and drafting the recap. A busy week can take a couple of minutes."
@@ -1428,7 +1377,7 @@ class ServerPulse(commands.Cog):
             target = guild.get_channel_or_thread(r["post_channel"]) if r["post_channel"] else None
             if target is None:
                 await interaction.response.send_message(
-                    "There's no channel to post in yet. Set one with `.pulse digest recap channel #channel`, then press Approve again.",
+                    "There's no channel to post in yet. Set one in `.pulse settings` → Recap, then press Approve again.",
                     ephemeral=True,
                 )
                 return
@@ -1518,7 +1467,7 @@ class ServerPulse(commands.Cog):
 
         Reads the week in the highlights channel (humans only), adds the week's numbers and join
         sources, and posts a draft here with Approve / Edit / Regenerate / Reject. Nothing is public
-        until you press Approve. Setup and options: `.pulse digest recap status`.
+        until you press Approve. Setup and options: `.pulse settings` → Recap; check it with `.pulse digest recap status`.
         """
         prep = await self._prepare(ctx.guild)
         resolved = engine.resolve_period("week", when, prep.today)
@@ -1537,8 +1486,8 @@ class ServerPulse(commands.Cog):
         now = time.time()
         t_in, t_out = recap.tokens_used(r["usage"], now)
         await ctx.send(embed=embeds.recap_status_embed(
-            source=source.mention if source else "**not set**: `.pulse digest recap source #cuddle`",
-            post=post.mention if post else "**not set**: `.pulse digest recap channel #channel`",
+            source=source.mention if source else "**not set**: `.pulse settings` → Recap",
+            post=post.mention if post else "**not set**: `.pulse settings` → Recap",
             model=r["model"], key_set=bool((tokens or {}).get("api_key")), used=recap.drafts_used(r["usage"], now),
             cap=r["max_drafts_week"], tokens_in=t_in, tokens_out=t_out, auto=r["auto"], voice_chars=len(r["voice"]),
             excluded=len(r["excluded_users"]), min_reactions=r["min_reactions"], notes=bool(r["notes"]), pending=len(r["pending"]),
@@ -1547,104 +1496,6 @@ class ServerPulse(commands.Cog):
     async def _recap_set(self, guild: discord.Guild, **updates) -> None:
         async with self.config.guild(guild).recap() as r:
             r.update(updates)
-
-    @pulse_digest_recap.command(name="source")
-    async def pulse_recap_source(self, ctx: commands.Context, channel: discord.TextChannel):
-        """The channel whose week gets read for highlights (usually #cuddle)."""
-        await self._recap_set(ctx.guild, source_channel=channel.id)
-        await self._ack(ctx)
-
-    @pulse_digest_recap.command(name="channel")
-    async def pulse_recap_channel(self, ctx: commands.Context, channel: discord.TextChannel):
-        """Where an approved recap is posted."""
-        await self._recap_set(ctx.guild, post_channel=channel.id)
-        await self._ack(ctx)
-
-    @pulse_digest_recap.command(name="auto")
-    async def pulse_recap_auto(self, ctx: commands.Context, state: bool):
-        """Draft one every Monday after the weekly digest (it still waits for your approval)."""
-        updates = {"auto": state}
-        if state:
-            updates["last"] = engine.weekly_due(models.local_dt(time.time()))[0]  # start with the *next* Monday, not a stale backlog
-        await self._recap_set(ctx.guild, **updates)
-        await self._ack(ctx)
-
-    @pulse_digest_recap.command(name="voice")
-    async def pulse_recap_voice(self, ctx: commands.Context, action: str = "show", *, text: str = ""):
-        """Teach it your voice: `voice add <text>` (paste past announcements), `voice set <text>`, `voice show`, `voice clear`.
-
-        Claude copies only the tone and style of these samples, never their content, so old announcements are fine.
-        For news about this week, use `.pulse digest recap note <what happened>`.
-        """
-        action = action.lower()
-        r = await self.config.guild(ctx.guild).recap()
-        if action == "show":
-            if not r["voice"]:
-                await ctx.send("No voice saved yet, so a warm default tone is used. Add some with `.pulse digest recap voice add <paste an announcement you wrote>`.")
-            else:
-                await ctx.send(f"**Saved voice** ({len(r['voice']):,} of {RECAP_VOICE_MAX:,} characters):\n>>> {embeds.clip(r['voice'], 1700)}")
-            return
-        if action == "clear":
-            await self._recap_set(ctx.guild, voice="")
-            await self._ack(ctx)
-            return
-        if action not in ("add", "set") or not text.strip():
-            await ctx.send("Use `voice add <text>`, `voice set <text>`, `voice show` or `voice clear`.")
-            return
-        new = text.strip() if action == "set" else (r["voice"].rstrip() + "\n\n" + text.strip()).strip()
-        if len(new) > RECAP_VOICE_MAX:
-            await ctx.send(f"That would pass the {RECAP_VOICE_MAX:,}-character limit ({len(new):,}). Trim it, or use `voice set` to replace what's there.")
-            return
-        await self._recap_set(ctx.guild, voice=new)
-        await ctx.send(f"✅ Saved ({len(new):,} of {RECAP_VOICE_MAX:,} characters).", delete_after=10)
-
-    @pulse_digest_recap.command(name="note")
-    async def pulse_recap_note(self, ctx: commands.Context, *, text: str = ""):
-        """Tell the next draft what happened this week (events, news). `note <text>`, `note clear`; used once, then cleared."""
-        text = text.strip()
-        if not text:
-            r = await self.config.guild(ctx.guild).recap()
-            await ctx.send(f">>> {embeds.clip(r['notes'], 1700)}" if r["notes"] else "No note saved. Add one with `.pulse digest recap note <what happened>`.")
-            return
-        await self._recap_set(ctx.guild, notes="" if text.lower() == "clear" else text[:600])
-        await self._ack(ctx)
-
-    @pulse_digest_recap.command(name="exclude")
-    async def pulse_recap_exclude(self, ctx: commands.Context, user: discord.User):
-        """Never read or highlight this member's messages."""
-        async with self.config.guild(ctx.guild).recap() as r:
-            if user.id not in r["excluded_users"]:
-                r["excluded_users"].append(user.id)
-        await self._ack(ctx)
-
-    @pulse_digest_recap.command(name="include")
-    async def pulse_recap_include(self, ctx: commands.Context, user: discord.User):
-        """Undo `exclude` for this member."""
-        async with self.config.guild(ctx.guild).recap() as r:
-            r["excluded_users"] = [u for u in r["excluded_users"] if u != user.id]
-        await self._ack(ctx)
-
-    @pulse_digest_recap.command(name="cap")
-    async def pulse_recap_cap(self, ctx: commands.Context, drafts_per_week: int):
-        """Most drafts (including regenerates) in any 7 days. Default 6. This is the cost limit."""
-        await self._recap_set(ctx.guild, max_drafts_week=max(1, min(drafts_per_week, 30)))
-        await self._ack(ctx)
-
-    @pulse_digest_recap.command(name="reactions")
-    async def pulse_recap_reactions(self, ctx: commands.Context, minimum: int):
-        """Fewest reactions a message needs to count as a highlight (default 3)."""
-        await self._recap_set(ctx.guild, min_reactions=max(1, min(minimum, 100)))
-        await self._ack(ctx)
-
-    @pulse_digest_recap.command(name="model")
-    async def pulse_recap_model(self, ctx: commands.Context, model: str):
-        """Which Claude model writes the draft, e.g. `claude-sonnet-5-5`."""
-        if not re.fullmatch(r"[A-Za-z0-9._-]{3,64}", model):
-            await ctx.send("That doesn't look like a model name. Example: `claude-sonnet-5-5`.")
-            return
-        await self._recap_set(ctx.guild, model=model)
-        await self._ack(ctx)
-
 
     # -- backfill -------------------------------------------------------------
 
@@ -1840,38 +1691,6 @@ class ServerPulse(commands.Cog):
 
     # -- ignore list & settings -------------------------------------------------
 
-    @pulse.command(name="ignore")
-    async def pulse_ignore(self, ctx: commands.Context, *channels: discord.abc.GuildChannel):
-        """Stop counting a channel (threads follow their parent). `.pulse ignore #bot-spam`."""
-        if not channels:
-            await ctx.send("Which channel? `.pulse ignore #channel`")
-            return
-        async with self.config.guild(ctx.guild).ignored_channels() as ignored:
-            for c in channels:
-                if c.id not in ignored:
-                    ignored.append(c.id)
-        await self._refresh_settings(ctx.guild)
-        await self._ack(ctx)
-
-    @pulse.command(name="unignore")
-    async def pulse_unignore(self, ctx: commands.Context, *channels: discord.abc.GuildChannel):
-        """Count a channel again. `.pulse unignore #channel`."""
-        if not channels:
-            await ctx.send("Which channel? `.pulse unignore #channel`")
-            return
-        async with self.config.guild(ctx.guild).ignored_channels() as ignored:
-            for c in channels:
-                if c.id in ignored:
-                    ignored.remove(c.id)
-        await self._refresh_settings(ctx.guild)
-        await self._ack(ctx)
-
-    @pulse.command(name="ignored")
-    async def pulse_ignored(self, ctx: commands.Context):
-        """List ignored channels."""
-        st = await self._ensure_guild(ctx.guild)
-        await ctx.send(", ".join(f"<#{c}>" for c in sorted(st["ignored"])) or "No ignored channels.")
-
     @pulse.group(name="guilds", invoke_without_command=True)
     async def pulse_guilds(self, ctx: commands.Context):
         """Bot owner: show which servers serverpulse tracks. `.pulse guilds add|remove <server id>`."""
@@ -1913,46 +1732,13 @@ class ServerPulse(commands.Cog):
         self._apply_allowed(new)
         await self._ack(ctx)
 
-    @pulse.group(name="set", invoke_without_command=True)
-    async def pulse_set(self, ctx: commands.Context):
-        """Settings: `.pulse set modchannel|modrole|commands`. Shows current settings."""
-        await self.pulse_settings(ctx)
-
-    @pulse_set.command(name="modchannel")
-    async def pulse_set_modchannel(self, ctx: commands.Context, channel: discord.TextChannel):
-        """Where `.pulse` works and digests are posted."""
-        await self.config.guild(ctx.guild).mod_channel_id.set(channel.id)
-        await self._refresh_settings(ctx.guild)
-        await self._ack(ctx)
-
-    @pulse_set.command(name="modrole")
-    async def pulse_set_modrole(self, ctx: commands.Context, role: discord.Role):
-        """Role allowed to use `.pulse` (admins and Red mods always can)."""
-        await self.config.guild(ctx.guild).mod_role_id.set(role.id)
-        await self._refresh_settings(ctx.guild)
-        await self._ack(ctx)
-
-    @pulse_set.command(name="commands")
-    async def pulse_set_commands(self, ctx: commands.Context, state: bool):
-        """Ignore bot-command messages like `.gamble` (default on), so game nights don't read as chatty."""
-        await self.config.guild(ctx.guild).exclude_commands.set(state)
-        await self._refresh_settings(ctx.guild)
-        await self._ack(ctx)
-
-    @pulse_set.command(name="source")
-    async def pulse_set_source(self, ctx: commands.Context, code: str, *, name: str):
-        """Name an invite code for `.pulse sources` (`off` removes it). `.pulse set source etywguQBWq Disboard`."""
-        code = code.rsplit("/", 1)[-1]  # accept a full discord.gg link too
-        async with self.config.guild(ctx.guild).invite_sources() as labels:
-            if name.lower() == "off":
-                labels.pop(code, None)
-            else:
-                labels[code] = name[:40]
-        await self._ack(ctx)
-
-    @pulse.command(name="settings")
+    @pulse.command(name="settings", aliases=["set"])
     async def pulse_settings(self, ctx: commands.Context):
-        """Show current settings."""
+        """Settings panel (admins). Mods get a read-only summary."""
+        perms = ctx.author.guild_permissions
+        if perms.administrator or perms.manage_guild:
+            await open_panel(ctx, self, panel_specs.build_specs(), title="Server Pulse", intro=panel_specs.INTRO)
+            return
         prep = await self._prepare(ctx.guild)
         gconf = self.config.guild(ctx.guild)
         dates = await asyncio.to_thread(storage.list_dates, self.data_dir, ctx.guild.id)
@@ -1964,6 +1750,173 @@ class ServerPulse(commands.Cog):
                 digest_monthly=await gconf.digest_monthly(), days_stored=len(dates),
             )
         )
+
+    # ------------------------------------------------------------------
+    # Settings (the panel calls these; each returns the message to show or raises PanelError)
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _ids_in(text: str) -> list[int]:
+        seen: list[int] = []
+        for raw in re.findall(r"\d{15,20}", text or ""):
+            if int(raw) not in seen:
+                seen.append(int(raw))
+        return seen
+
+    async def _apply_mod_channel(self, guild, member, channel) -> str:
+        if channel is None:
+            raise PanelError("Pick a channel: `.pulse` only works there and digests are posted there.")
+        await self.config.guild(guild).mod_channel_id.set(channel.id)
+        await self._refresh_settings(guild)
+        return f"`.pulse` now works in {channel.mention}, and digests go there."
+
+    async def _apply_mod_role(self, guild, member, role) -> str:
+        await self.config.guild(guild).mod_role_id.set(role.id if role else None)
+        await self._refresh_settings(guild)
+        return f"{role.mention} can use `.pulse`." if role else "No extra role: only admins and Red mods can use `.pulse`."
+
+    async def _apply_exclude_commands(self, guild, member, state: bool) -> str:
+        await self.config.guild(guild).exclude_commands.set(bool(state))
+        await self._refresh_settings(guild)
+        return "Bot-command messages are ignored." if state else "Bot-command messages now count as activity."
+
+    async def _apply_ignored(self, guild, member, values) -> str:
+        ids = self._ids_in((values or {}).get("channels", ""))
+        missing = [i for i in ids if guild.get_channel_or_thread(i) is None]
+        if missing:
+            raise PanelError("I can't find: " + ", ".join(str(i) for i in missing) + ". Use channel mentions or IDs from this server.")
+        await self.config.guild(guild).ignored_channels.set(ids)
+        await self._refresh_settings(guild)
+        return f"Ignoring {len(ids)} channel(s)." if ids else "No channels are ignored."
+
+    async def _apply_digest(self, guild, member, name: str, state: bool) -> str:
+        due = engine.weekly_due if name == "digest_weekly" else engine.monthly_due
+        gconf = self.config.guild(guild)
+        cfg = await getattr(gconf, name)()
+        cfg["enabled"] = bool(state)
+        if state:
+            cfg["last"] = due(models.local_dt(time.time()))[0]  # next digest is the *next* due one, not a stale backlog
+        await getattr(gconf, name).set(cfg)
+        label = "Weekly" if name == "digest_weekly" else "Monthly"
+        return f"{label} digest {'on' if state else 'off'}."
+
+    async def _apply_board(self, guild, member, channel) -> str:
+        gconf = self.config.guild(guild)
+        old = await gconf.board()
+        if channel is None:
+            await self._delete_board_message(guild, old)
+            await gconf.board.set({"channel_id": None, "message_id": None})
+            return "Live board stopped and removed."
+        if old.get("channel_id") and old.get("message_id"):
+            await self._delete_board_message(guild, old)
+        await gconf.board.set({"channel_id": channel.id, "message_id": None})
+        try:
+            await self._update_board(guild)
+        except discord.HTTPException as exc:
+            await gconf.board.set({"channel_id": None, "message_id": None})
+            raise PanelError(f"I couldn't post the board in {channel.mention} ({exc}). Check my permissions there.")
+        return f"Live board posted in {channel.mention}; it updates every {BOARD_INTERVAL_MINUTES} min."
+
+    async def _apply_board_refresh(self, guild, member, _value=None) -> str:
+        board = await self.config.guild(guild).board()
+        if not board.get("channel_id"):
+            raise PanelError("There's no live board yet. Pick a channel for it first.")
+        try:
+            await self._update_board(guild)
+        except discord.HTTPException as exc:
+            raise PanelError(f"I couldn't update the board ({exc}).")
+        return "Board updated."
+
+    async def _apply_joinlog(self, guild, member, which: str, channel) -> str:
+        gconf = self.config.guild(guild)
+        cfg = dict(await gconf.joinlog())
+        if which == "join":
+            if channel is None:
+                raise PanelError("The join log channel can't be cleared; pick another one.")
+            cfg["join_channel"] = channel.id
+        else:
+            cfg["leave_channel"] = channel.id if channel else None
+        cfg.setdefault("join_channel", None)
+        cfg.setdefault("leave_channel", None)
+        await gconf.joinlog.set(cfg)
+        if which == "join":
+            return f"Joins are read from {channel.mention}."
+        return f"Leaves are read from {channel.mention}." if channel else "Leaves are read from the join channel."
+
+    async def _apply_recap_channel(self, guild, member, which: str, channel) -> str:
+        if which == "post" and channel is None:
+            raise PanelError("Pick a channel: approved recaps are posted there.")
+        await self._recap_set(guild, **{"source_channel" if which == "source" else "post_channel": channel.id if channel else None})
+        if which == "source":
+            return f"The week is read from {channel.mention}." if channel else "The week is read from the channel named `cuddle`."
+        return f"Approved recaps are posted in {channel.mention}."
+
+    async def _apply_recap_auto(self, guild, member, state: bool) -> str:
+        updates = {"auto": bool(state)}
+        if state:
+            updates["last"] = engine.weekly_due(models.local_dt(time.time()))[0]  # start with the *next* Monday, not a stale backlog
+        await self._recap_set(guild, **updates)
+        return "A draft is written every Monday; it still waits for your approval." if state else "No automatic drafts."
+
+    async def _apply_recap_options(self, guild, member, values) -> str:
+        values = values or {}
+        model = str(values.get("model", "")).strip()
+        if not re.fullmatch(r"[A-Za-z0-9._-]{3,64}", model):
+            raise PanelError("That doesn't look like a model name. Example: `claude-sonnet-5-5`.")
+        numbers = {}
+        for key, label, low, high in (("drafts", "Drafts per week", 1, 30), ("reactions", "Reactions needed", 1, 100)):
+            try:
+                n = int(str(values.get(key, "")).strip())
+            except ValueError:
+                raise PanelError(f"{label} must be a whole number.")
+            if not low <= n <= high:
+                raise PanelError(f"{label} must be between {low} and {high}.")
+            numbers[key] = n
+        await self._recap_set(guild, model=model, max_drafts_week=numbers["drafts"], min_reactions=numbers["reactions"])
+        return f"Saved: {model}, up to {numbers['drafts']} drafts a week, highlights need {numbers['reactions']}+ reactions."
+
+    async def _apply_recap_voice(self, guild, member, values) -> str:
+        text = str((values or {}).get("voice", "")).strip()
+        r = await self.config.guild(guild).recap()
+        stored = r.get("voice", "")
+        shown = panel_specs.VOICE_FIELD_MAX
+        if len(stored) > shown and text == stored[:shown].strip():
+            return f"Your saved voice is longer than this form can show ({len(stored):,} characters), so it was left as it is. Clear the box and save to replace it."
+        if len(text) > RECAP_VOICE_MAX:
+            raise PanelError(f"That is over the {RECAP_VOICE_MAX:,}-character limit ({len(text):,}).")
+        await self._recap_set(guild, voice=text)
+        return f"Saved your voice ({len(text):,} characters)." if text else "Voice cleared: a warm default tone is used."
+
+    async def _apply_recap_note(self, guild, member, values) -> str:
+        text = str((values or {}).get("note", "")).strip()
+        await self._recap_set(guild, notes=text[:600])
+        return "The next draft will mention this, then it clears itself." if text else "Note cleared."
+
+    async def _apply_recap_excluded(self, guild, member, values) -> str:
+        ids = self._ids_in((values or {}).get("users", ""))
+        await self._recap_set(guild, excluded_users=ids)
+        return f"{len(ids)} member(s) are never read or highlighted." if ids else "Nobody is left out of recaps."
+
+    async def _apply_source_save(self, guild, member, item_id, values) -> str:
+        name = str((values or {}).get("name", "")).strip()[:40]
+        if not name:
+            raise PanelError("Give it a name, like Disboard.")
+        code = item_id
+        if code is None:
+            code = str((values or {}).get("code", "")).strip().rsplit("/", 1)[-1]
+            if not re.fullmatch(r"[A-Za-z0-9-]{2,32}", code):
+                raise PanelError("That doesn't look like an invite code. Paste the code or a full discord.gg link.")
+        async with self.config.guild(guild).invite_sources() as labels:
+            if item_id is not None and item_id not in labels:
+                raise PanelError("That invite code is no longer in the list.")
+            labels[code] = name
+        return f"`{code}` is now shown as **{name}**."
+
+    async def _apply_source_remove(self, guild, member, item_id) -> str:
+        async with self.config.guild(guild).invite_sources() as labels:
+            if labels.pop(item_id, None) is None:
+                raise PanelError("That invite code is no longer in the list.")
+        return f"`{item_id}` removed; joins through it are labelled by who made the invite."
 
     # ------------------------------------------------------------------
     # Scheduled loops (every body wrapped per guild: one failure must not kill the loop)

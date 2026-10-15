@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from zoneinfo import ZoneInfo
 
-COG_VERSION = "1.4.1"
+COG_VERSION = "1.5.0"
 COG_BUILD = "2026-10-13"
 
 TIMEZONE_NAME = "America/Los_Angeles"
@@ -11,7 +11,7 @@ TIMEZONE = ZoneInfo(TIMEZONE_NAME)
 
 CONFIG_IDENTIFIER = 0x5E4B5075  # arbitrary, unique to this cog
 
-# -- hardcoded defaults (confirm / change with `.pulse set ...`) ----------------
+# -- hardcoded defaults (change with `.pulse settings`) ----------------
 DEFAULT_MOD_CHANNEL_ID = 912520841613418596
 DEFAULT_MOD_ROLE_ID = 426696709780013066
 DEFAULT_IGNORED_CHANNEL_IDS = [1546909458582474772, 1530348323330986005]  # bot channels
