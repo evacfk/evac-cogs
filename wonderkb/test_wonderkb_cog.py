@@ -217,6 +217,23 @@ class FakeAliasCog:
         self._aliases = types.SimpleNamespace(get_guild_aliases=guild_aliases, get_global_aliases=global_aliases)
 
 
+class FakeCmd:
+    def __init__(self, name, level="NONE", parents=()):
+        self.qualified_name, self.hidden, self.parents = name, False, list(parents)
+        self.requires = types.SimpleNamespace(privilege_level=types.SimpleNamespace(name=level), user_perms=None)
+
+
+class FakeHeistCog:
+    """A third-party cog: one public command, one admin command, and a public-looking child of the admin one."""
+    qualified_name = "Heist"
+
+    def walk_commands(self):
+        admin = FakeCmd("heist reset", level="ADMIN")
+        yield FakeCmd("heist")
+        yield admin
+        yield FakeCmd("heist reset all", parents=[admin])
+
+
 class FakeBot:
     def __init__(self, guilds, cogs):
         self.guilds, self.cogs = guilds, cogs
@@ -254,7 +271,7 @@ def build(kb, *, has_key=True, with_shop=True, rules_text="Be kind to everyone."
     guide.say("Welcome", embeds=[types.SimpleNamespace(to_dict=lambda: {"title": "Colors", "description": "Buy them in the shop."})])
     guild = FakeGuild([rules, guide, modchat, private])
     assistant = FakeAssistant(has_key)
-    cogs = {"Assistant": assistant, "Alias": FakeAliasCog([("removemy", "selfrole remove")])}
+    cogs = {"Assistant": assistant, "Alias": FakeAliasCog([("removemy", "selfrole remove")]), "Heist": FakeHeistCog()}
     if with_shop:
         cogs["Shop"] = FakeShopCog(SHOPS)
     bot = FakeBot([guild], cogs)
@@ -277,6 +294,15 @@ async def test_first_sync_reads_channels_shop_aliases_and_seed(kb):
     assert "kb:alias:removemy" in names
     assert any(n.startswith("kb:seed:") for n in names)
     assert "Buy them in the shop." in " ".join(r["text"] for r in assistant.store.rows.values())
+
+
+async def test_every_loaded_cog_gets_an_overview_but_never_its_admin_commands(kb):
+    cog, guild, assistant, ch = build(kb)
+    result = await cog.sync_guild(guild)
+    assert result["notes"]["cogs"] == "1 entries"                         # Heist only; Assistant is skipped, odd fakes ignored
+    text = assistant.store.rows["kb:cog:Heist"]["text"]
+    assert text.endswith("Commands anyone can run: .heist.")
+    assert "reset" not in text                                            # admin command and its child both excluded
 
 
 async def test_second_sync_embeds_nothing(kb):
@@ -477,4 +503,4 @@ async def test_version_probe(kb):
     cog, guild, assistant, ch = build(kb)
     ctx = FakeCtx(guild)
     await cog.kb_version.callback(cog, ctx)
-    assert ctx.sent[-1] == "WonderKB v1.0.1"
+    assert ctx.sent[-1] == "WonderKB v1.1.0"

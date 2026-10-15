@@ -86,6 +86,46 @@ def test_shop_entries_still_read_the_older_layout_and_skip_junk():
     assert engine.shop_entries(None) == [] and engine.shop_entries([1]) == []
 
 
+def _cmd(name, level="NONE", perms=0, hidden=False, parents=()):
+    return types.SimpleNamespace(
+        qualified_name=name, hidden=hidden, parents=list(parents),
+        requires=types.SimpleNamespace(privilege_level=types.SimpleNamespace(name=level),
+                                       user_perms=types.SimpleNamespace(value=perms) if perms else None))
+
+
+def test_is_public_command_rejects_anything_not_for_everyone():
+    assert engine.is_public_command(_cmd("heist"))
+    assert not engine.is_public_command(_cmd("heist reset", level="ADMIN"))
+    assert not engine.is_public_command(_cmd("x", level="MOD"))
+    assert not engine.is_public_command(_cmd("x", perms=8))
+    assert not engine.is_public_command(_cmd("x", hidden=True))
+
+
+def test_a_subcommand_of_a_mod_group_is_not_public_even_if_it_looks_open():
+    group = _cmd("modgroup", level="MOD")
+    assert not engine.is_public_command(_cmd("modgroup list", parents=[group]))
+
+
+def test_cog_entries_describe_each_cog_and_skip_system_and_empty_ones():
+    out = engine.cog_entries([
+        engine.CogInfo("Heist", "Plan a group heist.\n\nLong details.", ("heist", "heist stats")),
+        engine.CogInfo("Assistant", "ai", ("assistant",)),
+        engine.CogInfo("Mod", "moderation", ()),
+    ])
+    assert [e.name for e in out] == ["kb:cog:Heist"]
+    assert out[0].text == "The Heist cog. Plan a group heist. Long details. Commands anyone can run: .heist, .heist stats."
+
+
+def test_cog_entries_cap_a_long_command_list():
+    out = engine.cog_entries([engine.CogInfo("Big", "", tuple(f"c{i}" for i in range(40)))])
+    assert ".c14" in out[0].text and ".c15" not in out[0].text and "and 25 more" in out[0].text
+
+
+def test_seed_connects_wondercoins_to_gambling_and_heists():
+    text = " ".join(e.text for e in engine.seed_entries(seed.ROWS))
+    assert "What you can do with wondercoins" in text and "heist" in text.lower() and "#wondercasino" in text
+
+
 def test_alias_entries_say_what_the_shortcut_runs():
     out = engine.alias_entries([("removemy", "selfrole remove"), ("", "x")])
     assert len(out) == 1 and ".removemy" in out[0].text and ".selfrole remove" in out[0].text

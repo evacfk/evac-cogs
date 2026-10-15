@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import importlib
+import inspect
 import json
 import logging
 import time
@@ -105,6 +106,21 @@ class WonderKB(commands.Cog):
             log.debug("no global aliases", exc_info=True)
         return [(a.name, a.command) for a in found]
 
+    def _read_cogs(self) -> List[engine.CogInfo]:
+        infos: List[engine.CogInfo] = []
+        for cog in list(self.bot.cogs.values()):
+            try:
+                names: List[Tuple[int, str]] = []
+                for command in cog.walk_commands():
+                    if engine.is_public_command(command):
+                        names.append((command.qualified_name.count(" "), command.qualified_name))
+                doc = (inspect.getdoc(cog) or "").split("\n\n")[0]
+                infos.append(engine.CogInfo(cog.qualified_name, doc, tuple(n for _, n in sorted(names))))
+            except Exception:
+                # One odd cog must not blank the overview for all the others.
+                log.debug("could not read cog %r", cog, exc_info=True)
+        return infos
+
     def _read_guide_pages(self):
         wld = self.bot.get_cog("Wonderland")
         if wld is None:
@@ -134,6 +150,15 @@ class WonderKB(commands.Cog):
         except Exception as e:
             log.warning("guide read failed: %s", e)
             notes["guide"] = f"failed: {e}"
+
+        try:
+            entries = engine.cog_entries(self._read_cogs())
+            wanted += entries
+            fetched.add(engine.cog_prefix())
+            notes["cogs"] = f"{len(entries)} entries"
+        except Exception as e:
+            log.warning("cog read failed: %s", e)
+            notes["cogs"] = f"failed: {e}"
 
         for ref in await self.config.guild(guild).sources():
             channel = self.resolve_channel(guild, ref)

@@ -229,6 +229,55 @@ def seed_entries(rows: Iterable[Tuple[str, str, str, Sequence[str]]]) -> List[En
     return out
 
 
+# ---------------------------------------------------------------- cog overviews
+
+
+@dataclass(frozen=True)
+class CogInfo:
+    name: str
+    doc: str
+    commands: Tuple[str, ...]
+
+
+def is_public_command(command: Any) -> bool:
+    """True only if everyone can run it: no mod/admin/owner level, no required permissions, not hidden,
+    and the same for every parent group (a subcommand of a mod group must not look public)."""
+    for c in [command, *list(getattr(command, "parents", []) or [])]:
+        if getattr(c, "hidden", False):
+            return False
+        requires = getattr(c, "requires", None)
+        level = getattr(getattr(requires, "privilege_level", None), "name", None)
+        if level not in (None, "NONE"):
+            return False
+        perms = getattr(requires, "user_perms", None)
+        if perms is not None and getattr(perms, "value", 0):
+            return False
+    return True
+
+
+def cog_prefix() -> str:
+    return f"{AUTO_PREFIX}cog:"
+
+
+MAX_COG_COMMANDS = 15
+SKIP_COGS = frozenset({"Assistant", "WonderKB", "Core", "Downloader", "CogManagerUI", "Dev", "Permissions"})
+
+
+def cog_entries(cogs: Iterable[CogInfo]) -> List[Entry]:
+    """One short entry per cog that has commands anyone can run: what it is, and those commands."""
+    out: List[Entry] = []
+    for cog in cogs:
+        if cog.name in SKIP_COGS or not cog.commands:
+            continue
+        doc = " ".join((cog.doc or "").split())
+        doc = doc if len(doc) <= 220 else doc[:219].rstrip() + "…"
+        shown = ", ".join("." + c for c in cog.commands[:MAX_COG_COMMANDS])
+        more = f" (and {len(cog.commands) - MAX_COG_COMMANDS} more)" if len(cog.commands) > MAX_COG_COMMANDS else ""
+        text = f"The {cog.name} cog." + (f" {doc}" if doc else "") + f" Commands anyone can run: {shown}{more}."
+        out.append(Entry(f"{cog_prefix()}{cog.name}", text))
+    return out
+
+
 # ---------------------------------------------------------------- diffing
 
 
