@@ -7,7 +7,7 @@ import re
 from dataclasses import dataclass
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Set, Tuple
 
-from .constants import AUTO_PREFIX, CURRENCY, MAX_CHUNK_CHARS, QUESTION_MAX_CHARS
+from .constants import AUTO_PREFIX, BOT_CHANNEL, CURRENCY, MAX_CHUNK_CHARS, QUESTION_MAX_CHARS
 
 
 @dataclass(frozen=True)
@@ -106,11 +106,9 @@ def channel_entries(channel_id: int, channel_label: str, items: Iterable[Tuple[i
 
 # ---------------------------------------------------------------- shop
 
-_COST_KEYS = ("Cost", "cost", "Price", "price")
-_INFO_KEYS = ("Info", "info", "Description", "description")
-_QTY_KEYS = ("Qty", "qty", "Stock", "stock")
-_TYPE_KEYS = ("Type", "type")
-_ITEM_KEYS = ("Items", "items")
+_COST_KEYS = ("price", "Cost", "cost", "Price")
+_INFO_KEYS = ("description", "Info", "info", "Description")
+_ITEM_KEYS = ("stock", "Items", "items")
 
 
 def _first(d: Dict[str, Any], keys: Sequence[str]) -> Any:
@@ -124,9 +122,16 @@ def shop_prefix() -> str:
     return f"{AUTO_PREFIX}shop:"
 
 
+def _money(value: Any) -> str:
+    return f"{value:,}" if isinstance(value, int) else str(value)
+
+
 def shop_entries(shops: Any) -> List[Entry]:
-    """Read the shop cog's config tolerantly: {shop name: {"Items": {item: {Cost, Info, ...}}}}.
-    Anything that does not look like that is skipped instead of raising."""
+    """Read the shop cog's config tolerantly: {shop: {"stock": {item: {"price", "description", ...}}}}
+    (older layouts with "Items"/"Cost" also work). Anything that does not look like that is skipped.
+
+    Per shop this writes how to buy from it, the prices grouped (so 35 colors at one price is one line,
+    not 35), and any item that has its own description. It deliberately does not write one entry per item."""
     out: List[Entry] = []
     if not isinstance(shops, dict):
         return out
@@ -136,30 +141,32 @@ def shop_entries(shops: Any) -> List[Entry]:
         items = _first(shop, _ITEM_KEYS)
         if not isinstance(items, dict) or not items:
             continue
-        summary: List[str] = []
+        prefix = f"{shop_prefix()}{shop_name}:"
+        howto = (
+            f"The shop '{shop_name}' sells {len(items)} items. To buy: run .shop buy in #{BOT_CHANNEL}, "
+            f"pick '{shop_name}', then choose the item and how many. Everything is paid for in {CURRENCY}. "
+            "See what you own with .shop inventory."
+        )
+        if shop.get("giftable"):
+            howto += " You can buy one for a friend with .shop gift."
+        if isinstance(shop.get("description"), str) and shop["description"].strip():
+            howto += f" About this shop: {shop['description'].strip()}"
+        out.append(Entry(f"{prefix}__howto__", howto))
+
+        by_price: Dict[Any, List[str]] = {}
         for item_name, item in items.items():
             if not isinstance(item, dict):
                 continue
-            cost = _first(item, _COST_KEYS)
+            by_price.setdefault(_first(item, _COST_KEYS), []).append(str(item_name))
             info = _first(item, _INFO_KEYS)
-            qty = _first(item, _QTY_KEYS)
-            kind = _first(item, _TYPE_KEYS)
-            line = f"Item '{item_name}' in the shop '{shop_name}'"
-            line += f" costs {cost:,} {CURRENCY}." if isinstance(cost, int) else (f" costs {cost} {CURRENCY}." if cost is not None else ".")
             if info:
-                line += f" {str(info).strip()}"
-            if kind:
-                line += f" (Type: {kind}.)"
-            if qty not in (None, "inf", "Inf"):
-                line += f" Stock: {qty}."
-            line += f" Buy it with .shop buy: pick '{shop_name}', then choose '{item_name}'."
-            out.append(Entry(f"{shop_prefix()}{shop_name}:{item_name}", line))
-            summary.append(f"{item_name} ({cost:,})" if isinstance(cost, int) else str(item_name))
-        if summary:
-            for i, chunk in enumerate(chunk_text(
-                f"The shop '{shop_name}' sells {len(summary)} items: " + ", ".join(summary) + f". Prices are in {CURRENCY}."
-            )):
-                out.append(Entry(f"{shop_prefix()}{shop_name}:__summary__:{i}", chunk))
+                out.append(Entry(f"{prefix}item:{item_name}", f"'{item_name}' in the shop '{shop_name}': {str(info).strip()}"))
+        for price, names in by_price.items():
+            label = f"cost {_money(price)} {CURRENCY} each" if price is not None else "have no listed price"
+            header = f"In the shop '{shop_name}', these items {label}: "
+            # Every chunk repeats the shop and the price, so a continuation is never a bare list of names.
+            for i, chunk in enumerate(chunk_text(", ".join(sorted(names)), MAX_CHUNK_CHARS - len(header) - 12)):
+                out.append(Entry(f"{prefix}price:{price}:{i}", f"{header}{chunk}."))
     return out
 
 

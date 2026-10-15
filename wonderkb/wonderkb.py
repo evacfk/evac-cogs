@@ -477,7 +477,7 @@ class WonderKB(commands.Cog):
         shop = shops[name]
         sample = dict(shop) if isinstance(shop, dict) else shop
         if isinstance(sample, dict):
-            for key in ("Items", "items"):
+            for key in ("stock", "Items", "items"):
                 if isinstance(sample.get(key), dict):
                     sample[key] = dict(list(sample[key].items())[:2])
         text = json.dumps({name: sample}, indent=1, default=str)

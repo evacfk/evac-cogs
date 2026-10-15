@@ -48,18 +48,41 @@ def test_channel_entries_are_stable_and_labelled():
     assert out[0].text == "From #rules: Be kind."
 
 
-def test_shop_entries_read_the_item_list_tolerantly():
-    shops = {
-        "wondershop - colors": {"Items": {"Rose": {"Cost": 20000, "Info": "A pink name color", "Type": "role", "Qty": "inf"}}},
-        "broken": "not a dict",
-        "empty": {"Items": {}},
-    }
-    out = engine.shop_entries(shops)
+def _live_shop():
+    """The shape `.kb shopdump` printed on the live bot."""
+    item = lambda price, desc="": {"price": price, "amount": None, "description": desc, "role_id": 1}
+    return {"wondershop - colors": {
+        "description": "", "thumbnail": "", "giftable": True,
+        "stock": {"Cloud": item(20000), "Pink": item(20000), "Rose": item(20000), "Void": item(50000, "A rare dark color")},
+    }}
+
+
+def test_shop_entries_read_the_live_format_without_one_entry_per_color():
+    out = engine.shop_entries(_live_shop())
     texts = {e.name: e.text for e in out}
-    rose = texts[f"{AUTO_PREFIX}shop:wondershop - colors:Rose"]
-    assert "20,000 wondercoins" in rose and "pink name color" in rose and ".shop buy" in rose
-    assert "Stock" not in rose                                   # unlimited stock is not worth saying
-    assert any("__summary__" in n for n in texts)
+    howto = texts[f"{AUTO_PREFIX}shop:wondershop - colors:__howto__"]
+    assert ".shop buy" in howto and "#bot-commands" in howto and ".shop gift" in howto and ".shop inventory" in howto
+    cheap = texts[f"{AUTO_PREFIX}shop:wondershop - colors:price:20000:0"]
+    assert "cost 20,000 wondercoins each" in cheap and "Cloud, Pink, Rose" in cheap
+    assert "Void" not in cheap                                      # different price, different line
+    assert "50,000 wondercoins" in texts[f"{AUTO_PREFIX}shop:wondershop - colors:price:50000:0"]
+    assert texts[f"{AUTO_PREFIX}shop:wondershop - colors:item:Void"].endswith("A rare dark color")
+    assert not any(n.endswith(":item:Cloud") for n in texts)       # a plain color has no entry of its own
+    assert len(out) == 4
+
+
+def test_shop_entries_chunk_a_long_price_group_and_name_the_shop():
+    big = {"s": {"stock": {f"Color {i}": {"price": 5} for i in range(300)}}}
+    out = [e for e in engine.shop_entries(big) if ":price:5:" in e.name]
+    assert len(out) > 1 and all(len(e.text) <= MAX_CHUNK_CHARS for e in out)
+    assert all("In the shop 's'" in e.text and "cost 5 wondercoins each" in e.text for e in out)
+    assert "Color 0" in " ".join(e.text for e in out) and "Color 299" in " ".join(e.text for e in out)
+
+
+def test_shop_entries_still_read_the_older_layout_and_skip_junk():
+    old = {"old": {"Items": {"Rose": {"Cost": 100, "Info": "pink"}}}, "bad": "x", "empty": {"stock": {}}}
+    texts = [e.text for e in engine.shop_entries(old)]
+    assert any("100 wondercoins" in t for t in texts) and any("pink" in t for t in texts)
     assert engine.shop_entries(None) == [] and engine.shop_entries([1]) == []
 
 
@@ -79,6 +102,11 @@ def test_guide_entries_never_include_mod_pages():
     out = engine.guide_entries(pages)
     assert len(out) == 1 and ".bank balance" in out[0].text
     assert not any(".case" in e.text for e in out)
+
+
+def test_seed_tells_members_where_to_run_commands():
+    texts = " ".join(e.text for e in engine.seed_entries(seed.ROWS))
+    assert "Run every bot command in #bot-commands" in texts
 
 
 def test_seed_has_no_mod_only_commands():

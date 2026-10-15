@@ -240,7 +240,9 @@ class FakeCtx:
         return _T()
 
 
-SHOPS = {"wondershop - colors": {"Items": {"Rose": {"Cost": 20000, "Info": "A pink name color", "Type": "role"}}}}
+SHOPS = {"wondershop - colors": {"giftable": True, "stock": {
+    "Rose": {"price": 20000, "amount": None, "description": "", "role_id": 1},
+    "Cloud": {"price": 20000, "amount": None, "description": "", "role_id": 2}}}}
 
 
 def build(kb, *, has_key=True, with_shop=True, rules_text="Be kind to everyone."):
@@ -270,7 +272,8 @@ async def test_first_sync_reads_channels_shop_aliases_and_seed(kb):
     names = set(assistant.store.rows)
     assert any(n.startswith("kb:ch:10:") for n in names)                  # rules
     assert any(n.startswith("kb:ch:11:") for n in names)                  # server-guide, embed text included
-    assert any(n.startswith("kb:shop:wondershop - colors:Rose") for n in names)
+    assert "kb:shop:wondershop - colors:__howto__" in names
+    assert any("Rose" in r["text"] and "20,000" in r["text"] for n, r in assistant.store.rows.items() if n.startswith("kb:shop:"))
     assert "kb:alias:removemy" in names
     assert any(n.startswith("kb:seed:") for n in names)
     assert "Buy them in the shop." in " ".join(r["text"] for r in assistant.store.rows.values())
@@ -474,4 +477,4 @@ async def test_version_probe(kb):
     cog, guild, assistant, ch = build(kb)
     ctx = FakeCtx(guild)
     await cog.kb_version.callback(cog, ctx)
-    assert ctx.sent[-1] == "WonderKB v1.0.0"
+    assert ctx.sent[-1] == "WonderKB v1.0.1"
