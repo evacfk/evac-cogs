@@ -1,10 +1,15 @@
 # secrethunt - Secrets of Wonderland
 
-WoW-style secret hunts. Each puzzle starts from a public poem whose first letters spell a hidden word. Saying the
-word starts a personal chain (every member gets their own variant). Solvers are listed on the **Hall of Secrets**.
+WoW-style secret hunts. Each puzzle starts from a public poem that hides a word (spelled by its first letters, or the
+answer to its riddle). Saying the word starts a personal chain (every member gets their own variant). Solvers are listed on
+the **Hall of Secrets**.
 
 Tiers: **Easy** (days, no role or badge, name on the Hall only), **Medium**, **Hard**, **Expert** (each with its own role
-and icon). Only Easy exists so far.
+and icon). Easy so far: **The Late Rabbit** (`late_rabbit`: acrostic poem, clock reaction, unscramble) and **The Looking Glass**
+(`looking_glass`: riddle poem whose answer is `.mirror`, a room named in words, a pinned glass with Drink / Eat / Knock / Look
+buttons answered privately, an emoji rebus). A puzzle with `"kind": "button"` gets the buttons from `views.py`; the pool and
+setup steps are the same for both. For The Looking Glass use `setup looking_glass` and `start looking_glass`; `preview looking_glass`
+DMs you every variant's pointer, right button, rebus and answer (spoilers).
 
 ## Setup (once)
 ```

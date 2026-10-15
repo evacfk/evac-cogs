@@ -25,10 +25,24 @@ def local(t):
 # ---------------------------------------------------------------- puzzle data
 
 
-@pytest.mark.parametrize("pid", list(PUZZLES))
-def test_every_poem_spells_its_trigger_word(pid):
+ACROSTIC = [pid for pid, p in PUZZLES.items() if p.get("trigger_kind", "acrostic") == "acrostic"]
+RIDDLE = [pid for pid, p in PUZZLES.items() if p.get("trigger_kind") == "riddle"]
+
+
+@pytest.mark.parametrize("pid", ACROSTIC)
+def test_every_acrostic_poem_spells_its_trigger_word(pid):
     p = PUZZLES[pid]
     assert engine.acrostic(p["poem"]) == engine.normalize(p["trigger"])
+
+
+@pytest.mark.parametrize("pid", RIDDLE)
+def test_a_riddle_poem_hides_no_acrostic_and_never_says_its_own_answer(pid):
+    p = PUZZLES[pid]
+    word = engine.normalize(p["trigger"])
+    assert engine.acrostic(p["poem"]) != word  # members already know to look for first letters
+    assert word not in engine.normalize(" ".join(p["poem"]) + p["poem_title"])  # it is a riddle, not a giveaway
+    assert word not in engine.acrostic(p["poem"]) and word not in "".join(
+        engine.normalize(line)[-1:] for line in p["poem"])  # nor a last-letter trick
 
 
 @pytest.mark.parametrize("pid", list(PUZZLES))
@@ -43,10 +57,9 @@ def test_answers_cover_the_largest_pool_and_stay_out_of_the_public_poem(pid):
 @pytest.mark.parametrize("pid", list(PUZZLES))
 def test_text_templates_format_cleanly(pid):
     p = PUZZLES[pid]
-    p["riddle"].format(hint="x", shape="1")
-    p["riddle_no_hint"].format(channel="#c")
-    p["final"].format(anagram="x")
-    p["solved"].format(rank=" #1")
+    keys = dict(hint="x", shape="1", pointer="p", object_hint="o", channel="#c", anagram="x", rebus="r", rank=" #1")
+    for field in ("riddle", "riddle_no_hint", "final", "solved"):
+        p[field].format_map(keys)
 
 
 @pytest.mark.parametrize("pid", list(PUZZLES))
@@ -344,3 +357,49 @@ def test_the_wait_is_at_least_four_hours_then_the_next_nine_am():
     assert due(5, 30) == ("Thu 09:00", 27.5)   # four hours later is past 9:00, so the next morning
     assert due(16, 50) == ("Thu 09:00", 16.2)
     assert due(22, 0) == ("Thu 09:00", 11.0)   # late evening now wakes the next morning, not a day later
+
+
+# ---------------------------------------------------------------- the button / pointer / rebus puzzle kind
+
+BUTTON = [pid for pid, p in PUZZLES.items() if p.get("kind") == "button"]
+
+
+@pytest.mark.parametrize("pid", BUTTON)
+def test_a_button_puzzle_covers_every_variant_and_only_uses_real_buttons(pid):
+    from secrethunt.views import BUTTON_KEYS
+    p = PUZZLES[pid]
+    assert len(p["buttons"]) >= POOL_MAX and set(p["buttons"]) <= set(BUTTON_KEYS)
+    assert set(p["buttons"]) <= set(p["button_hints"])
+    assert len(p["rebuses"]) >= POOL_MAX and len(set(p["rebuses"])) == len(p["rebuses"])
+    assert all(v < POOL_MAX for v in p["letter_variants"])
+    assert all(k == k.lower() for k in p["pointers"])
+    assert "idle" in p and "{rebus}" in p["final"] and "{shape}" in p["final"]
+
+
+def test_the_second_easy_puzzle_is_not_solved_like_the_first():
+    first, second = PUZZLES["late_rabbit"], PUZZLES["looking_glass"]
+    assert second["tier"] == "easy"
+    assert engine.acrostic(second["poem"]) != engine.normalize(second["trigger"])  # not a first-letter acrostic
+    assert first.get("kind", "reaction") == "reaction" and second["kind"] == "button"  # not the clock reaction
+    assert "rebuses" in second and "{anagram}" not in second["final"]  # not the unscramble
+    assert "{hint}" not in second["riddle"]  # not a jumbled room name
+
+
+def test_letter_clue_names_the_length_and_last_letter():
+    assert engine.letter_clue("Gaming") == "the room whose name has 6 letters and ends in **G**"
+    assert engine.letter_clue("Chat to the Queen") == "the room whose name has 4 + 2 + 3 + 5 letters and ends in **N**"
+    assert engine.letter_clue("A-1") is None
+    assert engine.letter_clue("") is None
+
+
+def test_pointer_uses_the_keyword_description_unless_the_variant_is_a_letter_variant():
+    p = {"pointers": {"music": "where songs are shared"}, "letter_variants": [1]}
+    assert engine.pointer_for(p, "Music Talk", 0) == "where songs are shared"
+    assert engine.pointer_for(p, "Music Talk", 1) == engine.letter_clue("Music Talk")  # forced to the letter clue
+    assert engine.pointer_for(p, "Artwork", 0) == engine.letter_clue("Artwork")        # no keyword fits
+    assert engine.pointer_for(p, "??", 0) is None                                      # nothing usable
+
+
+def test_object_hint_follows_the_variant_and_wraps():
+    p = {"buttons": ["look", "drink"], "button_hints": {"look": "L", "drink": "D"}}
+    assert [engine.object_hint(p, v) for v in range(3)] == ["L", "D", "L"]

@@ -1,12 +1,13 @@
 """Secrets of Wonderland: WoW-style hidden puzzles, one new easy one a week.
 
 How a hunt runs (see puzzles.py for the content of each puzzle):
-- a public poem's first letters spell a trigger word; saying it (`.tick` in chat, deleted at once, or just `tick` in
-  a DM to the bot) starts a personal chain;
+- a public poem hides a trigger word (its first letters spell it, or it is the answer to the poem's riddle); saying it
+  (`.tick` in chat, deleted at once, or just `tick` in a DM to the bot) starts a personal chain;
 - each member's variant is a private salted hash of their user id, so nobody's answer helps anyone else;
 - clue 1 arrives by DM; the object it describes is a pinned message in the member's own channel or forum post,
-  "clicked" by reacting with the watch emoji (a reaction on any other object is a decoy);
-- the next clue is delayed to the next 9:00 Pacific, then the jumbled answer is DM'd and the member DMs the answer back;
+  "clicked" by reacting with the watch emoji, or (`kind: button` puzzles) by pressing the right one of four buttons; a
+  wrong object or button is a decoy, and button replies are private to the clicker;
+- the next clue is delayed to the next 9:00 Pacific, then a jumbled word or emoji rebus is DM'd and the member DMs the answer back;
 - solving lists them in the Hall of Secrets (one post per puzzle, edited in place) and grants the puzzle tier's role
   when that tier has one. Easy never does.
 """
@@ -20,7 +21,7 @@ from typing import Union
 import discord
 from redbot.core import Config, commands
 
-from . import embeds, engine
+from . import embeds, engine, views
 from .constants import (
     COG_VERSION, CONFIG_IDENTIFIER, DEFAULT_GUILD, DEFAULT_MEMBER, ICON_MAX_BYTES, POOL_MAX, POOL_MIN,
     TICK_SECONDS, TIER_ROLE_NAMES, WATCH_EMOJI,
@@ -44,8 +45,15 @@ class SecretHunt(commands.Cog):
         self._locks: dict[int, asyncio.Lock] = {}
         self._task = self.bot.loop.create_task(self._loop())
 
+    async def cog_load(self):
+        self._view = views.ObjectView(self)  # persistent: the buttons keep working across restarts
+        self.bot.add_view(self._view)
+
     def cog_unload(self):
         self._task.cancel()
+        view = getattr(self, "_view", None)
+        if view is not None:
+            view.stop()
 
     def _lock(self, guild_id: int) -> asyncio.Lock:
         return self._locks.setdefault(guild_id, asyncio.Lock())
@@ -104,12 +112,21 @@ class SecretHunt(commands.Cog):
 
     def _riddle_text(self, guild, puzzle, pool, variant) -> str:
         channel, hint = self._hint_for(guild, puzzle, pool, variant)
-        if channel is not None and hint:
+        if "pointers" in puzzle:  # this puzzle names the room in words, not as a jumble
+            pointer = engine.pointer_for(puzzle, channel.name, variant) if channel is not None else None
+            if pointer:
+                return puzzle["riddle"].format(pointer=pointer, object_hint=engine.object_hint(puzzle, variant))
+        elif channel is not None and hint:
             return puzzle["riddle"].format(hint=hint[0], shape=hint[1])
-        return puzzle["riddle_no_hint"].format(channel=channel.mention if channel else "a room I cannot name")
+        return puzzle["riddle_no_hint"].format(
+            channel=channel.mention if channel else "a room I cannot name",
+            object_hint=engine.object_hint(puzzle, variant) if "buttons" in puzzle else "")
 
     def _final_text(self, puzzle, variant) -> str:
         answer = puzzle["answers"][variant % len(puzzle["answers"])]
+        if "rebuses" in puzzle:  # a picture to read instead of a word to unjumble
+            return puzzle["final"].format(rebus=puzzle["rebuses"][variant % len(puzzle["rebuses"])],
+                                          shape=len(engine.normalize(answer)))
         return puzzle["final"].format(anagram=engine.scramble(answer, f"{puzzle['id']}:{variant}:final"))
 
     # ------------------------------------------------------------------ trigger (guild message or DM)
@@ -226,6 +243,8 @@ class SecretHunt(commands.Cog):
         if hit is None:
             return
         pid, channel_id = hit
+        if PUZZLES.get(pid, {}).get("kind", "reaction") != "reaction":
+            return  # a button object: reactions on it mean nothing
         member = guild.get_member(payload.user_id)
         if member is None or member.bot:
             return
@@ -247,6 +266,46 @@ class SecretHunt(commands.Cog):
             await self._dm(member, puzzle["found"])
         elif action in ("decoy", "lockout"):  # while locked out ("locked") the reaction just vanishes
             await self._dm(member, puzzle[action])
+
+    async def handle_click(self, interaction, key: str):
+        """A button under a hunt object was pressed. Whatever happens, the answer is private to the clicker, so a decoy
+        looks exactly like the real thing and nobody can watch someone else solve."""
+        try:
+            text = await self._click_text(interaction, key)
+        except Exception:
+            log.exception("secrethunt button click failed")
+            text = None
+        try:
+            await interaction.response.send_message(text or "Nothing happens.", ephemeral=True)
+        except _DISCORD_ERRORS:
+            pass
+
+    async def _click_text(self, interaction, key: str):
+        guild, member = interaction.guild, interaction.user
+        message = getattr(interaction, "message", None)
+        if guild is None or message is None or getattr(member, "bot", False):
+            return None
+        conf = self.config.guild(guild)
+        if not await conf.enabled():
+            return None
+        hit = engine.find_object(await conf.objects(), message.id)
+        puzzle = PUZZLES.get(hit[0]) if hit else None
+        pool = await conf.pool()
+        if puzzle is None or puzzle.get("kind") != "button" or len(pool) < POOL_MIN:
+            return None
+        pid, channel_id = hit
+        now, test_mode = time.time(), await conf.test_mode()
+        async with self._lock(guild.id):
+            async with self.config.member(member).puzzles() as states:
+                state = states.get(pid)
+                if not state:
+                    return puzzle["idle"]
+                variant = state["variant"]
+                buttons = puzzle["buttons"]
+                own = pool[variant % len(pool)] == channel_id and buttons[variant % len(buttons)] == key
+                action = engine.react(state, own, now, test_mode)
+        return puzzle["idle"] if action == "ignore" else puzzle[{"found": "found", "decoy": "decoy",
+                                                                    "lockout": "lockout", "locked": "locked"}[action]]
 
     async def _remove_reaction(self, guild, payload, member):
         channel = self._lookup(guild, payload.channel_id)
@@ -457,7 +516,10 @@ class SecretHunt(commands.Cog):
                     except _DISCORD_ERRORS:
                         pass
                 try:
-                    msg = await channel.send(embed=embeds.object_embed(puzzle))
+                    if puzzle.get("kind") == "button":
+                        msg = await channel.send(embed=embeds.object_embed(puzzle), view=views.ObjectView(self))
+                    else:
+                        msg = await channel.send(embed=embeds.object_embed(puzzle))
                     await msg.pin()
                 except _DISCORD_ERRORS as err:
                     report.append(f"- {channel.mention}: failed ({type(err).__name__}); needs Send Messages (in Threads), "
@@ -756,9 +818,16 @@ class SecretHunt(commands.Cog):
             return await ctx.send("Unknown puzzle, or the pool is not set yet.")
         lines = [f"**{puzzle['title']}** trigger word: `{puzzle['trigger']}`"]
         for v in range(len(pool)):
-            _, hint = self._hint_for(ctx.guild, puzzle, pool, v)
-            hint = hint[0] if hint else None
+            channel, hint = self._hint_for(ctx.guild, puzzle, pool, v)
             answer = puzzle["answers"][v % len(puzzle["answers"])]
+            if "pointers" in puzzle:
+                pointer = engine.pointer_for(puzzle, channel.name, v) if channel is not None else None
+                button = puzzle["buttons"][v % len(puzzle["buttons"])]
+                rebus = puzzle["rebuses"][v % len(puzzle["rebuses"])]
+                lines.append(f"Variant {v + 1}: <#{pool[v]}>, pointer `{pointer}`, button `{button}`, "
+                             f"rebus {rebus}, answer `{answer}`")
+                continue
+            hint = hint[0] if hint else None
             jumbled = engine.scramble(answer, f"{puzzle['id']}:{v}:final")
             lines.append(f"Variant {v + 1}: <#{pool[v]}>, scrambled title `{hint}`, answer `{answer}`, jumbled `{jumbled}`")
         if await self._dm(ctx.author, "\n".join(lines)):

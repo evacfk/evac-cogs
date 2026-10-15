@@ -26,11 +26,11 @@ def ts(d, h=12, mi=0):
 @pytest.fixture
 def mod(monkeypatch):
     tk.install(monkeypatch)
-    for name in ("secrethunt.secrethunt", "secrethunt.embeds"):
+    for name in ("secrethunt.secrethunt", "secrethunt.embeds", "secrethunt.views"):
         monkeypatch.delitem(sys.modules, name, raising=False)
     cog = importlib.import_module("secrethunt.secrethunt")
     yield cog
-    for name in ("secrethunt.secrethunt", "secrethunt.embeds"):
+    for name in ("secrethunt.secrethunt", "secrethunt.embeds", "secrethunt.views"):
         sys.modules.pop(name, None)
 
 

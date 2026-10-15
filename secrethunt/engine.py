@@ -59,6 +59,35 @@ def title_hint(name: str, seed: str):
     return " ".join(parts), " + ".join(str(len(w)) for w in words)
 
 
+def letter_clue(name: str):
+    """A room pointer that needs no jumble: how many letters its name has and which letter it ends on, e.g.
+    "the room whose name is 6 letters long and ends in **G**". None when the title has too few letters."""
+    words = re.findall(r"[^\W\d_]+", (name or "").lower())
+    if sum(len(w) for w in words) < 3:
+        return None
+    shape = " + ".join(str(len(w)) for w in words)
+    return f"the room whose name has {shape} letters and ends in **{words[-1][-1].upper()}**"
+
+
+def pointer_for(puzzle: dict, name: str, variant: int):
+    """How a puzzle that points at rooms by description (instead of a jumbled title) names this member's room.
+    A variant listed in `letter_variants` always gets the letter clue, so the riddles are not all one trick; every other
+    room gets its written description when `pointers` has a keyword that its title contains, else the letter clue.
+    Returns None when neither works (the caller falls back to the plain channel mention)."""
+    low = (name or "").lower()
+    if variant not in puzzle.get("letter_variants", ()):
+        for keyword, text in puzzle.get("pointers", {}).items():
+            if keyword in low:
+                return text
+    return letter_clue(name)
+
+
+def object_hint(puzzle: dict, variant: int) -> str:
+    """The line that tells this variant which button on the object is the right one."""
+    buttons = puzzle["buttons"]
+    return puzzle["button_hints"][buttons[variant % len(buttons)]]
+
+
 def escape_markdown(text: str) -> str:
     """Backslash-escape Discord markdown so a display name cannot restyle or break the Hall post."""
     return re.sub(r"([\\*_~`|>])", r"\\\1", text or "")

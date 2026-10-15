@@ -307,6 +307,10 @@ class FakeBot:
         self.guilds = [guild]
         self.user = types.SimpleNamespace(id=999)
         self.loop = types.SimpleNamespace(create_task=self._create_task)
+        self.views = []
+
+    def add_view(self, view, **kw):
+        self.views.append(view)
 
     @staticmethod
     def _create_task(coro):
@@ -321,6 +325,18 @@ class FakeBot:
 
     async def wait_until_red_ready(self):
         return None
+
+
+class FakeInteraction:
+    """A button press: who pressed it, on which message, and every (private) reply the cog sent back."""
+
+    def __init__(self, guild, user, message):
+        self.guild, self.user, self.message = guild, user, message
+        self.replies = []
+        self.response = types.SimpleNamespace(send_message=self._send)
+
+    async def _send(self, content=None, **kw):
+        self.replies.append((content, kw))
 
 
 class _Cmd:
