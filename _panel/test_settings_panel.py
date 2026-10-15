@@ -390,6 +390,12 @@ async def test_new_only_fields_hidden_when_editing():
     assert list(make_modal("t", fields, {}, lambda *a: None, adding=True).boxes) == ["k", "v"]
 
 
+async def test_edit_only_fields_are_hidden_when_adding():
+    fields = [Field("k", "Key", new_only=True), Field("e", "Extra", edit_only=True), Field("v", "Value")]
+    assert list(make_modal("t", fields, {}, lambda *a: None, adding=False).boxes) == ["e", "v"]
+    assert list(make_modal("t", fields, {}, lambda *a: None, adding=True).boxes) == ["k", "v"]
+
+
 # ----------------------------------------------------------------- actions
 
 async def test_action_confirm_then_runs():
@@ -568,3 +574,43 @@ async def test_channel_types_limit_the_channel_picker():
     spec.channel_types = ()
     await pick_setting(panel, owner, "chan")
     assert not child(panel, discord.ui.ChannelSelect).channel_types
+
+
+async def test_long_collections_are_paged_and_every_record_is_reachable():
+    panel, store, owner = await make()
+    store.d["items"] = {f"k{i:02d}": {"name": f"Item {i}", "n": i} for i in range(60)}
+    panel.tab = "Things"
+    await pick_setting(panel, owner, "items")
+    sel = child(panel, discord.ui.Select, placeholder="Pick a record, or add a new one")
+    assert len(sel.options) == 25 and sel.options[0].value == NEW_ITEM and sel.options[1].value == "k00"
+    assert len(panel.to_components()) <= 5
+    pager = [c.label for c in panel.children if isinstance(c, discord.ui.Button) and c.row == 4]
+    assert pager == ["Refresh", "Close", "◀", "1/3", "▶"]
+    assert next(c for c in panel.children if getattr(c, "label", None) == "◀").disabled
+    await panel._on_page_next(FakeInteraction(owner))
+    sel = child(panel, discord.ui.Select, placeholder="Pick a record, or add a new one")
+    assert sel.options[1].value == "k24" and panel.page == 1
+    await panel._on_page_next(FakeInteraction(owner))
+    await panel._on_page_next(FakeInteraction(owner))                  # stops at the last page
+    assert panel.page == 2
+    sel = child(panel, discord.ui.Select, placeholder="Pick a record, or add a new one")
+    assert [o.value for o in sel.options][-1] == "k59"
+    assert next(c for c in panel.children if getattr(c, "label", None) == "▶").disabled
+    await panel._on_item(FakeInteraction(owner, ["k59"]))               # a record on a later page can be chosen
+    assert panel.item_id == "k59"
+    await panel._on_page_prev(FakeInteraction(owner))
+    assert panel.page == 1 and "page 2/3" in panel.build_embed().description
+
+
+async def test_paging_resets_when_the_setting_changes_and_short_lists_have_no_pager():
+    panel, store, owner = await make()
+    store.d["items"] = {f"k{i:02d}": {"name": f"Item {i}", "n": i} for i in range(60)}
+    panel.tab = "Things"
+    await pick_setting(panel, owner, "items")
+    await panel._on_page_next(FakeInteraction(owner))
+    assert panel.page == 1
+    await pick_setting(panel, owner, "items")
+    assert panel.page == 0
+    store.d["items"] = {"x": {"name": "X", "n": 1}}
+    await pick_setting(panel, owner, "items")
+    assert not any(isinstance(c, discord.ui.Button) and c.row == 4 and c.label in ("◀", "▶") for c in panel.children)

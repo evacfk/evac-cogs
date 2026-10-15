@@ -51,6 +51,7 @@ class Field:
     placeholder: str = ""
     new_default: str = ""                           # prefill when adding a new collection record
     new_only: bool = False                          # collections: only asked when adding
+    edit_only: bool = False                         # collections: only asked when editing an existing record
 
 
 @dataclass
@@ -183,7 +184,7 @@ def make_modal(title: str, fields: Sequence[Field], current: Any, on_submit, add
 
     modal = _Modal(title=clip(title, 45), timeout=PANEL_TIMEOUT)
     modal.boxes = {}
-    shown = [f for f in fields if adding or not f.new_only][:MAX_MODAL_FIELDS]
+    shown = [f for f in fields if (not f.edit_only if adding else not f.new_only)][:MAX_MODAL_FIELDS]
     for f in shown:
         default = ""
         if adding:
@@ -228,8 +229,10 @@ class SettingsPanel(discord.ui.View):
         self.message = None
         self.values: dict[str, Any] = {}
         self.items: list = []
+        self.page = 0                 # collections longer than one dropdown are paged
         self._value_select = None
         self._pick_select = None
+        self._pager = None
 
     # ---- lookups
 
@@ -241,6 +244,17 @@ class SettingsPanel(discord.ui.View):
             if s.key == self.spec_key and s.tab == self.tab:
                 return s
         return None
+
+    def page_capacity(self, spec: Spec) -> int:
+        return 25 - (1 if spec.can_add else 0)
+
+    def page_count(self, spec: Spec) -> int:
+        return max(1, -(-len(self.items) // self.page_capacity(spec)))
+
+    def page_items(self, spec: Spec) -> list:
+        cap = self.page_capacity(spec)
+        self.page = max(0, min(self.page, self.page_count(spec) - 1))
+        return self.items[self.page * cap:(self.page + 1) * cap]
 
     # ---- permission gate
 
@@ -310,11 +324,13 @@ class SettingsPanel(discord.ui.View):
                 continue
             if spec.kind == "collection":
                 items = self.values.get(spec.key) or []
-                lines.append(f"**{spec.label}** — {len(items)}")
-                for item in items[:12]:
+                paged = spec is self.current_spec() and self.page_count(spec) > 1
+                shown_items = self.page_items(spec) if paged else items
+                lines.append(f"**{spec.label}** — {len(items)}" + (f" (page {self.page + 1}/{self.page_count(spec)})" if paged else ""))
+                for item in shown_items[:12]:
                     lines.append(f" • {clip(item[1], 80)}" + (f" — {clip(item[2], 90)}" if len(item) > 2 and item[2] else ""))
-                if len(items) > 12:
-                    lines.append(f" … and {len(items) - 12} more")
+                if len(shown_items) > 12:
+                    lines.append(f" … and {len(shown_items) - 12} more{' on this page' if paged else ''}")
                 continue
             shown = format_value(spec, self.values.get(spec.key), self.guild)
             lines.append(f"**{spec.label}** — {clip(shown, MAX_VALUE_CHARS)}")
@@ -339,6 +355,7 @@ class SettingsPanel(discord.ui.View):
     def rebuild(self) -> None:
         self.clear_items()
         self._value_select = self._pick_select = None
+        self._pager = None
         if self.mode == "confirm":
             self._add_button("Confirm", "success", self._on_confirm, row=0)
             self._add_button("Cancel", "secondary", self._on_cancel, row=0)
@@ -354,6 +371,11 @@ class SettingsPanel(discord.ui.View):
             self._add_editor(spec)
         self._add_button("Refresh", "secondary", self._on_refresh, row=4)
         self._add_button("Close", "danger", self._on_close, row=4)
+        if self._pager is not None:
+            page, pages = self._pager
+            self._add_button("\u25c0", "secondary", self._on_page_prev, row=4, disabled=page <= 0)
+            self._add_button(f"{page + 1}/{pages}", "secondary", self._on_refresh, row=4, disabled=True)
+            self._add_button("\u25b6", "secondary", self._on_page_next, row=4, disabled=page >= pages - 1)
 
     # ---- item builders
 
@@ -428,7 +450,7 @@ class SettingsPanel(discord.ui.View):
         options = []
         if spec.can_add:
             options.append(discord.SelectOption(label="➕ Add new", value=NEW_ITEM, default=(self.item_id == NEW_ITEM)))
-        for item in self.items[: 25 - len(options)]:
+        for item in self.page_items(spec):
             options.append(discord.SelectOption(
                 label=clip(item[1], 100), value=str(item[0]),
                 description=clip(plain_value(item[2], self.guild), MAX_OPTION_DESC) if len(item) > 2 and item[2] else None,
@@ -450,6 +472,8 @@ class SettingsPanel(discord.ui.View):
             used += 1
         for index, action in enumerate(list(spec.item_actions)[: 5 - used]):
             self._add_button(action.label, action.style, self._make_item_action(index), row=3, disabled=not chosen or adding)
+        if self.page_count(spec) > 1:
+            self._pager = (self.page, self.page_count(spec))
 
     def _add_pick_select(self) -> None:
         pick = self.pending["pick"]
@@ -501,17 +525,25 @@ class SettingsPanel(discord.ui.View):
 
     async def _on_tab(self, interaction) -> None:
         self.tab = interaction.data["values"][0]
-        self.spec_key, self.item_id, self.note = None, None, ""
+        self.spec_key, self.item_id, self.note, self.page = None, None, "", 0
         await self.redraw(interaction)
 
     async def _on_setting(self, interaction) -> None:
         self.spec_key = interaction.data["values"][0]
-        self.item_id, self.note = None, ""
+        self.item_id, self.note, self.page = None, "", 0
         await self.redraw(interaction)
 
     async def _on_item(self, interaction) -> None:
         self.item_id = interaction.data["values"][0]
         self.note = ""
+        await self.redraw(interaction)
+
+    async def _on_page_prev(self, interaction) -> None:
+        self.page = max(0, self.page - 1)
+        await self.redraw(interaction)
+
+    async def _on_page_next(self, interaction) -> None:
+        self.page += 1
         await self.redraw(interaction)
 
     async def _on_refresh(self, interaction) -> None:

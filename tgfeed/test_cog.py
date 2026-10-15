@@ -640,13 +640,25 @@ async def test_status_lists_the_mapped_topics(tmp_path):
     assert "Group: Test Group" in text and "`7` Cats → <#100>" in text
 
 
-async def test_group_command_opens_the_panel(tmp_path, monkeypatch):
-    opened = {}
+async def test_group_command_opens_the_panel_for_admins_and_help_for_mods(tmp_path, monkeypatch):
+    opened, helped = {}, []
 
     async def fake_open(ctx, cog, specs, *, title, intro=""):
-        opened.update(ctx=ctx, cog=cog, title=title, n=len(specs))
+        opened.update(title=title, n=len(specs))
 
     monkeypatch.setattr(tg_module, "open_panel", fake_open)
+
+    class Ctx:
+        command = "CMD"
+
+        def __init__(self, manage):
+            self.author = SimpleNamespace(guild_permissions=SimpleNamespace(administrator=False, manage_guild=manage))
+
+        async def send_help(self, command=None):
+            helped.append(command)
+
     cog = make(tmp_path)
-    await cbk("tgfeed")(cog, "CTX")
-    assert opened["ctx"] == "CTX" and opened["title"] == "Telegram feed" and opened["n"] > 5
+    await cbk("tgfeed")(cog, Ctx(True))
+    assert opened["title"] == "Telegram feed" and opened["n"] > 5
+    await cbk("tgfeed")(cog, Ctx(False))
+    assert helped == ["CMD"]

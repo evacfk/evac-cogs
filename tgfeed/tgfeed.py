@@ -521,10 +521,14 @@ class TGFeed(commands.Cog):
 
     @commands.group(name="tgfeed", invoke_without_command=True)
     @commands.guild_only()
-    @commands.admin_or_permissions(manage_guild=True)
+    @commands.mod_or_permissions(manage_guild=True)
     async def tgfeed(self, ctx: commands.Context) -> None:
-        """Telegram feed control panel: group, topics, channels and pacing."""
-        await open_panel(ctx, self, panel_specs.build_specs(), title="Telegram feed", intro=panel_specs.INTRO)
+        """Telegram feed control panel (admins). Mods get the help list: status, version."""
+        perms = ctx.author.guild_permissions
+        if perms.administrator or perms.manage_guild:
+            await open_panel(ctx, self, panel_specs.build_specs(), title="Telegram feed", intro=panel_specs.INTRO)
+            return
+        await ctx.send_help(ctx.command)
 
     @tgfeed.command(name="version")
     async def tgfeed_version(self, ctx: commands.Context) -> None:
