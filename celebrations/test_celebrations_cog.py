@@ -8,6 +8,8 @@ import importlib
 import sys
 from datetime import datetime
 
+import types
+
 import pytest
 
 from celebrations import _testkit as tk
@@ -221,3 +223,110 @@ async def test_a_broken_dispatch_never_breaks_the_posts(env):
     await _bday(env, a, 10, 3, 1998)
     await env.cog._tick(env.guild, at(2026, 10, 3, 9, 5))
     assert len(env.chat.sent) >= 1
+
+
+# ------------------------------------------------------------ settings (the panel's apply methods)
+
+async def test_channel_settings(env):
+    g = env.guild
+    new = g.add_channel(300, "other")
+    assert "300" in await env.cog._apply_channel(g, None, new) or new.mention in await env.cog._apply_channel(g, None, new)
+    gc = env.cog.config.guild(g)
+    assert await gc.channel_id() == 300
+    with pytest.raises(env.mod.PanelError):
+        await env.cog._apply_channel(g, None, None)
+    await env.cog._apply_announce_channel(g, None, None)
+    assert await gc.announce_channel_id() is None
+
+
+async def test_gift_validation_and_blank_max_means_fixed(env):
+    g = env.guild
+    gc = env.cog.config.guild(g)
+    for bad in ({"gift_min": "-1", "gift_max": "", "min_days": "14"},
+                {"gift_min": "500", "gift_max": "100", "min_days": "14"},
+                {"gift_min": "x", "gift_max": "", "min_days": "14"}, {}):
+        with pytest.raises(env.mod.PanelError):
+            await env.cog._apply_gift(g, None, bad)
+    assert (await gc.gift_min(), await gc.gift_max()) == (20000, 30000)
+    await env.cog._apply_gift(g, None, {"gift_min": "25000", "gift_max": "", "min_days": "-5"})
+    assert (await gc.gift_min(), await gc.gift_max(), await gc.gift_min_member_days()) == (25000, 25000, 0)
+    assert "off" in await env.cog._apply_gift(g, None, {"gift_min": "0", "gift_max": "0", "min_days": "7"})
+
+
+async def test_hour_star_and_anniversary_settings(env):
+    g = env.guild
+    gc = env.cog.config.guild(g)
+    for bad in ("24", "-1", "x", ""):
+        with pytest.raises(env.mod.PanelError):
+            await env.cog._apply_hour(g, None, {"hour": bad})
+    await env.cog._apply_hour(g, None, {"hour": "18"})
+    assert await gc.announce_hour() == 18
+    await env.cog._apply_star(g, None, {"emoji": "off"})
+    assert await gc.star_emoji() == ""
+    await env.cog._apply_star(g, None, {"emoji": "\N{SPARKLES}"})
+    assert await gc.star_emoji() == "\N{SPARKLES}"
+    with pytest.raises(env.mod.PanelError):
+        await env.cog._apply_star(g, None, {"emoji": "two words"})
+    await env.cog._apply_anniversaries(g, None, False)
+    assert await gc.anniversaries() is False
+    with pytest.raises(env.mod.PanelError):
+        await env.cog._apply_anniversary_gift(g, None, {"amount": "-1"})
+    await env.cog._apply_anniversary_gift(g, None, {"amount": "5000"})
+    assert await gc.anniversary_gift() == 5000
+
+
+async def test_role_setting_hoists_and_makerole_creates(env):
+    g = env.guild
+    gc = env.cog.config.guild(g)
+    plain = g.add_role(700, "Plain")
+    edits = []
+
+    async def edit(**kw):
+        edits.append(kw)
+        plain.hoist = kw.get("hoist", plain.hoist)
+    plain.edit = edit
+    with pytest.raises(env.mod.PanelError):
+        await env.cog._apply_role(g, None, None)
+    await env.cog._apply_role(g, None, plain)
+    assert await gc.role_id() == 700 and edits[0]["hoist"] is True
+
+    async def create_role(**kw):
+        role = g.add_role(800, kw["name"], hoist=kw["hoist"])
+
+        async def redit(**k):
+            pass
+        role.edit = redit
+        return role
+    g.create_role = create_role
+    msg = await env.cog._apply_makerole(g, None)
+    assert await gc.role_id() == 800 and "Created" in msg
+
+
+async def test_group_opens_panel_for_admins_and_summary_for_mods(env, monkeypatch):
+    opened = []
+
+    async def fake_open(ctx, cog, specs, *, title, intro=""):
+        opened.append((title, len(specs)))
+    monkeypatch.setattr(env.mod, "open_panel", fake_open)
+    sent = []
+
+    class Ctx:
+        guild = env.guild
+
+        def __init__(self, manage):
+            self.author = types.SimpleNamespace(guild_permissions=types.SimpleNamespace(administrator=False, manage_guild=manage))
+
+        async def send(self, text=None, **kw):
+            sent.append(text)
+    await env.cog.celebrations.callback(env.cog, Ctx(True))
+    assert opened == [("Celebrations", 9)] and sent == []
+    await env.cog.celebrations.callback(env.cog, Ctx(False))
+    assert opened == [("Celebrations", 9)] and "Celebrations v" in sent[-1]
+
+
+async def test_removed_setter_commands_are_gone(env):
+    for gone in ("channel", "announcements", "role", "makerole", "gift", "giftmindays", "hour", "star",
+                 "anniversaries", "anniversarygift"):
+        assert not hasattr(env.cog, f"celebrations_{gone}")
+    for kept in ("settings", "setfor", "clearfor", "preview", "run", "version"):
+        assert hasattr(env.cog, f"celebrations_{kept}")

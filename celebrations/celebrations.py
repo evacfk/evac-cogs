@@ -24,6 +24,8 @@ import discord
 from redbot.core import Config, bank, commands
 
 from . import embeds, engine
+from . import panel as panel_specs
+from .settings_panel import PanelError, open_panel
 from .constants import (
     COG_VERSION,
     COLOR_BIRTHDAY,
@@ -400,13 +402,24 @@ class Celebrations(commands.Cog):
     @commands.guild_only()
     @commands.mod_or_permissions(manage_guild=True)
     async def celebrations(self, ctx: commands.Context):
-        """Birthday/anniversary settings. Subcommands: channel, announcements, role, makerole, gift,
-        giftmindays, hour, star, anniversaries, anniversarygift, setfor, clearfor, preview, run, version."""
+        """Birthday/anniversary settings panel (admins). Mods get the summary. Also: settings, setfor, clearfor, preview, run, version."""
+        perms = ctx.author.guild_permissions
+        if perms.administrator or perms.manage_guild:
+            await open_panel(ctx, self, panel_specs.build_specs(), title="Celebrations", intro=panel_specs.INTRO)
+            return
+        await self._send_settings(ctx)
+
+    @celebrations.command(name="settings")
+    async def celebrations_settings(self, ctx: commands.Context):
+        """Print the current settings as text."""
+        await self._send_settings(ctx)
+
+    async def _send_settings(self, ctx):
         s = await self.config.guild(ctx.guild).all()
         role = ctx.guild.get_role(s["role_id"]) if s["role_id"] else None
         role_ok = ""
         if role is not None:
-            role_ok = "(hoisted)" if role.hoist else "(⚠️ not hoisted: `.celebrations role` again to fix)"
+            role_ok = "(hoisted)" if role.hoist else "(⚠️ not hoisted: pick the role in the `.celebrations` panel again to fix)"
         await ctx.send(embeds.settings_text(s, role_ok=role_ok), allowed_mentions=discord.AllowedMentions.none())
 
     @celebrations.command(name="version")
@@ -414,49 +427,44 @@ class Celebrations(commands.Cog):
         """Show the running build (deploy probe)."""
         await ctx.send(f"Celebrations v{COG_VERSION}")
 
-    @celebrations.command(name="channel")
-    async def celebrations_channel(self, ctx: commands.Context, channel: discord.TextChannel):
-        """Where birthday + anniversary posts go (they stay up). Usually #cuddle."""
-        await self.config.guild(ctx.guild).channel_id.set(channel.id)
-        await ctx.send(f"Birthday and anniversary posts go to {channel.mention}.")
+    # ---------- settings (the panel calls these) ----------
 
-    @celebrations.command(name="announcements")
-    async def celebrations_announcements(self, ctx: commands.Context, channel: discord.TextChannel = None):
-        """Where the temporary birthday post goes (deleted when the day ends). No channel = off."""
-        await self.config.guild(ctx.guild).announce_channel_id.set(channel.id if channel else None)
-        await ctx.send(f"Temporary birthday posts go to {channel.mention}." if channel else "Announcement posts off.")
+    async def _apply_channel(self, guild, member, channel) -> str:
+        if channel is None:
+            raise PanelError("The birthday channel is required.")
+        await self.config.guild(guild).channel_id.set(channel.id)
+        return f"Birthday and anniversary posts go to {channel.mention}."
 
-    @celebrations.command(name="role")
-    async def celebrations_role(self, ctx: commands.Context, role: discord.Role):
-        """Use an existing role as the birthday role (made hoisted if it isn't)."""
-        await self.config.guild(ctx.guild).role_id.set(role.id)
+    async def _apply_announce_channel(self, guild, member, channel) -> str:
+        await self.config.guild(guild).announce_channel_id.set(channel.id if channel else None)
+        return f"Temporary birthday posts go to {channel.mention}." if channel else "Announcement posts off."
+
+    async def _apply_role(self, guild, member, role) -> str:
+        if role is None:
+            raise PanelError("The birthday role is required (or use Create role).")
+        await self.config.guild(guild).role_id.set(role.id)
         note = ""
         if not role.hoist:
             try:
                 await role.edit(hoist=True, reason="Birthday role must display separately")
             except _DISCORD_ERRORS:
                 note = " ⚠️ I couldn't make it hoisted; tick *Display role members separately* on it."
-        await ctx.send(f"Birthday role: {role.mention}.{note}" + self._position_note(ctx.guild, role),
-                       allowed_mentions=discord.AllowedMentions.none())
+        return f"Birthday role: {role.name}.{note}" + self._position_note(guild, role)
 
-    @celebrations.command(name="makerole")
-    async def celebrations_makerole(self, ctx: commands.Context):
-        """Create a hoisted 🎂 Birthday role and use it."""
+    async def _apply_makerole(self, guild, member, _value=None) -> str:
         try:
-            role = await ctx.guild.create_role(
+            role = await guild.create_role(
                 name="\N{BIRTHDAY CAKE} Birthday", colour=discord.Colour(COLOR_BIRTHDAY), hoist=True,
                 mentionable=False, reason="Celebrations birthday role",
             )
         except _DISCORD_ERRORS:
-            await ctx.send("I couldn't create the role (I need Manage Roles).")
-            return
+            raise PanelError("I couldn't create the role (I need Manage Roles).")
         try:  # as high as the bot can put it, so birthday members are listed in their own group
-            await role.edit(position=max(1, ctx.guild.me.top_role.position - 1))
+            await role.edit(position=max(1, guild.me.top_role.position - 1))
         except _DISCORD_ERRORS:
             pass
-        await self.config.guild(ctx.guild).role_id.set(role.id)
-        await ctx.send(f"Created {role.mention} and set it as the birthday role." + self._position_note(ctx.guild, role),
-                       allowed_mentions=discord.AllowedMentions.none())
+        await self.config.guild(guild).role_id.set(role.id)
+        return f"Created {role.name} and set it as the birthday role." + self._position_note(guild, role)
 
     @staticmethod
     def _position_note(guild, role) -> str:
@@ -467,51 +475,54 @@ class Celebrations(commands.Cog):
         return (f"\nNote: members with a higher hoisted role ({names}) will still be listed under that role. "
                 "Drag the birthday role above them in Server Settings → Roles if you want everyone shown separately.")
 
-    @celebrations.command(name="gift")
-    async def celebrations_gift(self, ctx: commands.Context, minimum: int, maximum: int = None):
-        """Birthday gift range. `.celebrations gift 20000 30000`, `.celebrations gift 25000` (fixed), `.celebrations gift 0` (off)."""
-        maximum = minimum if maximum is None else maximum
+    async def _apply_gift(self, guild, member, values) -> str:
+        try:
+            minimum = int(float(values["gift_min"]))
+            raw_max = str(values.get("gift_max") or "").strip()
+            maximum = int(float(raw_max)) if raw_max else minimum
+            days = int(float(values["min_days"]))
+        except (KeyError, TypeError, ValueError):
+            raise PanelError("Every box needs a plain number (the maximum can be blank).")
         if minimum < 0 or maximum < minimum:
-            await ctx.send("Use `.celebrations gift <min> [max]` with min ≤ max.")
-            return
-        gconf = self.config.guild(ctx.guild)
+            raise PanelError("The minimum can't be negative and can't be above the maximum.")
+        gconf = self.config.guild(guild)
         await gconf.gift_min.set(minimum)
         await gconf.gift_max.set(maximum)
-        await ctx.send("Birthday gift off." if maximum == 0 else f"Birthday gift: {minimum:,}–{maximum:,}.")
+        await gconf.gift_min_member_days.set(max(0, days))
+        gift = "off" if maximum == 0 else f"{minimum:,}–{maximum:,}" if maximum != minimum else f"{minimum:,}"
+        return f"Birthday gift: {gift}. Members need {max(0, days)} days in the server."
 
-    @celebrations.command(name="giftmindays")
-    async def celebrations_giftmindays(self, ctx: commands.Context, days: int):
-        """No birthday gift for members who joined less than N days ago (anti-farming, default 14)."""
-        await self.config.guild(ctx.guild).gift_min_member_days.set(max(0, days))
-        await ctx.send(f"Gift needs at least {max(0, days)} days in the server.")
-
-    @celebrations.command(name="hour")
-    async def celebrations_hour(self, ctx: commands.Context, hour: int):
-        """Pacific hour (0–23) the posts go out. Default 9 (= 5pm UK / 6pm CET)."""
+    async def _apply_hour(self, guild, member, values) -> str:
+        try:
+            hour = int(float(values["hour"]))
+        except (KeyError, TypeError, ValueError):
+            raise PanelError("Enter an hour from 0 to 23.")
         if not 0 <= hour <= 23:
-            await ctx.send("Pick an hour from 0 to 23.")
-            return
-        await self.config.guild(ctx.guild).announce_hour.set(hour)
-        await ctx.send(f"Posts go out at {hour}:00 Pacific.")
+            raise PanelError("Pick an hour from 0 to 23.")
+        await self.config.guild(guild).announce_hour.set(hour)
+        return f"Posts go out at {hour}:00 Pacific."
 
-    @celebrations.command(name="star")
-    async def celebrations_star(self, ctx: commands.Context, emoji: str):
-        """Reaction added to the chat post (match your starboard's emoji). `off` to disable."""
-        value = "" if emoji.lower() == "off" else emoji
-        await self.config.guild(ctx.guild).star_emoji.set(value)
-        await ctx.send("Star reaction off." if not value else f"Posts get a {value} reaction.")
+    async def _apply_star(self, guild, member, values) -> str:
+        raw = str((values or {}).get("emoji") or "").strip()
+        value = "" if raw.lower() in ("", "off") else raw
+        if " " in value or len(value) > 64:
+            raise PanelError("Enter one emoji, or leave it blank for no star reaction.")
+        await self.config.guild(guild).star_emoji.set(value)
+        return "Star reaction off." if not value else f"Posts get a {value} reaction."
 
-    @celebrations.command(name="anniversaries")
-    async def celebrations_anniversaries(self, ctx: commands.Context, state: bool):
-        """Turn the daily join-anniversary post on or off."""
-        await self.config.guild(ctx.guild).anniversaries.set(state)
-        await ctx.send(f"Anniversary posts {'on' if state else 'off'}.")
+    async def _apply_anniversaries(self, guild, member, on) -> str:
+        await self.config.guild(guild).anniversaries.set(bool(on))
+        return f"Anniversary posts {'on' if on else 'off'}."
 
-    @celebrations.command(name="anniversarygift")
-    async def celebrations_anniversarygift(self, ctx: commands.Context, amount: int):
-        """Wondercoins each member gets on their join anniversary (0 = off, the default)."""
-        await self.config.guild(ctx.guild).anniversary_gift.set(max(0, amount))
-        await ctx.send("Anniversary gift off." if amount <= 0 else f"Anniversary gift: {amount:,}.")
+    async def _apply_anniversary_gift(self, guild, member, values) -> str:
+        try:
+            amount = int(float(values["amount"]))
+        except (KeyError, TypeError, ValueError):
+            raise PanelError("Enter a whole number (0 = off).")
+        if amount < 0:
+            raise PanelError("Must be 0 or more.")
+        await self.config.guild(guild).anniversary_gift.set(amount)
+        return "Anniversary gift off." if amount == 0 else f"Anniversary gift: {amount:,}."
 
     @celebrations.command(name="setfor")
     async def celebrations_setfor(self, ctx: commands.Context, member: discord.Member, *, date: str):
