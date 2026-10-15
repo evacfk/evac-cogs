@@ -62,3 +62,17 @@ def test_setup_registers_all_four_cogs():
 
     asyncio.run(setup(Bot()))
     assert added == ["MyStats", "IntroForm", "IntroCleanup", "Wonderland"]
+
+
+def test_slash_descriptions_fit_discords_limit():
+    # Hybrid commands upload their docstring's first line as the slash description; Discord rejects >100 chars
+    # and fails the whole `.slash sync` (error 50035), so every command in the guide must stay within it.
+    import ast
+
+    tree = ast.parse(open(os.path.join(HERE, "guide.py")).read())
+    for node in ast.walk(tree):
+        if isinstance(node, ast.AsyncFunctionDef) and node.decorator_list:
+            doc = ast.get_docstring(node)
+            if doc:
+                first = doc.strip().split("\n")[0]
+                assert 1 <= len(first) <= 100, (node.name, len(first))

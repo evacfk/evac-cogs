@@ -271,7 +271,7 @@ class Wonderland(commands.Cog):
     @commands.mod_or_permissions(manage_guild=True)
     async def wonderland_publish(self, ctx: commands.Context, channel: discord.TextChannel,
                                  what: Literal["all", "map"] = "all"):
-        """Post the guide in a channel (`all`, the default) or just the server map (`map`). Run it again to refresh."""
+        """Post the guide (`all`) or just the server map (`map`) in a channel. Run again to refresh."""
         async with ctx.typing():
             stored = await self.config.guild(ctx.guild).publish()
             old = stored.get("messages", {}) if stored.get("channel_id") == channel.id else {}
