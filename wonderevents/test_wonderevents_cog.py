@@ -352,3 +352,69 @@ async def test_pet_cog_is_told_when_an_event_starts(env):
     assert calls == [("wonder_event_start", env.guild, "Movie Night")]
     await env.cog._tick(env.guild, START.timestamp() + 90)
     assert len(calls) == 1   # once per event
+
+
+# ------------------------------------------------------------ settings (the panel's apply methods)
+
+async def test_channel_and_reminder_settings(env):
+    gconf = env.cog.config.guild(env.guild)
+    with pytest.raises(env.mod.PanelError):
+        await env.cog._apply_channel(env.guild, None, None)
+    await env.cog._apply_channel(env.guild, None, env.chan)
+    assert await gconf.channel_id() == env.chan.id
+    for bad in ({"minutes": "-1"}, {"minutes": "x"}, {}):
+        with pytest.raises(env.mod.PanelError):
+            await env.cog._apply_remind(env.guild, None, bad)
+    assert await gconf.remind_minutes() == 60
+    assert "off" in await env.cog._apply_remind(env.guild, None, {"minutes": "0"})
+    await env.cog._apply_remind(env.guild, None, {"minutes": "30"})
+    assert await gconf.remind_minutes() == 30
+
+
+async def test_kind_save_validates_and_keeps_builtin_roles(env):
+    gconf = env.cog.config.guild(env.guild)
+    for values in ({"key": "bad key", "hours": "2"}, {"key": "", "hours": "2"}, {"key": "x" * 25, "hours": "2"},
+                   {"key": "trivia", "hours": "0.1"}, {"key": "trivia", "hours": "100"}, {"key": "trivia", "hours": "x"},
+                   {"key": "trivia", "hours": "2", "emoji": "two words"}):
+        with pytest.raises(env.mod.PanelError):
+            await env.cog._apply_kind_save(env.guild, None, None, values, None)
+    assert await gconf.kinds() == {}
+    await env.cog._apply_kind_save(env.guild, None, None, {"key": "Trivia", "emoji": "", "hours": "1.5"}, None)
+    saved = (await gconf.kinds())["trivia"]
+    assert saved["duration"] == 90 and saved["emoji"] == "\N{CALENDAR}"
+    await env.cog._apply_kind_save(env.guild, None, "game", {"emoji": "\N{DIRECT HIT}", "hours": "2"}, None)
+    kinds = await env.cog._kinds(env.guild)
+    assert kinds["game"]["duration"] == 120 and kinds["game"]["ping_role_id"] == 1536590356492320768
+    assert "built in" in await env.cog._apply_kind_remove(env.guild, None, "game")
+    assert "Removed" in await env.cog._apply_kind_remove(env.guild, None, "trivia")
+    assert await gconf.kinds() == {}
+
+
+async def test_settings_opens_the_panel_for_admins_and_prints_for_others(env, monkeypatch):
+    opened = []
+
+    async def fake_open(ctx, cog, specs, *, title, intro=""):
+        opened.append((title, [s.key for s in specs]))
+    monkeypatch.setattr(env.mod, "open_panel", fake_open)
+    sent = []
+
+    class Ctx:
+        guild = env.guild
+
+        def __init__(self, manage):
+            self.author = types.SimpleNamespace(guild_permissions=types.SimpleNamespace(administrator=False, manage_guild=manage))
+
+        async def send(self, text=None, **kw):
+            sent.append(text)
+    fn = getattr(env.mod.WonderEvents.event_settings, "callback", env.mod.WonderEvents.event_settings)
+    await fn(env.cog, Ctx(True))
+    assert opened == [("Events", ["channel", "remind", "kinds"])] and sent == []
+    await fn(env.cog, Ctx(False))
+    assert "WonderEvents v" in sent[-1] and len(opened) == 1
+
+
+async def test_removed_setter_commands_are_gone(env):
+    for gone in ("event_channel", "event_remind", "event_kind", "event_kind_list", "event_kind_add", "event_kind_remove"):
+        assert not hasattr(env.mod.WonderEvents, gone)
+    for kept in ("event_list", "event_create", "event_edit", "event_cancel", "event_poll", "event_settings", "event_version"):
+        assert hasattr(env.mod.WonderEvents, kept)

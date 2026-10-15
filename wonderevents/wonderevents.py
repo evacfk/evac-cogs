@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 import time
 from datetime import datetime, timedelta, timezone
 
@@ -23,6 +24,8 @@ import discord
 from redbot.core import Config, commands
 
 from . import embeds, engine
+from . import panel as panel_specs
+from .settings_panel import PanelError, open_panel
 from .constants import (
     BTN_GOING,
     BTN_MAYBE,
@@ -276,7 +279,7 @@ class WonderEvents(commands.Cog):
         k = (await self._kinds(guild)).get(kind) or {}
         channel = guild.get_channel(settings["channel_id"] or 0)
         if channel is None:
-            return None, "Set the events channel first: `.event channel #channel`."
+            return None, "Set the events channel first: open `.event settings` and pick it."
         async with self._lock(guild.id):
             event_id = await gconf.next_id()
             await gconf.next_id.set(event_id + 1)
@@ -537,7 +540,7 @@ class WonderEvents(commands.Cog):
 
     @event.command(name="create")
     async def event_create(self, ctx: commands.Context, kind: str, host: discord.Member = None):
-        """Create an event: `.event create movie` (or `game`, any kind from `.event kind list`). Optional host."""
+        """Create an event: `.event create movie` (or `game`, or any kind in `.event settings`). Optional host."""
         if not await self._require_host(ctx):
             return
         kinds = await self._kinds(ctx.guild)
@@ -547,7 +550,7 @@ class WonderEvents(commands.Cog):
             await ctx.send(f"Unknown kind `{kind}`. Kinds: {known}")
             return
         if not await self.config.guild(ctx.guild).channel_id():
-            await ctx.send("Set the events channel first: `.event channel #channel`.")
+            await ctx.send("Set the events channel first: open `.event settings` and pick it.")
             return
         label = kinds[kind].get("label") or kind.title()
         view = OpenFormView(self, author_id=ctx.author.id, guild_id=ctx.guild.id, kind=kind,
@@ -664,63 +667,60 @@ class WonderEvents(commands.Cog):
         await self.config.member(ctx.author).tz.set(tz)
         await ctx.send(f"Event times you type are read as **{zone.key}** unless you add a timezone.")
 
-    # -- settings ---------------------------------------------------------
+    # -- settings (the panel calls these) ---------------------------------------
 
-    @event.command(name="channel")
-    async def event_channel(self, ctx: commands.Context, channel: discord.TextChannel):
-        """Where event announcements are posted."""
-        if not await self._require_host(ctx):
-            return
-        await self.config.guild(ctx.guild).channel_id.set(channel.id)
-        await ctx.send(f"Events are posted in {channel.mention}.")
+    async def _apply_channel(self, guild, member, channel) -> str:
+        if channel is None:
+            raise PanelError("The events channel is required.")
+        await self.config.guild(guild).channel_id.set(channel.id)
+        return f"Events are posted in {channel.mention}."
 
-    @event.command(name="remind")
-    async def event_remind(self, ctx: commands.Context, minutes: int):
-        """How long before start the Going/Maybe reminder goes out (0 = off). Default 60."""
-        if not await self._require_host(ctx):
-            return
-        await self.config.guild(ctx.guild).remind_minutes.set(max(0, minutes))
-        await ctx.send("Reminders off." if minutes <= 0 else f"Reminders go out {minutes} minutes before.")
+    async def _apply_remind(self, guild, member, values) -> str:
+        try:
+            minutes = int(float(values["minutes"]))
+        except (KeyError, TypeError, ValueError):
+            raise PanelError("Enter a whole number of minutes (0 = off).")
+        if minutes < 0:
+            raise PanelError("Must be 0 or more.")
+        await self.config.guild(guild).remind_minutes.set(minutes)
+        return "Reminders off." if minutes == 0 else f"Reminders go out {minutes} minutes before."
 
-    @event.group(name="kind", invoke_without_command=True)
-    async def event_kind(self, ctx: commands.Context):
-        """Event kinds: `list`, and `add <key> [emoji] [hours]`/`remove` for extras. movie, game and event are built in."""
-        await self.event_kind_list(ctx)
-
-    @event_kind.command(name="list")
-    async def event_kind_list(self, ctx: commands.Context):
-        kinds = await self._kinds(ctx.guild)
-        lines = [
-            f"`{k}` {v.get('emoji', '')} **{v.get('label')}** — pings <@&{v.get('ping_role_id')}>, "
-            f"{v.get('duration', DEFAULT_DURATION_MIN) // 60}h"
-            for k, v in kinds.items()
-        ]
-        await ctx.send("\n".join(lines), allowed_mentions=discord.AllowedMentions.none())
-
-    @event_kind.command(name="add")
-    async def event_kind_add(self, ctx: commands.Context, key: str, emoji: str = None, hours: float = 3.0):
-        """Add a new kind (pings the generic event role), or change the emoji/length of movie, game or event.
-        `.event kind add trivia 🧠 2`"""
-        if not await self._require_host(ctx):
-            return
-        key = key.lower()
+    async def _apply_kind_save(self, guild, member, item_id, values, picked=None) -> str:
+        """Add a kind, or change the emoji/length of an existing one (movie, game and event are built in)."""
+        key = (item_id or str(values.get("key") or "")).strip().lower()
+        if not re.fullmatch(r"[a-z0-9_-]{1,24}", key):
+            raise PanelError("The key is 1-24 letters, digits, `-` or `_` (members type it in `.event create <key>`).")
+        try:
+            hours = float(str(values.get("hours") or "").strip() or 3)
+        except ValueError:
+            raise PanelError("Length must be a number of hours, like 3 or 1.5.")
+        if not 0.5 <= hours <= 72:
+            raise PanelError("Length must be between 0.5 and 72 hours.")
+        emoji = str(values.get("emoji") or "").strip()
+        if " " in emoji or len(emoji) > 64:
+            raise PanelError("Enter a single emoji.")
         base = BUILTIN_KINDS.get(key) or {"label": key.title(), "emoji": "\N{CALENDAR}"}
         emoji = emoji or base["emoji"]
-        async with self.config.guild(ctx.guild).kinds() as kinds:
-            kinds[key] = {"emoji": emoji, "duration": max(30, int(hours * 60))}
-        await ctx.send(f"Kind `{key}` saved: {emoji} {base['label']}, {max(30, int(hours * 60)) // 60}h.")
+        minutes = max(30, int(hours * 60))
+        async with self.config.guild(guild).kinds() as kinds:
+            kinds[key] = {"emoji": emoji, "duration": minutes}
+        return f"Kind `{key}` saved: {emoji} {base['label']}, {minutes / 60:g}h."
 
-    @event_kind.command(name="remove")
-    async def event_kind_remove(self, ctx: commands.Context, key: str):
-        if not await self._require_host(ctx):
-            return
-        async with self.config.guild(ctx.guild).kinds() as kinds:
-            kinds.pop(key.lower(), None)
-        await ctx.send(f"Removed kind `{key.lower()}`.")
+    async def _apply_kind_remove(self, guild, member, item_id) -> str:
+        key = str(item_id).lower()
+        async with self.config.guild(guild).kinds() as kinds:
+            kinds.pop(key, None)
+        if key in BUILTIN_KINDS:
+            return f"`{key}` is built in, so it is back to its default emoji and length."
+        return f"Removed kind `{key}`."
 
     @event.command(name="settings")
     async def event_settings(self, ctx: commands.Context):
-        """Show event settings."""
+        """Admins: open the settings panel. Everyone else: the current settings."""
+        perms = ctx.author.guild_permissions
+        if perms.administrator or perms.manage_guild:
+            await open_panel(ctx, self, panel_specs.build_specs(), title="Events", intro=panel_specs.INTRO)
+            return
         s = await self.config.guild(ctx.guild).all()
         hosts = ", ".join(f"<@&{r}>" for r in STAFF_ROLE_IDS)
         channel = f"<#{s['channel_id']}>" if s["channel_id"] else "not set"
