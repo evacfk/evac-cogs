@@ -31,7 +31,7 @@ DEFAULT_WARNING = (
 GUILD_DEFAULTS = {
     "enabled": True,
     "mod_channel_id": DEFAULT_MOD_CHANNEL_ID,
-    "cuddle_channel_id": None,      # set once with `.rejoinwatch fallback #cuddle`
+    "cuddle_channel_id": None,      # set in the `.rejoinwatch` panel
     "mod_role_id": DEFAULT_MOD_ROLE_ID,
     "retention_days": DEFAULT_RETENTION_DAYS,
     "warning_text": DEFAULT_WARNING,
