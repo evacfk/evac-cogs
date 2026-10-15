@@ -1,0 +1,15 @@
+{
+    "name": "WonderKB",
+    "short": "Keeps the Assistant cog's knowledge current from the server's own channels, shop, aliases and guide.",
+    "description": "Feeds the Vertyco Assistant cog automatically so nobody maintains a knowledge file. On a schedule (and with `.kb sync`) it reads the public channels you choose (default: announcements, server-guide, rules, server-updates, shop), the live shop items and prices, the Alias cog's shortcuts, the Wonderland guide and a short built-in seed, and writes only what changed into the Assistant's embeddings. When the assistant answers \"I'm not sure\", the question is posted to #mod-chat; a mod teaches the answer once with `.kb add <question> | <answer>`. Needs the Assistant cog loaded with an API key.",
+    "end_user_data_statement": "Stores per guild: the list of source channels, the mod-chat channel, sync timing, and short hashes of recently logged questions. Knowledge text is written into the Assistant cog's embedding store, which holds public channel text and any answers a mod adds by hand. Nothing about individual members is stored.",
+    "install_msg": "Needs the Assistant cog loaded with an API key. Run `[p]load wonderkb`, then `[p]kb status` and `[p]kb sync`.",
+    "author": ["evacfk"],
+    "version": "1.0.0",
+    "requirements": [],
+    "tags": ["assistant", "knowledge", "help", "ai"],
+    "min_bot_version": "3.5.0",
+    "hidden": false,
+    "disabled": false,
+    "type": "COG"
+}
