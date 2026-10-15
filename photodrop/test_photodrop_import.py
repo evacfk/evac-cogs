@@ -64,4 +64,4 @@ def test_pp_version_probe_exists_and_matches_the_constant():
     from photodrop.constants import COG_VERSION
 
     assert hasattr(photodrop.PhotoDrop, "pp_version")
-    assert COG_VERSION == "1.1.0"
+    assert COG_VERSION == "1.2.0"

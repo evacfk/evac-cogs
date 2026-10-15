@@ -36,7 +36,7 @@ DEFAULT_POLL_DURATION_HOURS = 24
 POLL_CLOSE_GRACE_MINUTES = 5  # wait this long past expiry before reading results, so Discord has finalized tallies
 DEFAULT_WEEKLY_POLL_WEEKDAY = 6  # Sunday, per date.weekday() (Mon=0 .. Sun=6)
 DEFAULT_WEEKLY_POLL_HOUR = 18  # 6pm local, "Sunday evening"
-DEFAULT_JOB_ROLE_ID = 1546643582633377832  # hardcoded default; changeable via `.pp set role`
+DEFAULT_JOB_ROLE_ID = 1546643582633377832  # hardcoded default; changeable in the `.pp set` panel
 DEFAULT_REMINDER_HOURS_BEFORE = 1  # ping the role this many hours before local midnight if anyone's still missing
 
 DEFAULT_MEMBER = {
@@ -64,4 +64,4 @@ DEFAULT_GUILD = {
 }
 
 # bumped on every deploy so `.pp version` can confirm the new build is live
-COG_VERSION = "1.1.0"
+COG_VERSION = "1.2.0"

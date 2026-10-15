@@ -3,7 +3,7 @@
 See photodrop-cog-design.md (evac.dev Bots project) for the full spec this
 implements. Command group is `.pp` / `.pockypolice`.
 
-The job role (`.pp set role`, hardcoded default DEFAULT_JOB_ROLE_ID) is the
+The job role (the `.pp set` panel, hardcoded default DEFAULT_JOB_ROLE_ID) is the
 single source of truth for who the job holder is -- there is no separately
 tracked "assigned member" id. Anyone currently holding the role can `.pp
 drop`; hire/fire/clearstrikes just add or remove that role. If more than one
@@ -19,6 +19,7 @@ from __future__ import annotations
 import asyncio
 import calendar as calendar_module
 import logging
+import re
 from datetime import datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -29,6 +30,8 @@ from redbot.core.bot import Red
 from redbot.core.data_manager import cog_data_path
 
 from . import collage, embeds, models, storage
+from . import panel as panel_specs
+from .settings_panel import PanelError, open_panel
 from .constants import (
     COG_VERSION,
     DEFAULT_GUILD,
@@ -224,7 +227,7 @@ class PhotoDrop(commands.Cog):
         rating post silently fail on locked-thread setups.
 
         Falls back to the main drop channel (`channel_id`) if a dedicated
-        rating channel was never set with `.pp set ratingchannel`.
+        rating channel was never set with the `.pp set` panel.
         """
         rating_channel_id = await self.config.guild(guild).rating_channel_id()
         if rating_channel_id:
@@ -368,7 +371,7 @@ class PhotoDrop(commands.Cog):
         """Add the job role to `user`."""
         role = await self._job_role(ctx.guild)
         if role is None:
-            await ctx.send("No job role configured. Set one with `.pp set role @role` first.")
+            await ctx.send("No job role configured. Pick one in `.pp set` first.")
             return
         await user.add_roles(role, reason="photodrop: hire")
         await ctx.send(f"{user.display_name} is hired.")
@@ -484,7 +487,7 @@ class PhotoDrop(commands.Cog):
 
         channel = await self._rating_channel(ctx.guild)
         if channel is None:
-            await ctx.send("No channel configured. Set one with `.pp set channel #channel` first.")
+            await ctx.send("No channel configured. Pick one in `.pp set` first.")
             return
 
         raw_paths = storage.list_photos(self.data_dir, user.id, date)
@@ -515,82 +518,75 @@ class PhotoDrop(commands.Cog):
 
     # -- set (config) ------------------------------------------------------------
 
-    @pp.group(name="set", invoke_without_command=True)
+    @pp.command(name="set")
     @commands.guild_only()
-    @commands.mod_or_permissions(manage_roles=True)
+    @commands.admin_or_permissions(manage_guild=True)
     async def pp_set(self, ctx: commands.Context):
-        """Configure the photodrop cog."""
-        await ctx.send_help(ctx.command)
+        """Open the photodrop settings panel (channels, job role, rater, quota, strikes)."""
+        await open_panel(ctx, self, panel_specs.build_specs(), title="Photo drop", intro=panel_specs.INTRO)
 
-    @pp_set.command(name="channel")
-    async def pp_set_channel(self, ctx: commands.Context, channel: discord.TextChannel):
-        """Set the shared channel for drops, shift reports, and the end-of-day reminder."""
-        await self.config.guild(ctx.guild).channel_id.set(channel.id)
-        await ctx.send(f"Channel set to {channel.mention}.")
+    # ---------- settings (the panel calls these) ----------
 
-    @pp_set.command(name="ratingchannel")
-    async def pp_set_ratingchannel(
-        self, ctx: commands.Context, channel: discord.TextChannel | discord.Thread
-    ):
-        """Set the channel (or thread) for nightly rating prompts and weekly/manual polls.
+    async def _apply_channel(self, guild, member, channel) -> str:
+        if channel is None:
+            raise PanelError("The shared channel is required.")
+        await self.config.guild(guild).channel_id.set(channel.id)
+        return f"Channel set to {channel.mention}."
 
-        Accepts a thread as well as a regular channel -- e.g. a public
-        thread you made under your main channel, used just for ratings.
-        Falls back to the main `.pp set channel` if never set.
-        """
-        await self.config.guild(ctx.guild).rating_channel_id.set(channel.id)
-        await ctx.send(f"Rating channel set to {channel.mention}.")
+    async def _apply_rating_channel(self, guild, member, channel) -> str:
+        """A channel or a thread; no channel falls back to the shared channel."""
+        await self.config.guild(guild).rating_channel_id.set(channel.id if channel else None)
+        if channel is None:
+            return "Rating channel cleared. Ratings go to the shared channel."
+        return f"Rating channel set to {channel.mention}."
 
-    @pp_set.command(name="role")
-    async def pp_set_role(self, ctx: commands.Context, role: discord.Role):
-        """Set the job role -- the single source of truth for who can `.pp drop`."""
-        await self.config.guild(ctx.guild).job_role_id.set(role.id)
-        await ctx.send(f"Job role set to {role.mention}.")
+    async def _apply_job_role(self, guild, member, role) -> str:
+        if role is None:
+            raise PanelError("The job role is required.")
+        await self.config.guild(guild).job_role_id.set(role.id)
+        return f"Job role set to {role.name}."
 
-    @pp_set.command(name="quota")
-    async def pp_set_quota(self, ctx: commands.Context, quota: int):
-        """Set the daily photo quota."""
+    async def _apply_rater(self, guild, member, values) -> str:
+        raw = str((values or {}).get("user") or "").strip()
+        if not raw:
+            await self.config.guild(guild).rater_id.set(None)
+            return "Rater reset: the server owner can rate."
+        digits = re.sub(r"\D", "", raw)
+        target = guild.get_member(int(digits)) if digits else None
+        if target is None:
+            raise PanelError("I can't find that member. Paste their user ID or @mention.")
+        await self.config.guild(guild).rater_id.set(target.id)
+        return f"Rater set to {target.display_name}."
+
+    async def _apply_daily(self, guild, member, values) -> str:
+        try:
+            quota = int(float(values["quota"]))
+            hours = int(float(values["reminder_hours"]))
+        except (KeyError, TypeError, ValueError):
+            raise PanelError("Both boxes need a whole number.")
         if quota < 1:
-            await ctx.send("Quota must be at least 1.")
-            return
-        await self.config.guild(ctx.guild).quota.set(quota)
-        await ctx.send(f"Quota set to {quota}.")
+            raise PanelError("Quota must be at least 1.")
+        if hours < 1 or hours >= 24:
+            raise PanelError("The reminder must be 1 to 23 hours before local midnight.")
+        conf = self.config.guild(guild)
+        await conf.quota.set(quota)
+        await conf.reminder_hours_before.set(hours)
+        return (f"Quota {quota}/day. Reminder {hours} hour{'s' if hours != 1 else ''} before local midnight.")
 
-    @pp_set.command(name="strikewindow")
-    async def pp_set_strikewindow(self, ctx: commands.Context, days: int):
-        """Set the rolling strike window, in days."""
+    async def _apply_strikes(self, guild, member, values) -> str:
+        try:
+            days = int(float(values["window_days"]))
+            threshold = int(float(values["threshold"]))
+        except (KeyError, TypeError, ValueError):
+            raise PanelError("Both boxes need a whole number.")
         if days < 1:
-            await ctx.send("Window must be at least 1 day.")
-            return
-        await self.config.guild(ctx.guild).strike_window_days.set(days)
-        await ctx.send(f"Strike window set to {days} days.")
-
-    @pp_set.command(name="strikethreshold")
-    async def pp_set_strikethreshold(self, ctx: commands.Context, threshold: int):
-        """Set how many strikes (within the window) cost the job role."""
+            raise PanelError("The window must be at least 1 day.")
         if threshold < 1:
-            await ctx.send("Threshold must be at least 1.")
-            return
-        await self.config.guild(ctx.guild).strike_threshold.set(threshold)
-        await ctx.send(f"Strike threshold set to {threshold}.")
-
-    @pp_set.command(name="rater")
-    async def pp_set_rater(self, ctx: commands.Context, user: discord.Member):
-        """Set who can click GOAT/Good/Mid/Bad on the nightly rating prompts (defaults to the server owner)."""
-        await self.config.guild(ctx.guild).rater_id.set(user.id)
-        await ctx.send(f"Rater set to {user.display_name}.")
-
-    @pp_set.command(name="reminderhours")
-    async def pp_set_reminderhours(self, ctx: commands.Context, hours: int):
-        """Ping the job role this many hours before local midnight if anyone still hasn't submitted."""
-        if hours < 1:
-            await ctx.send("Must be at least 1 hour.")
-            return
-        if hours >= 24:
-            await ctx.send("Must be less than 24 hours.")
-            return
-        await self.config.guild(ctx.guild).reminder_hours_before.set(hours)
-        await ctx.send(f"Reminder set to {hours} hour{'s' if hours != 1 else ''} before local midnight.")
+            raise PanelError("The threshold must be at least 1.")
+        conf = self.config.guild(guild)
+        await conf.strike_window_days.set(days)
+        await conf.strike_threshold.set(threshold)
+        return f"{threshold} strike(s) within {days} day(s) cost the job role."
 
     # -- ratephotos / rated -------------------------------------------------------
 
@@ -607,7 +603,7 @@ class PhotoDrop(commands.Cog):
 
         channel = await self._rating_channel(ctx.guild)
         if channel is None:
-            await ctx.send("No channel configured. Set one with `.pp set channel #channel` first.")
+            await ctx.send("No channel configured. Pick one in `.pp set` first.")
             return
 
         raw_paths = storage.list_photos(self.data_dir, user.id, date)
@@ -729,7 +725,7 @@ class PhotoDrop(commands.Cog):
 
         # get_channel_or_thread, not get_channel: the poll may have been
         # posted in a thread (e.g. a rating thread set via
-        # `.pp set ratingchannel`), and get_channel() never resolves
+        # the `.pp set` panel), and get_channel() never resolves
         # threads -- using it here would silently drop every poll posted
         # in a thread with no results ever posted and no error.
         channel = guild.get_channel_or_thread(record["channel_id"])
