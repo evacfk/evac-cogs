@@ -172,6 +172,7 @@ except ImportError:
         command=_group,
         guild_only=_passthrough_decorator,
         mod_or_permissions=_passthrough_decorator,
+        admin_or_permissions=_passthrough_decorator,
         has_permissions=_passthrough_decorator,
     )
 

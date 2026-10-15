@@ -85,6 +85,7 @@ class Spec:
     choices: Sequence[tuple] = ()                            # (label, value)
     multi: int = 1                                           # channel/role: how many may be picked
     min_multi: int = 1                                       # channel/role: how many must be picked
+    channel_types: Sequence[str] = ()                        # channel: limit the picker to these discord.ChannelType names, e.g. ("category",)
     clearable: bool = False                                  # channel/role: allow "Clear"
     confirm: str = ""                                        # non-empty: ask before applying
     confirm_if: Optional[Callable[[Any], bool]] = None       # which values need the confirm (toggles: only On)
@@ -394,6 +395,8 @@ class SettingsPanel(discord.ui.View):
             ids = [i for i in ids if i][: spec.multi]
             kwargs = dict(placeholder=f"Choose {spec.label.lower()}", min_values=max(1, min(spec.min_multi, spec.multi)),
                           max_values=max(1, spec.multi), row=2)
+            if kind == "channel" and spec.channel_types:
+                kwargs["channel_types"] = [getattr(discord.ChannelType, name) for name in spec.channel_types]
             if ids:
                 dtype = discord.SelectDefaultValueType.channel if kind == "channel" else discord.SelectDefaultValueType.role
                 kwargs["default_values"] = [discord.SelectDefaultValue(id=i, type=dtype) for i in ids]

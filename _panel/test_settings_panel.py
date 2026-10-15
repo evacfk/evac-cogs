@@ -557,3 +557,14 @@ async def test_min_multi_is_enforced_by_the_dropdown_and_many_item_actions_fit()
     labels = [c.label for c in panel.children if isinstance(c, discord.ui.Button) and c.row == 3]
     assert labels == ["A0", "A1", "A2", "A3", "A4"]
     assert len(panel.to_components()) <= 5
+
+
+async def test_channel_types_limit_the_channel_picker():
+    panel, store, owner = await make()
+    spec = next(x for x in panel.specs if x.key == "chan")
+    spec.channel_types = ("category",)
+    await pick_setting(panel, owner, "chan")
+    assert child(panel, discord.ui.ChannelSelect).channel_types == [discord.ChannelType.category]
+    spec.channel_types = ()
+    await pick_setting(panel, owner, "chan")
+    assert not child(panel, discord.ui.ChannelSelect).channel_types
