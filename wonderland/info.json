@@ -5,7 +5,7 @@
     "end_user_data_statement": "The guide stores only the channel and message IDs of any published copy. IntroForm stores, per guild, the intros channel ID and each member's submitted intro answers and the ID of their posted intro message, until the member deletes their intro or leaves. IntroCleanup stores the intros and log channel IDs. MyStats stores nothing.",
     "install_msg": "Moving from the separate cogs? First run `[p]unload mystats introform introcleanup`, then `[p]cog install evac-cogs wonderland` and `[p]load wonderland`. Saved intro-form and cleanup settings carry over. Try `[p]wld`, then `[p]wld publish #server-guide` when you want the guide posted.",
     "author": ["evacfk"],
-    "version": "1.4.0",
+    "version": "1.4.1",
     "requirements": [],
     "tags": ["guide", "help", "commands", "server map", "intro", "stats"],
     "min_bot_version": "3.5.0",
