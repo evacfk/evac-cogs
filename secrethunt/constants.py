@@ -1,7 +1,7 @@
 """Config defaults and fixed values for secrethunt (Secrets of Wonderland)."""
 from zoneinfo import ZoneInfo
 
-COG_VERSION = "1.8.0"
+COG_VERSION = "1.8.1"
 CONFIG_IDENTIFIER = 0x5EC8E7A1
 HOME_TZ = ZoneInfo("America/Los_Angeles")
 
@@ -19,6 +19,9 @@ REACT_LOCK_HOURS = 24              # ...for this long (test mode: TEST_DELAY_SEC
 POOL_MIN, POOL_MAX = 2, 5
 ICON_MAX_BYTES = 256 * 1024
 HALL_BUDGET = 3800                 # characters of solver names per Hall of Secrets post (embed limit is 4096)
+
+# Easy poems end with this line so nobody waits for something to react to. It must never name or hint at the word.
+EASY_NUDGE = "Easy secret: it begins when you type something in chat. There is nothing to click or react to yet."
 
 TIER_ORDER = ("easy", "medium", "hard", "expert")
 # Easy deliberately has no role or badge: solvers are only listed in the Hall of Secrets.

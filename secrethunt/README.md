@@ -36,6 +36,11 @@ trigger and pin notice, remove reactions), Read Message History, Manage Roles. K
 `.secrethunt` (the panel), `status`, `version`, `roleicon <tier or puzzle>`, `who <member>`, `preview [id]` (DMs you every variant's clues and answers: spoilers), `reset <member> [id]`.
 Everything else (pool, Hall, announcements, setup, go live, poem, roles, enable/disable, test mode) is in the panel.
 
+## Easy vs Medium and up
+Every Easy poem is posted with a footer telling players that a secret begins when they type something in chat (and that there is
+nothing to click or react to yet), because players kept looking for something to react to. It never names or shapes the word.
+Medium and up get no footer on purpose. The line lives in `constants.EASY_NUDGE`; the Hall intro carries a matching Easy hint.
+
 ## Adding a weekly puzzle
 Add a dict to `puzzles.py` (see `LATE_RABBIT`) and register it in `PUZZLES`. A test checks that the poem's
 acrostic spells the trigger and that no answer appears in the public poem. Then open `.secrethunt`, Puzzles tab: *Set up objects*, then *Go live*. Earlier puzzles stay live: they never expire.

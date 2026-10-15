@@ -129,9 +129,11 @@ async def test_setup_pins_one_button_message_in_every_room(env):
 
 async def test_cog_load_registers_the_persistent_buttons_and_unload_stops_them(env):
     await env.cog.cog_load()
-    assert env.bot.views == [env.cog._view] and not env.cog._view.stopped
+    assert env.bot.views == [env.cog._view]
+    stopped = []
+    env.cog._view.stop = lambda: stopped.append(True)  # works with the repo's stub View and with real discord.py
     env.cog.cog_unload()
-    assert env.cog._view.stopped
+    assert stopped == [True]
 
 
 async def test_the_poem_word_starts_the_chain_and_the_message_is_deleted(env):
@@ -382,3 +384,56 @@ async def test_both_puzzles_can_run_side_by_side(env):
     # a clock reaction still works on the Rabbit's watch and the Glass's buttons still work on the Glass
     ch, key = await right(env, m)
     assert await press(env, m, ch, key) == GLASS["found"]
+
+
+# ---------------------------------------------------------------- the Easy "type something" nudge
+
+
+@pytest.fixture
+def footers(monkeypatch):
+    """Every footer text set on any embed (recorded, so it works with the repo stub and with real discord.py)."""
+    import discord
+    seen = []
+    original = getattr(discord.Embed, "set_footer", None)
+
+    def spy(self, text=None, **kw):
+        seen.append(text)
+        return original(self, text=text, **kw) if original else self
+
+    monkeypatch.setattr(discord.Embed, "set_footer", spy, raising=False)
+    return seen
+
+
+async def test_every_easy_poem_says_you_have_to_type_something_and_never_what(env, footers):
+    from secrethunt import constants
+    embeds = importlib.import_module("secrethunt.embeds")
+    for puzzle in PUZZLES.values():
+        if puzzle["tier"] == "easy":
+            footers.clear()
+            embeds.poem_embed(puzzle)
+            assert footers == [constants.EASY_NUDGE]
+    nudge = constants.EASY_NUDGE.lower()
+    assert all(p["trigger"].lower() not in nudge for p in PUZZLES.values())  # it never names the word
+    assert "`" not in nudge and "prefix" not in nudge and "command" not in nudge and "dot" not in nudge  # nor its shape
+
+
+async def test_medium_and_above_poems_get_no_nudge(env, footers):
+    embeds = importlib.import_module("secrethunt.embeds")
+    for tier in ("medium", "hard", "expert"):
+        embeds.poem_embed(dict(GLASS, tier=tier))
+    assert footers == []
+
+
+async def test_the_hall_intro_tells_easy_players_to_type_but_not_the_others(env):
+    embeds = importlib.import_module("secrethunt.embeds")
+    text = embeds.intro_embed([]).description
+    lines = text.splitlines()
+    assert "typing something" in next(line for line in lines if "**Easy:**" in line)
+    for tier in ("Medium", "Hard", "Expert"):
+        assert "typing" not in next(line for line in lines if f"**{tier}:**" in line)
+
+
+async def test_posting_an_easy_poem_carries_the_nudge(env, footers):
+    from secrethunt import constants
+    await env.cog._apply_poem(env.g, member(env, 1), env.chans[1], PID)
+    assert footers == [constants.EASY_NUDGE]

@@ -1,10 +1,14 @@
 """Discord-facing rendering for secrethunt, kept apart from the engine."""
 import discord
 
+from .constants import EASY_NUDGE
+
 
 def poem_embed(puzzle: dict) -> discord.Embed:
     embed = discord.Embed(
         title=puzzle["poem_title"], description="*" + "\n".join(puzzle["poem"]) + "*", color=discord.Color.gold())
+    if puzzle.get("tier") == "easy":  # Medium and up deliberately say nothing about how a secret begins
+        embed.set_footer(text=EASY_NUDGE)
     return embed
 
 
@@ -41,7 +45,7 @@ def intro_embed(poem_channel_ids) -> discord.Embed:
         "comes to find you. Everything happens in Discord, and your path is your own, so sharing answers with a "
         "friend won't help them.\n\n"
         "**Tiers:**\n"
-        "\N{LARGE GREEN CIRCLE} **Easy:** a few days. A new one most weeks.\n"
+        "\N{LARGE GREEN CIRCLE} **Easy:** a few days. A new one most weeks. You begin by typing something in chat.\n"
         "\N{LARGE ORANGE CIRCLE} **Medium:** about a week.\n"
         "\N{LARGE RED CIRCLE} **Hard:** weeks.\n"
         "\N{LARGE PURPLE CIRCLE} **Expert:** months.\n\n"
