@@ -1,6 +1,6 @@
 """Defaults and tuning values for rejoinwatch."""
 
-VERSION = "1.0.1"
+VERSION = "1.1.0"
 
 # #mod-chat: the same channel serverpulse and lurker post to.
 DEFAULT_MOD_CHANNEL_ID = 912520841613418596

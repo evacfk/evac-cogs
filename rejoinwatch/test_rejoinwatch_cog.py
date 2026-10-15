@@ -248,12 +248,12 @@ class FakeInteraction:
 
 class FakeCtx:
     def __init__(self, guild):
-        self.guild, self.sent, self.helped = guild, [], False
+        self.guild, self.sent, self.helped, self.command = guild, [], False, None
 
     async def send(self, text=None, **kw):
         self.sent.append(text)
 
-    async def send_help(self):
+    async def send_help(self, *a):
         self.helped = True
 
 
@@ -720,40 +720,49 @@ async def test_clear_forgives_a_member(env):
 
 
 async def test_retention_validates_and_prunes(env):
-    ctx = FakeCtx(env.guild)
     seed(env, 7, 40)
-    await env.cog.rw_retention.callback(env.cog, ctx, 3)
-    assert "between" in ctx.sent[-1] and cfg_val(env, "retention_days").current() == 180
-    await env.cog.rw_retention.callback(env.cog, ctx, 30)
-    assert cfg_val(env, "retention_days").current() == 30
+    for bad in ("3", "9999", "abc", ""):
+        with pytest.raises(env.mod.PanelError):
+            await env.cog._apply_retention(env.guild, None, {"days": bad})
+    assert cfg_val(env, "retention_days").current() == 180
+    msg = await env.cog._apply_retention(env.guild, None, {"days": "30"})
+    assert "30 days" in msg and cfg_val(env, "retention_days").current() == 30
     assert stored(env) == {}  # the 40-day-old leave expired immediately
 
 
 async def test_toggle_and_channel_setters(env):
-    ctx = FakeCtx(env.guild)
-    await env.cog.rw_toggle.callback(env.cog, ctx)
-    assert cfg_val(env, "enabled").current() is False and "OFF" in ctx.sent[-1]
-    await env.cog.rw_toggle.callback(env.cog, ctx)
+    assert "OFF" in await env.cog._apply_enabled(env.guild, None, False)
+    assert cfg_val(env, "enabled").current() is False
+    assert "on" in await env.cog._apply_enabled(env.guild, None, True)
     assert cfg_val(env, "enabled").current() is True
     new = env.guild.add_channel(777, "other")
-    await env.cog.rw_fallback.callback(env.cog, ctx, new)
-    await env.cog.rw_modchannel.callback(env.cog, ctx, new)
+    await env.cog._apply_fallback(env.guild, None, new)
+    await env.cog._apply_mod_channel(env.guild, None, new)
     assert cfg_val(env, "cuddle_channel_id").current() == 777
     assert cfg_val(env, "mod_channel_id").current() == 777
-    await env.cog.rw_modrole.callback(env.cog, ctx, types.SimpleNamespace(id=42, mention="<@&42>"))
+    await env.cog._apply_mod_role(env.guild, None, types.SimpleNamespace(id=42, name="Mods"))
     assert cfg_val(env, "mod_role_id").current() == 42
+    # the fallback and the mod role can be cleared; the mod channel cannot
+    await env.cog._apply_fallback(env.guild, None, None)
+    await env.cog._apply_mod_role(env.guild, None, None)
+    assert cfg_val(env, "cuddle_channel_id").current() == 0
+    assert cfg_val(env, "mod_role_id").current() == 0
+    with pytest.raises(env.mod.PanelError):
+        await env.cog._apply_mod_channel(env.guild, None, None)
+    assert cfg_val(env, "mod_channel_id").current() == 777
 
 
-async def test_warning_text_set_show_reset(env):
-    ctx = FakeCtx(env.guild)
-    await env.cog.rw_warning.callback(env.cog, ctx, text="Hey {server}, careful.")
-    assert "Hey Wonderland, careful." in ctx.sent[-1]
+async def test_warning_text_set_and_reset(env):
+    msg = await env.cog._apply_warning(env.guild, None, {"text": "Hey {server}, careful."})
+    assert "Hey Wonderland, careful." in msg
     seed(env, 7, 5)
     member = FakeMember(env.guild, 7)
     await env.cog.on_member_join(member)
     assert member.dms == ["Hey Wonderland, careful."]
-    await env.cog.rw_warning.callback(env.cog, ctx, text="reset")
-    assert cfg_val(env, "warning_text").current() == env.constants.DEFAULT_WARNING
+    for blank in ("reset", "  RESET ", "", "   "):
+        await env.cog._apply_warning(env.guild, None, {"text": "x"})
+        await env.cog._apply_warning(env.guild, None, {"text": blank})
+        assert cfg_val(env, "warning_text").current() == env.constants.DEFAULT_WARNING
 
 
 async def test_settings_reports_setup_problems(env):
@@ -765,15 +774,30 @@ async def test_settings_reports_setup_problems(env):
     out = ctx.sent[-1]
     assert "v" + env.constants.VERSION in out
     assert "NOT SET" in out and "NO, kicks" in out and "leaves on record: 1" in out
-    # the hint must name a command that actually exists
-    assert "`.rejoinwatch fallback #cuddle`" in out
-    assert env.cog.rw_fallback.kw["name"] == "fallback"
+    assert "open `.rejoinwatch`" in out  # the hint points at the panel, not a removed command
 
 
-async def test_group_with_no_subcommand_shows_help(env):
+async def test_group_opens_panel_for_admins_and_help_for_mods(env, monkeypatch):
+    opened = []
+
+    async def fake_open(ctx, cog, specs, *, title, intro=""):
+        opened.append((title, [sp.key for sp in specs]))
+
+    monkeypatch.setattr(env.mod, "open_panel", fake_open)
     ctx = FakeCtx(env.guild)
+    ctx.author = types.SimpleNamespace(guild_permissions=types.SimpleNamespace(administrator=False, manage_guild=False))
     await env.cog.rejoinwatch.callback(env.cog, ctx)
-    assert ctx.helped
+    assert ctx.helped and opened == []
+    ctx = FakeCtx(env.guild)
+    ctx.author = types.SimpleNamespace(guild_permissions=types.SimpleNamespace(administrator=False, manage_guild=True))
+    await env.cog.rejoinwatch.callback(env.cog, ctx)
+    assert opened == [("RejoinWatch", ["enabled", "mod_channel", "fallback", "mod_role", "retention", "warning"])]
+    assert not ctx.helped
+
+
+async def test_removed_setter_commands_are_gone(env):
+    for name in ("rw_toggle", "rw_modchannel", "rw_fallback", "rw_modrole", "rw_retention", "rw_warning"):
+        assert not hasattr(env.cog, name)
 
 
 async def test_data_deletion_request_removes_the_member(env):

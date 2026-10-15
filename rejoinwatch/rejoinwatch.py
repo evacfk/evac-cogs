@@ -9,6 +9,8 @@ import discord
 from redbot.core import Config, commands
 
 from . import constants, embeds, engine, views
+from . import panel as panel_specs
+from .settings_panel import PanelError, open_panel
 
 log = logging.getLogger("red.evac-cogs.rejoinwatch")
 
@@ -349,8 +351,12 @@ class RejoinWatch(commands.Cog):
     @commands.guild_only()
     @commands.mod_or_permissions(manage_guild=True)
     async def rejoinwatch(self, ctx):
-        """Repeat-leaver tracking. Try `.rejoinwatch settings`."""
-        await ctx.send_help()
+        """Repeat-leaver settings panel (admins). Mods get the help list: settings, check, clear."""
+        perms = ctx.author.guild_permissions
+        if perms.administrator or perms.manage_guild:
+            await open_panel(ctx, self, panel_specs.build_specs(), title="RejoinWatch", intro=panel_specs.INTRO)
+            return
+        await ctx.send_help(ctx.command)
 
     @rejoinwatch.command(name="settings")
     @commands.mod_or_permissions(manage_guild=True)
@@ -366,7 +372,7 @@ class RejoinWatch(commands.Cog):
         mod_text = "<#%s>" % mod_ch if self._channel(guild, mod_ch) else "NOT FOUND, alerts are dropped"
         cuddle_text = (
             "<#%s>" % cuddle_ch if self._channel(guild, cuddle_ch)
-            else "NOT SET, use `.rejoinwatch fallback #cuddle`"
+            else "NOT SET, open `.rejoinwatch` and pick the fallback channel"
         )
         role_text = "<@&%s>" % mod_role if mod_role else "none"
         audit_text = (
@@ -416,80 +422,52 @@ class RejoinWatch(commands.Cog):
             msg = f"Cleared {engine.count_phrase(len(removed))} for {user.mention}."
         await ctx.send(msg, allowed_mentions=discord.AllowedMentions.none())
 
-    @rejoinwatch.command(name="toggle")
-    @commands.admin_or_permissions(manage_guild=True)
-    async def rw_toggle(self, ctx):
-        """Turn tracking on or off. Existing records are kept either way."""
-        cfg = self.config.guild(ctx.guild)
-        new = not await cfg.enabled()
-        await cfg.enabled.set(new)
-        await ctx.send(f"Tracking is now {'on' if new else 'OFF'}.")
+    # ---------------------------------------------------- settings (the panel calls these)
 
-    @rejoinwatch.command(name="modchannel")
-    @commands.admin_or_permissions(manage_guild=True)
-    async def rw_modchannel(self, ctx, channel: Optional[discord.TextChannel] = None):
-        """Set where alerts go (default #mod-chat). With no channel, shows the current one."""
-        cfg = self.config.guild(ctx.guild)
-        if channel is None:
-            current = await cfg.mod_channel_id()
-            await ctx.send("Mod channel: %s" % ("<#%s>" % current if current else "not set"))
-            return
-        await cfg.mod_channel_id.set(channel.id)
-        await ctx.send(f"Alerts will go to {channel.mention}.")
+    async def _apply_enabled(self, guild, member, on) -> str:
+        await self.config.guild(guild).enabled.set(bool(on))
+        return f"Tracking is now {'on' if on else 'OFF'}. Existing records are kept either way."
 
-    @rejoinwatch.command(name="fallback")
-    @commands.admin_or_permissions(manage_guild=True)
-    async def rw_fallback(self, ctx, channel: Optional[discord.TextChannel] = None):
-        """Set the fallback channel for warnings when DMs are closed (#cuddle). No channel shows the current one."""
-        cfg = self.config.guild(ctx.guild)
+    async def _apply_mod_channel(self, guild, member, channel) -> str:
         if channel is None:
-            current = await cfg.cuddle_channel_id()
-            await ctx.send("Fallback channel: %s" % ("<#%s>" % current if current else "not set"))
-            return
+            raise PanelError("The mod channel is required.")
+        await self.config.guild(guild).mod_channel_id.set(channel.id)
+        return f"Alerts will go to {channel.mention}."
+
+    async def _apply_fallback(self, guild, member, channel) -> str:
+        cfg = self.config.guild(guild)
+        if channel is None:
+            await cfg.cuddle_channel_id.set(0)
+            return "Fallback cleared: warnings are skipped when a DM can't be sent."
         await cfg.cuddle_channel_id.set(channel.id)
-        await ctx.send(f"Warnings will fall back to {channel.mention} when a DM can't be sent.")
+        return f"Warnings will fall back to {channel.mention} when a DM can't be sent."
 
-    @rejoinwatch.command(name="modrole")
-    @commands.admin_or_permissions(manage_guild=True)
-    async def rw_modrole(self, ctx, role: Optional[discord.Role] = None):
-        """Set the role allowed to press the ban buttons. With no role, shows the current one.
-        Anyone with Ban Members or Administrator can press them regardless."""
-        cfg = self.config.guild(ctx.guild)
+    async def _apply_mod_role(self, guild, member, role) -> str:
+        cfg = self.config.guild(guild)
         if role is None:
-            current = await cfg.mod_role_id()
-            await ctx.send(
-                "Mod role: %s" % ("<@&%s>" % current if current else "not set"),
-                allowed_mentions=discord.AllowedMentions.none(),
-            )
-            return
+            await cfg.mod_role_id.set(0)
+            return "Mod role cleared. Only Ban Members or Administrator can press the buttons."
         await cfg.mod_role_id.set(role.id)
-        await ctx.send(f"{role.mention} can now press the ban buttons.", allowed_mentions=discord.AllowedMentions.none())
+        return f"{role.name} can now press the ban buttons."
 
-    @rejoinwatch.command(name="retention")
-    @commands.admin_or_permissions(manage_guild=True)
-    async def rw_retention(self, ctx, days: int):
-        """How many days a leave is remembered (7 to 730, default 180). Older leaves are deleted now."""
+    async def _apply_retention(self, guild, member, values) -> str:
+        try:
+            days = int(float(values["days"]))
+        except (KeyError, TypeError, ValueError):
+            raise PanelError("Enter a whole number of days.")
         if not constants.MIN_RETENTION_DAYS <= days <= constants.MAX_RETENTION_DAYS:
-            await ctx.send(
+            raise PanelError(
                 f"Pick between {constants.MIN_RETENTION_DAYS} and {constants.MAX_RETENTION_DAYS} days."
             )
-            return
-        await self.config.guild(ctx.guild).retention_days.set(days)
-        await self._prune_guild(ctx.guild)
-        await ctx.send(f"Leaves are now remembered for {days} days.")
+        await self.config.guild(guild).retention_days.set(days)
+        await self._prune_guild(guild)
+        return f"Leaves are now remembered for {days} days. Older ones were deleted."
 
-    @rejoinwatch.command(name="warning")
-    @commands.admin_or_permissions(manage_guild=True)
-    async def rw_warning(self, ctx, *, text: Optional[str] = None):
-        """Set the warning sent on a first rejoin. `{server}` becomes the server name.
-        No text shows the current one; `reset` restores the default."""
-        cfg = self.config.guild(ctx.guild)
-        if text is None:
-            await ctx.send(f"Current warning:\n{await cfg.warning_text()}")
-            return
-        if text.strip().lower() == "reset":
+    async def _apply_warning(self, guild, member, values) -> str:
+        text = str((values or {}).get("text") or "").strip()
+        cfg = self.config.guild(guild)
+        if not text or text.lower() == "reset":
             await cfg.warning_text.set(constants.DEFAULT_WARNING)
-            await ctx.send("Warning text reset to the default.")
-            return
+            return "Warning text reset to the default."
         await cfg.warning_text.set(text)
-        await ctx.send(f"Warning text updated. A member would see:\n{engine.render_warning(text, ctx.guild.name)}")
+        return f"Warning text updated. A member would see:\n{engine.render_warning(text, guild.name)}"
