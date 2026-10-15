@@ -6,6 +6,9 @@ import discord
 from redbot.core import Config, bank, commands, checks
 from redbot.core.utils.chat_formatting import humanize_number, bold
 
+from . import panel as panel_specs
+from .settings_panel import PanelError, open_panel
+
 
 WEAPONS = [
     ("🍭", "Candy Cane Saber"),
@@ -99,7 +102,7 @@ class DuelView(discord.ui.View):
 class Duel(commands.Cog):
     """Challenge another member to a best-of-3 wagered duel."""
 
-    __version__ = "1.0.0"
+    __version__ = "1.1.0"
 
     def __init__(self, bot):
         self.bot = bot
@@ -342,44 +345,35 @@ class Duel(commands.Cog):
         )
         await ctx.send(embed=embed)
 
+    # ---------- settings (the panel calls these) ----------
+
+    async def _apply_limits(self, guild, member, values: dict) -> str:
+        """Minimum wager, maximum wager (0 = no cap) and the per-user cooldown in seconds (0 = off)."""
+        try:
+            low = int(float(values["min_bet"]))
+            high = int(float(values["max_bet"]))
+            cooldown = int(float(values["cooldown"]))
+        except (KeyError, TypeError, ValueError):
+            raise PanelError("Every box needs a plain number.")
+        if low < 0 or high < 0 or cooldown < 0:
+            raise PanelError("Every number must be 0 or higher.")
+        if high and high < low:
+            raise PanelError("The maximum can't be below the minimum (use 0 for no cap).")
+        conf = self.config.guild(guild)
+        await conf.min_bet.set(low)
+        await conf.max_bet.set(high)
+        await conf.cooldown.set(cooldown)
+        return (f"Wager {humanize_number(low)} to {'no cap' if not high else humanize_number(high)}, "
+                f"cooldown {cooldown}s.")
+
     @commands.guild_only()
     @checks.admin_or_permissions(manage_guild=True)
-    @commands.group(name="duelset")
+    @commands.group(name="duelset", invoke_without_command=True)
     async def duelset(self, ctx: commands.Context):
-        """Configure the duel cog."""
+        """Open the duel settings panel: wager limits and cooldown."""
+        await open_panel(ctx, self, panel_specs.build_specs(), title="Duels", intro=panel_specs.INTRO)
 
-    @duelset.command(name="mincost")
-    async def duelset_mincost(self, ctx: commands.Context, amount: int):
-        """Set the minimum wager. 0 disables the minimum."""
-        if amount < 0:
-            return await ctx.send("Must be 0 or higher.")
-        await self.config.guild(ctx.guild).min_bet.set(amount)
-        await ctx.send(f"Minimum wager set to {humanize_number(amount)}.")
-
-    @duelset.command(name="maxcost")
-    async def duelset_maxcost(self, ctx: commands.Context, amount: int):
-        """Set the maximum wager. 0 disables the cap."""
-        if amount < 0:
-            return await ctx.send("Must be 0 or higher.")
-        await self.config.guild(ctx.guild).max_bet.set(amount)
-        await ctx.send(f"Maximum wager set to {'no cap' if amount == 0 else humanize_number(amount)}.")
-
-    @duelset.command(name="cooldown")
-    async def duelset_cooldown(self, ctx: commands.Context, seconds: int):
-        """Set the per-user cooldown between duels, in seconds. 0 disables it."""
-        if seconds < 0:
-            return await ctx.send("Must be 0 or higher.")
-        await self.config.guild(ctx.guild).cooldown.set(seconds)
-        await ctx.send(f"Duel cooldown set to {seconds}s.")
-
-    @duelset.command(name="settings")
-    async def duelset_settings(self, ctx: commands.Context):
-        """Show current duel settings."""
-        data = await self.config.guild(ctx.guild).all()
-        embed = discord.Embed(title="Duel settings", color=discord.Color.blurple())
-        embed.add_field(name="Min wager", value=humanize_number(data["min_bet"]))
-        embed.add_field(
-            name="Max wager", value="no cap" if not data["max_bet"] else humanize_number(data["max_bet"])
-        )
-        embed.add_field(name="Cooldown", value=f"{data['cooldown']}s")
-        await ctx.send(embed=embed)
+    @duelset.command(name="version")
+    async def duelset_version(self, ctx: commands.Context):
+        """Show the running version (use it to confirm a deploy)."""
+        await ctx.send(f"Duel v{self.__version__}")

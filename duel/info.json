@@ -1,11 +1,17 @@
 {
-    "author": ["Fareed"],
+    "author": [
+        "Fareed"
+    ],
     "min_bot_version": "3.5.0",
     "description": "Challenge another member to a best-of-3 wagered duel using the server's bank currency.",
     "hidden": false,
-    "install_msg": "Duel cog installed. Set limits with `[p]duelset` if desired, then use `[p]duel @user <amount>`.",
+    "install_msg": "Duel cog installed. Run `.duelset` to open the settings panel (wager limits and cooldown), then use `.duel @user <amount>`. `.duelset version` confirms the build.",
     "requirements": [],
     "short": "1v1 best-of-3 wagered duels",
-    "tags": ["economy", "games", "pvp"],
+    "tags": [
+        "economy",
+        "games",
+        "pvp"
+    ],
     "type": "COG"
 }
