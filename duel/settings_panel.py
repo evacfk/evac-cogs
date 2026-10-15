@@ -635,7 +635,8 @@ class SettingsPanel(discord.ui.View):
         except PanelError as exc:
             await self.redraw(interaction, note=f"⚠️ {exc}")
             return
-        if spec.fields:
+        shown = [f for f in spec.fields if (not f.edit_only if adding else not f.new_only)]
+        if shown:
             async def submit(modal_interaction, values: dict) -> None:
                 if spec.pick is not None:
                     await self._defer(modal_interaction)
@@ -651,7 +652,10 @@ class SettingsPanel(discord.ui.View):
             modal = make_modal(spec.label, spec.fields, record, submit, adding=adding)
             await interaction.response.send_modal(modal)
             return
-        # pick-only record (no text fields)
+        # pick-only record (no text fields to show; e.g. only an add-time key, which an existing record keeps)
+        if spec.pick is None:
+            await self.redraw(interaction, note="⚠️ Nothing to edit here. Remove it and add it again.")
+            return
         await self._defer(interaction)
         self.mode = "pick"
         self.pending = {"pick": spec.pick, "label": spec.pick.label, "values": {}, "item": None if adding else self.item_id,
