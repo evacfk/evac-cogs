@@ -339,7 +339,7 @@ def as_member(mod, monkeypatch):
 
 def test_module_imports_and_defines_cog(mod):
     assert hasattr(mod, "Lurker")
-    assert mod.VERSION == "2.4.0"
+    assert mod.VERSION == "2.5.0"
     for name in ("lurker_version", "lurker_backfill", "lurker_backfill_confirm",
                  "lurker_sweep_preview", "lurker_sweep_run", "lurker_report",
                  "lurker_report_send", "lurker_exempt_audit"):

@@ -12,10 +12,12 @@ from redbot.core.utils.chat_formatting import humanize_list
 from . import engine
 from .dashboard_integration import DashboardIntegration, dashboard_page
 from .dashboard_view import PAGE_TEMPLATE, build_overview
+from . import panel as panel_specs
+from .settings_panel import PanelError, open_panel
 
 log = logging.getLogger("red.evac-cogs.lurker")
 
-VERSION = "2.4.0"
+VERSION = "2.5.0"
 
 # #mod-chat: mods get a "welcome them back" post whenever a lurker reactivates themselves.
 DEFAULT_WELCOME_CHANNEL_ID = 912520841613418596
@@ -313,7 +315,7 @@ class Lurker(DashboardIntegration, commands.Cog):
                     f"⚠️ **Lurker sweep aborted.** It would have flagged "
                     f"**{len(candidates)}** members, above the safety limit of **{sweep_max}**. "
                     f"Nobody was flagged. Review with `.lurkersweeppreview`; if it looks right, "
-                    f"raise the limit with `.lurkerset sweepmax <n>` and run `.lurkersweeprun`.",
+                    f"raise the limit in `.lurkerset` → Lurkers and run `.lurkersweeprun`.",
                 )
                 return stats
 
@@ -696,7 +698,7 @@ class Lurker(DashboardIntegration, commands.Cog):
         mapping = engine.club_mapping(await cfg.yearclub_roles())
         lines = [f"Automatic anniversary upkeep: **{'ON' if await cfg.yearclub_enabled() else 'off'}** (checks hourly)"]
         if not mapping:
-            lines.append("No club roles mapped yet. Run `.yearclub autodetect` (finds roles named like `5 year club!`).")
+            lines.append("No club roles mapped yet. Open `.lurkerset` → Year club and press Find club roles (finds roles named like `5 year club!`).")
         for years in sorted(mapping):
             role = ctx.guild.get_role(mapping[years])
             lines.append(f"`{years:>2}` year → {role.mention + f' ({len(role.members)} members)' if role else '⚠️ role deleted'}")
@@ -708,41 +710,8 @@ class Lurker(DashboardIntegration, commands.Cog):
                 f"{last.get('skipped_lurkers', 0)} lurkers skipped, {last.get('blocked', 0)} blocked, "
                 f"{last.get('errors', 0)} errors{note}"
             )
-        lines.append("Commands: `autodetect`, `setrole <years> @role`, `clearrole <years>`, `check @member`, `sync`, `enable`, `disable`.")
+        lines.append("Commands: `check @member`, `sync`. Roles and the on/off switch live in `.lurkerset` → Year club.")
         await ctx.send("\n".join(lines), allowed_mentions=discord.AllowedMentions.none())
-
-    @yearclub.command(name="autodetect")
-    async def yearclub_autodetect(self, ctx):
-        """Map every role named like `N year club!` to N years."""
-        found = {}
-        for role in ctx.guild.roles:
-            n = engine.parse_club_role_name(role.name)
-            if n is not None and n not in found:
-                found[n] = role.id
-        if not found:
-            await ctx.send("No roles named like `5 year club!` found. Use `.yearclub setrole <years> @role`.")
-            return
-        await self.config.guild(ctx.guild).yearclub_roles.set({str(k): v for k, v in found.items()})
-        listed = ", ".join(f"{n}→<@&{found[n]}>" for n in sorted(found))
-        await ctx.send(f"Mapped {len(found)} club roles: {listed}\nNext: `.yearclub sync` to preview the one-time fix.",
-                       allowed_mentions=discord.AllowedMentions.none())
-
-    @yearclub.command(name="setrole")
-    async def yearclub_setrole(self, ctx, years: int, role: discord.Role):
-        """Map one club role by hand. `.yearclub setrole 13 @13 year club!`"""
-        if not 1 <= years <= 50:
-            await ctx.send("Years must be between 1 and 50.")
-            return
-        async with self.config.guild(ctx.guild).yearclub_roles() as roles:
-            roles[str(years)] = role.id
-        await ctx.send(f"{years} year → {role.mention}", allowed_mentions=discord.AllowedMentions.none())
-
-    @yearclub.command(name="clearrole")
-    async def yearclub_clearrole(self, ctx, years: int):
-        """Unmap one club role (the role itself is not deleted)."""
-        async with self.config.guild(ctx.guild).yearclub_roles() as roles:
-            roles.pop(str(years), None)
-        await ctx.send(f"Removed the {years}-year mapping.")
 
     @yearclub.command(name="check")
     async def yearclub_check(self, ctx, member: discord.Member):
@@ -772,7 +741,7 @@ class Lurker(DashboardIntegration, commands.Cog):
         cfg = self.config.guild(ctx.guild)
         mapping = engine.club_mapping(await cfg.yearclub_roles())
         if not mapping:
-            await ctx.send("No club roles mapped. Run `.yearclub autodetect` first.")
+            await ctx.send("No club roles mapped. Open `.lurkerset` → Year club first.")
             return
         if ctx.guild.id in self._yearclub_running:
             await ctx.send("A year club pass is already running.")
@@ -814,117 +783,132 @@ class Lurker(DashboardIntegration, commands.Cog):
             f"{result['skipped_lurkers']} lurkers skipped, {result['blocked']} blocked."
         ))
 
-    @yearclub.command(name="enable")
-    async def yearclub_enable(self, ctx):
-        """Turn on hourly anniversary upkeep (and recomputed club roles on un-lurk)."""
-        await self.config.guild(ctx.guild).yearclub_enabled.set(True)
-        await ctx.send("Year club upkeep ON. Anniversaries are applied within the hour (Pacific dates).")
+    # -------------------------------------------------------- settings (the panel calls these)
 
-    @yearclub.command(name="disable")
-    async def yearclub_disable(self, ctx):
-        """Turn off hourly upkeep (roles are left as they are)."""
-        await self.config.guild(ctx.guild).yearclub_enabled.set(False)
-        await ctx.send("Year club upkeep off.")
+    async def _apply_lurker_role(self, guild, member, role) -> str:
+        if role is None:
+            raise PanelError("Pick the role inactive members get.")
+        await self.config.guild(guild).lurker_role_id.set(role.id)
+        return f"Lurker role set to {role.mention}."
+
+    async def _apply_lurker_channel(self, guild, member, channel) -> str:
+        if channel is None:
+            raise PanelError("Pick the channel lurkers can post in to come back.")
+        await self.config.guild(guild).lurker_channel_id.set(channel.id)
+        return f"Reactivation channel set to {channel.mention}."
+
+    async def _apply_exempt(self, guild, member, roles) -> str:
+        roles = list(roles or [])
+        await self.config.guild(guild).exempt_role_ids.set([r.id for r in roles])
+        return f"Never flagged: {humanize_list([r.name for r in roles])}." if roles else "No exempt roles: anyone can be flagged."
+
+    async def _apply_sweep_rules(self, guild, member, values) -> str:
+        values = values or {}
+        try:
+            days, limit = int(str(values.get("days", "")).strip()), int(str(values.get("limit", "")).strip())
+        except ValueError:
+            raise PanelError("Both fields must be whole numbers.")
+        if not 1 <= days <= 3650:
+            raise PanelError("Inactive days must be between 1 and 3650.")
+        if not 1 <= limit <= 5000:
+            raise PanelError("The safety limit must be between 1 and 5000.")
+        cfg = self.config.guild(guild)
+        await cfg.threshold_days.set(days)
+        await cfg.sweep_max.set(limit)
+        return f"Members are flagged after {days} inactive days; a sweep that would flag more than {limit} aborts and alerts mods."
+
+    async def _apply_sweep_enabled(self, guild, member, state: bool) -> str:
+        cfg = self.config.guild(guild)
+        if not state:
+            await cfg.enabled.set(False)
+            return "Automatic sweep off. `.lurkerbackfill`, `.lurkersweeprun` and the other manual commands still work."
+        if not await cfg.lurker_role_id() or not await cfg.lurker_channel_id():
+            raise PanelError("Set the Lurker role and the reactivation channel first.")
+        await cfg.enabled.set(True)
+        await cfg.last_sweep_ts.set(datetime.now(timezone.utc).timestamp())
+        note = "" if await cfg.exempt_role_ids() else " No exempt roles are set, so mods and boosters can be flagged."
+        return "Automatic daily sweep on. The first run is in about 24 hours, then every 24h regardless of reloads." + note
+
+    async def _apply_report_channel(self, guild, member, channel) -> str:
+        cfg = self.config.guild(guild)
+        if channel is None:
+            await cfg.report_channel_id.set(None)
+            return "Weekly report off."
+        await cfg.report_channel_id.set(channel.id)
+        if not await cfg.last_report_ts():
+            await cfg.last_report_ts.set(datetime.now(timezone.utc).timestamp())
+        days = await cfg.report_interval_days()
+        return f"Mod report goes to {channel.mention} every {days} days (first one {days} days from now). Preview with `.lurkerreport`."
+
+    async def _apply_report_days(self, guild, member, values) -> str:
+        try:
+            days = int(str((values or {}).get("days", "")).strip())
+        except ValueError:
+            raise PanelError("Days must be a whole number.")
+        if not 1 <= days <= 30:
+            raise PanelError("Pick between 1 and 30 days.")
+        await self.config.guild(guild).report_interval_days.set(days)
+        return f"The mod report posts every {days} days."
+
+    async def _apply_welcome_channel(self, guild, member, channel) -> str:
+        await self.config.guild(guild).welcome_channel_id.set(channel.id if channel else None)
+        return f"Welcome-back notices go to {channel.mention}." if channel else "Welcome-back notices off."
+
+    async def _apply_yearclub_enabled(self, guild, member, state: bool) -> str:
+        cfg = self.config.guild(guild)
+        if state and not engine.club_mapping(await cfg.yearclub_roles()):
+            raise PanelError("Map the club roles first (Find club roles, or add them one by one).")
+        await cfg.yearclub_enabled.set(bool(state))
+        if state:
+            return "Year club upkeep on. Anniversaries are applied within the hour (Pacific dates). Run `.yearclub sync` once to fix everyone now."
+        return "Year club upkeep off. Roles are left as they are."
+
+    async def _apply_yearclub_autodetect(self, guild, member, _value=None) -> str:
+        found = {}
+        for role in guild.roles:
+            n = engine.parse_club_role_name(role.name)
+            if n is not None and n not in found:
+                found[n] = role.id
+        if not found:
+            raise PanelError("No roles named like `5 year club!` found. Add them one by one instead.")
+        await self.config.guild(guild).yearclub_roles.set({str(k): v for k, v in found.items()})
+        listed = ", ".join(f"{n}→<@&{found[n]}>" for n in sorted(found))
+        return f"Mapped {len(found)} club roles: {listed}. Next: `.yearclub sync` to preview the one-time fix."
+
+    async def _apply_yearclub_save(self, guild, member, item_id, values, picked) -> str:
+        if item_id is None:
+            try:
+                years = int(str((values or {}).get("years", "")).strip())
+            except ValueError:
+                raise PanelError("Years must be a whole number.")
+        else:
+            years = int(item_id)
+        if not 1 <= years <= 50:
+            raise PanelError("Years must be between 1 and 50.")
+        role = (picked or [None])[0]
+        if role is None:
+            raise PanelError("Pick the role for that year.")
+        async with self.config.guild(guild).yearclub_roles() as roles:
+            roles[str(years)] = role.id
+        return f"{years} year → {role.mention}."
+
+    async def _apply_yearclub_remove(self, guild, member, item_id) -> str:
+        async with self.config.guild(guild).yearclub_roles() as roles:
+            if roles.pop(str(item_id), None) is None:
+                raise PanelError("That year isn't mapped.")
+        return f"Removed the {item_id}-year mapping (the role itself is not deleted)."
 
     # -------------------------------------------------------- config cmds
 
     @checks.admin_or_permissions(manage_roles=True)
     @commands.group(invoke_without_command=True)
     async def lurkerset(self, ctx):
-        """Configure the Lurker inactivity system."""
+        """Settings panel for the Lurker system and the year club (admins). Others get the command list."""
+        perms = ctx.author.guild_permissions
+        if perms.administrator or perms.manage_guild:
+            await open_panel(ctx, self, panel_specs.build_specs(), title="Lurker", intro=panel_specs.INTRO)
+            return
         await ctx.send_help()
-
-    @lurkerset.command(name="role")
-    async def lurkerset_role(self, ctx, role: discord.Role):
-        """Set the role applied to inactive members."""
-        await self.config.guild(ctx.guild).lurker_role_id.set(role.id)
-        await ctx.send(f"Lurker role set to {role.mention}.")
-
-    @lurkerset.command(name="channel")
-    async def lurkerset_channel(self, ctx, channel: discord.TextChannel):
-        """Set the channel where lurkers can post to reactivate themselves."""
-        await self.config.guild(ctx.guild).lurker_channel_id.set(channel.id)
-        await ctx.send(f"Reactivation channel set to {channel.mention}.")
-
-    @lurkerset.command(name="exempt")
-    async def lurkerset_exempt(self, ctx, *roles: discord.Role):
-        """Set roles that are never flagged as lurkers (e.g. Mod, Booster)."""
-        ids = [r.id for r in roles]
-        await self.config.guild(ctx.guild).exempt_role_ids.set(ids)
-        names = humanize_list([r.name for r in roles]) if roles else "none"
-        await ctx.send(f"Exempt roles set to: {names}")
-
-    @lurkerset.command(name="threshold")
-    async def lurkerset_threshold(self, ctx, days: int):
-        """Set the number of inactive days before a member is flagged."""
-        if days < 1:
-            await ctx.send("Threshold must be at least 1 day.")
-            return
-        await self.config.guild(ctx.guild).threshold_days.set(days)
-        await ctx.send(f"Inactivity threshold set to {days} days.")
-
-    @lurkerset.command(name="enable")
-    async def lurkerset_enable(self, ctx):
-        """Turn ON the automatic daily inactivity sweep for this server."""
-        await self.config.guild(ctx.guild).enabled.set(True)
-        await self.config.guild(ctx.guild).last_sweep_ts.set(datetime.now(timezone.utc).timestamp())
-        await ctx.send(
-            "Automatic daily sweep enabled. First run will happen in ~24 hours, "
-            "not immediately, and every 24h after that regardless of reloads."
-        )
-
-    @lurkerset.command(name="disable")
-    async def lurkerset_disable(self, ctx):
-        """Turn OFF the automatic daily inactivity sweep for this server."""
-        await self.config.guild(ctx.guild).enabled.set(False)
-        await ctx.send("Automatic daily sweep disabled. Manual commands (.lurker, .lurkerbackfill) still work.")
-
-    @lurkerset.command(name="sweepmax")
-    async def lurkerset_sweepmax(self, ctx, limit: int):
-        """Safety limit: a sweep that would flag more than this many members aborts and alerts mods."""
-        if not 1 <= limit <= 5000:
-            await ctx.send("Pick a limit between 1 and 5000.")
-            return
-        await self.config.guild(ctx.guild).sweep_max.set(limit)
-        await ctx.send(f"Sweep safety limit set to {limit} members per sweep.")
-
-    @lurkerset.command(name="reportchannel")
-    async def lurkerset_reportchannel(self, ctx, channel: Optional[discord.TextChannel] = None):
-        """Set the channel for the weekly mod report. Run with no channel to turn reports off."""
-        cfg = self.config.guild(ctx.guild)
-        if channel is None:
-            await cfg.report_channel_id.set(None)
-            await ctx.send("Weekly report disabled.")
-            return
-        await cfg.report_channel_id.set(channel.id)
-        if not await cfg.last_report_ts():
-            await cfg.last_report_ts.set(datetime.now(timezone.utc).timestamp())
-        days = await cfg.report_interval_days()
-        await ctx.send(
-            f"Mod report channel set to {channel.mention}. One digest every {days} days "
-            f"(first one {days} days from now). Preview any time with `.lurkerreport`."
-        )
-
-    @lurkerset.command(name="welcomechannel")
-    async def lurkerset_welcomechannel(self, ctx, channel: Optional[discord.TextChannel] = None):
-        """Set the mod channel that gets a "welcome them back" post when a lurker reactivates.
-        Run with no channel to turn it off."""
-        cfg = self.config.guild(ctx.guild)
-        if channel is None:
-            await cfg.welcome_channel_id.set(None)
-            await ctx.send("Welcome-back notices disabled.")
-            return
-        await cfg.welcome_channel_id.set(channel.id)
-        await ctx.send(f"Welcome-back notices will post in {channel.mention}.")
-
-    @lurkerset.command(name="reportdays")
-    async def lurkerset_reportdays(self, ctx, days: int):
-        """Set how many days between mod reports (default 7)."""
-        if not 1 <= days <= 30:
-            await ctx.send("Pick between 1 and 30 days.")
-            return
-        await self.config.guild(ctx.guild).report_interval_days.set(days)
-        await ctx.send(f"Mod report will post every {days} days.")
 
     @lurkerset.command(name="settings")
     async def lurkerset_settings(self, ctx):
@@ -970,7 +954,7 @@ class Lurker(DashboardIntegration, commands.Cog):
             f"Members with tracked activity: {len(self._cache.get(ctx.guild.id, {}))}",
         ]
         if not exempt:
-            lines.append("⚠️ No exempt roles set — mods/boosters can be flagged. Use `.lurkerset exempt`.")
+            lines.append("⚠️ No exempt roles set — mods/boosters can be flagged. Set them in `.lurkerset` → Lurkers.")
         await ctx.send("\n".join(lines))
 
     @lurkerset.command(name="postinfo")
@@ -978,7 +962,7 @@ class Lurker(DashboardIntegration, commands.Cog):
         """Post and pin the explainer embed in the configured lurker channel."""
         channel_id = await self.config.guild(ctx.guild).lurker_channel_id()
         if not channel_id:
-            await ctx.send("Set the lurker channel first with `.lurkerset channel`.")
+            await ctx.send("Set the lurker channel first in `.lurkerset` → Lurkers.")
             return
         channel = ctx.guild.get_channel(channel_id)
         if not channel:
@@ -1087,7 +1071,7 @@ class Lurker(DashboardIntegration, commands.Cog):
     @commands.command(name="lurkerversion")
     async def lurker_version(self, ctx):
         """Show the running Lurker cog version (deploy probe)."""
-        await ctx.send(f"Lurker cog v{VERSION} (welcome-back notice to mods)")
+        await ctx.send(f"Lurker cog v{VERSION} (settings panel: `.lurkerset`)")
 
     @checks.mod_or_permissions(manage_roles=True)
     @commands.command(name="lurker")
@@ -1095,7 +1079,7 @@ class Lurker(DashboardIntegration, commands.Cog):
         """Immediately flag a member as a lurker (for testing)."""
         role_id = await self.config.guild(ctx.guild).lurker_role_id()
         if not role_id:
-            await ctx.send("Lurker role not configured. Use `.lurkerset role` first.")
+            await ctx.send("Lurker role not configured. Set it in `.lurkerset` → Lurkers first.")
             return
         lurker_role = ctx.guild.get_role(role_id)
         if not lurker_role:
@@ -1168,7 +1152,7 @@ class Lurker(DashboardIntegration, commands.Cog):
         """Manually restore a lurker's roles without them needing to post."""
         role_id = await self.config.guild(ctx.guild).lurker_role_id()
         if not role_id:
-            await ctx.send("Lurker role not configured. Use `.lurkerset role` first.")
+            await ctx.send("Lurker role not configured. Set it in `.lurkerset` → Lurkers first.")
             return
         lurker_role = ctx.guild.get_role(role_id)
         if not lurker_role:
@@ -1206,7 +1190,7 @@ class Lurker(DashboardIntegration, commands.Cog):
             return
         exempt_ids = set(await cfg.exempt_role_ids())
         if not exempt_ids:
-            await ctx.send("No exempt roles are configured. Set them with `.lurkerset exempt`.")
+            await ctx.send("No exempt roles are configured. Set them in `.lurkerset` → Lurkers.")
             return
 
         all_cfg = await self.config.all_members(ctx.guild)
@@ -1397,7 +1381,7 @@ class Lurker(DashboardIntegration, commands.Cog):
         cfg = self.config.guild(ctx.guild)
         role_id = await cfg.lurker_role_id()
         if not role_id:
-            await ctx.send("Lurker role not configured. Use `.lurkerset role` first.")
+            await ctx.send("Lurker role not configured. Set it in `.lurkerset` → Lurkers first.")
             return
         lurker_role = ctx.guild.get_role(role_id)
         if not lurker_role:
@@ -1444,7 +1428,7 @@ class Lurker(DashboardIntegration, commands.Cog):
                 f"(bot permissions). Members active only there will look inactive."
             )
         if not exempt_ids:
-            warn += "\n⚠️ No exempt roles are set — mods/boosters can be flagged. Use `.lurkerset exempt` first."
+            warn += "\n⚠️ No exempt roles are set — mods/boosters can be flagged. Set them in `.lurkerset` → Lurkers first."
         await ctx.send(
             f"Dry run complete. Scanned {scan_stats['scanned']} channels/threads.\n"
             f"Active in last {threshold_days} days: {len(latest)}\n"
@@ -1770,7 +1754,7 @@ class Lurker(DashboardIntegration, commands.Cog):
     async def lurker_report_send(self, ctx):
         """Post the mod report to the report channel now and reset the counters."""
         if not await self.config.guild(ctx.guild).report_channel_id():
-            await ctx.send("No report channel set. Use `.lurkerset reportchannel #channel`.")
+            await ctx.send("No report channel set. Pick one in `.lurkerset` → Reports.")
             return
         ok = await self._send_digest(ctx.guild, consume=True)
         await ctx.send("Report posted." if ok else "Couldn't post the report (check the channel and my permissions).")
