@@ -1,7 +1,7 @@
 """All defaults and lookup tables for afterdark -- no discord/redbot imports."""
 
-VERSION = "1.7.0"
-BUILD = "afterdark build: panel-v1 (settings panel: roles, channels, sweep, invitations, drops and interests are set from .afterdark)"
+VERSION = "1.8.0"
+BUILD = "afterdark build: feeds-v1 (interests, channels and Reddit/Telegram feeds are set up together from .afterdark)"
 
 CONFIG_IDENTIFIER = 7316482950
 DAY = 86400
@@ -105,6 +105,7 @@ GUILD_DEFAULTS = dict(
     min_level=3,
     access_mode="overwrites",    # "overwrites" (per-user, no role) | "roles" -- how interest access is granted
     interests={},                # key -> Interest.to_dict()
+    interest_category_id=0,      # category new interest channels are created in (0 = not set)
     # ---- inactivity (interest channels only) ----
     warn_days=7,
     remove_days=14,

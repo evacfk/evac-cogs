@@ -96,7 +96,7 @@ def test_spec_keys_are_unique_and_every_tab_fits_a_dropdown():
     tabs = {}
     for s in specs:
         tabs.setdefault(s.tab, []).append(s)
-    assert set(tabs) == {"Roles & channels", "Access & sweep", "Invitations", "Drops", "Interests"}
+    assert set(tabs) == {"Roles & channels", "Access & sweep", "Invitations", "Drops", "Interests & feeds"}
     assert all(len(v) <= 25 for v in tabs.values())
     assert {x.key for x in tabs["Drops"]} == {"drops", "drop_channel_id", "drop_timing", "drop_next", "drop_now"}
     assert {x.key for x in tabs["Roles & channels"]} == {"rabbit_role_id", "adult_role_id", "verified_role_id", "log_channel_id", "clue_channel_id"}
@@ -228,18 +228,18 @@ async def test_action_buttons_run_the_cog(w):
 async def test_interest_collection_add_edit_remove(w):
     c2 = w.guild.add_channel(900001, "user-feet")
     p, admin = await open_it(w)
-    await go(p, admin, "Interests", "interests")
+    await go(p, admin, "Interests & feeds", "interests")
     await p._on_item(Click(admin, [NEW_ITEM]))
     click = Click(admin)
     await p._on_item_edit(click)
     modal = click.response.modal
-    assert set(modal.boxes) == {"name", "emoji", "role", "join_message"}
+    assert set(modal.boxes) == {"name", "emoji", "new_channel", "join_message"}  # no role: access is per member
     modal.boxes["name"]._value, modal.boxes["emoji"]._value = "Feet", "\U0001F9B6"
-    modal.boxes["role"]._value, modal.boxes["join_message"]._value = "", "hello"
+    modal.boxes["new_channel"]._value, modal.boxes["join_message"]._value = "", "hello"
     await modal.on_submit(Click(admin))
     assert p.mode == "pick"
     sel = child(p, discord.ui.ChannelSelect)
-    assert sel.min_values == 1 and sel.max_values == 25
+    assert sel.min_values == 0 and sel.max_values == 25
     sel._values = [SimpleNamespace(id=FEET_CHANNEL), SimpleNamespace(id=900001)]
     done = Click(admin)
     await p._on_pick_done(done)

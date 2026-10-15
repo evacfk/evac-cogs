@@ -1509,8 +1509,9 @@ class AfterDark(commands.Cog):
         for channel in picked or []:
             if channel.id not in channel_ids:
                 channel_ids.append(channel.id)
-        if not channel_ids:
-            raise PanelError("Pick at least one channel.")
+        new_channel_name = (values.get("new_channel") or "").strip()
+        if not channel_ids and not new_channel_name:
+            raise PanelError("Pick at least one channel, or give a name for a new one.")
         role_text = (values.get("role") or "").strip()
         role_id = existing.role_id if existing is not None else None
         if role_text:
@@ -1520,6 +1521,10 @@ class AfterDark(commands.Cog):
             role_id = int(digits)
         elif existing is not None and "role" in values:
             role_id = None
+        created = None
+        if new_channel_name:
+            created = await self._make_interest_channel(guild, member, new_channel_name)
+            channel_ids.append(created.id)
         # The form has separate boxes, so a word typed in the emoji box is simply not an emoji:
         # drop it (Discord rejects the whole member panel on an invalid button emoji).
         emoji_text = (values.get("emoji") or "").strip()
@@ -1550,6 +1555,8 @@ class AfterDark(commands.Cog):
         if existing is not None and added:
             notes += " Members who already joined get the new channels when they click the button again, or use `.afterdark grantinterest`."
         listing = ", ".join(f"#{guild.get_channel(c).name}" if guild.get_channel(c) else str(c) for c in interest.channel_ids)
+        if created is not None:
+            notes = f" Created {created.mention} (age-restricted, hidden from everyone but you and the bot; members get in through the button)." + notes
         return (f"Interest {key} now opens {listing}. Re-post the member panel (`.afterdark panel #channel`) to refresh the buttons."
                 + notes)
 
@@ -1558,11 +1565,217 @@ class AfterDark(commands.Cog):
         interests = dict(await self.config.guild(guild).interests())
         if key not in interests:
             raise PanelError("No such interest.")
-        interests.pop(key)
+        gone = Interest.from_dict(interests.pop(key))
         await self.config.guild(guild).interests.set(interests)
         await self._register_interest_view(guild)
-        return (f"Interest {key} removed. Existing access is left alone; `.afterdark revokeinterest` takes it back. "
+        still_used = {c for other in interests.values() for c in Interest.from_dict(other).channel_ids}
+        paused = await self._pause_feeds_on(guild, member, {c for c in gone.channel_ids if c not in still_used})
+        feeds = f" Paused {len(paused)} feed(s): {', '.join(paused)} (channels left as they are)." if paused else ""
+        return (f"Interest {key} removed.{feeds} Existing access is left alone; `.afterdark revokeinterest` takes it back. "
                 "Re-post the member panel to refresh the buttons.")
+
+    # ------------------------------------------------------------------
+    # Interests and feeds in one place (the panel calls these)
+    # ------------------------------------------------------------------
+
+    def _feed_cog(self, name: str, label: str):
+        cog = self.bot.get_cog(name)
+        if cog is None:
+            raise PanelError(f"The {label} cog isn't loaded.")
+        return cog
+
+    @staticmethod
+    async def _foreign(call):
+        """Run a feed cog's own change. Each cog has its own PanelError class, so turn theirs into ours."""
+        try:
+            return await call
+        except PanelError:
+            raise
+        except Exception as exc:
+            if type(exc).__name__ == "PanelError":
+                raise PanelError(str(exc)) from exc
+            raise
+
+    async def _apply_interest_category(self, guild, member, category) -> str:
+        await self.config.guild(guild).interest_category_id.set(category.id if category else 0)
+        return (f"New interest channels are created in {category.mention}." if category
+                else "No category set: you can't create new channels from here until you pick one.")
+
+    async def _make_interest_channel(self, guild, member, name: str):
+        """A new age-restricted text channel, hidden from everyone but the bot and the person making it.
+        Members get in through the interest button (a per-member permission, no role)."""
+        slug = engine.slugify_channel(name)
+        if not slug:
+            raise PanelError("That channel name isn't usable. Use letters, digits and dashes.")
+        category_id = await self.config.guild(guild).interest_category_id()
+        category = guild.get_channel(category_id) if category_id else None
+        if category is None:
+            raise PanelError("Pick a category for new channels first (the 'Category for new channels' setting).")
+        overwrites = {
+            guild.default_role: discord.PermissionOverwrite(view_channel=False),
+            guild.me: discord.PermissionOverwrite(view_channel=True, send_messages=True, attach_files=True,
+                                                  embed_links=True, read_message_history=True),
+            member: discord.PermissionOverwrite(view_channel=True, read_message_history=True, add_reactions=True),
+        }
+        try:
+            return await guild.create_text_channel(slug, category=category, nsfw=True, overwrites=overwrites,
+                                                   reason=f"AfterDark: new interest channel (by {member})")
+        except (discord.Forbidden, discord.HTTPException) as exc:
+            raise PanelError(f"I couldn't create the channel: {exc}")
+
+    @staticmethod
+    def _real_channels(guild, picked) -> list:
+        out = []
+        for channel in picked or []:
+            real = guild.get_channel(channel.id) or channel
+            if real.id not in [c.id for c in out]:
+                out.append(real)
+        return out
+
+    def _interest_labels(self, interests: Dict[str, Interest], channel_ids) -> str:
+        names = [i.name for i in interests.values() if any(c in i.channel_ids for c in channel_ids)]
+        return ", ".join(names) if names else "no interest"
+
+    async def _feed_rows(self, guild) -> list:
+        """Every Reddit and Telegram feed on this server: (id, label, channel ids, paused, approval text)."""
+        rows = []
+        reddit = self.bot.get_cog("RedditFeed")
+        if reddit is not None:
+            for name, raw in sorted((await reddit.config.mappings()).items()):
+                ids = [int(c) for c in raw.get("channel_ids", [])]
+                if ids and any(guild.get_channel(c) for c in ids):
+                    rows.append((f"r:{name}", f"r/{name}", ids, bool(raw.get("paused")), str(raw.get("approval", "manual"))))
+        telegram = self.bot.get_cog("TGFeed")
+        if telegram is not None:
+            for key, raw in sorted((await telegram.config.mappings()).items(), key=lambda kv: int(kv[0])):
+                cid = int(raw.get("channel_id") or 0)
+                if cid and guild.get_channel(cid):
+                    title = raw.get("title") or f"topic {key}"
+                    rows.append((f"t:{key}", f"Telegram: {title}", [cid], bool(raw.get("paused")), ""))
+        return rows
+
+    async def _feed_items(self, guild) -> list:
+        interests = self._interests(await self.config.guild(guild).all())
+        out = []
+        for item_id, label, ids, paused, approval in await self._feed_rows(guild):
+            bits = ["→ " + " ".join(f"<#{c}>" for c in ids), self._interest_labels(interests, ids)]
+            if approval:
+                bits.append(f"{approval} approval")
+            if paused:
+                bits.append("PAUSED")
+            out.append((item_id, label, " · ".join(bits)))
+        return out
+
+    async def _feed_record(self, guild, item_id: str) -> dict:
+        for row_id, _label, ids, _paused, _approval in await self._feed_rows(guild):
+            if row_id == item_id:
+                return {"channel_ids": ids}
+        raise PanelError("That feed no longer exists.")
+
+    def _find_interest_key(self, interests: Dict[str, Interest], text: str) -> str:
+        wanted = engine.normalize_key(text)
+        for key, interest in interests.items():
+            if key == wanted or engine.normalize_key(interest.name) == wanted:
+                return key
+        raise PanelError("I don't know an interest called that. Known: " + (", ".join(i.name for i in interests.values()) or "none yet") + ".")
+
+    async def _apply_feed_save(self, guild, member, item_id, values: dict, picked) -> str:
+        values = values or {}
+        channels = self._real_channels(guild, picked)
+        if item_id is not None:  # edit: move an existing feed to other channel(s)
+            if not channels:
+                raise PanelError("Pick at least one channel (use Remove to stop the feed).")
+            kind, _, ident = str(item_id).partition(":")
+            if kind == "r":
+                cog = self._feed_cog("RedditFeed", "Reddit feed")
+                mapping = await self._foreign(cog._mapping_or_raise(ident))
+                return await self._foreign(cog._apply_feed(
+                    guild, member, ident, ", ".join(mapping.require_keywords), ", ".join(mapping.block_keywords), channels))
+            if len(channels) != 1:
+                raise PanelError("A Telegram topic posts to exactly one channel.")
+            cog = self._feed_cog("TGFeed", "Telegram feed")
+            return await self._foreign(cog._apply_map(guild, member, ident, channels[0]))
+        reddit_text = (values.get("reddit") or "").strip()
+        topic_text = (values.get("telegram") or "").strip()
+        if bool(reddit_text) == bool(topic_text):
+            raise PanelError("Fill in a subreddit or a Telegram topic, one of the two.")
+        interests = {k: Interest.from_dict(v) for k, v in (await self.config.guild(guild).interests()).items()}
+        interest_text = (values.get("interest") or "").strip()
+        interest_key = self._find_interest_key(interests, interest_text) if interest_text else None
+        new_name = (values.get("new_channel") or "").strip()
+        if not channels and not new_name:
+            raise PanelError("Pick a channel, or give a name for a new one.")
+        cog = self._feed_cog("RedditFeed", "Reddit feed") if reddit_text else self._feed_cog("TGFeed", "Telegram feed")
+        if topic_text and len(channels) + (1 if new_name else 0) != 1:
+            raise PanelError("A Telegram topic posts to exactly one channel: pick one, or name one new channel.")
+        created = None
+        if new_name:
+            created = await self._make_interest_channel(guild, member, new_name)
+            channels.append(created)
+        try:
+            if reddit_text:
+                message = await self._foreign(cog._apply_add(guild, member, reddit_text, channels))
+            else:
+                message = await self._foreign(cog._apply_map(guild, member, topic_text, channels[0]))
+        except Exception:
+            if created is not None:  # nothing was mapped to it, so don't leave an empty channel behind
+                try:
+                    await created.delete(reason="AfterDark: the feed could not be set up")
+                except (discord.Forbidden, discord.HTTPException):
+                    log.warning("afterdark: could not remove channel %s after a failed feed setup", created.id)
+            raise
+        if interest_key is not None:
+            interest = interests[interest_key]
+            for channel in channels:
+                if channel.id not in interest.channel_ids:
+                    interest.extra_channel_ids.append(channel.id)
+            stored = dict(await self.config.guild(guild).interests())
+            stored[interest_key] = interest.to_dict()
+            await self.config.guild(guild).interests.set(stored)
+            message += (f" Added to the {interest.name} interest. Members who already joined get the new channel when they "
+                        "click the button again.")
+        if created is not None:
+            message += f" Created {created.mention} (age-restricted, hidden; members get in through the button)."
+        return message
+
+    async def _apply_feed_remove(self, guild, member, item_id) -> str:
+        kind, _, ident = str(item_id).partition(":")
+        if kind == "r":
+            return await self._foreign(self._feed_cog("RedditFeed", "Reddit feed")._apply_remove(guild, member, ident))
+        return await self._foreign(self._feed_cog("TGFeed", "Telegram feed")._apply_unmap(guild, member, ident))
+
+    async def _apply_feed_pause(self, guild, member, item_id) -> str:
+        """Pause an active feed, or resume a paused one."""
+        kind, _, ident = str(item_id).partition(":")
+        if kind == "r":
+            cog = self._feed_cog("RedditFeed", "Reddit feed")
+            mapping = await self._foreign(cog._mapping_or_raise(ident))
+            return await self._foreign(cog._apply_pause(guild, member, ident, not mapping.paused))
+        cog = self._feed_cog("TGFeed", "Telegram feed")
+        mapping = await self._foreign(cog._mapped_or_raise(ident))
+        call = cog._apply_resume_topic if mapping.paused else cog._apply_pause_topic
+        return await self._foreign(call(guild, member, ident))
+
+    async def _apply_feed_approval(self, guild, member, item_id) -> str:
+        kind, _, ident = str(item_id).partition(":")
+        if kind != "r":
+            raise PanelError("Telegram feeds post straight away; only Reddit feeds have an approval queue.")
+        return await self._foreign(self._feed_cog("RedditFeed", "Reddit feed")._apply_switch_mode(guild, member, ident))
+
+    async def _pause_feeds_on(self, guild, member, channel_ids) -> list:
+        """Pause every active feed that posts ONLY to these channels. Feeds that also post elsewhere are left alone."""
+        if not channel_ids:
+            return []
+        paused = []
+        for item_id, label, ids, is_paused, _approval in await self._feed_rows(guild):
+            if is_paused or not all(c in channel_ids for c in ids):
+                continue
+            try:
+                await self._apply_feed_pause(guild, member, item_id)
+                paused.append(label)
+            except PanelError as exc:
+                log.warning("afterdark: could not pause %s: %s", label, exc)
+        return paused
 
 
     @afterdark_interest.command(name="list")

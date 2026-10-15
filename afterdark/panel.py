@@ -6,7 +6,7 @@ validation is the same as ever. No discord objects are created here, only plain 
 from . import constants as C
 from . import engine
 from .models import Interest
-from .settings_panel import Field, PanelError, Pick, Spec
+from .settings_panel import Field, ItemAction, PanelError, Pick, Spec
 
 INTRO = ("Pick a section, then a setting. Changes save as soon as you choose. "
          "Member lookups (`status`, `check`, `grant`, `revoke`, `exclude`, `clear`, `sweep`) stay as commands.")
@@ -149,17 +149,63 @@ async def _invite_stop(cog, guild, member, _value):
     return await cog._apply_invite_stop(guild, member)
 
 
+TAB_INTERESTS = "Interests & feeds"
+
+
+async def _get_feeds(cog, guild):
+    return await cog._feed_items(guild)
+
+
+async def _feed_get(cog, guild, item_id):
+    return await cog._feed_record(guild, item_id)
+
+
+async def _feed_save(cog, guild, member, item_id, values, picked):
+    return await cog._apply_feed_save(guild, member, item_id, values, picked)
+
+
+async def _feed_remove(cog, guild, member, item_id):
+    return await cog._apply_feed_remove(guild, member, item_id)
+
+
+async def _feed_pause(cog, guild, member, item_id):
+    return await cog._apply_feed_pause(guild, member, item_id)
+
+
+async def _feed_approval(cog, guild, member, item_id):
+    return await cog._apply_feed_approval(guild, member, item_id)
+
+
+async def _category_apply(cog, guild, member, value):
+    return await cog._apply_interest_category(guild, member, value)
+
+
+def _category_fmt(value, guild):
+    if not value:
+        return "not set"
+    category = guild.get_channel(value)
+    return category.name if category is not None else f"MISSING (id {value})"
+
+
 def build_specs():
     interest_fields = (
         Field("name", "Name (also the button text)", value=lambda r: r.get("name", ""), max_length=80,
               placeholder="Feet"),
         Field("emoji", "Button emoji (optional)", value=lambda r: r.get("emoji", ""), required=False, max_length=64,
               placeholder="\U0001F9B6"),
-        Field("role", "Role ID (only for 'roles' access mode)", value=lambda r: str(r.get("role_id") or ""),
-              required=False, max_length=40),
+        Field("new_channel", "Create a new channel named (optional)", required=False, max_length=90,
+              placeholder="feet-pics (age-restricted, hidden until members join)"),
         Field("join_message", "Message shown to them when they join", value=lambda r: r.get("join_message", ""),
               style="long", required=False, max_length=2000,
               placeholder="Leave empty for the default: You're in <name>."),
+    )
+    feed_fields = (
+        Field("reddit", "Subreddit (leave blank for a Telegram topic)", new_only=True, required=False, max_length=60,
+              placeholder="feet"),
+        Field("telegram", "Telegram topic id or title (blank for a subreddit)", new_only=True, required=False, max_length=100),
+        Field("new_channel", "Create a new channel named (optional)", new_only=True, required=False, max_length=90),
+        Field("interest", "Add the channel to this interest (optional)", new_only=True, required=False, max_length=80,
+              placeholder="Feet"),
     )
     return [
         # ---------------------------------------------------------------- roles & channels
@@ -175,9 +221,6 @@ def build_specs():
              confirm="Go live? The hourly sweep will start removing access from members who fail the checks. It aborts at the circuit-breaker limit.",
              confirm_if=lambda v: v == "live",
              help="Starts as a dry run. Check `.afterdark sweep` output before going live."),
-        Spec("access_mode", "How interest access is granted", "Access & sweep", "choice", get=_cfg("access_mode"), apply=_apply_mode,
-             choices=(("Per-user channel permissions (no role)", "overwrites"), ("A role per interest", "roles")),
-             help="Existing access of either kind keeps working and is cleaned up on removal."),
         _modal("min_level", "Minimum level to be admitted", "Access & sweep", _cfg("min_level"), "_apply_min_level",
                (Field("level", "LevelUp level", value=lambda v: str(v), max_length=4),), lambda v, g: f"level {v}",
                help="Only needed to get in, never to stay."),
@@ -220,10 +263,22 @@ def build_specs():
                _fmt_next, help="Set exactly when the next drop happens. Later gaps stay random."),
         Spec("drop_now", "Drop one right now", "Drops", "action", apply=_drop_now, button="Drop now",
              help="A test drop. It still disappears after its lifetime."),
-        # ---------------------------------------------------------------- interests
-        Spec("interests", "Interests", "Interests", "collection", get=_get_interests, item_get=_interest_get,
+        # ---------------------------------------------------------------- interests and feeds
+        Spec("interests", "Interests", TAB_INTERESTS, "collection", get=_get_interests, item_get=_interest_get,
              save=_interest_save, remove=_interest_remove, fields=interest_fields,
-             pick=Pick("channel", "Choose every channel this interest opens", 1, 25,
+             pick=Pick("channel", "Also open these existing channels (skip if you named a new one)", 0, 25,
                        defaults=lambda r: [r["channel_id"]] + list(r.get("extra_channel_ids") or []) if r else []),
-             help="After saving, re-post the member panel with `.afterdark panel #channel` so the buttons match."),
+             help="Members join with a button and get access to the interest's channels one by one (no role). "
+                  "After saving, re-post the member panel with `.afterdark panel #channel` so the buttons match."),
+        Spec("feeds", "Feeds", TAB_INTERESTS, "collection", get=_get_feeds, item_get=_feed_get,
+             save=_feed_save, remove=_feed_remove, fields=feed_fields,
+             pick=Pick("channel", "Also post into these existing channels (age-restricted)", 0, 25,
+                       defaults=lambda r: list(r.get("channel_ids") or []) if r else []),
+             item_actions=(ItemAction("Pause / resume", _feed_pause), ItemAction("Approval: manual / auto", _feed_approval)),
+             help="Reddit subreddits and Telegram topics that post into a channel. Add one with a subreddit or a topic, "
+                  "and either a new channel or existing ones; name an interest to add the channel to it. "
+                  "Edit moves a feed to other channels; Remove stops it and leaves the channel."),
+        Spec("interest_category", "Category for new channels", TAB_INTERESTS, "channel", get=_cfg("interest_category_id"),
+             apply=_category_apply, fmt=_category_fmt, channel_types=("category",), clearable=True,
+             help="Where channels created from the forms above go. Needed only if you create channels here."),
     ]

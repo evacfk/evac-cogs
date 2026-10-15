@@ -194,6 +194,12 @@ def normalize_key(text: str) -> str:
     return key[:32]
 
 
+def slugify_channel(text: str) -> str:
+    """A Discord text-channel name: lowercase letters, digits, dashes and underscores, max 90 chars."""
+    slug = re.sub(r"[^a-z0-9_-]+", "-", (text or "").strip().lower()).strip("-")
+    return slug[:90]
+
+
 _CUSTOM_EMOJI_RE = re.compile(r"^<a?:\w{2,32}:\d{15,25}>$")
 
 
