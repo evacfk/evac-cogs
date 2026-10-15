@@ -304,6 +304,18 @@ async def set_cfg(w, **kwargs):
         await getattr(w.cog.config.guild(w.guild), key).set(value)
 
 
+async def save_interest(w, item_id, values, channels):
+    """Drive the panel's save path the way the panel does (the member is the acting admin)."""
+    return await w.cog._apply_interest_save(w.guild, w.member("admin"), item_id, values, channels)
+
+
+async def expect_refused(coro, text):
+    from afterdark.settings_panel import PanelError
+    with pytest.raises(PanelError) as err:
+        await coro
+    assert text in str(err.value)
+
+
 async def add_feet(w, mode="roles"):
     await set_cfg(
         w,
@@ -1065,33 +1077,34 @@ async def test_post_command_sends_then_edits_same_message(w):
     assert sent and sent[0]["embed"].title == "\U0001F407"
 
 
-async def test_interest_add_validates_and_registers_view(w):
-    ctx = FakeCtx(w.guild, w.member("admin"))
-    chan = w.feet
-    await w.cog.interest_add.func(w.cog, ctx, "Feet!", rest=f"<#{chan.id}> <@&{FEET_ROLE}> x Feet")
+async def test_interest_save_validates_and_registers_view(w):
+    w.guild.add_role(FEET_ROLE, "Feet")
+    msg = await save_interest(w, None, {"name": "Feet!", "emoji": "\U0001F9B6", "role": f"<@&{FEET_ROLE}>"}, [w.feet])
     cfg = await w.cog.config.guild(w.guild).all()
     assert list(cfg["interests"]) == ["feet"] and cfg["interests"]["feet"]["role_id"] == FEET_ROLE
-    assert w.guild.id in w.cog._interest_views
-    await w.cog.interest_add.func(w.cog, ctx, "!!!", rest=f"<#{chan.id}>")
-    assert "usable" in ctx.sent[-1]
+    assert w.guild.id in w.cog._interest_views and "feet" in msg
+    await expect_refused(save_interest(w, None, {"name": "!!!"}, [w.feet]), "usable")
+    await expect_refused(save_interest(w, None, {"name": "feet"}, [w.feet]), "already an interest")
+    await expect_refused(save_interest(w, None, {"name": "Toes", "role": "999"}, [w.feet]), "couldn't find that role")
 
 
 async def test_set_inactivity_rejects_bad_pairs(w):
-    ctx = FakeCtx(w.guild, w.member("admin"))
-    await w.cog.set_inactivity.func(w.cog, ctx, 14, 7)
+    admin = w.member("admin")
+    await expect_refused(w.cog._apply_inactivity(w.guild, admin, {"warn": "14", "remove": "7"}), "")
     assert await w.cog.config.guild(w.guild).warn_days() == 7  # unchanged defaults
-    await w.cog.set_inactivity.func(w.cog, ctx, 3, 10)
+    await w.cog._apply_inactivity(w.guild, admin, {"warn": "3", "remove": "10"})
     assert await w.cog.config.guild(w.guild).warn_days() == 3
     assert await w.cog.config.guild(w.guild).remove_days() == 10
+    await expect_refused(w.cog._apply_inactivity(w.guild, admin, {"warn": "x", "remove": "10"}), "must be a number")
 
 
 async def test_dryrun_toggle_is_logged(w):
-    ctx = FakeCtx(w.guild, w.member("admin"))
-    await w.cog.set_dryrun.func(w.cog, ctx, "off")
+    admin = w.member("admin")
+    await w.cog._apply_dry_run(w.guild, admin, "live")
     assert await w.cog.config.guild(w.guild).dry_run() is False
     assert "OFF (LIVE)" in log_text(w)
-    await w.cog.set_dryrun.func(w.cog, ctx, "maybe")
-    assert "on" in ctx.sent[-1].lower()
+    await w.cog._apply_dry_run(w.guild, admin, "dry")
+    assert await w.cog.config.guild(w.guild).dry_run() is True
 
 
 async def test_defaults_match_the_agreed_design(w):
@@ -1125,12 +1138,11 @@ async def test_default_access_mode_is_per_user_overwrites(w):
     assert await w.cog.config.guild(w.guild).access_mode() == "overwrites"
 
 
-async def test_interest_add_with_a_word_in_the_emoji_slot_keeps_the_panel_valid(w):
-    ctx = FakeCtx(w.guild, w.member("admin"))
-    await w.cog.interest_add.func(w.cog, ctx, "feet", rest=f"<#{w.feet.id}> Feet")
+async def test_interest_save_with_a_word_in_the_emoji_slot_keeps_the_panel_valid(w):
+    msg = await save_interest(w, None, {"name": "Feet", "emoji": "Feet"}, [w.feet])
     cfg = await w.cog.config.guild(w.guild).all()
     assert cfg["interests"]["feet"]["emoji"] == "" and cfg["interests"]["feet"]["name"] == "Feet"
-    assert "No valid emoji" in ctx.sent[-1]
+    assert "No valid emoji" in msg
 
 
 def test_interest_view_drops_an_invalid_stored_emoji(w):
@@ -1212,34 +1224,31 @@ async def test_old_saved_interest_without_extras_still_loads():
     assert i.channel_ids == [5] and i.extra_channel_ids == []
 
 
-async def test_add_lists_many_channels_in_one_command_by_mention_and_name(w):
-    w.guild.add_channel(900001, "user-feet")
-    w.guild.add_channel(900002, "anime-feet")
-    ctx = FakeCtx(w.guild, w.member("admin"))
-    await w.cog.interest_add.func(w.cog, ctx, "feet", rest=f"<#{FEET_CHANNEL}> #user-feet 900002 \U0001F9B6 Feet toes")
-    i = (await w.cog.config.guild(w.guild).interests())["feet"]
+async def test_save_keeps_every_picked_channel_in_order(w):
+    c1, c2 = w.guild.add_channel(900001, "user-feet"), w.guild.add_channel(900002, "anime-feet")
+    await save_interest(w, None, {"name": "Feet toes", "emoji": "\U0001F9B6"}, [w.feet, c1, c2, c1])
+    i = (await w.cog.config.guild(w.guild).interests())["feet-toes"]
     assert [i["channel_id"]] + i["extra_channel_ids"] == [FEET_CHANNEL, 900001, 900002]
     assert i["emoji"] == "\U0001F9B6" and i["name"] == "Feet toes"
 
 
-async def test_add_same_key_appends_and_keeps_button_details(w):
+async def test_editing_replaces_channels_and_keeps_the_rest(w):
     await add_feet(w, mode="overwrites")
     w.guild.add_channel(900001, "user-feet")
-    ctx = FakeCtx(w.guild, w.member("admin"))
-    await w.cog.interest_add.func(w.cog, ctx, "feet", rest="<#900001>")
+    msg = await save_interest(w, "feet", {"name": "Feet", "emoji": "", "role": str(FEET_ROLE)}, [w.feet, w.guild.get_channel(900001)])
     i = (await w.cog.config.guild(w.guild).interests())["feet"]
-    assert i["extra_channel_ids"] == [900001] and i["name"] == "Feet" and i["emoji"] == "x" and i["role_id"] == FEET_ROLE
-    await w.cog.interest_add.func(w.cog, ctx, "feet", rest="<#900001>")       # repeat: no duplicate
+    assert i["extra_channel_ids"] == [900001] and i["name"] == "Feet" and i["role_id"] == FEET_ROLE
+    assert "click the button again" in msg
+    msg = await save_interest(w, "feet", {"name": "Feet", "emoji": "", "role": str(FEET_ROLE)}, [w.feet, w.guild.get_channel(900001)])
+    assert "click the button again" not in msg                   # nothing new was added
     i = (await w.cog.config.guild(w.guild).interests())["feet"]
-    assert i["extra_channel_ids"] == [900001] and "already on it" in ctx.sent[-1]
+    assert i["extra_channel_ids"] == [900001]
 
 
-async def test_add_with_unknown_channel_changes_nothing(w):
-    ctx = FakeCtx(w.guild, w.member("admin"))
-    await w.cog.interest_add.func(w.cog, ctx, "feet", rest=f"<#{FEET_CHANNEL}> #nope")
-    assert "#nope" in ctx.sent[-1] and not await w.cog.config.guild(w.guild).interests()
-    await w.cog.interest_add.func(w.cog, ctx, "feet", rest="")
-    assert "at least one channel" in ctx.sent[-1]
+async def test_saving_without_a_channel_changes_nothing(w):
+    await expect_refused(save_interest(w, None, {"name": "Feet"}, []), "at least one channel")
+    assert not await w.cog.config.guild(w.guild).interests()
+    await expect_refused(save_interest(w, "ghost", {"name": "Feet"}, [w.feet]), "No such interest")
 
 
 async def test_button_opens_every_channel_and_leaving_closes_every_channel(w):
@@ -1295,26 +1304,23 @@ async def test_revoke_all_clears_every_channel(w):
     assert not (w.feet.overwrites or w.feet2.overwrites or w.feet3.overwrites)
 
 
-async def test_remove_one_channel_then_the_whole_interest(w):
+async def test_unpicking_channels_drops_them_and_the_first_slot_passes_on(w):
     await add_two_feet_channels(w)
-    ctx = FakeCtx(w.guild, w.member("admin"))
-    await w.cog.interest_remove.func(w.cog, ctx, "feet", channels="<#900001>")
+    c1, c2 = w.guild.get_channel(900001), w.guild.get_channel(900002)
+    values = {"name": "Feet", "emoji": ""}
+    await save_interest(w, "feet", values, [w.feet, c2])
     i = (await w.cog.config.guild(w.guild).interests())["feet"]
     assert i["channel_id"] == FEET_CHANNEL and i["extra_channel_ids"] == [900002]
-    await w.cog.interest_remove.func(w.cog, ctx, "feet", channels="<#900001>")      # not on it any more
-    assert "Not on that interest" in ctx.sent[-1]
-    await w.cog.interest_remove.func(w.cog, ctx, "feet", channels=f"<#{FEET_CHANNEL}>")
+    await save_interest(w, "feet", values, [c2])
     i = (await w.cog.config.guild(w.guild).interests())["feet"]
-    assert i["channel_id"] == 900002 and i["extra_channel_ids"] == []                   # first slot passes on
-    await w.cog.interest_remove.func(w.cog, ctx, "feet", channels="<#900002>")
-    assert "feet" not in await w.cog.config.guild(w.guild).interests() and "last channel" in ctx.sent[-1]
+    assert i["channel_id"] == 900002 and i["extra_channel_ids"] == []
 
 
-async def test_remove_with_only_the_key_drops_the_interest(w):
+async def test_remove_drops_the_interest_and_refreshes_the_view(w):
     await add_two_feet_channels(w)
-    ctx = FakeCtx(w.guild, w.member("admin"))
-    await w.cog.interest_remove.func(w.cog, ctx, "feet")
+    await w.cog._apply_interest_remove(w.guild, w.member("admin"), "feet")
     assert not await w.cog.config.guild(w.guild).interests()
+    await expect_refused(w.cog._apply_interest_remove(w.guild, w.member("admin"), "feet"), "No such interest")
 
 
 async def test_list_shows_every_channel(w):
@@ -1344,8 +1350,9 @@ def test_shipped_rules_fit_the_panel_and_render_white_with_the_how_to_section():
 
 async def test_join_message_is_per_interest_and_defaults_when_empty(w):
     await add_feet(w, mode="overwrites")
-    ctx = FakeCtx(w.guild, w.member("admin"))
-    await w.cog.interest_joinmessage.func(w.cog, ctx, "feet", text="You clicked feet? Now everyone knows.")
+    base = {"name": "Feet", "emoji": "", "role": str(FEET_ROLE)}
+    w.guild.add_role(FEET_ROLE, "Feet") if w.guild.get_role(FEET_ROLE) is None else None
+    await save_interest(w, "feet", {**base, "join_message": "You clicked feet? Now everyone knows."}, [w.feet])
     m = w.member()
     m.roles.append(w.rabbit)
     inter = FakeInteraction(m, w.guild)
@@ -1354,20 +1361,21 @@ async def test_join_message_is_per_interest_and_defaults_when_empty(w):
     inter = FakeInteraction(m, w.guild)
     await w.cog.handle_interest_toggle(inter, "feet")           # leaving keeps its own wording
     assert inter.replies[0] == "You left Feet."
-    await w.cog.interest_joinmessage.func(w.cog, ctx, "feet", text="")
+    await save_interest(w, "feet", {**base, "join_message": ""}, [w.feet])
     inter = FakeInteraction(m, w.guild)
     await w.cog.handle_interest_toggle(inter, "feet")
     assert inter.replies[0] == "You're in Feet."
-    await w.cog.interest_joinmessage.func(w.cog, ctx, "nope", text="x")
-    assert "No such interest" in ctx.sent[-1]
 
 
 async def test_join_message_survives_adding_channels(w):
     await add_feet(w, mode="overwrites")
-    ctx = FakeCtx(w.guild, w.member("admin"))
-    await w.cog.interest_joinmessage.func(w.cog, ctx, "feet", text="hi")
-    w.guild.add_channel(900001, "more")
-    await w.cog.interest_add.func(w.cog, ctx, "feet", rest="<#900001>")
+    w.guild.add_role(FEET_ROLE, "Feet") if w.guild.get_role(FEET_ROLE) is None else None
+    base = {"name": "Feet", "emoji": "", "role": str(FEET_ROLE)}
+    await save_interest(w, "feet", {**base, "join_message": "hi"}, [w.feet])
+    more = w.guild.add_channel(900001, "more")
+    await save_interest(w, "feet", {**base, "join_message": "hi"}, [w.feet, more])
+    assert (await w.cog.config.guild(w.guild).interests())["feet"]["join_message"] == "hi"
+    await save_interest(w, "feet", base, [w.feet, more])          # no join_message key: left alone
     assert (await w.cog.config.guild(w.guild).interests())["feet"]["join_message"] == "hi"
 
 
@@ -1493,22 +1501,23 @@ async def test_a_failed_drop_logs_once_and_still_plans_the_next_one(w):
 
 
 async def test_drop_on_replaces_the_permanent_message_and_needs_a_channel(w):
-    ctx = FakeCtx(w.guild, w.member("admin"))
+    admin = w.member("admin")
     clue = w.guild.get_channel(C.DEFAULT_CLUE_CHANNEL_ID) or w.guild.add_channel(C.DEFAULT_CLUE_CHANNEL_ID, "pillow-talk")
     permanent = await clue.send(embed=embeds_rabbit())
     await set_cfg(w, rabbit_post={"channel_id": clue.id, "message_id": permanent.id})
-    await w.cog.drop_on.func(w.cog, ctx)                      # falls back to the clue channel
+    msg = await w.cog._apply_drops_enabled(w.guild, admin, True)                      # falls back to the clue channel
     assert permanent.id not in clue.messages and await w.cog.config.guild(w.guild).rabbit_post() == {}
     assert await w.cog.config.guild(w.guild).drop_enabled() is True
-    assert "permanent" in ctx.sent[-1] and (await w.cog.config.guild(w.guild).drop_state())["next_ts"] > NOW
+    assert "permanent" in msg and (await w.cog.config.guild(w.guild).drop_state())["next_ts"] > NOW
+    await set_cfg(w, drop_enabled=False, drop_channel_id=0, clue_channel_id=0)
+    await expect_refused(w.cog._apply_drops_enabled(w.guild, admin, True), "drop channel")
 
 
 async def test_drop_off_deletes_the_live_drop_and_stops_the_schedule(w):
     fight = await drop_world(w)
     await set_cfg(w, drop_state={"next_ts": NOW - 1})
     await w.cog._drop_tick(w.guild)
-    ctx = FakeCtx(w.guild, w.member("admin"))
-    await w.cog.drop_off.func(w.cog, ctx)
+    await w.cog._apply_drops_enabled(w.guild, w.member("admin"), False)
     state = await w.cog.config.guild(w.guild).drop_state()
     assert fight.messages == {} and "next_ts" not in state and await w.cog.config.guild(w.guild).drop_enabled() is False
     await w.cog._drop_tick(w.guild)
@@ -1517,27 +1526,29 @@ async def test_drop_off_deletes_the_live_drop_and_stops_the_schedule(w):
 
 async def test_drop_now_posts_for_a_test_without_starting_a_schedule(w):
     fight = await drop_world(w, enabled=False)
-    ctx = FakeCtx(w.guild, w.member("admin"))
-    await w.cog.drop_now.func(w.cog, ctx)
+    admin = w.member("admin")
+    msg = await w.cog._apply_drop_now(w.guild, admin)
     state = await w.cog.config.guild(w.guild).drop_state()
-    assert len(fight.messages) == 1 and "next_ts" not in state and ctx.sent[-1] == "Dropped."
-    await w.cog.drop_now.func(w.cog, ctx)
-    assert "already live" in ctx.sent[-1]
+    assert len(fight.messages) == 1 and "next_ts" not in state and msg.startswith("Dropped")
+    await expect_refused(w.cog._apply_drop_now(w.guild, admin), "already live")
     w.clock[0] = NOW + 601
     await w.cog._drop_tick(w.guild)
     assert fight.messages == {}
 
 
 async def test_drop_settings_are_validated(w):
-    ctx = FakeCtx(w.guild, w.member("admin"))
-    await w.cog.drop_every.func(w.cog, ctx, 5, 30)
-    assert "longer than the lifetime" in ctx.sent[-1] and await w.cog.config.guild(w.guild).drop_min_minutes() == 60
-    await w.cog.drop_every.func(w.cog, ctx, 30, 90)
+    admin = w.member("admin")
+    ok = {"min": "60", "max": "180", "life": "10", "slots": "4"}
+    await expect_refused(w.cog._apply_drop_timing(w.guild, admin, {**ok, "min": "5", "max": "30"}), "longer than the lifetime")
+    assert await w.cog.config.guild(w.guild).drop_min_minutes() == 60
+    await w.cog._apply_drop_timing(w.guild, admin, {**ok, "min": "30", "max": "90"})
     assert await w.cog.config.guild(w.guild).drop_max_minutes() == 90
-    await w.cog.drop_lifetime.func(w.cog, ctx, 45)
-    assert "longer than the lifetime" in ctx.sent[-1] and await w.cog.config.guild(w.guild).drop_life_minutes() == 10
-    await w.cog.drop_lifetime.func(w.cog, ctx, 15)
+    await expect_refused(w.cog._apply_drop_timing(w.guild, admin, {**ok, "min": "30", "max": "90", "life": "45"}), "longer than the lifetime")
+    assert await w.cog.config.guild(w.guild).drop_life_minutes() == 10
+    await w.cog._apply_drop_timing(w.guild, admin, {**ok, "min": "30", "max": "90", "life": "15"})
     assert await w.cog.config.guild(w.guild).drop_life_minutes() == 15
+    await expect_refused(w.cog._apply_drop_timing(w.guild, admin, {**ok, "life": "ten"}), "whole number")
+    assert await w.cog.config.guild(w.guild).drop_life_minutes() == 15           # a bad value saves nothing at all
 
 
 async def test_a_drop_enforces_the_same_criteria_when_someone_taps_it(w):
@@ -1585,14 +1596,15 @@ async def test_only_four_people_get_in_per_drop_and_failed_taps_do_not_use_a_slo
     assert "Too slow" in inter.replies[-1]
 
 
-async def test_slots_command_and_unlimited_and_permanent_message_is_uncapped(w):
+async def test_slots_setting_and_unlimited_and_permanent_message_is_uncapped(w):
     fight = await drop_world(w)
-    ctx = FakeCtx(w.guild, w.member("admin"))
-    await w.cog.drop_slots.func(w.cog, ctx, 2)
+    admin = w.member("admin")
+    timing = {"min": "60", "max": "180", "life": "10"}
+    await w.cog._apply_drop_timing(w.guild, admin, {**timing, "slots": "2"})
     assert await w.cog.config.guild(w.guild).drop_max_claims() == 2
-    await w.cog.drop_slots.func(w.cog, ctx, 500)
-    assert "0 to 100" in ctx.sent[-1] and await w.cog.config.guild(w.guild).drop_max_claims() == 2
-    await w.cog.drop_slots.func(w.cog, ctx, 0)
+    await expect_refused(w.cog._apply_drop_timing(w.guild, admin, {**timing, "slots": "500"}), "0 to 100")
+    assert await w.cog.config.guild(w.guild).drop_max_claims() == 2
+    await w.cog._apply_drop_timing(w.guild, admin, {**timing, "slots": "0"})
     await set_cfg(w, drop_state={"next_ts": NOW - 1})
     await w.cog._drop_tick(w.guild)
     live = list(fight.messages.values())[0]
@@ -1609,8 +1621,7 @@ async def test_slots_command_and_unlimited_and_permanent_message_is_uncapped(w):
 
 async def test_members_report_lists_each_interest_busiest_first_and_flags_empty_ones(w):
     await add_feet(w)
-    ctx = FakeCtx(w.guild, w.member("admin"))
-    await w.cog.interest_add.func(w.cog, ctx, "ears", rest=f"<#{w.feet.id}> Ears")
+    await save_interest(w, None, {"name": "Ears"}, [w.feet])
     a, b = w.member("Zed"), w.member("amy")
     for m in (a, b):
         m.roles.append(w.rabbit)
@@ -1689,15 +1700,15 @@ def test_panel_mentions_leave_button_but_the_final_warning_lives_in_the_confirm_
     assert "Leave Rabbit Hole" in emb.fields[0].value and "let back in" not in emb.fields[0].value
 
 
-async def test_drop_next_sets_an_exact_time_and_status_shows_minutes(w):
+async def test_drop_next_sets_an_exact_time_and_the_panel_shows_minutes(w):
     fight = await drop_world(w)
-    ctx = FakeCtx(w.guild, w.member("admin"))
-    await w.cog.drop_next.func(w.cog, ctx, 25)
+    admin = w.member("admin")
+    await w.cog._apply_drop_next(w.guild, admin, {"minutes": "25"})
     assert (await w.cog.config.guild(w.guild).drop_state())["next_ts"] == NOW + 25 * 60
-    await w.cog.drop_status.func(w.cog, ctx)
-    assert "25 min" in ctx.sent[-1]
-    await w.cog.drop_next.func(w.cog, ctx, 0)
-    assert "Pick 1 to" in ctx.sent[-1]
+    from afterdark import panel as panel_mod
+    shown = panel_mod._fmt_next(await panel_mod._get_next(w.cog, w.guild), w.guild)
+    assert "25 min" in shown
+    await expect_refused(w.cog._apply_drop_next(w.guild, admin, {"minutes": "0"}), "Pick 1 to")
     w.clock[0] = NOW + 25 * 60 + 1
     await w.cog._drop_tick(w.guild)
     assert len(fight.messages) == 1
@@ -1705,9 +1716,8 @@ async def test_drop_next_sets_an_exact_time_and_status_shows_minutes(w):
 
 async def test_drop_next_refuses_while_drops_are_off(w):
     await drop_world(w, enabled=False)
-    ctx = FakeCtx(w.guild, w.member("admin"))
-    await w.cog.drop_next.func(w.cog, ctx, 10)
-    assert "off" in ctx.sent[-1] and "next_ts" not in await w.cog.config.guild(w.guild).drop_state()
+    await expect_refused(w.cog._apply_drop_next(w.guild, w.member("admin"), {"minutes": "10"}), "off")
+    assert "next_ts" not in await w.cog.config.guild(w.guild).drop_state()
 
 
 # --------------------------------------------- verified-first invitations + stop
@@ -1785,9 +1795,10 @@ async def test_invite_stop_command_closes_the_waiting_prompt(w):
 
 
 async def test_verifiedrole_setting_and_clearing(w):
-    ctx = FakeCtx(w.guild, w.member("admin"))
+    admin = w.member("admin")
     role = w.guild.add_role(888, "Age Verified")
-    await w.cog.set_verifiedrole.func(w.cog, ctx, role)
+    await w.cog._apply_role(w.guild, admin, "verified_role_id", role)
     assert await w.cog.config.guild(w.guild).verified_role_id() == 888
-    await w.cog.set_verifiedrole.func(w.cog, ctx, None)
+    await w.cog._apply_role(w.guild, admin, "verified_role_id", None)
     assert await w.cog.config.guild(w.guild).verified_role_id() == 0
+    await expect_refused(w.cog._apply_role(w.guild, admin, "rabbit_role_id", None), "required")

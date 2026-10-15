@@ -24,6 +24,8 @@ from redbot.core import Config, commands
 from . import constants as C
 from . import embeds, engine
 from .models import ExcludeEntry, Interest, Invite
+from . import panel as panel_specs
+from .settings_panel import PanelError, open_panel
 from .views import InterestView, InviteView, LeaveConfirmView, RabbitView, ReviewView
 
 log = logging.getLogger("red.evac-cogs.afterdark")
@@ -166,7 +168,7 @@ class AfterDark(commands.Cog):
         channel = self._drop_channel(guild, cfg)
         self._schedule_next_drop(cfg, state, now)
         if channel is None:
-            await self._log(guild, "⚠️ Rabbit drop skipped: no drop channel is set (`.afterdark drop channel #ch`).")
+            await self._log(guild, "⚠️ Rabbit drop skipped: no drop channel is set (open `.afterdark`, Drops).")
             return False
         variant = engine.pick_variant(len(C.DROP_VARIANTS), state.get("last_variant"), self._rng)
         try:
@@ -1139,7 +1141,10 @@ class AfterDark(commands.Cog):
     @commands.guild_only()
     @commands.mod_or_permissions(manage_roles=True)
     async def afterdark(self, ctx):
-        """Rabbit Hole access: grant, revoke, exclude, clear, check."""
+        """Rabbit Hole control panel (admins). Mods get the help list: grant, revoke, exclude, clear, check."""
+        perms = ctx.author.guild_permissions
+        if perms.administrator or perms.manage_guild:
+            return await open_panel(ctx, self, panel_specs.build_specs(), title="Rabbit Hole", intro=panel_specs.INTRO)
         await ctx.send_help()
 
     @afterdark.command(name="version")
@@ -1371,135 +1376,89 @@ class AfterDark(commands.Cog):
         cfg = await self.config.guild(ctx.guild).all()
         channel = channel or ctx.guild.get_channel(cfg["clue_channel_id"])
         if channel is None:
-            return await ctx.send("No channel. Pass one or `.afterdark set cluechannel #channel`.")
+            return await ctx.send("No channel. Pass one or set the clue channel in `.afterdark`.")
         message = await self._post_or_edit(
             ctx.guild, channel, cfg["rabbit_post"], embed=embeds.rabbit_embed(), view=RabbitView(self)
         )
         await self.config.guild(ctx.guild).rabbit_post.set({"channel_id": channel.id, "message_id": message.id})
         await ctx.send(f"Posted in {channel.mention}. Pin it if you want it to stay visible.")
 
-    @afterdark.group(name="drop", invoke_without_command=True)
-    @commands.admin_or_permissions(manage_guild=True)
-    async def afterdark_drop(self, ctx):
-        """Random rabbit drops: the 🐇 message appears now and then, then vanishes."""
-        await ctx.send_help()
+    # ------------------------------------------------ rabbit drops (used by the panel)
 
-    @afterdark_drop.command(name="status")
-    async def drop_status(self, ctx):
-        """Show whether drops are on, the next one, and the live one."""
-        cfg = await self.config.guild(ctx.guild).all()
-        state = cfg["drop_state"]
-        channel = self._drop_channel(ctx.guild, cfg)
-        lines = [
-            f"Drops: **{'on' if cfg['drop_enabled'] else 'off'}** in {channel.mention if channel else '(no channel)'}",
-            f"Every {cfg['drop_min_minutes']}-{cfg['drop_max_minutes']} minutes at random, each stays {cfg['drop_life_minutes']} minutes.",
-            f"Slots per drop: {cfg.get('drop_max_claims') or 'unlimited'}.",
-        ]
-        if cfg["drop_enabled"] and state.get("next_ts"):
-            mins = max(0, int(round((state["next_ts"] - self._clock()) / 60)))
-            lines.append(f"Next drop: in about **{mins} min** (<t:{int(state['next_ts'])}:t>), then another random {cfg['drop_min_minutes']}-{cfg['drop_max_minutes']} min after that.")
-        if state.get("message_id"):
-            lines.append(f"Live now, deleted <t:{int(state['delete_ts'])}:R>.")
-        await ctx.send("\n".join(lines))
-
-    @afterdark_drop.command(name="on")
-    async def drop_on(self, ctx):
-        """Turn drops on. This REPLACES the permanent 🐇 message: it is deleted."""
-        async with self._drop_lock(ctx.guild):
-            cfg = await self.config.guild(ctx.guild).all()
-            channel = self._drop_channel(ctx.guild, cfg)
-            if channel is None:
-                return await ctx.send("Set a channel first: `.afterdark drop channel #channel`.")
-            removed = ""
-            saved = cfg["rabbit_post"]
-            if saved and saved.get("message_id"):
-                old = ctx.guild.get_channel(saved.get("channel_id") or 0)
-                try:
-                    message = await old.fetch_message(saved["message_id"]) if old is not None else None
-                    if message is not None:
-                        await message.delete()
-                        removed = " The permanent 🐇 message was deleted."
-                except (discord.NotFound, discord.Forbidden, discord.HTTPException):
-                    removed = " (Couldn't delete the old permanent 🐇 message; remove it by hand.)"
-                await self.config.guild(ctx.guild).rabbit_post.set({})
-            state = dict(cfg["drop_state"])
-            self._schedule_next_drop(cfg, state, self._clock())
-            await self.config.guild(ctx.guild).drop_state.set(state)
-            await self.config.guild(ctx.guild).drop_enabled.set(True)
-        await ctx.send(f"Drops are on in {channel.mention}. The first one is <t:{int(state['next_ts'])}:R>.{removed}")
-
-    @afterdark_drop.command(name="off")
-    async def drop_off(self, ctx):
-        """Turn drops off and delete the live one, if any."""
-        async with self._drop_lock(ctx.guild):
-            state = dict(await self.config.guild(ctx.guild).drop_state())
-            await self._drop_delete(ctx.guild, state)
+    async def _apply_drops_enabled(self, guild, member, on: bool) -> str:
+        if on:
+            async with self._drop_lock(guild):
+                cfg = await self.config.guild(guild).all()
+                channel = self._drop_channel(guild, cfg)
+                if channel is None:
+                    raise PanelError("Set a drop channel (or the clue channel) first.")
+                removed = ""
+                saved = cfg["rabbit_post"]
+                if saved and saved.get("message_id"):
+                    old = guild.get_channel(saved.get("channel_id") or 0)
+                    try:
+                        message = await old.fetch_message(saved["message_id"]) if old is not None else None
+                        if message is not None:
+                            await message.delete()
+                            removed = " The permanent \U0001F407 message was deleted."
+                    except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+                        removed = " (Couldn't delete the old permanent \U0001F407 message; remove it by hand.)"
+                    await self.config.guild(guild).rabbit_post.set({})
+                state = dict(cfg["drop_state"])
+                self._schedule_next_drop(cfg, state, self._clock())
+                await self.config.guild(guild).drop_state.set(state)
+                await self.config.guild(guild).drop_enabled.set(True)
+            return f"Drops are on in {channel.mention}. The first one is <t:{int(state['next_ts'])}:R>.{removed}"
+        async with self._drop_lock(guild):
+            state = dict(await self.config.guild(guild).drop_state())
+            await self._drop_delete(guild, state)
             state.pop("next_ts", None)
-            await self.config.guild(ctx.guild).drop_state.set(state)
-            await self.config.guild(ctx.guild).drop_enabled.set(False)
-        await ctx.send("Drops are off.")
+            await self.config.guild(guild).drop_state.set(state)
+            await self.config.guild(guild).drop_enabled.set(False)
+        return "Drops are off."
 
-    @afterdark_drop.command(name="now")
-    async def drop_now(self, ctx):
-        """Post a drop right now to test it (it still disappears after its lifetime)."""
-        async with self._drop_lock(ctx.guild):
-            cfg = await self.config.guild(ctx.guild).all()
+    async def _apply_drop_now(self, guild, member, _value=None) -> str:
+        async with self._drop_lock(guild):
+            cfg = await self.config.guild(guild).all()
             state = dict(cfg["drop_state"])
             if state.get("message_id"):
-                return await ctx.send("A drop is already live.")
-            ok = await self._drop_post(ctx.guild, cfg, state, self._clock())
+                raise PanelError("A drop is already live.")
+            ok = await self._drop_post(guild, cfg, state, self._clock())
             if not cfg["drop_enabled"]:
                 state.pop("next_ts", None)       # a test must not start a schedule
-            await self.config.guild(ctx.guild).drop_state.set(state)
-        await ctx.send("Dropped." if ok else "Couldn't drop (see the log channel).")
+            await self.config.guild(guild).drop_state.set(state)
+        if not ok:
+            raise PanelError("Couldn't drop (see the log channel).")
+        return "Dropped. It disappears after its lifetime."
 
-    @afterdark_drop.command(name="channel")
-    async def drop_channel(self, ctx, channel: discord.TextChannel):
-        """Where drops appear."""
-        await self.config.guild(ctx.guild).drop_channel_id.set(channel.id)
-        await ctx.send(f"Drops will appear in {channel.mention}.")
-
-    @afterdark_drop.command(name="every")
-    async def drop_every(self, ctx, minimum: int, maximum: int):
-        """Gap between drops in minutes, picked at random: `.afterdark drop every 60 180`."""
-        cfg = await self.config.guild(ctx.guild).all()
-        error = engine.validate_drop_timing(minimum, maximum, cfg["drop_life_minutes"], C.DROP_MAX_GAP_MINUTES)
+    async def _apply_drop_timing(self, guild, member, values: dict) -> str:
+        minimum, maximum = self._whole(values, "min", "Shortest gap"), self._whole(values, "max", "Longest gap")
+        lifetime, slots = self._whole(values, "life", "Lifetime"), self._whole(values, "slots", "Slots")
+        error = engine.validate_drop_timing(minimum, maximum, lifetime, C.DROP_MAX_GAP_MINUTES)
         if error:
-            return await ctx.send(error)
-        await self.config.guild(ctx.guild).drop_min_minutes.set(minimum)
-        await self.config.guild(ctx.guild).drop_max_minutes.set(maximum)
-        await ctx.send(f"Drops come every {minimum}-{maximum} minutes (applies from the next one).")
+            raise PanelError(error)
+        if not 0 <= slots <= 100:
+            raise PanelError("Slots: pick a number from 0 to 100 (0 = unlimited).")
+        conf = self.config.guild(guild)
+        await conf.drop_min_minutes.set(minimum)
+        await conf.drop_max_minutes.set(maximum)
+        await conf.drop_life_minutes.set(lifetime)
+        await conf.drop_max_claims.set(slots)
+        return (f"Drops come every {minimum}-{maximum} minutes, stay {lifetime} minutes and let in "
+                f"{slots if slots else 'unlimited'} people (gaps and lifetime apply from the next drop; slots apply to the live one too).")
 
-    @afterdark_drop.command(name="lifetime")
-    async def drop_lifetime(self, ctx, minutes: int):
-        """How long a drop stays before it is deleted."""
-        cfg = await self.config.guild(ctx.guild).all()
-        error = engine.validate_drop_timing(cfg["drop_min_minutes"], cfg["drop_max_minutes"], minutes, C.DROP_MAX_GAP_MINUTES)
-        if error:
-            return await ctx.send(error)
-        await self.config.guild(ctx.guild).drop_life_minutes.set(minutes)
-        await ctx.send(f"Drops stay for {minutes} minutes (applies from the next one).")
-
-    @afterdark_drop.command(name="next")
-    async def drop_next(self, ctx, minutes: int):
-        """Set exactly when the next drop happens: in this many minutes. Later gaps stay random."""
+    async def _apply_drop_next(self, guild, member, values: dict) -> str:
+        minutes = self._whole(values, "minutes", "Minutes")
         if not 1 <= minutes <= C.DROP_MAX_GAP_MINUTES:
-            return await ctx.send(f"Pick 1 to {C.DROP_MAX_GAP_MINUTES} minutes.")
-        if not await self.config.guild(ctx.guild).drop_enabled():
-            return await ctx.send("Drops are off. Turn them on first: `.afterdark drop on`.")
-        async with self._drop_lock(ctx.guild):
-            state = dict(await self.config.guild(ctx.guild).drop_state())
+            raise PanelError(f"Pick 1 to {C.DROP_MAX_GAP_MINUTES} minutes.")
+        if not await self.config.guild(guild).drop_enabled():
+            raise PanelError("Drops are off. Turn them on first.")
+        async with self._drop_lock(guild):
+            state = dict(await self.config.guild(guild).drop_state())
             state["next_ts"] = self._clock() + minutes * 60
-            await self.config.guild(ctx.guild).drop_state.set(state)
-        await ctx.send(f"Next drop in {minutes} minutes (<t:{int(state['next_ts'])}:t>).")
+            await self.config.guild(guild).drop_state.set(state)
+        return f"Next drop in {minutes} minutes (<t:{int(state['next_ts'])}:t>). Later gaps stay random."
 
-    @afterdark_drop.command(name="slots")
-    async def drop_slots(self, ctx, count: int):
-        """How many people can get in per drop (0 = unlimited). Applies to the live drop too."""
-        if not 0 <= count <= 100:
-            return await ctx.send("Pick a number from 0 to 100 (0 = unlimited).")
-        await self.config.guild(ctx.guild).drop_max_claims.set(count)
-        await ctx.send(f"Each drop lets in {count} people, then disappears." if count else "Drops are unlimited.")
 
     @afterdark.command(name="panel")
     @commands.admin_or_permissions(manage_guild=True)
@@ -1508,7 +1467,7 @@ class AfterDark(commands.Cog):
         cfg = await self.config.guild(ctx.guild).all()
         interests = self._interests(cfg)
         if not interests:
-            return await ctx.send("Add an interest first: `.afterdark interest add`.")
+            return await ctx.send("Add an interest first in `.afterdark` (Interests).")
         channel = channel or ctx.channel
         await self._register_interest_view(ctx.guild)
         view = self._interest_views.get(ctx.guild.id) or InterestView(self, interests.values())
@@ -1527,152 +1486,84 @@ class AfterDark(commands.Cog):
         """Manage interest channels."""
         await ctx.send_help()
 
-    @staticmethod
-    def _parse_channel(guild, token: str):
-        """`<#id>`, a bare id, or an exact channel name (leading # optional)."""
-        raw = token.strip()
-        digits = raw[2:-1] if raw.startswith("<#") and raw.endswith(">") else raw
-        if digits.isdigit():
-            return guild.get_channel(int(digits))
-        name = raw.lstrip("#").lower()
-        for channel in getattr(guild, "text_channels", []):
-            if channel.name.lower() == name:
-                return channel
-        return None
-
-    @afterdark_interest.command(name="add")
-    async def interest_add(self, ctx, key: str, *, rest: str = ""):
-        """Create an interest, or add channels to one that exists.
-
-        `.afterdark interest add feet #feet #user-feet #anime-feet \U0001F9B6 Feet`
-        List as many channels as you like. Use the same key again later to add
-        more; the button, emoji and name are kept unless you give new ones.
-        A role (`@Role`) is only needed in `roles` mode.
-        """
-        key = engine.normalize_key(key)
-        if not key:
-            return await ctx.send("That key isn't usable (letters, digits, dashes).")
-        tokens = rest.split()
-        channels, unknown = [], []
-        while tokens:
-            channel = self._parse_channel(ctx.guild, tokens[0])
-            if channel is None:
-                # Anything that looks like a channel mention but isn't one is a mistake, not an emoji.
-                if tokens[0].startswith("<#") or tokens[0].startswith("#"):
-                    unknown.append(tokens[0])
-                    tokens.pop(0)
-                    continue
-                break
-            tokens.pop(0)
-            if channel.id not in [c.id for c in channels]:
-                channels.append(channel)
-        if unknown:
-            return await ctx.send("I couldn't find: " + ", ".join(unknown) + ". Nothing was changed.")
-        role_id = None
-        if tokens and tokens[0].startswith("<@&") and tokens[0].endswith(">") and tokens[0][3:-1].isdigit():
-            role_id = int(tokens.pop(0)[3:-1])
-        emoji = tokens.pop(0) if tokens else ""
-        name_text = " ".join(tokens)
-
-        interests = dict(await self.config.guild(ctx.guild).interests())
-        existing = Interest.from_dict(interests[key]) if key in interests else None
-        if existing is None and not channels:
-            return await ctx.send("Give at least one channel: `.afterdark interest add feet #feet #more-feet \U0001F9B6 Feet`.")
-        if existing is None and len(interests) >= InterestView.MAX_BUTTONS:
-            return await ctx.send("That's the maximum number of interests.")
-        # A word typed where the emoji goes ("Feet") becomes part of the name,
-        # because Discord rejects the whole panel on an invalid button emoji.
-        emoji, name = engine.split_emoji_and_name(emoji, name_text)
+    async def _apply_interest_save(self, guild, member, item_id, values: dict, picked) -> str:
+        """Create an interest (item_id None) or replace an existing one's name, emoji, role, join
+        message and channels. `picked` is the list of channels it opens."""
+        interests = dict(await self.config.guild(guild).interests())
+        name_text = (values.get("name") or "").strip()
+        if item_id is None:
+            key = engine.normalize_key(name_text)
+            if not key:
+                raise PanelError("That name isn't usable as a key (use letters, digits, dashes).")
+            if key in interests:
+                raise PanelError(f"There is already an interest called `{key}`. Pick it from the list to edit it.")
+            if len(interests) >= InterestView.MAX_BUTTONS:
+                raise PanelError("That's the maximum number of interests.")
+            existing = None
+        else:
+            key = engine.normalize_key(item_id)
+            if key not in interests:
+                raise PanelError("No such interest any more.")
+            existing = Interest.from_dict(interests[key])
+        channel_ids = []
+        for channel in picked or []:
+            if channel.id not in channel_ids:
+                channel_ids.append(channel.id)
+        if not channel_ids:
+            raise PanelError("Pick at least one channel.")
+        role_text = (values.get("role") or "").strip()
+        role_id = existing.role_id if existing is not None else None
+        if role_text:
+            digits = role_text[3:-1] if role_text.startswith("<@&") and role_text.endswith(">") else role_text
+            if not digits.isdigit() or guild.get_role(int(digits)) is None:
+                raise PanelError("I couldn't find that role. Paste its ID or leave it blank.")
+            role_id = int(digits)
+        elif existing is not None and "role" in values:
+            role_id = None
+        # The form has separate boxes, so a word typed in the emoji box is simply not an emoji:
+        # drop it (Discord rejects the whole member panel on an invalid button emoji).
+        emoji_text = (values.get("emoji") or "").strip()
+        emoji, name = (emoji_text if engine.valid_emoji(emoji_text) else ""), name_text
         if existing is None:
-            interest = Interest(key=key, name=name or key.title(), emoji=emoji, channel_id=channels[0].id,
-                                role_id=role_id, extra_channel_ids=[c.id for c in channels[1:]])
-            added = channels
+            interest = Interest(key=key, name=name or key.title(), emoji=emoji, channel_id=channel_ids[0],
+                                role_id=role_id, extra_channel_ids=channel_ids[1:])
+            added = channel_ids
         else:
             interest = existing
-            added = [c for c in channels if c.id not in interest.channel_ids]
-            interest.extra_channel_ids = interest.extra_channel_ids + [c.id for c in added]
-            if emoji:
-                interest.emoji = emoji
+            added = [c for c in channel_ids if c not in interest.channel_ids]
+            interest.channel_id, interest.extra_channel_ids = channel_ids[0], channel_ids[1:]
+            interest.emoji = emoji
             if name:
                 interest.name = name
-            if role_id:
-                interest.role_id = role_id
+            interest.role_id = role_id
+        if "join_message" in values:
+            interest.join_message = (values.get("join_message") or "").strip()[:2000]
         interests[key] = interest.to_dict()
-        await self.config.guild(ctx.guild).interests.set(interests)
-        await self._register_interest_view(ctx.guild)
-        mode = await self.config.guild(ctx.guild).access_mode()
+        await self.config.guild(guild).interests.set(interests)
+        await self._register_interest_view(guild)
+        mode = await self.config.guild(guild).access_mode()
         notes = ""
         if mode == "roles" and not interest.role_id:
-            notes += " Warning: mode is `roles` but no role was given, so joins will fail until you add one."
+            notes += " Warning: mode is roles but no role was given, so joins will fail until you add one."
         if not engine.valid_emoji(interest.emoji):
             notes += " (No valid emoji, so the button has none.)"
-        if existing is not None and not added:
-            notes += " (Those channels were already on it.)"
         if existing is not None and added:
-            notes += " Members who already joined get the new channels when they click the button again, or you can use `.afterdark grantinterest`."
-        listing = ", ".join(f"<#{c}>" for c in interest.channel_ids)
-        await ctx.send(f"Interest `{key}` now opens {listing} (button \"{interest.name}\"). "
-                       f"Re-run `.afterdark panel` to refresh the buttons.{notes}",
-                       allowed_mentions=discord.AllowedMentions.none())
+            notes += " Members who already joined get the new channels when they click the button again, or use `.afterdark grantinterest`."
+        listing = ", ".join(f"#{guild.get_channel(c).name}" if guild.get_channel(c) else str(c) for c in interest.channel_ids)
+        return (f"Interest {key} now opens {listing}. Re-post the member panel (`.afterdark panel #channel`) to refresh the buttons."
+                + notes)
 
-    @afterdark_interest.command(name="remove")
-    async def interest_remove(self, ctx, key: str, *, channels: str = ""):
-        """Remove a whole interest, or only some of its channels.
-
-        `.afterdark interest remove feet` removes the interest.
-        `.afterdark interest remove feet #user-feet` removes just that channel
-        (the interest goes away if it was the last one). Existing access is
-        left alone; use `.afterdark revokeinterest` to take it back.
-        """
-        key = engine.normalize_key(key)
-        interests = dict(await self.config.guild(ctx.guild).interests())
+    async def _apply_interest_remove(self, guild, member, item_id) -> str:
+        key = engine.normalize_key(item_id)
+        interests = dict(await self.config.guild(guild).interests())
         if key not in interests:
-            return await ctx.send("No such interest.")
-        tokens = channels.split()
-        if not tokens:
-            interests.pop(key)
-            await self.config.guild(ctx.guild).interests.set(interests)
-            await self._register_interest_view(ctx.guild)
-            return await ctx.send(f"Interest `{key}` removed. Re-run `.afterdark panel` to refresh the buttons.")
-        interest = Interest.from_dict(interests[key])
-        drop, unknown = [], []
-        for token in tokens:
-            channel = self._parse_channel(ctx.guild, token)
-            cid = channel.id if channel is not None else (int(token[2:-1]) if token.startswith("<#") and token[2:-1].isdigit() else None)
-            if cid is None or cid not in interest.channel_ids:
-                unknown.append(token)
-            elif cid not in drop:
-                drop.append(cid)
-        if unknown:
-            return await ctx.send("Not on that interest: " + ", ".join(unknown) + ". Nothing was changed.",
-                                  allowed_mentions=discord.AllowedMentions.none())
-        remaining = [c for c in interest.channel_ids if c not in drop]
-        if not remaining:
-            interests.pop(key)
-            msg = f"That was the last channel, so interest `{key}` is removed."
-        else:
-            interest.channel_id, interest.extra_channel_ids = remaining[0], remaining[1:]
-            interests[key] = interest.to_dict()
-            msg = f"Interest `{key}` now opens " + ", ".join(f"<#{c}>" for c in remaining) + "."
-        await self.config.guild(ctx.guild).interests.set(interests)
-        await self._register_interest_view(ctx.guild)
-        await ctx.send(msg + " Existing access is left alone. Re-run `.afterdark panel` if the button changed.",
-                       allowed_mentions=discord.AllowedMentions.none())
+            raise PanelError("No such interest.")
+        interests.pop(key)
+        await self.config.guild(guild).interests.set(interests)
+        await self._register_interest_view(guild)
+        return (f"Interest {key} removed. Existing access is left alone; `.afterdark revokeinterest` takes it back. "
+                "Re-post the member panel to refresh the buttons.")
 
-    @afterdark_interest.command(name="joinmessage")
-    async def interest_joinmessage(self, ctx, key: str, *, text: str = ""):
-        """Set what the button says to the member (only they see it) when they join.
-        `.afterdark interest joinmessage feet Your text here`. Leave the text empty to go back to the default."""
-        key = engine.normalize_key(key)
-        interests = dict(await self.config.guild(ctx.guild).interests())
-        if key not in interests:
-            return await ctx.send("No such interest.")
-        interest = Interest.from_dict(interests[key])
-        interest.join_message = text.strip()[:2000]
-        interests[key] = interest.to_dict()
-        await self.config.guild(ctx.guild).interests.set(interests)
-        await ctx.send(f"Join message for `{key}` set." if interest.join_message
-                       else f"Join message for `{key}` reset to the default.")
 
     @afterdark_interest.command(name="list")
     async def interest_list(self, ctx):
@@ -1735,23 +1626,29 @@ class AfterDark(commands.Cog):
         """Invitation tools."""
         await ctx.send_help()
 
+    async def _apply_invite_now(self, guild, member, _value=None) -> str:
+        target = await self._start_round(guild)
+        return f"Review round started: up to {target} invitation(s). Check <#{await self.config.guild(guild).log_channel_id()}>."
+
+    async def _apply_invite_stop(self, guild, member, _value=None) -> str:
+        async with self._review_lock(guild):
+            rnd = dict(await self.config.guild(guild).invite_round())
+            prompt = rnd.get("prompt")
+            await self.config.guild(guild).invite_round.set(engine.stop_round(rnd))
+        if prompt:
+            await self._close_prompt(guild, prompt, f"Stopped by {member.display_name}.")
+        return "Today's invitations are stopped. A new round starts tomorrow, or start one from the panel."
+
     @afterdark_invite.command(name="now")
     async def invite_now(self, ctx):
         """Start a review round right now (ignores the once-a-day limit). The first
         candidate appears in the log channel; nothing is sent until you answer."""
-        target = await self._start_round(ctx.guild)
-        await ctx.send(f"Review round started: up to {target} invitation(s). Check <#{await self.config.guild(ctx.guild).log_channel_id()}>.")
+        await ctx.send(await self._apply_invite_now(ctx.guild, ctx.author))
 
     @afterdark_invite.command(name="stop")
     async def invite_stop(self, ctx):
         """End today's invitations now and close any waiting prompt (a new round starts tomorrow, or run `invite now`)."""
-        async with self._review_lock(ctx.guild):
-            rnd = dict(await self.config.guild(ctx.guild).invite_round())
-            prompt = rnd.get("prompt")
-            await self.config.guild(ctx.guild).invite_round.set(engine.stop_round(rnd))
-        if prompt:
-            await self._close_prompt(ctx.guild, prompt, f"Stopped by {ctx.author.display_name}.")
-        await ctx.send("Today's invitations are stopped. A new round starts tomorrow, or run `.afterdark invite now`.")
+        await ctx.send(await self._apply_invite_stop(ctx.guild, ctx.author))
 
     @afterdark_invite.command(name="list")
     async def invite_list(self, ctx):
@@ -1767,110 +1664,95 @@ class AfterDark(commands.Cog):
             lines.append(f"{who.display_name if who else uid}: expires in {engine.humanize_days(max(0, left))}")
         await ctx.send("\n".join(engine.cap_lines(lines, 40)), allowed_mentions=discord.AllowedMentions.none())
 
-    @afterdark.group(name="set", invoke_without_command=True)
-    @commands.admin_or_permissions(manage_guild=True)
-    async def afterdark_set(self, ctx):
-        """Change settings."""
-        await ctx.send_help()
+    # ------------------------------------------------ settings (used by the panel)
 
-    @afterdark_set.command(name="dryrun")
-    async def set_dryrun(self, ctx, state: str):
-        """`on`: the sweep only reports. `off`: the sweep acts."""
-        value = engine.parse_toggle(state)
-        if value is None:
-            return await ctx.send("Use `on` or `off`.")
-        await self.config.guild(ctx.guild).dry_run.set(value)
-        await self._log(ctx.guild, f"⚙️ {ctx.author.display_name} set sweep dry-run {'ON' if value else 'OFF (LIVE)'}.")
-        await ctx.send(f"Sweep is now {'DRY-RUN' if value else 'LIVE'}.")
+    @staticmethod
+    def _whole(values: dict, key: str, label: str) -> int:
+        try:
+            return int(str(values[key]).strip())
+        except (KeyError, ValueError):
+            raise PanelError(f"{label} must be a whole number.")
 
-    @afterdark_set.command(name="invites")
-    async def set_invites(self, ctx, state: str):
-        """Turn daily invitations on or off."""
-        value = engine.parse_toggle(state)
-        if value is None:
-            return await ctx.send("Use `on` or `off`.")
-        await self.config.guild(ctx.guild).invites_enabled.set(value)
-        await ctx.send(f"Daily invitations {'ON' if value else 'OFF'}.")
+    @staticmethod
+    def _number(values: dict, key: str, label: str) -> float:
+        try:
+            return float(str(values[key]).strip())
+        except (KeyError, ValueError):
+            raise PanelError(f"{label} must be a number.")
 
-    @afterdark_set.command(name="inactivity")
-    async def set_inactivity(self, ctx, warn_days: float, remove_days: float):
-        """`.afterdark set inactivity 7 14`: warn then remove (interest channels only)."""
+    async def _apply_dry_run(self, guild, member, mode: str) -> str:
+        """`dry`: the sweep only reports. `live`: the sweep acts."""
+        value = mode != "live"
+        await self.config.guild(guild).dry_run.set(value)
+        await self._log(guild, f"\u2699\ufe0f {member.display_name} set sweep dry-run {'ON' if value else 'OFF (LIVE)'}.")
+        return f"Sweep is now {'DRY-RUN' if value else 'LIVE'}."
+
+    async def _apply_invites_enabled(self, guild, member, value: bool) -> str:
+        await self.config.guild(guild).invites_enabled.set(bool(value))
+        return f"Daily invitations {'ON' if value else 'OFF'}."
+
+    async def _apply_inactivity(self, guild, member, values: dict) -> str:
+        warn_days, remove_days = self._number(values, "warn", "Warn days"), self._number(values, "remove", "Remove days")
         problem = engine.validate_warn_remove(warn_days, remove_days)
         if problem:
-            return await ctx.send(problem)
-        await self.config.guild(ctx.guild).warn_days.set(warn_days)
-        await self.config.guild(ctx.guild).remove_days.set(remove_days)
-        await ctx.send(f"Warn after {warn_days:g} days, remove after {remove_days:g}.")
+            raise PanelError(problem)
+        await self.config.guild(guild).warn_days.set(warn_days)
+        await self.config.guild(guild).remove_days.set(remove_days)
+        return f"Warn after {warn_days:g} days, remove after {remove_days:g}."
 
-    @afterdark_set.command(name="minlevel")
-    async def set_minlevel(self, ctx, level: int):
-        """Minimum LevelUp level to be admitted."""
+    async def _apply_min_level(self, guild, member, values: dict) -> str:
+        level = self._whole(values, "level", "Level")
         if level < 0:
-            return await ctx.send("Level can't be negative.")
-        await self.config.guild(ctx.guild).min_level.set(level)
-        await ctx.send(f"Minimum level is now {level}.")
+            raise PanelError("Level can't be negative.")
+        await self.config.guild(guild).min_level.set(level)
+        return f"Minimum level is now {level}."
 
-    @afterdark_set.command(name="mode")
-    async def set_mode(self, ctx, mode: str):
-        """`roles` (decoy-named roles) or `overwrites` (per-user channel permissions)."""
-        mode = mode.lower()
+    async def _apply_access_mode(self, guild, member, mode: str) -> str:
+        mode = str(mode).lower()
         if mode not in C.ACCESS_MODES:
-            return await ctx.send("Use `roles` or `overwrites`.")
-        await self.config.guild(ctx.guild).access_mode.set(mode)
-        await ctx.send(f"New interest joins use `{mode}`. Existing access of either kind keeps working and is cleaned up on removal.")
+            raise PanelError("Use roles or overwrites.")
+        await self.config.guild(guild).access_mode.set(mode)
+        return f"New interest joins use {mode}. Existing access of either kind keeps working and is cleaned up on removal."
 
-    @afterdark_set.command(name="sweepmax")
-    async def set_sweepmax(self, ctx, count: int):
-        """Circuit breaker: a live sweep acting on more members than this aborts."""
+    async def _apply_sweep_max(self, guild, member, values: dict) -> str:
+        count = self._whole(values, "count", "Circuit breaker")
         if count < 1:
-            return await ctx.send("Must be at least 1.")
-        await self.config.guild(ctx.guild).sweep_max.set(count)
-        await ctx.send(f"Circuit breaker set to {count}.")
+            raise PanelError("Must be at least 1.")
+        await self.config.guild(guild).sweep_max.set(count)
+        return f"Circuit breaker set to {count}."
 
-    @afterdark_set.command(name="invitesnooze")
-    async def set_invite_snooze(self, ctx, days: int):
-        """How long "Not now" skips a member before they can be suggested again (default 7)."""
+    async def _apply_invite_snooze(self, guild, member, values: dict) -> str:
+        days = self._whole(values, "days", "Days")
         if days < 0 or days > 365:
-            return await ctx.send("Pick between 0 and 365 days.")
-        await self.config.guild(ctx.guild).invite_snooze_days.set(days)
-        await ctx.send(f"\"Not now\" now skips a member for {days} day(s).")
+            raise PanelError("Pick between 0 and 365 days.")
+        await self.config.guild(guild).invite_snooze_days.set(days)
+        return f"\"Not now\" now skips a member for {days} day(s)."
 
-    @afterdark_set.command(name="invitesperday")
-    async def set_invites_per_day(self, ctx, low: int, high: int):
-        """`.afterdark set invitesperday 3 4`."""
+    async def _apply_invites_per_day(self, guild, member, values: dict) -> str:
+        low, high = self._whole(values, "low", "Low"), self._whole(values, "high", "High")
         if low < 0 or high < low:
-            return await ctx.send("Need 0 <= low <= high.")
-        await self.config.guild(ctx.guild).invite_min.set(low)
-        await self.config.guild(ctx.guild).invite_max.set(high)
-        await ctx.send(f"{low}-{high} invitations per day.")
+            raise PanelError("Need 0 <= low <= high.")
+        await self.config.guild(guild).invite_min.set(low)
+        await self.config.guild(guild).invite_max.set(high)
+        return f"{low}-{high} invitations per day."
 
-    @afterdark_set.command(name="logchannel")
-    async def set_logchannel(self, ctx, channel: discord.TextChannel):
-        """Where grants, revokes and sweep reports are posted."""
-        await self.config.guild(ctx.guild).log_channel_id.set(channel.id)
-        await ctx.send(f"Logging to {channel.mention}.")
+    async def _apply_channel(self, guild, member, key: str, channel) -> str:
+        """Set one of the channel settings (log_channel_id, clue_channel_id, drop_channel_id); None clears it."""
+        if key not in ("log_channel_id", "clue_channel_id", "drop_channel_id"):
+            raise PanelError("Unknown setting.")
+        await getattr(self.config.guild(guild), key).set(channel.id if channel is not None else 0)
+        if channel is None:
+            return "Cleared (drops use the clue channel)." if key == "drop_channel_id" else "Cleared."
+        return f"Set to {channel.mention}."
 
-    @afterdark_set.command(name="cluechannel")
-    async def set_cluechannel(self, ctx, channel: discord.TextChannel):
-        """Where `.afterdark post` puts the 🐇 button by default."""
-        await self.config.guild(ctx.guild).clue_channel_id.set(channel.id)
-        await ctx.send(f"The rabbit lives in {channel.mention}.")
-
-    @afterdark_set.command(name="rabbitrole")
-    async def set_rabbitrole(self, ctx, role: discord.Role):
-        """The Rabbit Hole role."""
-        await self.config.guild(ctx.guild).rabbit_role_id.set(role.id)
-        await ctx.send(f"Rabbit Hole role set to {role.name}.")
-
-    @afterdark_set.command(name="verifiedrole")
-    async def set_verifiedrole(self, ctx, role: Optional[discord.Role] = None):
-        """The Age Verified role: members with it are suggested for invitations first. Leave blank to turn the priority off."""
-        await self.config.guild(ctx.guild).verified_role_id.set(role.id if role else 0)
-        await ctx.send(f"Age Verified members are now invited first ({role.name})." if role
-                       else "No Age Verified priority: highest level first.")
-
-    @afterdark_set.command(name="adultrole")
-    async def set_adultrole(self, ctx, role: discord.Role):
-        """The Adult Chat role (prerequisite)."""
-        await self.config.guild(ctx.guild).adult_role_id.set(role.id)
-        await ctx.send(f"Adult Chat role set to {role.name}.")
+    async def _apply_role(self, guild, member, key: str, role) -> str:
+        """Set one of the role settings (rabbit_role_id, adult_role_id, verified_role_id)."""
+        if key not in ("rabbit_role_id", "adult_role_id", "verified_role_id"):
+            raise PanelError("Unknown setting.")
+        if role is None and key != "verified_role_id":
+            raise PanelError("That role is required.")
+        await getattr(self.config.guild(guild), key).set(role.id if role is not None else 0)
+        if key == "verified_role_id":
+            return (f"Age Verified members are now invited first ({role.name})." if role
+                    else "No Age Verified priority: highest level first.")
+        return f"Set to {role.name}."

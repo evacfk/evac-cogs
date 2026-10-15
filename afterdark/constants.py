@@ -1,7 +1,7 @@
 """All defaults and lookup tables for afterdark -- no discord/redbot imports."""
 
-VERSION = "1.6.0"
-BUILD = "afterdark build: multi-v1 (random rabbit drops, 4 slots, members report, leave button, final, drop next, verified first, stop invites)"
+VERSION = "1.7.0"
+BUILD = "afterdark build: panel-v1 (settings panel: roles, channels, sweep, invitations, drops and interests are set from .afterdark)"
 
 CONFIG_IDENTIFIER = 7316482950
 DAY = 86400
