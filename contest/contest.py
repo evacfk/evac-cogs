@@ -1017,9 +1017,15 @@ class Contest(commands.Cog):
 
     # ---- panel setters (each returns the message shown in the panel)
 
-    def _check_private(self, guild, channel) -> None:
-        if getattr(channel.permissions_for(guild.default_role), "view_channel", False):
+    def _check_private(self, guild, channel):
+        """Return the real channel if @everyone cannot see it. The picker hands over a light channel stub
+        (id, name, mention only), so resolve it first; refuse when it can't be resolved (fail closed)."""
+        real = guild.get_channel(channel.id)
+        if real is None or not hasattr(real, "permissions_for"):
+            raise PanelError(f"I can't see {channel.mention} to check its permissions. Give me View Channel there and try again.")
+        if getattr(real.permissions_for(guild.default_role), "view_channel", False):
             raise PanelError(f"{channel.mention} can be seen by @everyone. Entry photos land there: pick a private channel.")
+        return real
 
     async def _apply_approval_channel(self, guild, member, channel) -> str:
         if channel is None:

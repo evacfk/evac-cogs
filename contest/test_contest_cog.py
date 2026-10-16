@@ -140,6 +140,35 @@ async def test_review_channel_must_be_private(w):
         await w.cog._apply_approval_channel(w.g, w.owner, public)
 
 
+class _PickerStub:
+    """What discord.py's ChannelSelect really returns: id, name and mention only, no permissions_for."""
+    def __init__(self, ch):
+        self.id, self.name, self.mention = ch.id, ch.name, ch.mention
+
+
+async def test_review_channel_accepts_the_picker_stub(w):
+    private = w.g.add_channel(78, "mod-chat")
+    private.overwrites[w.g.default_role] = discord.PermissionOverwrite(view_channel=False)
+    msg = await w.cog._apply_approval_channel(w.g, w.owner, _PickerStub(private))
+    assert "wait for review" in msg and w.conf_value("approval_channel_id") == 78
+
+
+async def test_review_channel_stub_for_a_public_channel_is_refused(w):
+    public = w.g.add_channel(79, "general")
+    public.overwrites[w.g.default_role] = discord.PermissionOverwrite(view_channel=True)
+    with pytest.raises(w.mod.PanelError, match="seen by @everyone"):
+        await w.cog._apply_approval_channel(w.g, w.owner, _PickerStub(public))
+    assert w.conf_value("approval_channel_id") != 79
+
+
+async def test_review_channel_stub_that_cannot_be_resolved_fails_closed(w):
+    ghost = w.g.add_channel(80, "ghost")
+    stub = _PickerStub(ghost)
+    stub.id = 999999
+    with pytest.raises(w.mod.PanelError, match="can't see"):
+        await w.cog._apply_approval_channel(w.g, w.owner, stub)
+
+
 async def test_launch_creates_a_hidden_chat_off_channel_roles_and_the_announcement(w):
     msg = await w.launch()
     assert "Launched" in msg
