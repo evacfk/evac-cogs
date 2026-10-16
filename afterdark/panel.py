@@ -269,7 +269,8 @@ def build_specs():
              pick=Pick("channel", "Also open these existing channels (skip if you named a new one)", 0, 25,
                        defaults=lambda r: [r["channel_id"]] + list(r.get("extra_channel_ids") or []) if r else []),
              help="Members join with a button and get access to the interest's channels one by one (no role). "
-                  "After saving, re-post the member panel with `.afterdark panel #channel` so the buttons match."),
+                  "After saving, re-post the member panel with `.afterdark panel #channel` so the buttons match. "
+                  "Remove also hides its channels from everyone except you and the bot."),
         Spec("feeds", "Feeds", TAB_INTERESTS, "collection", get=_get_feeds, item_get=_feed_get,
              save=_feed_save, remove=_feed_remove, fields=feed_fields,
              pick=Pick("channel", "Also post into these existing channels (age-restricted)", 0, 25,

@@ -1569,10 +1569,39 @@ class AfterDark(commands.Cog):
         await self.config.guild(guild).interests.set(interests)
         await self._register_interest_view(guild)
         still_used = {c for other in interests.values() for c in Interest.from_dict(other).channel_ids}
-        paused = await self._pause_feeds_on(guild, member, {c for c in gone.channel_ids if c not in still_used})
-        feeds = f" Paused {len(paused)} feed(s): {', '.join(paused)} (channels left as they are)." if paused else ""
-        return (f"Interest {key} removed.{feeds} Existing access is left alone; `.afterdark revokeinterest` takes it back. "
-                "Re-post the member panel to refresh the buttons.")
+        exclusive = [c for c in gone.channel_ids if c not in still_used]
+        paused = await self._pause_feeds_on(guild, member, set(exclusive))
+        # Close the channels: a removed interest must not leave members with a view of its channel.
+        hidden, failed, cleared = [], [], 0
+        for channel_id in exclusive:
+            channel = guild.get_channel(channel_id)
+            if channel is None:
+                continue
+            ok, count = await self._hide_channel(guild, channel, member)
+            if ok:
+                hidden.append(channel.mention)
+                cleared += count
+            else:
+                failed.append(channel.mention)
+        # Forget who was tracked or lapsed under this key, so a later interest with the same key
+        # starts clean and the sweep never warns people who no longer have the channel.
+        state = await self._get_state(guild)
+        if state.pop(key, None) is not None:
+            self._mark_dirty(guild.id)
+            await self._flush_state(guild.id)
+        lapsed = dict(await self.config.guild(guild).lapsed())
+        if lapsed.pop(key, None) is not None:
+            await self.config.guild(guild).lapsed.set(lapsed)
+        notes = ""
+        if hidden:
+            notes += (f" Hid {', '.join(hidden)} from everyone except you and the bot "
+                      f"({cleared} member/role permission(s) cleared).")
+        if failed:
+            notes += (f" I could NOT change the permissions of {', '.join(failed)} (the bot needs Manage Channel "
+                      "and Manage Permissions there), so people who joined can still see it.")
+        if paused:
+            notes += f" Paused {len(paused)} feed(s): {', '.join(paused)}."
+        return f"Interest {key} removed.{notes} Re-post the member panel to refresh the buttons."
 
     # ------------------------------------------------------------------
     # Interests and feeds in one place (the panel calls these)
@@ -1622,6 +1651,25 @@ class AfterDark(commands.Cog):
                                                    reason=f"AfterDark: new interest channel (by {member})")
         except (discord.Forbidden, discord.HTTPException) as exc:
             raise PanelError(f"I couldn't create the channel: {exc}")
+
+    async def _hide_channel(self, guild, channel, keep_member) -> Tuple[bool, int]:
+        """Lock a channel down in ONE call: @everyone cannot see it, every member and role overwrite is
+        dropped, and only the bot and `keep_member` (the admin who removed the interest) keep access.
+        The bot and keep_member keep any overwrite they already had. Returns (ok, overwrites cleared)."""
+        old = dict(channel.overwrites)
+        bot_overwrite = old.get(guild.me) or discord.PermissionOverwrite(
+            view_channel=True, send_messages=True, attach_files=True, embed_links=True, read_message_history=True)
+        new = {guild.default_role: discord.PermissionOverwrite(view_channel=False), guild.me: bot_overwrite}
+        if keep_member is not None and keep_member != guild.me:
+            new[keep_member] = old.get(keep_member) or discord.PermissionOverwrite(
+                view_channel=True, read_message_history=True, add_reactions=True)
+        cleared = len([target for target in old if target not in new])
+        try:
+            await channel.edit(overwrites=new, reason="AfterDark: interest removed, channel hidden")
+        except (discord.Forbidden, discord.HTTPException) as exc:
+            log.warning("afterdark: could not hide %s: %s", channel.id, exc)
+            return False, 0
+        return True, cleared
 
     @staticmethod
     def _real_channels(guild, picked) -> list:

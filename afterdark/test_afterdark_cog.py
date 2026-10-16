@@ -105,6 +105,12 @@ class FakeChannel:
         else:
             self.overwrites[member] = overwrite
 
+    async def edit(self, *, overwrites=None, reason=None):
+        if getattr(self, "edit_error", None) is not None:
+            raise self.edit_error
+        if overwrites is not None:
+            self.overwrites = dict(overwrites)
+
     async def send(self, text=None, **kwargs):
         self.sent.append(text)
         embed = kwargs.get("embed")
@@ -120,11 +126,19 @@ class FakeChannel:
     mention = "#chan"
 
 
+class FakeBotMember:
+    """The bot's own member: hashable (it keys channel overwrites) and carries its top role."""
+
+    def __init__(self, top_role):
+        self.top_role = top_role
+
+
 class FakeGuild:
     def __init__(self):
         self.id, self.name = 42, "Wonderland"
         self.members, self.roles, self.channels = [], {}, {}
-        self.me = SimpleNamespace(top_role=FakeRole(1, "bot", position=100))
+        self.me = FakeBotMember(FakeRole(1, "bot", position=100))
+        self.default_role = object()
 
     def add_role(self, rid, name="role", **kw):
         role = FakeRole(rid, name, **kw)
@@ -1321,6 +1335,69 @@ async def test_remove_drops_the_interest_and_refreshes_the_view(w):
     await w.cog._apply_interest_remove(w.guild, w.member("admin"), "feet")
     assert not await w.cog.config.guild(w.guild).interests()
     await expect_refused(w.cog._apply_interest_remove(w.guild, w.member("admin"), "feet"), "No such interest")
+
+
+async def test_remove_hides_every_channel_from_everyone_but_admin_and_bot(w):
+    await add_two_feet_channels(w)
+    joined = [w.member(f"m{i}") for i in range(3)]
+    for m in joined:
+        m.roles.append(w.rabbit)
+        await w.cog.handle_interest_toggle(FakeInteraction(m, w.guild), "feet")
+    w.feet.overwrites[w.feet_role] = object()            # a role that could see it also loses access
+    admin = w.member("admin")
+    msg = await w.cog._apply_interest_remove(w.guild, admin, "feet")
+    for channel in (w.feet, w.feet2, w.feet3):
+        assert set(channel.overwrites) == {w.guild.default_role, w.guild.me, admin}
+        assert channel.overwrites[w.guild.default_role].view_channel is False
+        assert channel.overwrites[admin].view_channel is True
+        assert all(m not in channel.overwrites for m in joined)
+    assert "Hid" in msg and "everyone except you and the bot" in msg and "NOT" not in msg
+
+
+async def test_remove_keeps_the_admin_and_bot_overwrites_they_already_had(w):
+    await add_two_feet_channels(w)
+    admin = w.member("admin")
+    mine, bots = object(), object()
+    w.feet.overwrites[admin], w.feet.overwrites[w.guild.me] = mine, bots
+    await w.cog._apply_interest_remove(w.guild, admin, "feet")
+    assert w.feet.overwrites[admin] is mine and w.feet.overwrites[w.guild.me] is bots
+
+
+async def test_remove_leaves_a_channel_another_interest_still_uses(w):
+    shared = w.guild.add_channel(900001, "shared")
+    await set_cfg(w, access_mode="overwrites", interests={
+        "feet": {"key": "feet", "name": "Feet", "emoji": "x", "channel_id": FEET_CHANNEL, "role_id": None,
+                 "extra_channel_ids": [900001]},
+        "pics": {"key": "pics", "name": "Pics", "emoji": "y", "channel_id": 900001, "role_id": None},
+    })
+    m = w.member()
+    w.feet.overwrites[m] = object()
+    shared.overwrites[m] = object()
+    await w.cog._apply_interest_remove(w.guild, w.member("admin"), "feet")
+    assert m not in w.feet.overwrites          # only feet used it: closed
+    assert m in shared.overwrites              # pics still uses it: untouched
+
+
+async def test_remove_forgets_tracking_and_lapses_for_that_interest(w):
+    await add_two_feet_channels(w)
+    m = w.member()
+    w.feet.overwrites[m] = object()
+    state = await w.cog._get_state(w.guild)
+    state["feet"] = {str(m.id): {"since": NOW, "last": NOW, "warned": 0.0}}
+    await set_cfg(w, lapsed={"feet": [m.id], "other": [m.id]})
+    await w.cog._apply_interest_remove(w.guild, w.member("admin"), "feet")
+    assert "feet" not in (await w.cog._get_state(w.guild))
+    assert "feet" not in await w.cog.config.guild(w.guild).interest_state()
+    assert await w.cog.config.guild(w.guild).lapsed() == {"other": [m.id]}
+
+
+async def test_remove_says_so_when_the_bot_cannot_change_the_channel(w):
+    await add_two_feet_channels(w)
+    m = w.member()
+    w.feet.overwrites[m] = object()
+    w.feet.edit_error = discord.Forbidden("no perms")
+    msg = await w.cog._apply_interest_remove(w.guild, w.member("admin"), "feet")
+    assert m in w.feet.overwrites and "NOT" in msg and not await w.cog.config.guild(w.guild).interests()
 
 
 async def test_list_shows_every_channel(w):
