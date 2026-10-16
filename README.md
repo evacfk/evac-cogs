@@ -1,7 +1,7 @@
 # evac-cogs
 
 Custom Red-DiscordBot cogs for the Wonderland server, running on **Hana** (Red 3.5, prefix `.`).
-21 cogs, each a folder with its own `info.json`. Install name = folder name.
+22 cogs, each a folder with its own `info.json`. Install name = folder name.
 
 Most cogs are set up through an interactive **settings panel**: dropdowns for channels and roles, buttons for on/off,
 and pop-up forms for numbers and text. Open it with the command in the *Settings* column (needs Manage Server;
@@ -18,6 +18,7 @@ reports, previews, testing, member commands) stay typed.
 | `lurker` | 2.5.0 | Auto-hides inactive members behind a Lurker role; mod reports; year-club roles (`.yearclub`). | `.lurkerset` | `.lurkerversion` |
 | `rejoinwatch` | 1.1.0 | Tracks voluntary leaves, warns rejoiners, flags repeat leavers to mods with a ban button. | `.rejoinwatch` | `.rejoinwatch settings` |
 | `celebrations` | 1.1.0 | Birthdays (role, coin gift, posts) and join-anniversary shout-outs. Members use `.birthday`. | `.celebrations` | `.celebrations version` |
+| `contest` | 1.0.0 | Wonderween 2026 costume contest: DM entries, mod approval, hidden-then-public channel, daily anonymous votes, prizes, auto-purge. | `.contest` | `.contest version` |
 | `wonderevents` | 1.4.0 | Movie and game nights: RSVP buttons, scheduled events, votes, reminders, attendance. | `.event settings` | `.event version` |
 | `verdict` | 1.4.0 | Daily crowd question: pick an answer, then guess what everyone else picks. | `.verdict settings` | `.verdict version` |
 | `bumpreward` | 1.1.0 | Coin rewards, streaks, reminders and a daily board for Disboard bumps. | `.bumpreward settings` | `.bumpreward version` |

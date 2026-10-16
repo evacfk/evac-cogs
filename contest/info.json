@@ -1,0 +1,23 @@
+{
+    "name": "Contest",
+    "short": "Wonderween 2026: a Halloween costume contest with private DM entries, mod approval, anonymous daily votes and prizes.",
+    "description": "Members press Enter on the announcement, send 1 or 2 costume photos to the bot in DMs and submit. Mods approve or reject each entry in a private review channel; approved entries are posted as Costume #N in a temporary channel that only mods can see until the open date, when it becomes visible to everyone except the excluded roles (Lurker, 13-17, Muted). Each member then gets one vote a day, never for their own entry and never for the same entry twice. People's Choice is decided by votes, Mods' Choice by mod picks; 1st, 2nd and 3rd of each get coins, and everyone who entered gets coins and a pumpkin role. The cog reveals the results, pays out, and deletes the channel and every stored photo on the purge date.",
+    "end_user_data_statement": "This cog stores, for each entrant, their user ID, costume title, the (re-encoded, metadata-free) photos they submit and the review outcome, and for each voter the costume number they voted for each day. Photos, entries and votes are deleted when the contest is purged; only a payout ledger (user ID, prize tier, coins, time) is kept. It is deleted on a Red data-deletion request.",
+    "install_msg": "Run `.contest` (needs Manage Server) to open the panel: pick the review channel, the announcement channel, the results channel, the excluded roles, the prizes and the schedule, press Check setup, then Launch. The bot needs Manage Channels, Manage Roles and permission to DM members. `.contest version` confirms the deploy.",
+    "author": [
+        "evacfk"
+    ],
+    "requirements": [
+        "Pillow"
+    ],
+    "tags": [
+        "contest",
+        "halloween",
+        "events",
+        "community"
+    ],
+    "min_bot_version": "3.5.0",
+    "hidden": false,
+    "disabled": false,
+    "type": "COG"
+}
