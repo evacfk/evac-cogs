@@ -115,6 +115,8 @@ GUILD_DEFAULTS = dict(
     sweep_max=25,                # circuit breaker: abort a live sweep that would act on more
     sweep_interval_minutes=60,
     last_sweep={},
+    digest_last=0.0,             # unix time of the last sweep digest posted (sweeps report at most once a day)
+    digest_pending={},           # {"dry": bool, "revoke": [...], "remove": [...], "warn": [...]} waiting for the next digest
     # ---- invitations ----
     invites_enabled=False,
     invite_min=3,
@@ -140,3 +142,5 @@ GUILD_DEFAULTS = dict(
 TOUCH_RESOLUTION = 6 * 3600
 STATE_FLUSH_SECONDS = 900
 LOG_LINE_CAP = 25
+DIGEST_SECONDS = 24 * 3600       # sweeps run hourly but report once a day
+DIGEST_LINE_CAP = 10             # names listed per kind in one digest (the rest become "...and N more")

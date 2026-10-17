@@ -683,6 +683,73 @@ async def test_sweep_dry_run_changes_nothing_but_reports(w):
     assert "would revoke" in log_text(w) and "would remove" in log_text(w)
 
 
+async def sweep_and_report(w, **kwargs):
+    summary = await w.cog._sweep_guild(w.guild)
+    await w.cog._report_sweep(w.guild, summary, **kwargs)
+    return summary
+
+
+async def test_dry_run_reports_once_a_day_with_counts(w):
+    await add_feet(w)
+    await tracked(w, 8)  # idle past the warn threshold: "would warn" on every sweep
+    for _ in range(3):  # hourly sweeps inside the same day
+        await sweep_and_report(w)
+        w.clock[0] += 3600
+    assert len(w.log.sent) == 1
+    assert "1 would warn" in log_text(w) and "0 would remove" in log_text(w)
+    w.clock[0] = NOW + DAY + 1
+    await sweep_and_report(w)
+    assert len(w.log.sent) == 2  # next day: one more digest
+
+
+async def test_live_warnings_and_removals_are_batched_into_one_daily_digest(w):
+    await add_feet(w)
+    await set_cfg(w, dry_run=False)
+    await tracked(w, 8, name="warnme")
+    await sweep_and_report(w)                    # first digest is due straight away
+    assert len(w.log.sent) == 1 and "1 warned" in log_text(w) and "warnme" in log_text(w)
+    w.clock[0] += 2 * 3600
+    await tracked(w, 15, name="goner")           # removed two hours later
+    await sweep_and_report(w)
+    assert len(w.log.sent) == 1                  # queued, not posted
+    w.clock[0] = NOW + DAY + 1
+    await sweep_and_report(w)                    # the day is up: digest with the removal
+    assert len(w.log.sent) == 2
+    assert "1 removed" in w.log.sent[1] and "goner" in w.log.sent[1]
+
+
+async def test_manual_sweep_flushes_the_digest_immediately(w):
+    await add_feet(w)
+    await tracked(w, 8)
+    await sweep_and_report(w)
+    await sweep_and_report(w, force=True)
+    assert len(w.log.sent) == 2
+
+
+async def test_abort_alerts_post_immediately_even_when_no_digest_is_due(w):
+    await add_feet(w)
+    await set_cfg(w, dry_run=False, sweep_max=1, digest_last=NOW)
+    for _ in range(2):
+        kid = w.member(roles=[w.adult, w.under])
+        kid.roles.append(w.rabbit)
+    await sweep_and_report(w)
+    assert "ABORTED" in log_text(w)
+
+
+async def test_going_live_flushes_the_dry_run_findings_first(w):
+    await add_feet(w)
+    await tracked(w, 8, name="first")
+    await sweep_and_report(w)                    # dry digest posted
+    w.clock[0] += 3600
+    await tracked(w, 9, name="second")
+    await sweep_and_report(w)                    # queued (dry)
+    assert len(w.log.sent) == 1
+    await set_cfg(w, dry_run=False)
+    w.clock[0] += 3600
+    await sweep_and_report(w)                    # mode changed: dry findings go out, labelled dry
+    assert "dry-run" in w.log.sent[1] and "second" in w.log.sent[1]
+
+
 async def test_sweep_live_revokes_ineligible_and_removes_inactive(w):
     await add_feet(w)
     await set_cfg(w, dry_run=False)

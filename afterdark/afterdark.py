@@ -847,20 +847,58 @@ class AfterDark(commands.Cog):
         except (discord.Forbidden, discord.HTTPException):
             return False
 
-    async def _report_sweep(self, guild, summary: dict):
-        if not (summary["revoke"] or summary["remove"] or summary["warn"] or summary["errors"]
-                or summary["aborted"]):
-            return  # (daily invitations log themselves)
-        head = "\U0001F9EA Sweep (dry-run, nothing changed)" if summary["dry"] else "\U0001F9F9 Sweep"
+    async def _report_sweep(self, guild, summary: dict, *, force: bool = False):
+        """Sweeps run hourly but report once a day. Warned / removed / revoked
+        members are queued and posted together as one digest. Aborts and errors
+        need a mod now, so they post straight away. `force` (a manual
+        `.afterdark sweep`) flushes the queue immediately."""
+        if summary["aborted"] or summary["errors"]:
+            await self._post_alert(guild, summary)
         if summary["aborted"]:
-            head = "⛔ Sweep ABORTED: too many actions for the circuit breaker (nothing changed)"
-        lines = [head]
-        verb = "would " if summary["dry"] or summary["aborted"] else ""
-        for label, items in (("revoke", summary["revoke"]), ("remove", summary["remove"])):
-            for line in engine.cap_lines(items, C.LOG_LINE_CAP):
-                lines.append(f"• {verb}{label}: {line}")
-        if summary["warn"]:
-            lines.append(f"• {'would warn' if summary['dry'] else 'warned'}: {len(summary['warn'])} member(s)")
+            return  # nothing was done, so there is nothing to put in a digest
+        conf = self.config.guild(guild)
+        pending = await conf.digest_pending()
+        now = self._clock()
+        if pending and bool(pending.get("dry")) != bool(summary["dry"]):
+            await self._post_digest(guild, pending)  # mode flipped: never mix "would" and "did"
+            pending = {}
+        queued = pending or {"dry": bool(summary["dry"]), "revoke": [], "remove": [], "warn": []}
+        for kind in ("revoke", "remove", "warn"):
+            for line in summary[kind]:
+                if line not in queued[kind]:  # a dry run finds the same members every sweep
+                    queued[kind].append(line)
+        if not any(queued[k] for k in ("revoke", "remove", "warn")):
+            await conf.digest_pending.set({})
+            return  # (daily invitations log themselves)
+        if force or now - float(await conf.digest_last()) >= C.DIGEST_SECONDS:
+            await self._post_digest(guild, queued)
+        else:
+            await conf.digest_pending.set(queued)
+
+    async def _post_digest(self, guild, queued: dict):
+        conf = self.config.guild(guild)
+        dry = bool(queued.get("dry"))
+        counts = {k: len(queued.get(k, [])) for k in ("revoke", "remove", "warn")}
+        verb = {"revoke": "revoked", "remove": "removed", "warn": "warned"}
+        if dry:
+            verb = {"revoke": "would revoke", "remove": "would remove", "warn": "would warn"}
+        head = "\U0001F9EA Sweep digest (dry-run, nothing changed)" if dry else "\U0001F9F9 Sweep digest"
+        lines = [head, "• " + ", ".join(f"{counts[k]} {verb[k]}" for k in ("warn", "remove", "revoke"))]
+        for kind in ("warn", "remove", "revoke"):
+            for line in engine.cap_lines(queued.get(kind, []), C.DIGEST_LINE_CAP):
+                lines.append(f"• {verb[kind]}: {line}")
+        await self._log(guild, "\n".join(lines))
+        await conf.digest_last.set(self._clock())
+        await conf.digest_pending.set({})
+
+    async def _post_alert(self, guild, summary: dict):
+        """Circuit-breaker aborts and per-member errors: posted immediately."""
+        lines = ["⛔ Sweep ABORTED: too many actions for the circuit breaker (nothing changed)"
+                 if summary["aborted"] else "⚠️ Sweep finished with errors (the rest is in the next digest)"]
+        if summary["aborted"]:
+            for label, items in (("revoke", summary["revoke"]), ("remove", summary["remove"])):
+                for line in engine.cap_lines(items, C.LOG_LINE_CAP):
+                    lines.append(f"• would {label}: {line}")
         for err in summary["errors"][:5]:
             lines.append(f"• error: {err}")
         await self._log(guild, "\n".join(lines))
@@ -1362,7 +1400,7 @@ class AfterDark(commands.Cog):
         dry = True if mode.lower() == "dry" else None
         async with ctx.typing():
             summary = await self._sweep_guild(ctx.guild, dry=dry)
-        await self._report_sweep(ctx.guild, summary)
+        await self._report_sweep(ctx.guild, summary, force=True)
         await ctx.send(
             f"Sweep done ({'dry-run' if summary['dry'] else 'live'}): "
             f"{len(summary['revoke'])} revoke, {len(summary['remove'])} remove, {len(summary['warn'])} warn"
