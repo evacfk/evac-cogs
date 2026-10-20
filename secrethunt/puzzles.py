@@ -176,6 +176,8 @@ KNAVE_TRIAL = {
         "A fitting end the guilty earn,",
         "And who will end up in the soup.",
     ],
+    # printed under the poem: the verses hide the words, this line says what to do with them (Easy poems carry theirs inside)
+    "nudge": "Gather the words that broke the rhyme and speak them to the court in a row, with a dot before them.",
     "object_title": "A witness waits here",
     "object_text": "A witness sits in the dock with their hands folded, waiting to be asked.",
     "summons": (

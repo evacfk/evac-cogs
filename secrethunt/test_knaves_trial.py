@@ -166,6 +166,16 @@ def test_the_poem_does_not_tell_players_what_to_do_and_gives_no_answer_away():
         assert "stole" not in body and "thief" not in body
 
 
+def test_the_nudge_under_the_poem_says_what_to_do_without_giving_the_words_away():
+    from secrethunt import embeds
+    nudge = TRIAL["nudge"]
+    assert "dot" in nudge.lower() and "rhyme" in nudge.lower()
+    assert not any(w in engine.normalize(nudge) for w in TRIAL["breakers"])
+    assert nudge in embeds.poem_embed(TRIAL).description  # it is really printed under the poem
+    rabbit = PUZZLES["late_rabbit"]
+    assert embeds.poem_embed(rabbit).description == "*" + "\n".join(rabbit["poem"]) + "*"  # Easy poems are unchanged
+
+
 def test_every_trial_text_formats_cleanly():
     keys = dict(rooms="<#1> <#2>", until="<t:1:R>", when="<t:1:R>", room="<#1>", text="t", hint="h", n=1,
                 max=HINT_MAX, rank=" #1")

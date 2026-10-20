@@ -3,9 +3,10 @@ import discord
 
 
 def poem_embed(puzzle: dict) -> discord.Embed:
-    embed = discord.Embed(
-        title=puzzle["poem_title"], description="*" + "\n".join(puzzle["poem"]) + "*", color=discord.Color.gold())
-    return embed
+    body = "*" + "\n".join(puzzle["poem"]) + "*"
+    if puzzle.get("nudge"):  # a trial's poem hides its words in the verses; this line says what to do with them
+        body += "\n\n**" + puzzle["nudge"] + "**"
+    return discord.Embed(title=puzzle["poem_title"], description=body, color=discord.Color.gold())
 
 
 def witness_embed(puzzle: dict) -> discord.Embed:
