@@ -383,18 +383,18 @@ async def test_the_trigger_replays_whatever_step_the_member_is_on(env, clock):
 
 # ---------------------------------------------------------------- wrong answers
 
-async def test_a_wrong_round_one_answer_locks_the_member_out_for_twelve_hours_then_rerolls(env, clock):
+async def test_a_wrong_round_one_answer_locks_the_member_out_for_four_hours_then_rerolls(env, clock):
     m = member(env, 11)
     await start(env, m)
     first = [await press(env, m, r) for r in range(5)]
     reply = await say(env, m, wrong(11, 1))
     assert "recess" in reply and "<t:" in reply
     st = await state(env, m)
-    assert st["roll"] == 1 and st["locked_until"] == clock.now + 12 * HOUR
+    assert st["roll"] == 1 and st["locked_until"] == clock.now + 4 * HOUR
     assert await press(env, m, 0) == TRIAL["recess"].format(until=f"<t:{int(st['locked_until'])}:R>")
     clock.now += HOUR
     assert "recess" in await say(env, m, right(11, 1, 0)) and (await state(env, m))["stage"] == engine.STAGE_RIDDLE
-    clock.now += 12 * HOUR  # the recess is over: the witnesses remember it differently now
+    clock.now += 4 * HOUR  # the recess is over: the witnesses remember it differently now
     second = [await press(env, m, r) for r in range(5)]
     assert second != first
     assert "adjourns" in await say(env, m, right(11, 1, 1))

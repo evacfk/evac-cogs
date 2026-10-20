@@ -148,11 +148,11 @@ def test_a_correct_round_one_answer_adjourns_the_court_until_morning():
     assert trial.round_of(st) == 0  # nothing more to answer until round 2 opens
 
 
-def test_a_wrong_round_one_answer_locks_for_twelve_hours_and_rerolls():
+def test_a_wrong_round_one_answer_locks_for_four_hours_and_rerolls():
     st, c = fresh(), case("s2", 1)
     assert trial.check_answer(st, c, wrong_for(c, 1), 5000.0) == "wrong"
     assert st["roll"] == 1 and st["wrongs"] == 1 and st["locked_until"] == 5000.0 + TRIAL_LOCK_R1_HOURS * HOUR
-    assert TRIAL_LOCK_R1_HOURS == 12
+    assert TRIAL_LOCK_R1_HOURS == 4
     # during the lockout even the right answer is refused (and it is not a second wrong answer)
     assert trial.check_answer(st, c, answer_for(c, 1), 5000.0 + HOUR) == "recess"
     assert st["roll"] == 1 and st["stage"] == engine.STAGE_RIDDLE

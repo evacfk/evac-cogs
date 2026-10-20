@@ -284,7 +284,7 @@ def recess_until(state, now: float) -> float:
 def check_answer(state: dict, case, text: str, now: float, test_mode: bool = False) -> str:
     """The member DM'd an answer. Returns correct / wrong / recess / malformed_suspect / malformed_hour / ignore.
 
-    Wrong, well-formed answers re-roll the round's testimony and start a recess: 12 hours in round 1 (a lockout),
+    Wrong, well-formed answers re-roll the round's testimony and start a recess: 4 hours in round 1 (a lockout),
     4 hours in round 2 (a cooldown). Malformed answers cost nothing."""
     round_no = round_of(state)
     if not round_no:

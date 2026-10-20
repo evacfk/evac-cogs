@@ -20,7 +20,7 @@ Needs exactly **5** hiding places: each pool room holds one pinned witness with 
 hears their own private testimony (generated from a private seed, never a fixed list, and checked by a brute-force solver to
 have exactly one valid answer).
 - **Round 1:** exactly two of five witnesses lie. The answer is the thief's name only. A wrong answer locks the member out
-  for **12 hours**, then the testimony re-rolls.
+  for **4 hours**, then the testimony re-rolls.
 - The court adjourns until the next 9:00 Pacific (at least 4 hours).
 - **Round 2:** harder testimony that also talks about the hour, exactly three liars. The answer is the thief **and** the hour
   (1 to 12), for example `Hatter 9`; the summons says so. A wrong answer re-rolls the testimony after a **4 hour** cooldown.
