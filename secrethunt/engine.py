@@ -119,7 +119,7 @@ def match_trigger(puzzles: dict, published, word: str):
         return None
     for pid in published:
         puzzle = puzzles.get(pid)
-        if puzzle and normalize(puzzle["trigger"]) == word:
+        if puzzle and puzzle.get("trigger") and normalize(puzzle["trigger"]) == word:
             return pid
     return None
 

@@ -27,7 +27,7 @@ def local(t):
 
 ACROSTIC = [pid for pid, p in PUZZLES.items() if p.get("trigger_kind", "acrostic") == "acrostic"]
 RIDDLE = [pid for pid, p in PUZZLES.items() if p.get("trigger_kind") == "riddle"]
-FIXED = [pid for pid, p in PUZZLES.items() if p.get("kind") != "trial"]   # puzzles with a fixed answer list (a trial generates its cases)
+FIXED = [pid for pid, p in PUZZLES.items() if p.get("kind") not in ("trial", "trail")]   # puzzles with a fixed answer list (a trial or a trail generates its own)
 
 
 @pytest.mark.parametrize("pid", ACROSTIC)

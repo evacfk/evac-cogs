@@ -18,17 +18,18 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
+from collections import deque
 from typing import Union
 
 import discord
 from redbot.core import Config, commands
 
-from . import embeds, engine, trial, views
+from . import embeds, engine, trail, trial, views
 from . import panel as panel_specs
 from .settings_panel import PanelError, open_panel
 from .constants import (
     COG_VERSION, CONFIG_IDENTIFIER, DEFAULT_GUILD, DEFAULT_MEMBER, HINT_MAX, ICON_MAX_BYTES, NO_ROLE_TIERS, POOL_MAX,
-    POOL_MIN, TICK_SECONDS, TIER_ROLE_NAMES, WATCH_EMOJI,
+    POOL_MIN, TICK_SECONDS, TIER_ROLE_NAMES, TRAIL_MAX_ROOMS, WATCH_EMOJI,
 )
 from .puzzles import PUZZLES
 
@@ -47,6 +48,8 @@ class SecretHunt(commands.Cog):
         self.config.register_guild(**DEFAULT_GUILD)
         self.config.register_member(**DEFAULT_MEMBER)
         self._locks: dict[int, asyncio.Lock] = {}
+        self._poem_ids: dict[int, dict[int, str]] = {}   # guild id -> {poem message id: puzzle id}, loaded on first use
+        self._poem_hist: dict[tuple, deque] = {}         # (guild, member, puzzle) -> recent poem reactions (memory only)
         self._task = self.bot.loop.create_task(self._loop())
 
     async def cog_load(self):
@@ -54,10 +57,12 @@ class SecretHunt(commands.Cog):
         self.bot.add_view(self._view)
         self._witness_view = views.WitnessView(self)
         self.bot.add_view(self._witness_view)
+        self._trail_view = views.TrailView(self)
+        self.bot.add_view(self._trail_view)
 
     def cog_unload(self):
         self._task.cancel()
-        for name in ("_view", "_witness_view"):
+        for name in ("_view", "_witness_view", "_trail_view"):
             view = getattr(self, name, None)
             if view is not None:
                 view.stop()
@@ -103,6 +108,24 @@ class SecretHunt(commands.Cog):
         """A channel OR thread (forum post) by id; plain get_channel never returns threads."""
         getter = getattr(guild, "get_channel_or_thread", None) or guild.get_channel
         return getter(cid)
+
+    async def _blocked(self, guild, member) -> bool:
+        """True for a member holding the "blocked" role (Lurker). Every puzzle ignores them: their progress just waits."""
+        rid = await self.config.guild(guild).blocked_role_id()
+        return bool(rid) and any(getattr(r, "id", None) == rid for r in getattr(member, "roles", []))
+
+    @staticmethod
+    def _can_play(member, puzzle: dict) -> bool:
+        """A work-in-progress puzzle (`wip`) is playable by admins only, so it can be tested live before it is finished."""
+        if not puzzle.get("wip"):
+            return True
+        perms = getattr(member, "guild_permissions", None)
+        return bool(getattr(perms, "administrator", False) or getattr(perms, "manage_guild", False))
+
+    async def _rooms_of(self, guild, puzzle: dict) -> list:
+        """The rooms a puzzle's objects live in: the trail rooms for a trail puzzle, else the pool."""
+        conf = self.config.guild(guild)
+        return list(await (conf.trail() if puzzle.get("kind") == "trail" else conf.pool()))
 
     @staticmethod
     def _when(ts: float) -> str:
@@ -180,6 +203,8 @@ class SecretHunt(commands.Cog):
             await message.delete()  # never advertise the word in chat
         except _DISCORD_ERRORS:
             pass
+        if await self._blocked(guild, message.author) or not self._can_play(message.author, PUZZLES[pid]):
+            return
         if not await self._run_trigger(guild, message.author, pid, time.time()):
             try:
                 await message.channel.send(
@@ -206,11 +231,14 @@ class SecretHunt(commands.Cog):
             if member is None:
                 continue
             conf = self.config.guild(guild)
-            if not await conf.enabled():
+            if not await conf.enabled() or await self._blocked(guild, member):
                 continue
+            if engine.normalize(low) == "recap" and await self._trail_recap(guild, member):
+                return
             pid = engine.match_trigger(PUZZLES, await conf.published(), low)
             if pid is not None:
-                await self._run_trigger(guild, member, pid, now)
+                if self._can_play(member, PUZZLES[pid]):
+                    await self._run_trigger(guild, member, pid, now)
                 return
             if await self._try_guess(guild, member, low, now):
                 return
@@ -255,8 +283,20 @@ class SecretHunt(commands.Cog):
         except Exception:
             log.exception("secrethunt on_raw_reaction_add failed")
 
+    async def _poem_map(self, guild_id: int) -> dict:
+        """{poem message id: puzzle id} for a guild, loaded once and kept in step by _apply_poem."""
+        if guild_id not in self._poem_ids:
+            guild = self.bot.get_guild(guild_id)
+            raw = await self.config.guild(guild).poem_ids() if guild is not None else {}
+            self._poem_ids[guild_id] = {int(k): v for k, v in raw.items()}
+        return self._poem_ids[guild_id]
+
     async def _on_reaction(self, payload):
         if payload.guild_id is None or payload.user_id == getattr(self.bot.user, "id", None):
+            return
+        pid = (await self._poem_map(payload.guild_id)).get(payload.message_id)
+        if pid is not None:
+            await self._on_poem_reaction(payload, pid)
             return
         if engine.normalize_emoji(str(payload.emoji)) != WATCH_EMOJI:
             return
@@ -276,6 +316,8 @@ class SecretHunt(commands.Cog):
         if member is None or member.bot:
             return
         await self._remove_reaction(guild, payload, member)  # the object always looks untouched
+        if await self._blocked(guild, member):
+            return
         puzzle, pool = PUZZLES.get(pid), await conf.pool()
         if puzzle is None or len(pool) < POOL_MIN:
             return
@@ -293,6 +335,113 @@ class SecretHunt(commands.Cog):
             await self._dm(member, puzzle["found"])
         elif action in ("decoy", "lockout"):  # while locked out ("locked") the reaction just vanishes
             await self._dm(member, puzzle[action])
+
+    async def _on_poem_reaction(self, payload, pid: str):
+        """A reaction on a trail puzzle's pinned poem (stage 1). Every reaction is removed at once, right or wrong, so the
+        poem always looks untouched and nobody can copy anyone by looking. The last three, in order, wake the Dormouse."""
+        puzzle = PUZZLES.get(pid)
+        guild = self.bot.get_guild(payload.guild_id)
+        if puzzle is None or puzzle.get("kind") != "trail" or guild is None:
+            return
+        conf = self.config.guild(guild)
+        if not await conf.enabled() or pid not in await conf.published():
+            return
+        member = guild.get_member(payload.user_id)
+        if member is None or member.bot:
+            return
+        await self._remove_reaction(guild, payload, member)
+        if await self._blocked(guild, member) or not self._can_play(member, puzzle):
+            return
+        now = time.time()
+        history = self._poem_hist.setdefault((guild.id, member.id, pid), deque())
+        if not trail.record_reaction(history, str(payload.emoji), now) or not trail.poem_solved(history):
+            return
+        rooms = await conf.trail()
+        if len(rooms) < max(puzzle["trail_min"], len(trail.SISTERS)):
+            return  # not set up yet: stay silent
+        plan = trail.plan(trail.seed(await self._salt(guild), pid, member.id), len(rooms))
+        async with self._lock(guild.id):
+            async with self.config.member(member).puzzles() as states:
+                if states.get(pid):
+                    return  # already woke him
+                state = trail.start(0, now)
+                state["clue"] = trail.first_clue(puzzle, self._pointer(guild, puzzle, rooms, plan, 0))
+                states[pid] = state
+        history.clear()
+        await self._dm(member, state["clue"])
+
+    def _pointer(self, guild, puzzle: dict, rooms: list, plan: dict, step: int):
+        """How trail room `plan['chain'][step]` is named in a clue; None when the room is gone."""
+        channel = self._lookup(guild, rooms[plan["chain"][step]])
+        if channel is None:
+            return None
+        return trail.room_pointer(puzzle, channel.name, step)
+
+    async def _trail_recap(self, guild, member) -> bool:
+        """`recap` by DM: send the current stage's clue again. True when this member is on a trail."""
+        conf = self.config.guild(guild)
+        states = await self.config.member(member).puzzles()
+        for pid in await conf.published():
+            puzzle, state = PUZZLES.get(pid), states.get(pid)
+            if puzzle and puzzle.get("kind") == "trail" and state and state.get("stage") != engine.STAGE_SOLVED \
+                    and self._can_play(member, puzzle):
+                await self._dm(member, state.get("clue") or puzzle["idle"])
+                return True
+        return False
+
+    async def handle_trail(self, interaction, key: str):
+        """A button under a tea table was pressed. The reply is private, so a wrong table looks like any other."""
+        try:
+            text = await self._trail_text(interaction, key)
+        except Exception:
+            log.exception("secrethunt tea table click failed")
+            text = None
+        try:
+            await interaction.response.send_message(text or "Nothing happens.", ephemeral=True)
+        except _DISCORD_ERRORS:
+            pass
+
+    async def _trail_text(self, interaction, key: str):
+        guild, member = interaction.guild, interaction.user
+        message = getattr(interaction, "message", None)
+        if guild is None or message is None or getattr(member, "bot", False):
+            return None
+        conf = self.config.guild(guild)
+        if not await conf.enabled() or await self._blocked(guild, member):
+            return None
+        hit = engine.find_object(await conf.objects(), message.id)
+        puzzle = PUZZLES.get(hit[0]) if hit else None
+        rooms = await conf.trail()
+        if puzzle is None or puzzle.get("kind") != "trail" or hit[1] not in rooms or not self._can_play(member, puzzle):
+            return None
+        pid, room = hit[0], rooms.index(hit[1])
+        if key != "look":
+            return puzzle["quiet"]  # Pour, Bow and Toast arrive with the later stages
+        now, test_mode, salt = time.time(), await conf.test_mode(), await self._salt(guild)
+        async with self._lock(guild.id):
+            async with self.config.member(member).puzzles() as states:
+                state = states.get(pid)
+                if not state:
+                    return puzzle["idle"]
+                if len(rooms) < len(trail.SISTERS):
+                    return None
+                plan = trail.plan(trail.seed(salt, pid, member.id), len(rooms))
+                action, detail = trail.look(state, room, plan, now, test_mode)
+                if action == "sister":
+                    nxt = self._pointer(guild, puzzle, rooms, plan, detail + 1) if detail + 1 < len(trail.SISTERS) else None
+                    text = trail.sister_line(puzzle, detail, plan, nxt)
+                    state["clue"] = text if detail + 1 < len(trail.SISTERS) else puzzle["sisters_done_dm"]
+                    return text
+                if action == "replay":
+                    nxt = self._pointer(guild, puzzle, rooms, plan, detail + 1) if detail + 1 < len(trail.SISTERS) else None
+                    return trail.sister_line(puzzle, detail, plan, nxt)
+        if action == "rest":
+            return puzzle["rest"].format(until=self._when(detail))
+        if action == "rest_start":
+            return puzzle["rest_start"].format(until=self._when(detail))
+        if action == "wrong":
+            return puzzle["wrong_look"][state["wrong_looks"] % len(puzzle["wrong_look"])]
+        return puzzle["idle"]
 
     async def handle_click(self, interaction, key: str):
         """A button under a hunt object was pressed. Whatever happens, the answer is private to the clicker, so a decoy
@@ -313,7 +462,7 @@ class SecretHunt(commands.Cog):
         if guild is None or message is None or getattr(member, "bot", False):
             return None
         conf = self.config.guild(guild)
-        if not await conf.enabled():
+        if not await conf.enabled() or await self._blocked(guild, member):
             return None
         hit = engine.find_object(await conf.objects(), message.id)
         puzzle = PUZZLES.get(hit[0]) if hit else None
@@ -352,7 +501,7 @@ class SecretHunt(commands.Cog):
         if guild is None or message is None or getattr(member, "bot", False):
             return None
         conf = self.config.guild(guild)
-        if not await conf.enabled():
+        if not await conf.enabled() or await self._blocked(guild, member):
             return None
         hit = engine.find_object(await conf.objects(), message.id)
         puzzle = PUZZLES.get(hit[0]) if hit else None
@@ -404,14 +553,33 @@ class SecretHunt(commands.Cog):
     async def _deliver_due(self, guild, now: float):
         if not await self.config.guild(guild).enabled():
             return
+        await self._reopen_trail(guild)
         for uid, data in (await self.config.all_members(guild)).items():
             for pid, state in data["puzzles"].items():
                 if pid in PUZZLES and engine.is_due(state, now):
                     await self._send_final(guild, uid, pid, now)
 
+    async def _reopen_trail(self, guild) -> None:
+        """A quiet forum post auto-archives, which would strand the tea table in it: reopen any that has."""
+        conf = self.config.guild(guild)
+        if not any(PUZZLES.get(p, {}).get("kind") == "trail" for p in await conf.published()):
+            return
+        for cid in await conf.trail():
+            channel = self._lookup(guild, cid)
+            if channel is None:  # archived threads are not always cached
+                try:
+                    channel = await guild.fetch_channel(cid)
+                except (*_DISCORD_ERRORS, AttributeError):
+                    continue
+            if getattr(channel, "archived", False):
+                try:
+                    await channel.edit(archived=False)
+                except _DISCORD_ERRORS:
+                    log.warning("secrethunt: could not reopen trail room %s in guild %s", cid, guild.id)
+
     async def _send_final(self, guild, uid: int, pid: str, now: float):
         member = guild.get_member(uid)
-        if member is None:
+        if member is None or await self._blocked(guild, member):
             return
         puzzle = PUZZLES[pid]
         async with self._lock(guild.id):  # mark first, send after: a second pass can never double-send
@@ -640,9 +808,10 @@ class SecretHunt(commands.Cog):
         """Post and pin the hunt object in every pool channel (once per puzzle unless forced). Returns report lines."""
         puzzle, conf = PUZZLES[pid], self.config.guild(guild)
         report = []
+        rooms = await self._rooms_of(guild, puzzle)
         async with conf.objects() as objects:
             by_channel = objects.setdefault(pid, {})
-            for cid in await conf.pool():
+            for cid in rooms:
                 channel = self._lookup(guild, cid)
                 if channel is None:
                     report.append(f"- <#{cid}>: not found (was the post deleted?)")
@@ -660,6 +829,8 @@ class SecretHunt(commands.Cog):
                         msg = await channel.send(embed=embeds.object_embed(puzzle), view=views.ObjectView(self))
                     elif puzzle.get("kind") == "trial":
                         msg = await channel.send(embed=embeds.witness_embed(puzzle), view=views.WitnessView(self))
+                    elif puzzle.get("kind") == "trail":
+                        msg = await channel.send(embed=embeds.object_embed(puzzle), view=views.TrailView(self))
                     else:
                         msg = await channel.send(embed=embeds.object_embed(puzzle))
                     await msg.pin()
@@ -749,6 +920,36 @@ class SecretHunt(commands.Cog):
                 + ". Now set up each puzzle's objects under Puzzles. Changing the pool mid-puzzle moves "
                   "people's hiding places, so do it between puzzles.")
 
+    async def _apply_trail_text(self, guild, member, values: dict) -> str:
+        """The Treacle Well's trail rooms from pasted mentions or ids (forum posts are threads)."""
+        found, bad = [], []
+        for token in (values.get("rooms") or "").replace(",", " ").split():
+            digits = token[2:-1] if token.startswith("<#") and token.endswith(">") else token
+            channel = self._lookup(guild, int(digits)) if digits.isdigit() else None
+            if channel is None:
+                bad.append(token)
+            elif channel.id not in [c.id for c in found]:
+                found.append(channel)
+        if bad:
+            raise PanelError("I couldn't find: " + ", ".join(bad) + ". Nothing was changed.")
+        low = min((p.get("trail_min", 0) for p in PUZZLES.values() if p.get("kind") == "trail"), default=0)
+        if not max(low, len(trail.SISTERS)) <= len(found) <= TRAIL_MAX_ROOMS:
+            raise PanelError(f"Give me {max(low, len(trail.SISTERS))} to {TRAIL_MAX_ROOMS} different rooms (12 planned).")
+        conf = self.config.guild(guild)
+        await conf.trail.set([c.id for c in found])
+        async with conf.objects() as objects:  # the old tea tables no longer match the rooms
+            for pid, puzzle in PUZZLES.items():
+                if puzzle.get("kind") == "trail":
+                    objects.pop(pid, None)
+        return (f"Trail rooms set ({len(found)}). Now press Set up objects on the Treacle Well. Changing them mid-puzzle "
+                "moves people's sisters, so do it between puzzles.")
+
+    async def _apply_blocked_role(self, guild, member, role) -> str:
+        """Members with this role (Lurker) are ignored by every puzzle; their progress just waits."""
+        await self.config.guild(guild).blocked_role_id.set(role.id if role else None)
+        return (f"Members with {role.mention} cannot take part in any secret." if role
+                else "Every member can take part again.")
+
     async def _apply_pool_text(self, guild, member, values: dict) -> str:
         """The pool from pasted mentions or ids (forum posts are threads, which a dropdown may not offer)."""
         found, bad = [], []
@@ -767,11 +968,23 @@ class SecretHunt(commands.Cog):
         """Post and pin the puzzle's object in each pool channel."""
         if puzzle_id not in PUZZLES:
             raise PanelError("Unknown puzzle. Known: " + ", ".join(PUZZLES))
-        pool = await self.config.guild(guild).pool()
-        if len(pool) < POOL_MIN:
-            raise PanelError("Set the pool first (Hunt tab).")
-        self._check_pool_size(puzzle_id, pool)
+        conf = self.config.guild(guild)
+        if PUZZLES[puzzle_id].get("kind") == "trail":
+            self._check_trail_size(puzzle_id, await conf.trail())
+        else:
+            pool = await conf.pool()
+            if len(pool) < POOL_MIN:
+                raise PanelError("Set the pool first (Hunt tab).")
+            self._check_pool_size(puzzle_id, pool)
         return "\n".join(await self._setup_objects(guild, puzzle_id, force))
+
+    @staticmethod
+    def _check_trail_size(puzzle_id: str, rooms) -> None:
+        need = PUZZLES[puzzle_id].get("trail_min", 0)
+        if len(rooms) < need:
+            raise PanelError(f"{PUZZLES[puzzle_id]['title']} needs at least {need} trail rooms "
+                             f"({PUZZLES[puzzle_id].get('needs_trail', need)} planned); {len(rooms)} are set. "
+                             "Set them under Hunt first.")
 
     @staticmethod
     def _check_pool_size(puzzle_id: str, pool) -> None:
@@ -785,7 +998,10 @@ class SecretHunt(commands.Cog):
         if puzzle_id not in PUZZLES:
             raise PanelError("Unknown puzzle. Known: " + ", ".join(PUZZLES))
         conf = self.config.guild(guild)
-        self._check_pool_size(puzzle_id, await conf.pool())
+        if PUZZLES[puzzle_id].get("kind") == "trail":
+            self._check_trail_size(puzzle_id, await conf.trail())
+        else:
+            self._check_pool_size(puzzle_id, await conf.pool())
         async with conf.published() as published:
             if puzzle_id not in published:
                 published.append(puzzle_id)
@@ -815,6 +1031,10 @@ class SecretHunt(commands.Cog):
             try:
                 await posted.pin(reason="Secret poem")
                 poems[str(target.id)] = posted.id
+                async with self.config.guild(guild).poem_ids() as ids:  # a reaction on a trail poem finds its puzzle here
+                    ids.pop(str(old), None)
+                    ids[str(posted.id)] = pid
+                    self._poem_ids[guild.id] = {int(k): v for k, v in ids.items()}
             except _DISCORD_ERRORS as err:
                 poems.pop(str(target.id), None)
                 notes.append(f"Posted, but I could not pin it ({type(err).__name__}): I need Pin Messages here, "
@@ -870,6 +1090,8 @@ class SecretHunt(commands.Cog):
     async def _apply_preview(self, guild, member, puzzle_id: str) -> str:
         """DM the admin every variant's clues and answer (spoilers, so it never goes in a channel)."""
         puzzle = PUZZLES.get(puzzle_id)
+        if puzzle is not None and puzzle.get("kind") == "trail":
+            return await self._preview_trail(guild, member, puzzle)
         pool = await self.config.guild(guild).pool()
         if puzzle is None or len(pool) < POOL_MIN:
             raise PanelError("Unknown puzzle, or the pool is not set yet.")
@@ -892,6 +1114,24 @@ class SecretHunt(commands.Cog):
         if not await self._dm(member, "\n".join(lines)):
             raise PanelError("I could not DM you.")
         return "Sent you a DM with every variant and its answer."
+
+    async def _preview_trail(self, guild, member, puzzle: dict) -> str:
+        """DM the admin their OWN trail: the poem's emoji and the three sisters, with the clue that names each room.
+        Check every pointer here: a room whose title matches no keyword gets the letter clue instead."""
+        rooms = await self.config.guild(guild).trail()
+        self._check_trail_size(puzzle["id"], rooms)
+        plan = trail.plan(trail.seed(await self._salt(guild), puzzle["id"], member.id), len(rooms))
+        lines = [f"**{puzzle['title']}** (YOUR trail; every member's differs). Stage 1: react to the poem with "
+                 + " then ".join(" or ".join(group) for group in trail.EMOJI_SLOTS) + "."]
+        for k, name in enumerate(trail.SISTERS):
+            channel = self._lookup(guild, rooms[plan["chain"][k]])
+            where = channel.mention if channel is not None else f"MISSING `{rooms[plan['chain'][k]]}`"
+            pointer = self._pointer(guild, puzzle, rooms, plan, k)
+            lines.append(f"{k + 1}. {name} is in {where}; the clue to reach her: {pointer or 'NONE (room missing)'}; "
+                         f"her number {plan['numbers'][k]}, her word `{plan['tokens'][k]}`")
+        if not await self._dm(member, "\n".join(lines)):
+            raise PanelError("I could not DM you.")
+        return "Sent you a DM with your own trail."
 
     async def _preview_trial(self, guild, member, puzzle: dict, pool) -> str:
         """DM the admin their OWN cases for both rounds, with the answers (spoilers: every member's cases differ)."""
@@ -1021,6 +1261,10 @@ class SecretHunt(commands.Cog):
         pool = await self.config.guild(ctx.guild).pool()
         lines = []
         for pid, st in states.items():
+            if PUZZLES.get(pid, {}).get("kind") == "trail":
+                lines.append(f"**{pid}**: stage {st.get('step', 2)}; sisters found {st.get('found', 0)}/3; "
+                             f"wrong tables in a row {st.get('wrong_looks', 0)}")
+                continue
             if PUZZLES.get(pid, {}).get("kind") == "trial":
                 lines.append(f"**{pid}**: {trial_names.get(st['stage'], st['stage'])}; re-rolls {st.get('roll', 0)}, "
                              f"wrong answers {st.get('wrongs', 0)}, hints {st.get('hints', 0)}")

@@ -3,7 +3,7 @@
 Specs only; every change goes through the cog's `_apply_*` methods.
 """
 from . import engine
-from .constants import NO_ROLE_TIERS, POOL_MAX, POOL_MIN, TIER_ROLE_NAMES
+from .constants import NO_ROLE_TIERS, POOL_MAX, POOL_MIN, TIER_ROLE_NAMES, TRAIL_MAX_ROOMS
 from .puzzles import PUZZLES
 from .settings_panel import Field, ItemAction, PanelError, Pick, Spec
 
@@ -61,6 +61,14 @@ async def _pool_text_apply(cog, guild, member, values):
     return await cog._apply_pool_text(guild, member, values)
 
 
+async def _trail_text_apply(cog, guild, member, values):
+    return await cog._apply_trail_text(guild, member, values)
+
+
+async def _blocked_apply(cog, guild, member, role):
+    return await cog._apply_blocked_role(guild, member, role)
+
+
 async def _enabled_apply(cog, guild, member, on):
     return await cog._apply_enabled(guild, member, on)
 
@@ -100,13 +108,18 @@ async def _puzzles(cog, guild):
     conf = cog.config.guild(guild)
     published, finishers, objects = await conf.published(), await conf.finishers(), await conf.objects()
     members = await cog.config.all_members(guild)
-    pool = await conf.pool()
+    pool, trail_rooms = await conf.pool(), await conf.trail()
     out = []
     for pid, puzzle in PUZZLES.items():
         started = sum(1 for d in members.values() if pid in d["puzzles"])
         bits = ["LIVE" if pid in published else "not live"]
         placed = len(objects.get(pid, {}))
-        bits.append(f"objects {placed}/{len(pool)}" if pool else "no pool yet")
+        if puzzle.get("kind") == "trail":
+            bits.append(f"tea tables {placed}/{len(trail_rooms)}" if trail_rooms else "no trail rooms yet")
+            if puzzle.get("wip"):
+                bits.append("admins only")
+        else:
+            bits.append(f"objects {placed}/{len(pool)}" if pool else "no pool yet")
         if pid in published:
             bits.append(f"{started} started, {len(finishers.get(pid, []))} solved")
         out.append((pid, f"{puzzle['title']} ({puzzle['tier']})", " · ".join(bits)))
@@ -159,6 +172,15 @@ def build_specs():
              fields=(Field("channels", "Channels or forum posts (mentions or IDs)", style="long", max_length=1000,
                            value=lambda v: " ".join(f"<#{c}>" for c in (v or [])), placeholder="#post1 #post2 #post3"),),
              help="Forum posts are threads and may not appear in the dropdown. Paste their links as mentions or IDs."),
+        Spec("trail_text", "Trail rooms (Treacle Well)", "Hunt", "modal", get=_conf("trail"), apply=_trail_text_apply,
+             fmt=_pool_fmt,
+             fields=(Field("rooms", "Forum posts or channels (mentions or IDs)", style="long", max_length=1500,
+                           value=lambda v: " ".join(f"<#{c}>" for c in (v or [])), placeholder="#post1 #post2 ... (12 planned)"),),
+             help=f"The public rooms that each hold a tea table: 12 planned, at most {TRAIL_MAX_ROOMS}. Paste links as mentions or IDs. "
+                  "Changing them moves everyone's sisters, so do it between puzzles."),
+        Spec("blocked_role", "Roles that cannot play (Lurker)", "Hunt", "role", get=_conf("blocked_role_id"),
+             apply=_blocked_apply, fmt=_role_fmt, clearable=True,
+             help="Members with this role are ignored by every secret: no clues, no clicks, no answers. Their progress just waits."),
         Spec("hall", "Hall of Secrets channel", "Hunt", "channel", get=_conf("hall_channel_id"), apply=_hall_apply,
              fmt=_channel_fmt, clearable=True, help="One post per puzzle listing its solvers."),
         Spec("announce", "Solve announcements", "Hunt", "channel", get=_conf("announce_channel_id"), apply=_announce_apply,

@@ -240,4 +240,91 @@ KNAVE_TRIAL = {
     "already": "\N{SCALES} *The trial is over, and the Knave walks free.* The witness waves politely.",
 }
 
-PUZZLES = {p["id"]: p for p in (LATE_RABBIT, LOOKING_GLASS, KNAVE_TRIAL)}
+# Medium #2. A six-stage trail of different tasks (act, search, experiment, count, navigate, assemble), played in the
+# server and in DMs. Everything personal is generated (trail.py); the story and the kinds of stage are shared.
+# `wip` keeps it playable by admins only until every stage is built.
+TREACLE_WELL = {
+    "id": "treacle_well",
+    "title": "The Treacle Well",
+    "tier": "medium",
+    "kind": "trail",             # a pinned tea table in every trail room (views.TrailView); no typed trigger
+    "trigger_kind": "reactions", # the poem is a riddle of three pictures; the answer is three emoji, in order
+    "wip": True,                 # push 1 of 3: stages 1-2 only, admins only
+    "needs_trail": 12,           # public rooms that each hold a tea table (12 planned; the panel allows fewer while wip)
+    "trail_min": 6,
+    "poem_title": "Written on the Dormouse's teacup",
+    "poem": [
+        "The Dormouse tells a tale, and every time",
+        "he reaches the good part, he stops.",
+        "First comes whatever pours his tea.",
+        "Then the sweet, slow, bottomless thing the sisters drew from the well.",
+        "Last comes what happens to him in the middle of every sentence.",
+        "Wake him with all three, in order.",
+    ],
+    "nudge": "Show him. Don't tell him.",
+    "object_title": "A tea table",
+    "object_text": "A long table, laid for tea. Nobody is sitting at it, but the cups are still warm.",
+    "clue1": (
+        "\N{TEACUP WITHOUT HANDLE} *The Dormouse stirs, blinks, and begins his tale at once, as if he had never stopped.*\n\n"
+        "There were three little sisters, and they lived at the bottom of a well. Elsie was the eldest. "
+        "**Find her**: she sits at a tea table in {pointer}. Press **Look** on it.\n\n"
+        "*Lost the thread? Whisper me* `recap`."
+    ),
+    "sisters": [
+        # Elsie
+        ("\N{TEACUP WITHOUT HANDLE} *Elsie stirs her tea and does not look up.*\n\n"
+         "> \"I counted **{number}** lumps of sugar before I fell asleep, and I tucked a **{token}** under the saucer. "
+         "My sister Lacie is the one who knows the way down. She is at a tea table in {pointer}.\""),
+        # Lacie
+        ("\N{TEACUP WITHOUT HANDLE} *Lacie turns her cup round and round.*\n\n"
+         "> \"**{number}** spoonfuls, no more, no less. I kept a **{token}** in my pocket for later. "
+         "Tillie is the youngest and the sleepiest. Look for her in {pointer}.\""),
+        # Tillie
+        ("\N{TEACUP WITHOUT HANDLE} *Tillie yawns, and it is a very long yawn.*\n\n"
+         "> \"**{number}** is how many I poured. I hid a **{token}** in the sugar bowl, so mind the sugar. "
+         "That is all of us.\"\n\n"
+         "*The Dormouse is snoring. The next part of the tale is not written yet.*"),
+    ],
+    "sisters_done_dm": (
+        "\N{TEACUP WITHOUT HANDLE} *All three sisters have spoken, and the Dormouse has fallen asleep on the teapot.* "
+        "Keep what they told you safe. The tale goes on soon."
+    ),
+    # how each room is named in a sister's line: a written description when the room's title contains the keyword, the
+    # letter clue otherwise (and always for the steps in `letter_variants`)
+    "pointers": {
+        "gaming": "the room where games are argued over and nobody agrees on the best one",
+        "music": "the room where songs are passed around like sweets",
+        "meme": "the room where the jokes have been shared so often they have worn smooth",
+        "movie": "the room where the lights go down and everyone has an opinion about the ending",
+        "anime": "the room where the cartoons are drawn far too well to be for children",
+        "book": "the room where the shelves are crowded and nobody has finished the pile",
+        "food": "the room where everyone is hungry and nobody agrees on dinner",
+        "pets": "the room full of small creatures, none of whom are the ones who took the tarts",
+        "drawing": "the room where the walls are never quite dry",
+        "tech": "the room where something is always broken and someone always knows why",
+        "sport": "the room where everyone shouts about a game they only watched",
+        "travel": "the room where everyone has been somewhere else",
+        "photo": "the room where the pictures are kept and the stories behind them are told",
+        "game": "the room where games are argued over and nobody agrees on the best one",
+    },
+    "letter_variants": [1],
+    "wrong_look": [
+        "\N{TEACUP WITHOUT HANDLE} *Only a tea table. The tea has gone cold and nobody has sat here.*",
+        "\N{TEACUP WITHOUT HANDLE} *A teapot, a saucer, a crumb. Nothing that belongs to the tale.*",
+        "\N{TEACUP WITHOUT HANDLE} *The cups are empty. This is not where the sisters sit.*",
+    ],
+    "rest": "\N{SLEEPING SYMBOL} *The tea tables have gone quiet.* They will wake {until}.",
+    "rest_start": (
+        "\N{SLEEPING SYMBOL} *The tea tables sigh, and one by one they go quiet.* Too many wrong tables in a row. "
+        "They will wake {until}."
+    ),
+    "quiet": "\N{TEACUP WITHOUT HANDLE} *You pour, you bow, you drink to nobody. Nothing happens, yet.*",
+    "idle": "\N{TEACUP WITHOUT HANDLE} *Only a tea table. The tea has gone cold.*",
+    "already": "\N{TEACUP WITHOUT HANDLE} *The tale is over, and the well is quiet.*",
+    "solved": (
+        "\N{TEACUP WITHOUT HANDLE} *You reach the bottom of the well, and the sisters were drawing something after all.*\n\n"
+        "Your name is on the **Hall of Secrets** now.{rank}"
+    ),
+}
+
+PUZZLES = {p["id"]: p for p in (LATE_RABBIT, LOOKING_GLASS, KNAVE_TRIAL, TREACLE_WELL)}

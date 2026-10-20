@@ -647,7 +647,7 @@ async def test_the_witness_button_is_persistent_with_its_own_fixed_id(env):
     a persistent view needs no timeout and a custom id on every button, and the id must not clash with the glass buttons."""
     await env.cog.cog_load()
     witness, glass = env.cog._witness_view, env.cog._view
-    assert env.bot.views == [glass, witness]
+    assert env.bot.views == [glass, witness, env.cog._trail_view]
     ids = [getattr(c, "custom_id", None) for c in getattr(witness, "children", [])]
     if not ids:
         pytest.skip("the repo's discord stub has no buttons")

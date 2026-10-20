@@ -5,7 +5,7 @@ answer to its riddle). Saying the word starts a personal chain (every member get
 the **Hall of Secrets**.
 
 Tiers: **Easy** (days) and **Medium** (about a week) have no role or badge: solvers are only listed on the Hall.
-**Hard** and **Expert** each have their own role and icon. Medium so far: **The Knave's Trial** (see below). Easy so far: **The Late Rabbit** (`late_rabbit`: acrostic poem, clock reaction, unscramble) and **The Looking Glass**
+**Hard** and **Expert** each have their own role and icon. Medium so far: **The Knave's Trial** and **The Treacle Well** (see below). Easy so far: **The Late Rabbit** (`late_rabbit`: acrostic poem, clock reaction, unscramble) and **The Looking Glass**
 (`looking_glass`: riddle poem whose answer is `.mirror`, a room named in words, a pinned glass with Drink / Eat / Knock / Look
 buttons answered privately, an emoji rebus). A puzzle with `"kind": "button"` gets the buttons from `views.py`; the pool and
 setup steps are the same for both. For The Looking Glass use the same panel buttons; `.secrethunt preview looking_glass`
@@ -31,6 +31,22 @@ have exactly one valid answer).
 - Medium has no role. `preview knaves_trial` DMs you your own cases for both rounds with the answers (spoilers).
 - Set it up in the same panel: pool (exactly 5), *Set up objects*, *Go live*, post the poem. Test mode shrinks the lockout,
   cooldown, adjournment and hint waits to 30 seconds.
+
+## The Treacle Well (Medium, `treacle_well`, in progress)
+A six-stage trail of different tasks played in the server and in DMs, built in three pushes. Everything personal (which rooms,
+which numbers and words) is generated per member from a private seed, so one member's route is useless to another. There is no
+typed trigger: the pinned poem is a riddle, and the member answers it by reacting to the poem (the bot removes every reaction
+at once, so the poem always looks untouched). Built so far: stage 1 (the poem) and stage 2 (three rooms found one after
+another, each with a pinned tea table and a **Look** button; its replies are private). DM the bot `recap` to get the current
+clue again. Three wrong tables in a row make the tea tables rest for 30 minutes.
+- Needs **trail rooms** (public forum posts or channels, 12 planned, at least 6 while it is unfinished), set under Hunt with
+  *Trail rooms*. *Set up objects* pins a tea table in each. It does not use the 2-5 hiding place pool.
+- While unfinished it is playable by admins and Manage Server members only; everyone else's reactions are just removed.
+- The delivery loop reopens trail rooms that auto-archived. `preview treacle_well` DMs you your own trail (spoilers).
+
+## Who can play
+Under Hunt, *Roles that cannot play* (the Lurker role) makes every secret ignore those members: no clues, no clicks, no answers.
+A typed trigger word is still deleted from chat, and their progress waits for when they lose the role.
 
 ## Setup (once)
 ```

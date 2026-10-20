@@ -1,7 +1,7 @@
 """Config defaults and fixed values for secrethunt (Secrets of Wonderland)."""
 from zoneinfo import ZoneInfo
 
-COG_VERSION = "1.9.0"
+COG_VERSION = "1.10.0"
 CONFIG_IDENTIFIER = 0x5EC8E7A1
 HOME_TZ = ZoneInfo("America/Los_Angeles")
 
@@ -22,6 +22,11 @@ HINT_FIRST_HOURS = 48              # a trial hint can be asked for this long aft
 HINT_GAP_HOURS = 24                # ...and each further one this long after the previous
 HINT_MAX = 3                       # per round
 POOL_MIN, POOL_MAX = 2, 5
+TRAIL_MIN_ROOMS, TRAIL_MAX_ROOMS = 6, 16   # The Treacle Well hides its tea tables in this many public rooms (12 planned)
+TRAIL_REACT_WINDOW = 600           # Treacle Well stage 1: the three reactions must come within this many seconds
+TRAIL_REACTS_PER_HOUR = 30         # ...and a member's reactions on the poem beyond this many per hour are ignored
+TRAIL_WRONG_LOOKS = 3              # stage 2: this many wrong tables in a row and the tea tables rest...
+TRAIL_REST_MINUTES = 30            # ...for this long (test mode: TEST_DELAY_SECONDS)
 ICON_MAX_BYTES = 256 * 1024
 HALL_BUDGET = 3800                 # characters of solver names per Hall of Secrets post (embed limit is 4096)
 
@@ -42,6 +47,9 @@ DEFAULT_GUILD = {
     "announce_channel_id": None,  # where "X solved <puzzle>" is announced (e.g. the general chat)
     "hall_channel_id": None, # the Hall of Secrets: one post per puzzle listing its solvers
     "hall_messages": {}, "poems": {}, "hall_intro": 0,     # puzzle id -> that puzzle's Hall post
+    "poem_ids": {},          # poem message id (str) -> puzzle id, so a reaction on a poem can be told which puzzle it starts
+    "trail": [],             # channel/forum-post ids that hold the Treacle Well's tea tables
+    "blocked_role_id": None, # members with this role (Lurker) are ignored by every puzzle
     "test_mode": False,
 }
 

@@ -44,3 +44,28 @@ class WitnessView(discord.ui.View):
     @discord.ui.button(label="Hear the witness", custom_id="secrethunt:witness", style=discord.ButtonStyle.secondary)
     async def witness(self, interaction: discord.Interaction, button):
         await self.cog.handle_witness(interaction)
+
+
+class TrailView(discord.ui.View):
+    """The tea table under a Treacle Well room: Look / Pour / Bow / Toast. Persistent, registered once at cog load; the
+    cog works out which room and which member from the message and the clicker, and every reply is private."""
+
+    def __init__(self, cog):
+        super().__init__(timeout=None)
+        self.cog = cog
+
+    @discord.ui.button(label="Look", custom_id="secrethunt:trail:look", style=discord.ButtonStyle.secondary)
+    async def look(self, interaction: discord.Interaction, button):
+        await self.cog.handle_trail(interaction, "look")
+
+    @discord.ui.button(label="Pour", custom_id="secrethunt:trail:pour", style=discord.ButtonStyle.secondary)
+    async def pour(self, interaction: discord.Interaction, button):
+        await self.cog.handle_trail(interaction, "pour")
+
+    @discord.ui.button(label="Bow", custom_id="secrethunt:trail:bow", style=discord.ButtonStyle.secondary)
+    async def bow(self, interaction: discord.Interaction, button):
+        await self.cog.handle_trail(interaction, "bow")
+
+    @discord.ui.button(label="Toast", custom_id="secrethunt:trail:toast", style=discord.ButtonStyle.secondary)
+    async def toast(self, interaction: discord.Interaction, button):
+        await self.cog.handle_trail(interaction, "toast")
