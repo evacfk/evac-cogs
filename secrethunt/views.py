@@ -31,3 +31,16 @@ class ObjectView(discord.ui.View):
     @discord.ui.button(label="Look", custom_id="secrethunt:look", style=discord.ButtonStyle.secondary)
     async def look(self, interaction: discord.Interaction, button):
         await self.cog.handle_click(interaction, "look")
+
+
+class WitnessView(discord.ui.View):
+    """The single button under a trial puzzle's witness. Persistent, registered once at cog load; the cog works out which
+    witness (room) and which member from the message and the clicker, and the reply is private."""
+
+    def __init__(self, cog):
+        super().__init__(timeout=None)
+        self.cog = cog
+
+    @discord.ui.button(label="Hear the witness", custom_id="secrethunt:witness", style=discord.ButtonStyle.secondary)
+    async def witness(self, interaction: discord.Interaction, button):
+        await self.cog.handle_witness(interaction)

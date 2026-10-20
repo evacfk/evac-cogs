@@ -129,11 +129,12 @@ async def test_setup_pins_one_button_message_in_every_room(env):
 
 async def test_cog_load_registers_the_persistent_buttons_and_unload_stops_them(env):
     await env.cog.cog_load()
-    assert env.bot.views == [env.cog._view]
+    assert env.bot.views == [env.cog._view, env.cog._witness_view]  # the glass buttons and the trial's witness button
     stopped = []
-    env.cog._view.stop = lambda: stopped.append(True)  # works with the repo's stub View and with real discord.py
+    env.cog._view.stop = lambda: stopped.append("glass")  # works with the repo's stub View and with real discord.py
+    env.cog._witness_view.stop = lambda: stopped.append("witness")
     env.cog.cog_unload()
-    assert stopped == [True]
+    assert stopped == ["glass", "witness"]
 
 
 async def test_the_poem_word_starts_the_chain_and_the_message_is_deleted(env):

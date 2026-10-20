@@ -9,7 +9,9 @@ How a hunt runs (see puzzles.py for the content of each puzzle):
   wrong object or button is a decoy, and button replies are private to the clicker;
 - the next clue is delayed to the next 9:00 Pacific, then a jumbled word or emoji rebus is DM'd and the member DMs the answer back;
 - solving lists them in the Hall of Secrets (one post per puzzle, edited in place) and grants the puzzle tier's role
-  when that tier has one. Easy never does.
+  when that tier has one. Easy and Medium never do.
+- `kind: trial` puzzles (The Knave's Trial, trial.py) are logic puzzles instead of a chain of finds: every pool room
+  holds a witness whose private, generated statement is read with a button; wrong answers re-roll the testimony.
 """
 from __future__ import annotations
 
@@ -21,12 +23,12 @@ from typing import Union
 import discord
 from redbot.core import Config, commands
 
-from . import embeds, engine, views
+from . import embeds, engine, trial, views
 from . import panel as panel_specs
 from .settings_panel import PanelError, open_panel
 from .constants import (
-    COG_VERSION, CONFIG_IDENTIFIER, DEFAULT_GUILD, DEFAULT_MEMBER, ICON_MAX_BYTES, POOL_MAX, POOL_MIN,
-    TICK_SECONDS, TIER_ROLE_NAMES, WATCH_EMOJI,
+    COG_VERSION, CONFIG_IDENTIFIER, DEFAULT_GUILD, DEFAULT_MEMBER, HINT_MAX, ICON_MAX_BYTES, NO_ROLE_TIERS, POOL_MAX,
+    POOL_MIN, TICK_SECONDS, TIER_ROLE_NAMES, WATCH_EMOJI,
 )
 from .puzzles import PUZZLES
 
@@ -50,12 +52,15 @@ class SecretHunt(commands.Cog):
     async def cog_load(self):
         self._view = views.ObjectView(self)  # persistent: the buttons keep working across restarts
         self.bot.add_view(self._view)
+        self._witness_view = views.WitnessView(self)
+        self.bot.add_view(self._witness_view)
 
     def cog_unload(self):
         self._task.cancel()
-        view = getattr(self, "_view", None)
-        if view is not None:
-            view.stop()
+        for name in ("_view", "_witness_view"):
+            view = getattr(self, name, None)
+            if view is not None:
+                view.stop()
 
     def _lock(self, guild_id: int) -> asyncio.Lock:
         return self._locks.setdefault(guild_id, asyncio.Lock())
@@ -98,6 +103,16 @@ class SecretHunt(commands.Cog):
         """A channel OR thread (forum post) by id; plain get_channel never returns threads."""
         getter = getattr(guild, "get_channel_or_thread", None) or guild.get_channel
         return getter(cid)
+
+    @staticmethod
+    def _when(ts: float) -> str:
+        """A Discord relative timestamp ("in 3 hours"), which shows in the reader's own time."""
+        return f"<t:{int(ts)}:R>"
+
+    @staticmethod
+    def _rooms(pool) -> list:
+        """How each witness is named in testimony: a channel mention, so a renamed forum post never breaks it."""
+        return [f"<#{c}>" for c in pool]
 
     async def _prefixes(self, guild):
         try:
@@ -147,15 +162,18 @@ class SecretHunt(commands.Cog):
 
     async def _on_guild_message(self, message):
         content = (message.content or "").strip()
-        if not content or len(content) > 40 or " " in content:
+        if not content or len(content) > 40 or content.count(" ") > 3:
             return
         guild = message.guild
         conf = self.config.guild(guild)
         if not await conf.enabled():
             return
+        published = await conf.published()
+        if engine.match_trigger(PUZZLES, published, content) is None:  # cheap first look (ignores spaces and the prefix)
+            return
         low = content.lower()
         word = next((low[len(p):] for p in await self._prefixes(guild) if p and low.startswith(p.lower())), None)
-        pid = engine.match_trigger(PUZZLES, await conf.published(), word or "")
+        pid = engine.match_trigger(PUZZLES, published, word or "")
         if pid is None:
             return
         try:
@@ -202,16 +220,23 @@ class SecretHunt(commands.Cog):
         puzzle = PUZZLES[pid]
         conf = self.config.guild(guild)
         pool = await conf.pool()
-        if len(pool) < POOL_MIN:
+        if len(pool) < POOL_MIN or len(pool) < puzzle.get("needs_pool", 0):
             return True  # not configured yet: stay silent
         salt = await self._salt(guild)
         async with self._lock(guild.id):
             async with self.config.member(member).puzzles() as states:
                 state, action = engine.trigger(
                     states.get(pid), engine.variant_for(salt, pid, member.id, len(pool)), now)
+                if puzzle.get("kind") == "trial":
+                    trial.ensure(state)
                 states[pid] = state
         variant = state["variant"]
-        if action in ("start", "riddle_again"):
+        if puzzle.get("kind") == "trial":
+            rooms = " ".join(self._rooms(pool))
+            text = {"start": puzzle["summons"].format(rooms=rooms), "riddle_again": puzzle["summons"].format(rooms=rooms),
+                    "waiting": puzzle["waiting"], "final_again": puzzle["summons2"].format(rooms=rooms),
+                    }.get(action, puzzle["already"])
+        elif action in ("start", "riddle_again"):
             text = self._riddle_text(guild, puzzle, pool, variant)
         elif action == "waiting":
             text = puzzle["waiting"]
@@ -309,6 +334,50 @@ class SecretHunt(commands.Cog):
         return puzzle["idle"] if action == "ignore" else puzzle[{"found": "found", "decoy": "decoy",
                                                                     "lockout": "lockout", "locked": "locked"}[action]]
 
+    async def handle_witness(self, interaction):
+        """The button under a trial witness was pressed. The reply is private: it is this member's own testimony."""
+        try:
+            text = await self._witness_text(interaction)
+        except Exception:
+            log.exception("secrethunt witness button failed")
+            text = None
+        try:
+            await interaction.response.send_message(text or "Nothing happens.", ephemeral=True)
+        except _DISCORD_ERRORS:
+            pass
+
+    async def _witness_text(self, interaction):
+        guild, member = interaction.guild, interaction.user
+        message = getattr(interaction, "message", None)
+        if guild is None or message is None or getattr(member, "bot", False):
+            return None
+        conf = self.config.guild(guild)
+        if not await conf.enabled():
+            return None
+        hit = engine.find_object(await conf.objects(), message.id)
+        puzzle = PUZZLES.get(hit[0]) if hit else None
+        pool = await conf.pool()
+        if puzzle is None or puzzle.get("kind") != "trial" or len(pool) != puzzle["needs_pool"] or hit[1] not in pool:
+            return None
+        pid, witness = hit[0], pool.index(hit[1])
+        salt, now = await self._salt(guild), time.time()
+        async with self._lock(guild.id):
+            async with self.config.member(member).puzzles() as states:
+                state = states.get(pid)
+                if not state:
+                    return puzzle["idle"]
+                round_no = trial.round_of(state)
+                if not round_no:
+                    return puzzle["already"] if state["stage"] == engine.STAGE_SOLVED else puzzle["closed"]
+                trial.ensure(state)
+                until = trial.recess_until(state, now)
+                if until:
+                    return puzzle["recess"].format(until=self._when(until))
+                roll = state["roll"]
+        case = await asyncio.to_thread(trial.generate, trial.case_seed(salt, pid, member.id, round_no, roll), round_no)
+        rooms = self._rooms(pool)
+        return puzzle["testimony"].format(room=rooms[witness], text=trial.testimony(case[0][witness], rooms))
+
     async def _remove_reaction(self, guild, payload, member):
         channel = self._lookup(guild, payload.channel_id)
         if channel is None:
@@ -344,14 +413,21 @@ class SecretHunt(commands.Cog):
         member = guild.get_member(uid)
         if member is None:
             return
+        puzzle = PUZZLES[pid]
         async with self._lock(guild.id):  # mark first, send after: a second pass can never double-send
             async with self.config.member(member).puzzles() as states:
                 state = states.get(pid)
                 if not engine.is_due(state, now):
                     return
                 engine.mark_final_sent(state, now)
+                if puzzle.get("kind") == "trial":
+                    trial.start_round2(state)  # the court reconvenes: fresh testimony, fresh hint ladder
                 variant = state["variant"]
-        if await self._dm(member, self._final_text(PUZZLES[pid], variant)):
+        if puzzle.get("kind") == "trial":
+            text = puzzle["summons2"].format(rooms=" ".join(self._rooms(await self.config.guild(guild).pool())))
+        else:
+            text = self._final_text(puzzle, variant)
+        if await self._dm(member, text):
             return
         async with self._lock(guild.id):
             async with self.config.member(member).puzzles() as states:
@@ -363,12 +439,28 @@ class SecretHunt(commands.Cog):
     async def _try_guess(self, guild, member, text: str, now: float) -> bool:
         """True when this DM was handled as a guess for a puzzle at the final stage."""
         conf = self.config.guild(guild)
-        reply, solved = None, None
+        reply, solved, handled = None, None, False
         async with self._lock(guild.id):
             async with self.config.member(member).puzzles() as states:
-                for pid in await conf.published():
+                # An exact Easy answer always belongs to that Easy puzzle (two Late Rabbit answers are also suspects'
+                # names, and a wrong trial guess costs a lockout), so such a DM never reaches the trial.
+                easy_exact = any(
+                    (puzzle := PUZZLES.get(pid)) and (state := states.get(pid)) and puzzle.get("kind") != "trial"
+                    and state["stage"] == engine.STAGE_FINAL
+                    and engine.normalize(text) == engine.normalize(puzzle["answers"][state["variant"] % len(puzzle["answers"])])
+                    for pid in await conf.published())
+                for pid in ([] if easy_exact else await conf.published()):  # an open trial round goes first: its answers are names
                     puzzle, state = PUZZLES.get(pid), states.get(pid)
-                    if puzzle is None or not state or state["stage"] != engine.STAGE_FINAL:
+                    if puzzle is None or not state or puzzle.get("kind") != "trial":
+                        continue
+                    outcome = await self._trial_dm(guild, member, pid, puzzle, state, text, now)
+                    if outcome is not None:
+                        (reply, solved), handled = outcome, True
+                        break
+                for pid in ([] if handled else await conf.published()):
+                    puzzle, state = PUZZLES.get(pid), states.get(pid)
+                    if (puzzle is None or not state or puzzle.get("kind") == "trial"
+                            or state["stage"] != engine.STAGE_FINAL):
                         continue
                     answer = puzzle["answers"][state["variant"] % len(puzzle["answers"])]
                     result = engine.guess(state, answer, text, now)
@@ -390,6 +482,47 @@ class SecretHunt(commands.Cog):
             await self._dm(member, reply)
             return True
         return False
+
+    async def _trial_dm(self, guild, member, pid: str, puzzle: dict, state: dict, text: str, now: float):
+        """A DM from a member whose trial round is open: a hint request or an answer. Returns (reply, solved) where
+        `solved` is (pid, rank) for a finished trial, or None when this DM is not for the trial at all. Called with the
+        guild lock and the member's states held, so it must not take either again."""
+        round_no = trial.round_of(state)
+        pool = await self.config.guild(guild).pool()
+        if not round_no or len(pool) != puzzle["needs_pool"]:
+            return None
+        trial.ensure(state)
+        conf = self.config.guild(guild)
+        test_mode, salt = await conf.test_mode(), await self._salt(guild)
+        seed = trial.case_seed(salt, pid, member.id, round_no, state["roll"])
+        if engine.normalize(text) == "hint":
+            outcome, extra = trial.request_hint(state, now, test_mode)
+            if outcome == "ok":
+                case = await asyncio.to_thread(trial.generate, seed, round_no)
+                hint = trial.hint_text(case, round_no, extra, self._rooms(pool), seed)
+                return puzzle["hint"].format(hint=hint, n=extra, max=HINT_MAX), None
+            return {"recess": lambda: puzzle["recess"].format(until=self._when(extra or 0)),
+                    "max": lambda: puzzle["hint_max"],
+                    "early": lambda: puzzle["hint_early"].format(when=self._when(extra or 0)),
+                    }.get(outcome, lambda: None)(), None
+        if trial.parse_answer(text, round_no)[0] == "none":
+            return None  # not an answer to the trial: another puzzle may want it
+        case = await asyncio.to_thread(trial.generate, seed, round_no)
+        result = trial.check_answer(state, case, text, now, test_mode)
+        if result == "correct" and round_no == 1:
+            return puzzle["round1_done"], None
+        if result == "correct":
+            async with conf.finishers() as fin:  # claimed before any further await
+                ids = fin.setdefault(pid, [])
+                if member.id not in ids:
+                    ids.append(member.id)
+                state["rank"] = ids.index(member.id) + 1
+            return None, (pid, state["rank"])
+        until = self._when(state.get("locked_until", 0.0))
+        reply = {"wrong": puzzle["wrong1" if round_no == 1 else "wrong2"].format(until=until),
+                 "recess": puzzle["recess"].format(until=until),
+                 "malformed_suspect": puzzle["malformed_suspect"], "malformed_hour": puzzle["malformed_hour"]}.get(result)
+        return (reply, None) if reply else None
 
     async def _on_solved(self, guild, member, pid: str, rank: int):
         puzzle = PUZZLES[pid]
@@ -416,10 +549,10 @@ class SecretHunt(commands.Cog):
             log.warning("secrethunt: could not announce a solve in guild %s", guild.id)
 
     async def _grant_roles(self, guild, member, pid: str) -> list:
-        """The tier's role and this puzzle's own role, whichever are configured (Easy never has either)."""
+        """The tier's role and this puzzle's own role, whichever are configured (Easy and Medium never have either)."""
         conf = self.config.guild(guild)
         tier = PUZZLES[pid]["tier"]
-        if tier == "easy":
+        if tier in NO_ROLE_TIERS:
             return []
         ids = [(await conf.roles()).get(tier), (await conf.puzzle_roles()).get(pid)]
         earned = []
@@ -477,7 +610,12 @@ class SecretHunt(commands.Cog):
             for rank, uid in enumerate(ids, 1):
                 member = guild.get_member(uid)
                 if member is not None:  # someone who left the server drops off the list
-                    entries.append((rank, engine.escape_markdown(member.display_name)))
+                    name = engine.escape_markdown(member.display_name)
+                    if puzzle.get("kind") == "trial":  # the list shows how many hints each solver needed
+                        theirs = (await self.config.member_from_ids(guild.id, uid).puzzles()).get(pid) or {}
+                        entries.append((rank, name, trial.hint_label(theirs.get("hints", 0))))
+                    else:
+                        entries.append((rank, name))
             mid = (await conf.hall_messages()).get(pid)
             if not entries and not mid and not create:
                 return
@@ -520,6 +658,8 @@ class SecretHunt(commands.Cog):
                 try:
                     if puzzle.get("kind") == "button":
                         msg = await channel.send(embed=embeds.object_embed(puzzle), view=views.ObjectView(self))
+                    elif puzzle.get("kind") == "trial":
+                        msg = await channel.send(embed=embeds.witness_embed(puzzle), view=views.WitnessView(self))
                     else:
                         msg = await channel.send(embed=embeds.object_embed(puzzle))
                     await msg.pin()
@@ -580,7 +720,7 @@ class SecretHunt(commands.Cog):
             "Test mode": "on (clues arrive in 30 seconds)" if await conf.test_mode() else "off",
             "Pool": ", ".join(f"<#{c}>" if self._lookup(guild, c) else f"**MISSING** `{c}`" for c in pool)
                     or "not set (open `.secrethunt`)",
-            "Roles": "easy: none (by design), " + ", ".join(tier_roles),
+            "Roles": "easy and medium: none (by design), " + ", ".join(tier_roles),
             "Puzzle roles": ", ".join(
                 f"{PUZZLES[p]['title']}: {r.mention if r else 'MISSING'}"
                 for p, rid in (await conf.puzzle_roles()).items() if p in PUZZLES
@@ -627,15 +767,25 @@ class SecretHunt(commands.Cog):
         """Post and pin the puzzle's object in each pool channel."""
         if puzzle_id not in PUZZLES:
             raise PanelError("Unknown puzzle. Known: " + ", ".join(PUZZLES))
-        if len(await self.config.guild(guild).pool()) < POOL_MIN:
+        pool = await self.config.guild(guild).pool()
+        if len(pool) < POOL_MIN:
             raise PanelError("Set the pool first (Hunt tab).")
+        self._check_pool_size(puzzle_id, pool)
         return "\n".join(await self._setup_objects(guild, puzzle_id, force))
+
+    @staticmethod
+    def _check_pool_size(puzzle_id: str, pool) -> None:
+        need = PUZZLES[puzzle_id].get("needs_pool", 0)
+        if need and len(pool) != need:
+            raise PanelError(f"{PUZZLES[puzzle_id]['title']} needs exactly {need} hiding places (one witness in each); "
+                             f"the pool has {len(pool)}. Change it under Hunt first.")
 
     async def _apply_start(self, guild, member, puzzle_id: str) -> str:
         """Make a puzzle's trigger word live. Earlier puzzles stay live too."""
         if puzzle_id not in PUZZLES:
             raise PanelError("Unknown puzzle. Known: " + ", ".join(PUZZLES))
         conf = self.config.guild(guild)
+        self._check_pool_size(puzzle_id, await conf.pool())
         async with conf.published() as published:
             if puzzle_id not in published:
                 published.append(puzzle_id)
@@ -723,6 +873,8 @@ class SecretHunt(commands.Cog):
         pool = await self.config.guild(guild).pool()
         if puzzle is None or len(pool) < POOL_MIN:
             raise PanelError("Unknown puzzle, or the pool is not set yet.")
+        if puzzle.get("kind") == "trial":
+            return await self._preview_trial(guild, member, puzzle, pool)
         lines = [f"**{puzzle['title']}** trigger word: `{puzzle['trigger']}`"]
         for v in range(len(pool)):
             channel, hint = self._hint_for(guild, puzzle, pool, v)
@@ -741,11 +893,30 @@ class SecretHunt(commands.Cog):
             raise PanelError("I could not DM you.")
         return "Sent you a DM with every variant and its answer."
 
+    async def _preview_trial(self, guild, member, puzzle: dict, pool) -> str:
+        """DM the admin their OWN cases for both rounds, with the answers (spoilers: every member's cases differ)."""
+        self._check_pool_size(puzzle["id"], pool)
+        salt, rooms = await self._salt(guild), self._rooms(pool)
+        intro = (f"**{puzzle['title']}** trigger: `{puzzle['trigger']}` (the rhyme-breakers, in order). "
+                 "These are YOUR cases; every member's are different. Re-rolls after a wrong answer are different again.")
+        if not await self._dm(member, intro):
+            raise PanelError("I could not DM you.")
+        for round_no in (1, 2):
+            seed = trial.case_seed(salt, puzzle["id"], member.id, round_no, 0)
+            statements, thief, hour, liars = await asyncio.to_thread(trial.generate, seed, round_no)
+            lines = [f"**Round {round_no}** (exactly {trial.LIARS[round_no]} lie)"]
+            lines += [f"{rooms[w]}: {trial.testimony(statements[w], rooms)}" for w in range(trial.WITNESSES)]
+            answer = trial.SUSPECTS[thief] + (f" {hour}" if round_no == 2 else "")
+            lines.append(f"Answer: `{answer}`. Liars: " + ", ".join(rooms[i] for i in liars))
+            if not await self._dm(member, "\n".join(lines)):
+                raise PanelError("I could not DM you.")
+        return "Sent you a DM with your own round 1 and round 2 cases and their answers."
+
     async def _tier_role(self, ctx, tier: str):
         """Validate a tier name for the role commands; returns (tier, role or None) or None after replying."""
         tier = (tier or "").lower()
-        if tier == "easy":
-            await ctx.send("Easy has no role or badge by design: its solvers are only listed in the Hall of Secrets.")
+        if tier in NO_ROLE_TIERS:
+            await ctx.send(f"{tier.title()} has no role or badge by design: its solvers are only listed in the Hall of Secrets.")
             return None
         if tier not in TIER_ROLE_NAMES:
             await ctx.send("Tier must be one of: " + ", ".join(TIER_ROLE_NAMES))
@@ -756,8 +927,8 @@ class SecretHunt(commands.Cog):
     async def _apply_tier_role(self, guild, member, tier: str, role) -> str:
         """Set (or clear, with None) a tier's reward role: medium, hard or expert. Easy never has one."""
         tier = (tier or "").lower()
-        if tier == "easy":
-            raise PanelError("Easy has no role or badge by design: its solvers are only listed in the Hall of Secrets.")
+        if tier in NO_ROLE_TIERS:
+            raise PanelError(f"{tier.title()} has no role or badge by design: its solvers are only listed in the Hall of Secrets.")
         if tier not in TIER_ROLE_NAMES:
             raise PanelError("Tier must be one of: " + ", ".join(TIER_ROLE_NAMES))
         async with self.config.guild(guild).roles() as roles:
@@ -784,12 +955,12 @@ class SecretHunt(commands.Cog):
                 if made else "Every tier already has a role.")
 
     async def _apply_puzzle_role(self, guild, member, puzzle_id: str, role) -> str:
-        """Give one puzzle its own badge role (Medium and up); role None removes it."""
+        """Give one puzzle its own badge role (Hard and up); role None removes it."""
         puzzle = PUZZLES.get(puzzle_id)
         if puzzle is None:
             raise PanelError("Unknown puzzle. Known: " + ", ".join(PUZZLES))
-        if puzzle["tier"] == "easy":
-            raise PanelError("Easy puzzles have no role or badge by design.")
+        if puzzle["tier"] in NO_ROLE_TIERS:
+            raise PanelError(f"{puzzle['tier'].title()} puzzles have no role or badge by design.")
         async with self.config.guild(guild).puzzle_roles() as roles:
             if role is None:
                 roles.pop(puzzle_id, None)
@@ -800,8 +971,8 @@ class SecretHunt(commands.Cog):
 
     async def _apply_create_puzzle_role(self, guild, member, puzzle_id: str) -> str:
         puzzle = PUZZLES.get(puzzle_id)
-        if puzzle is None or puzzle["tier"] == "easy":
-            raise PanelError("Only Medium and harder puzzles have a badge role.")
+        if puzzle is None or puzzle["tier"] in NO_ROLE_TIERS:
+            raise PanelError("Only Hard and Expert puzzles have a badge role.")
         try:
             role = await guild.create_role(name=puzzle["title"], hoist=False, mentionable=False,
                                            reason="Secret hunt puzzle role")
@@ -814,8 +985,8 @@ class SecretHunt(commands.Cog):
         """Attach an image (under 256 KB) as a role's icon. `target` is a tier or a puzzle id (needs boost level 2+)."""
         key = (target or "").lower()
         if key in PUZZLES:
-            if PUZZLES[key]["tier"] == "easy":
-                return await ctx.send("Easy puzzles have no role or badge by design.")
+            if PUZZLES[key]["tier"] in NO_ROLE_TIERS:
+                return await ctx.send(f"{PUZZLES[key]['tier'].title()} puzzles have no role or badge by design.")
             role = ctx.guild.get_role((await self.config.guild(ctx.guild).puzzle_roles()).get(key) or 0)
             hint = "`.secrethunt` (Roles tab)"
         else:
@@ -845,9 +1016,15 @@ class SecretHunt(commands.Cog):
             return await ctx.send(f"{member.display_name} has not started anything.")
         names = {engine.STAGE_RIDDLE: "riddle sent", engine.STAGE_FOUND: "found the object, waiting",
                  engine.STAGE_FINAL: "has the jumbled word", engine.STAGE_SOLVED: "solved"}
+        trial_names = {engine.STAGE_RIDDLE: "round 1 open", engine.STAGE_FOUND: "round 1 solved, court adjourned",
+                       engine.STAGE_FINAL: "round 2 open", engine.STAGE_SOLVED: "solved"}
         pool = await self.config.guild(ctx.guild).pool()
         lines = []
         for pid, st in states.items():
+            if PUZZLES.get(pid, {}).get("kind") == "trial":
+                lines.append(f"**{pid}**: {trial_names.get(st['stage'], st['stage'])}; re-rolls {st.get('roll', 0)}, "
+                             f"wrong answers {st.get('wrongs', 0)}, hints {st.get('hints', 0)}")
+                continue
             where = f"<#{pool[st['variant'] % len(pool)]}>" if pool else "?"
             lines.append(f"**{pid}**: {names.get(st['stage'], st['stage'])}; variant {st['variant'] + 1} ({where}); "
                          f"wrong guesses today {st['wrong_count']}")
@@ -896,7 +1073,9 @@ class SecretHunt(commands.Cog):
         if not found:
             return await ctx.send(f"{engine.escape_markdown(member.display_name)} has not found any secrets yet.")
         lines = [f"**{PUZZLES[pid]['tier'].title()}** \N{MIDDLE DOT} {PUZZLES[pid]['title']}"
-                 + (f" \N{MIDDLE DOT} finder #{st['rank']}" if st.get("rank") else "") for pid, st in found]
+                 + (f" \N{MIDDLE DOT} finder #{st['rank']}" if st.get("rank") else "")
+                 + (f" \N{MIDDLE DOT} {trial.hint_label(st.get('hints', 0))}"
+                    if PUZZLES[pid].get("kind") == "trial" else "") for pid, st in found]
         embed = discord.Embed(title=f"Secrets found by {member.display_name}", description="\n".join(lines),
                               color=discord.Color.gold())
         embed.set_footer(text=f"{len(found)} secret{'' if len(found) == 1 else 's'} found")

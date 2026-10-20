@@ -149,4 +149,91 @@ LOOKING_GLASS = {
     "already": "\N{MIRROR} *You have already stepped through.* The glass is rather fond of you.",
 }
 
-PUZZLES = {p["id"]: p for p in (LATE_RABBIT, LOOKING_GLASS)}
+# Medium #1. A different shape from both Easies: a logic trial, not a chain of finds. Five witnesses (the five hiding
+# places) each give every member a private, generated statement; some of them lie; the member deduces the thief (round 1)
+# and then the thief and the hour (round 2). trial.py generates and checks the cases, so there is no `answers` list here.
+KNAVE_TRIAL = {
+    "id": "knaves_trial",
+    "title": "The Knave's Trial",
+    "tier": "medium",
+    "kind": "trial",             # witnesses are pressed (views.WitnessView) and the answers are generated (trial.py)
+    "trigger_kind": "breaker",   # one end-word per verse breaks the rhyme; read in order those words are the trigger
+    "trigger": "mock turtle soup",
+    "breakers": ["mock", "turtle", "soup"],
+    "needs_pool": 5,             # one witness per hiding place
+    "poem_title": "Nailed to the courtroom door",
+    "poem": [
+        "The Queen of Hearts is in a rage,",
+        "The tarts are gone, the Knave on stage,",
+        "The jurors sit with slates in hand",
+        "And copy down each word, then mock.",
+        "A witness takes the stand and swears,",
+        "The Hatter shakes, the Dormouse stares,",
+        "Some tell it straight, the rest askew,",
+        "While far behind them creeps the turtle.",
+        "The hour is late, the candles burn,",
+        "The Queen awaits her turn to learn",
+        "Who took the tarts, and when, and why,",
+        "And who will end up in the soup.",
+    ],
+    "object_title": "A witness waits here",
+    "object_text": "A witness sits in the dock with their hands folded, waiting to be asked.",
+    "button_label": "Hear the witness",
+    "summons": (
+        "\N{SCALES} *A bell rings somewhere, and a gavel falls.*\n\n"
+        "The Knave of Hearts is on trial for stealing the Queen's tarts, and **you** have been called to the jury.\n\n"
+        "**The rules of the court**\n"
+        "\N{BULLET} Five witnesses have given their statements. **Exactly two of them are lying.** The rest tell the truth.\n"
+        "\N{BULLET} Every juror hears their own version of the testimony, so do not expect anyone else's to match yours.\n"
+        "\N{BULLET} The suspects: the Hatter, the March Hare, the Dormouse, the Duchess and the Cook.\n\n"
+        "A witness waits in each of these rooms: {rooms}. Press the button on the pinned message in each one to hear "
+        "them out. When you know who stole the tarts, tell me the name here, in this chat.\n\n"
+        "*Stuck for two days or more? Whisper me* `hint`."
+    ),
+    "round1_done": (
+        "\N{SCALES} *The gavel falls.* **Correct.** The Knave was not the thief, and the court adjourns until morning.\n\n"
+        "When it reconvenes, the Queen will want more than a name."
+    ),
+    "summons2": (
+        "\N{SCALES} *The gavel falls again. The court reconvenes.*\n\n"
+        "The Queen is not satisfied with half an answer. **This time she wants the whole truth:** who stole the tarts "
+        "**and the hour it happened**, from 1 to 12. Answer with both, for example `Hatter 9`.\n\n"
+        "The witnesses have new things to say, and **exactly three of the five are lying** now. Hear them out again "
+        "in {rooms}.\n\n"
+        "*Stuck for two days or more? Whisper me* `hint`."
+    ),
+    "waiting": "\N{SCALES} *The court is adjourned.* The doors are shut and the witnesses have gone home. It reconvenes in the morning.",
+    "idle": "\N{SCALES} *The witness looks straight through you.* Only the jury is heard here.",
+    "closed": "\N{SCALES} *The witness has gone home.* The court is not in session.",
+    "testimony": "\N{SCALES} *The witness in {room} clears their throat.*\n\n> {text}",
+    "recess": "\N{SCALES} *The court is in recess.* It reconvenes {until}.",
+    "wrong1": (
+        "\N{SCALES} *Wrong.* That is not the thief. The court is in recess, and when it reconvenes the witnesses will "
+        "remember things differently. It reconvenes {until}."
+    ),
+    "wrong2": (
+        "\N{SCALES} *The Queen is displeased.* That is not the verdict. The court is in recess, and the witnesses "
+        "will have a new story when it reconvenes {until}."
+    ),
+    "malformed_suspect": (
+        "\N{SCALES} *The Queen frowns.* I need **one** suspect: the Hatter, the Hare, the Dormouse, the Duchess or the "
+        "Cook. That one does not count against you."
+    ),
+    "malformed_hour": (
+        "\N{SCALES} *The Queen frowns.* She wants the thief **and** the hour, from 1 to 12. For example `Hatter 9`. "
+        "That one does not count against you."
+    ),
+    "hint": (
+        "\N{ELECTRIC LIGHT BULB} *A bailiff leans in and whispers:*\n\n> {hint}\n\n"
+        "(Hint {n} of {max}. Hints are listed beside your name in the Hall of Secrets.)"
+    ),
+    "hint_early": "\N{ELECTRIC LIGHT BULB} *Not yet.* The bailiff will have something for you {when}.",
+    "hint_max": "\N{ELECTRIC LIGHT BULB} *The bailiff shrugs.* That is all the help you get this round.",
+    "solved": (
+        "\N{SCALES} *The courtroom erupts. Order! Order!* You found the truth, and the Knave walks free. "
+        "Your name is on the **Hall of Secrets** now.{rank}"
+    ),
+    "already": "\N{SCALES} *The trial is over, and the Knave walks free.* The witness waves politely.",
+}
+
+PUZZLES = {p["id"]: p for p in (LATE_RABBIT, LOOKING_GLASS, KNAVE_TRIAL)}

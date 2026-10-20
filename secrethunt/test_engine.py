@@ -7,7 +7,7 @@ import pytest
 
 from secrethunt import engine
 from secrethunt.constants import (
-    MAX_DM_FAILS, MAX_WRONG_PER_DAY, MAX_WRONG_REACTS, REACT_LOCK_HOURS, POOL_MAX, TIER_ORDER, TIER_ROLE_NAMES,
+    MAX_DM_FAILS, MAX_WRONG_PER_DAY, MAX_WRONG_REACTS, NO_ROLE_TIERS, REACT_LOCK_HOURS, POOL_MAX, TIER_ORDER, TIER_ROLE_NAMES,
 )
 from secrethunt.puzzles import PUZZLES
 
@@ -27,6 +27,7 @@ def local(t):
 
 ACROSTIC = [pid for pid, p in PUZZLES.items() if p.get("trigger_kind", "acrostic") == "acrostic"]
 RIDDLE = [pid for pid, p in PUZZLES.items() if p.get("trigger_kind") == "riddle"]
+FIXED = [pid for pid, p in PUZZLES.items() if p.get("kind") != "trial"]   # puzzles with a fixed answer list (a trial generates its cases)
 
 
 @pytest.mark.parametrize("pid", ACROSTIC)
@@ -45,7 +46,7 @@ def test_a_riddle_poem_hides_no_acrostic_and_never_says_its_own_answer(pid):
         engine.normalize(line)[-1:] for line in p["poem"])  # nor a last-letter trick
 
 
-@pytest.mark.parametrize("pid", list(PUZZLES))
+@pytest.mark.parametrize("pid", FIXED)
 def test_answers_cover_the_largest_pool_and_stay_out_of_the_public_poem(pid):
     p = PUZZLES[pid]
     answers = [engine.normalize(a) for a in p["answers"]]
@@ -54,7 +55,7 @@ def test_answers_cover_the_largest_pool_and_stay_out_of_the_public_poem(pid):
     assert not any(a in poem for a in answers)  # nobody can read an answer off the public poem
 
 
-@pytest.mark.parametrize("pid", list(PUZZLES))
+@pytest.mark.parametrize("pid", FIXED)
 def test_text_templates_format_cleanly(pid):
     p = PUZZLES[pid]
     keys = dict(hint="x", shape="1", pointer="p", object_hint="o", channel="#c", anagram="x", rebus="r", rank=" #1")
@@ -70,9 +71,10 @@ def test_every_puzzle_has_a_known_tier_and_easy_promises_no_role(pid):
         assert "role" not in p["solved"].lower() and "badge" not in p["solved"].lower()
 
 
-def test_easy_never_has_a_role_and_the_ladder_starts_at_easy():
-    assert TIER_ORDER[0] == "easy" and "easy" not in TIER_ROLE_NAMES
-    assert set(TIER_ROLE_NAMES) == set(TIER_ORDER) - {"easy"}
+def test_easy_and_medium_never_have_a_role_and_the_ladder_starts_at_easy():
+    assert TIER_ORDER[0] == "easy" and "easy" not in TIER_ROLE_NAMES and "medium" not in TIER_ROLE_NAMES
+    assert set(NO_ROLE_TIERS) == {"easy", "medium"}
+    assert set(TIER_ROLE_NAMES) == set(TIER_ORDER) - set(NO_ROLE_TIERS)
 
 
 # ---------------------------------------------------------------- normalising and scrambling
@@ -126,6 +128,12 @@ def test_escape_markdown_stops_names_restyling_the_hall():
 def test_hall_text_numbers_solvers_by_their_original_finishing_position():
     assert engine.hall_text([(1, "ann"), (2, "bo"), (4, "cy")]) == ("1. ann\n2. bo\n4. cy", 0)  # #3 left: a gap, no renumbering
     assert engine.hall_text([]) == ("", 0)
+
+
+def test_hall_text_puts_an_optional_note_after_the_name():
+    entries = [(1, "ann", "no hints"), (2, "bo", "2 hints"), (4, "cy")]
+    assert engine.hall_text(entries) == ("1. ann \N{MIDDLE DOT} no hints\n2. bo \N{MIDDLE DOT} 2 hints\n4. cy", 0)
+    assert engine.hall_text([(1, "ann", "")]) == ("1. ann", 0)  # an empty note adds nothing
 
 
 def test_hall_text_cuts_off_at_the_budget_and_says_how_many_are_hidden():

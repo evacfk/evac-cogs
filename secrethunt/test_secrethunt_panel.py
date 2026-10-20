@@ -93,7 +93,7 @@ def test_spec_keys_are_unique_and_every_tab_fits_a_dropdown():
     assert set(tabs) == {"Hunt", "Puzzles", "Roles"}
     assert all(len(v) <= 25 for v in tabs.values())
     assert {x.key for x in tabs["Hunt"]} == {"enabled", "test_mode", "pool", "pool_text", "hall", "announce", "hall_refresh"}
-    assert {x.key for x in tabs["Roles"]} == {"role_medium", "role_hard", "role_expert", "create_roles", "badges"}
+    assert {x.key for x in tabs["Roles"]} == {"role_hard", "role_expert", "create_roles", "badges"}  # Medium has no role
     assert not any(s.key == "role_easy" for s in specs)  # Easy never has a role
     for s in specs:
         assert len(s.fields) <= 5
@@ -193,17 +193,17 @@ async def test_hall_and_announce_channels_save_and_clear(env):
 
 async def test_tier_roles_save_clear_and_create_missing(env):
     p, admin = await open_it(env)
-    await go(p, admin, "Roles", "role_medium")
+    await go(p, admin, "Roles", "role_hard")
     child(p, discord.ui.RoleSelect)._values = [env.role]
     await p._on_pick_value(Click(admin))
-    assert (await env.conf.roles())["medium"] == env.role.id
+    assert (await env.conf.roles())["hard"] == env.role.id
     await p._on_clear(Click(admin))
-    assert "medium" not in await env.conf.roles()
+    assert "hard" not in await env.conf.roles()
     await go(p, admin, "Roles", "create_roles")
     click = Click(admin)
     await p._on_action(click)
     assert "Created" in last_note(click)
-    assert set(await env.conf.roles()) == {"medium", "hard", "expert"}
+    assert set(await env.conf.roles()) == {"hard", "expert"}
 
 
 async def test_puzzle_actions_and_badge_roles(env, monkeypatch):

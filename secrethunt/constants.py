@@ -1,7 +1,7 @@
 """Config defaults and fixed values for secrethunt (Secrets of Wonderland)."""
 from zoneinfo import ZoneInfo
 
-COG_VERSION = "1.8.2"
+COG_VERSION = "1.9.0"
 CONFIG_IDENTIFIER = 0x5EC8E7A1
 HOME_TZ = ZoneInfo("America/Los_Angeles")
 
@@ -16,13 +16,19 @@ MAX_DM_FAILS = 72                  # ...for about three days, then waits for the
 MAX_WRONG_PER_DAY = 10
 MAX_WRONG_REACTS = 2               # wrong hunt objects allowed before the Rabbit stops listening
 REACT_LOCK_HOURS = 24              # ...for this long (test mode: TEST_DELAY_SECONDS)
+TRIAL_LOCK_R1_HOURS = 12           # The Knave's Trial: a wrong round 1 answer locks the member out this long, then re-rolls
+TRIAL_LOCK_R2_HOURS = 4            # ...and a wrong round 2 answer is a shorter cooldown before its testimony re-rolls
+HINT_FIRST_HOURS = 48              # a trial hint can be asked for this long after a round opens...
+HINT_GAP_HOURS = 24                # ...and each further one this long after the previous
+HINT_MAX = 3                       # per round
 POOL_MIN, POOL_MAX = 2, 5
 ICON_MAX_BYTES = 256 * 1024
 HALL_BUDGET = 3800                 # characters of solver names per Hall of Secrets post (embed limit is 4096)
 
 TIER_ORDER = ("easy", "medium", "hard", "expert")
-# Easy deliberately has no role or badge: solvers are only listed in the Hall of Secrets.
-TIER_ROLE_NAMES = {"medium": "Secret Finder", "hard": "Timekeeper", "expert": "Eye of Wonder"}
+# Easy and Medium deliberately have no role or badge: their solvers are only listed in the Hall of Secrets.
+NO_ROLE_TIERS = ("easy", "medium")
+TIER_ROLE_NAMES = {"hard": "Timekeeper", "expert": "Eye of Wonder"}
 
 DEFAULT_GUILD = {
     "enabled": False,

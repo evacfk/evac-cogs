@@ -8,6 +8,11 @@ def poem_embed(puzzle: dict) -> discord.Embed:
     return embed
 
 
+def witness_embed(puzzle: dict) -> discord.Embed:
+    """The pinned object of a trial puzzle: identical in every room, because every room holds a witness."""
+    return discord.Embed(title=puzzle["object_title"], description=puzzle["object_text"], color=discord.Color.dark_grey())
+
+
 def object_embed(puzzle: dict) -> discord.Embed:
     # Identical in every channel on purpose: a decoy must look exactly like the real object.
     return discord.Embed(title=puzzle["object_title"], description=puzzle["object_text"], color=discord.Color.dark_grey())
@@ -46,7 +51,8 @@ def intro_embed(poem_channel_ids) -> discord.Embed:
         "\N{LARGE RED CIRCLE} **Hard:** weeks.\n"
         "\N{LARGE PURPLE CIRCLE} **Expert:** months.\n\n"
         "Everyone who solves a secret is listed below. Hard and Expert solvers also earn a badge role. "
-        "Check yours any time with `.secrets`."
+        "Some secrets let you ask for a hint once you have been stuck a while, and the list shows how many hints each "
+        "solver used. Check yours any time with `.secrets`."
     )
     if poem_channel_ids:
         text += "\n\n**The current poem is pinned in " + ", ".join(f"<#{c}>" for c in poem_channel_ids) + ".**"

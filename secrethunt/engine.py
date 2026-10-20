@@ -94,12 +94,13 @@ def escape_markdown(text: str) -> str:
 
 
 def hall_text(entries, budget: int = HALL_BUDGET):
-    """`(rank, name)` pairs in finishing order as a numbered list, cut off at `budget` characters.
-    Returns (text, hidden_count). Ranks are the original finishing positions, so someone leaving the server
-    leaves a gap instead of renumbering everybody."""
+    """`(rank, name)` or `(rank, name, note)` entries in finishing order as a numbered list, cut off at `budget`
+    characters. A note (for example "2 hints") follows the name. Returns (text, hidden_count). Ranks are the original
+    finishing positions, so someone leaving the server leaves a gap instead of renumbering everybody."""
     lines, used = [], 0
-    for rank, name in entries:
-        line = f"{rank}. {name}"
+    for entry in entries:
+        rank, name = entry[0], entry[1]
+        line = f"{rank}. {name}" + (f" \N{MIDDLE DOT} {entry[2]}" if len(entry) > 2 and entry[2] else "")
         if used + len(line) + 1 > budget:
             return "\n".join(lines), len(entries) - len(lines)
         lines.append(line)

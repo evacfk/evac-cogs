@@ -3,7 +3,7 @@
 Specs only; every change goes through the cog's `_apply_*` methods.
 """
 from . import engine
-from .constants import POOL_MAX, POOL_MIN, TIER_ROLE_NAMES
+from .constants import NO_ROLE_TIERS, POOL_MAX, POOL_MIN, TIER_ROLE_NAMES
 from .puzzles import PUZZLES
 from .settings_panel import Field, ItemAction, PanelError, Pick, Spec
 
@@ -50,7 +50,7 @@ def _tier_spec(tier):
     async def apply(cog, guild, member, role):
         return await cog._apply_tier_role(guild, member, tier, role)
     return Spec(f"role_{tier}", f"{tier.title()} reward role", "Roles", "role", get=get, apply=apply, fmt=_role_fmt,
-                clearable=True, help=f"Given to everyone who solves a {tier} puzzle. Easy never has one.")
+                clearable=True, help=f"Given to everyone who solves a {tier} puzzle. Easy and Medium never have one.")
 
 
 async def _pool_apply(cog, guild, member, channels):
@@ -123,7 +123,7 @@ async def _badges(cog, guild):
     roles = await cog.config.guild(guild).puzzle_roles()
     out = []
     for pid, puzzle in PUZZLES.items():
-        if puzzle["tier"] == "easy":
+        if puzzle["tier"] in NO_ROLE_TIERS:
             continue
         role = guild.get_role(roles.get(pid) or 0)
         out.append((pid, puzzle["title"], role.mention if role else "no badge role"))
@@ -181,8 +181,8 @@ def build_specs():
         *[_tier_spec(tier) for tier in TIER_ROLE_NAMES],
         Spec("create_roles", "Create the missing tier roles", "Roles", "action", apply=_create_roles_apply,
              button="Create roles", help="Makes the default hoisted role for any tier that has none."),
-        Spec("badges", "Puzzle badge roles (Medium and up)", "Roles", "collection", get=_badges, item_get=_badge_get,
+        Spec("badges", "Puzzle badge roles (Hard and up)", "Roles", "collection", get=_badges, item_get=_badge_get,
              save=_badge_save, remove=_badge_remove, can_add=False, pick=Pick("role", "Choose the badge role"),
              item_actions=(ItemAction("Create a role", _action("_apply_create_puzzle_role")),),
-             help="A per-puzzle badge for future solvers. Easy puzzles never have one."),
+             help="A per-puzzle badge for future solvers. Easy and Medium puzzles never have one."),
     ]

@@ -173,7 +173,7 @@ async def test_setup_reports_a_deleted_post(env):
 
 async def test_full_chain_from_poem_to_the_hall_with_no_role_for_easy(env):
     async with env.conf.roles() as roles:
-        roles["medium"] = env.role.id  # a role for ANOTHER tier must never leak into Easy
+        roles["hard"] = env.role.id  # a role for ANOTHER tier must never leak into Easy
     a = member(env, 11)
     msg = chat(env, a, ".tick")
     await env.cog._on_guild_message(msg)
@@ -475,12 +475,22 @@ async def test_hall_names_cannot_restyle_the_post(env):
 
 
 async def test_a_tier_with_a_role_grants_it_and_titles_the_hall_by_tier(env, monkeypatch):
-    monkeypatch.setitem(env.mod.PUZZLES, PID, {**PUZZLES[PID], "tier": "medium"})
+    monkeypatch.setitem(env.mod.PUZZLES, PID, {**PUZZLES[PID], "tier": "hard"})
     async with env.conf.roles() as roles:
-        roles["medium"] = env.role.id
+        roles["hard"] = env.role.id
     a = await solve(env, 21)
     assert env.role in a.roles and "Secret Finder" in a.dms[-1]
-    assert env.hall.sent[-1].embed.title.startswith("Medium ·")
+    assert env.hall.sent[-1].embed.title.startswith("Hard ·")
+
+
+async def test_a_medium_puzzle_never_grants_a_role_even_if_one_is_stored(env, monkeypatch):
+    monkeypatch.setitem(env.mod.PUZZLES, PID, {**PUZZLES[PID], "tier": "medium"})
+    async with env.conf.roles() as roles:
+        roles["medium"] = env.role.id  # left over from before Medium lost its role
+    async with env.conf.puzzle_roles() as badges:
+        badges[PID] = env.role.id
+    a = await solve(env, 21)
+    assert env.role not in a.roles and "role" not in a.dms[-1].lower()
 
 
 async def test_changing_the_hall_channel_starts_fresh_posts(env):
@@ -547,6 +557,17 @@ async def test_easy_can_never_be_given_a_role_or_badge(env):
     assert "Tier must be one of" in ctx.out[-1]
 
 
+async def test_medium_can_never_be_given_a_role_or_badge_either(env, monkeypatch):
+    ctx = Ctx(env)
+    await run(ctx, env.cog._apply_tier_role(env.g, ctx.author, "medium", env.role))
+    assert "Medium has no role or badge" in ctx.out[-1] and await env.conf.roles() == {}
+    await env.cog.secrethunt_roleicon.callback(env.cog, ctx, "medium")
+    assert "Medium has no role or badge" in ctx.out[-1]
+    monkeypatch.setitem(env.mod.PUZZLES, PID, {**PUZZLES[PID], "tier": "medium"})
+    await run(ctx, env.cog._apply_puzzle_role(env.g, ctx.author, PID, env.role))
+    assert "no role or badge" in ctx.out[-1] and await env.conf.puzzle_roles() == {}
+
+
 async def test_role_command_creates_the_tiers_default_role_hoisted(env):
     ctx = Ctx(env)
     await run(ctx, env.cog._apply_create_tier_roles(env.g, ctx.author))
@@ -555,25 +576,25 @@ async def test_role_command_creates_the_tiers_default_role_hoisted(env):
     assert (await env.conf.roles())["hard"] == role.id and "Created" in ctx.out[-1]
     await run(ctx, env.cog._apply_create_tier_roles(env.g, ctx.author))  # nothing left to create
     assert "already has a role" in ctx.out[-1]
-    await run(ctx, env.cog._apply_tier_role(env.g, ctx.author, "medium", env.role))  # or point it at an existing role
-    assert (await env.conf.roles())["medium"] == env.role.id
+    await run(ctx, env.cog._apply_tier_role(env.g, ctx.author, "expert", env.role))  # or point it at an existing role
+    assert (await env.conf.roles())["expert"] == env.role.id
 
 
 async def test_roleicon_edits_the_right_tiers_role(env):
     ctx = Ctx(env)
-    await env.cog.secrethunt_roleicon.callback(env.cog, ctx, "medium")
+    await env.cog.secrethunt_roleicon.callback(env.cog, ctx, "hard")
     assert "Set the role first" in ctx.out[-1]
-    await run(ctx, env.cog._apply_tier_role(env.g, ctx.author, "medium", env.role))
-    await env.cog.secrethunt_roleicon.callback(env.cog, ctx, "medium")
+    await run(ctx, env.cog._apply_tier_role(env.g, ctx.author, "hard", env.role))
+    await env.cog.secrethunt_roleicon.callback(env.cog, ctx, "hard")
     assert "Attach" in ctx.out[-1]
     ctx.message.attachments = [Attachment(size=300 * 1024)]
-    await env.cog.secrethunt_roleicon.callback(env.cog, ctx, "medium")
+    await env.cog.secrethunt_roleicon.callback(env.cog, ctx, "hard")
     assert "256 KB" in ctx.out[-1] and env.role.edits == []
     ctx.message.attachments = [Attachment()]
-    await env.cog.secrethunt_roleicon.callback(env.cog, ctx, "medium")
+    await env.cog.secrethunt_roleicon.callback(env.cog, ctx, "hard")
     assert ctx.out[-1] == "Icon set." and env.role.edits[-1]["display_icon"] == b"png"
     env.role.fail_edit = True
-    await env.cog.secrethunt_roleicon.callback(env.cog, ctx, "medium")
+    await env.cog.secrethunt_roleicon.callback(env.cog, ctx, "hard")
     assert "boost level" in ctx.out[-1]
     env.role.fail_edit = False
 
@@ -614,7 +635,7 @@ async def test_status_shows_tier_roles_counts_and_flags_a_deleted_post(env):
     assert ctx.out[-1].startswith("SecretHunt v")
     await start(env, member(env, 11))
     text = (await env.cog._status_embed(env.g)).description
-    assert "1 started, 0 solved" in text and "easy: none (by design)" in text and "medium: not set" in text
+    assert "1 started, 0 solved" in text and "easy and medium: none (by design)" in text and "hard: not set" in text
     assert "MISSING" not in text
     del env.g.threads[env.chans[3].id]
     assert "MISSING" in (await env.cog._status_embed(env.g)).description
