@@ -192,13 +192,16 @@ KNAVE_TRIAL = {
         "*Stuck for two days or more? Whisper me* `hint`."
     ),
     "round1_done": (
-        "\N{SCALES} *The gavel falls.* **Correct.** The Knave was not the thief, and the court adjourns until morning.\n\n"
-        "When it reconvenes, the Queen will want more than a name."
+        "\N{SCALES} *The gavel falls.* **Correct.** The court accepts your verdict and the Knave is let go, for now. "
+        "The court adjourns until morning.\n\n"
+        "The Queen has more questions, and she does not like to be wrong."
     ),
     "summons2": (
         "\N{SCALES} *The gavel falls again. The court reconvenes.*\n\n"
-        "The Queen is not satisfied with half an answer. **This time she wants the whole truth:** who stole the tarts "
-        "**and the hour it happened**, from 1 to 12. Answer with both, for example `Hatter 9`.\n\n"
+        "**Bad news.** Overnight the bailiff found out that one of the witnesses you trusted yesterday was lying all "
+        "along. **Yesterday's verdict is void**, the Knave is back in the dock, and the thief may not be who you named.\n\n"
+        "The Queen wants **the whole truth** this time: who stole the tarts **and the hour it happened**, from 1 to 12. "
+        "Answer with both, for example `Hatter 9`.\n\n"
         "The witnesses have new things to say, and **exactly three of the five are lying** now. Hear them out again "
         "in {rooms}.\n\n"
         "*Stuck for two days or more? Whisper me* `hint`."
