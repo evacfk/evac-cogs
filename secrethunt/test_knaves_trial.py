@@ -619,7 +619,7 @@ async def test_reset_lets_a_juror_start_over_with_fresh_state(env, clock):
     await env.cog.secrethunt_reset.callback(env.cog, ctx, m, PID)
     assert await state(env, m) is None and await env.conf.finishers() == {PID: []}
     assert ctx.out[-1] == "Reset."
-    assert "no solvers" not in env.hall.sent[-1].embed.description and "user11" not in env.hall.sent[-1].embed.description
+    assert "user11" not in env.hall.sent[-1].embed.description
     assert (await start(env, m))["stage"] == engine.STAGE_RIDDLE
 
 

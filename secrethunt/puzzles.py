@@ -178,7 +178,6 @@ KNAVE_TRIAL = {
     ],
     "object_title": "A witness waits here",
     "object_text": "A witness sits in the dock with their hands folded, waiting to be asked.",
-    "button_label": "Hear the witness",
     "summons": (
         "\N{SCALES} *A bell rings somewhere, and a gavel falls.*\n\n"
         "The Knave of Hearts is on trial for stealing the Queen's tarts, and **you** have been called to the jury.\n\n"

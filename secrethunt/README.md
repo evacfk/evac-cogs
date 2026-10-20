@@ -13,7 +13,8 @@ DMs you every variant's pointer, right button, rebus and answer (spoilers).
 
 ## The Knave's Trial (Medium, `knaves_trial`)
 A logic puzzle instead of a chain of finds. The poem's rhyme-breakers (the last word of each verse that fails to rhyme),
-read in order, are the trigger: `mock turtle soup`. It works as `.mock turtle soup` in chat (deleted at once) or a DM.
+read in order, are the trigger (a multi-word phrase; it lives in `puzzles.py` and is not written here). It works with the
+prefix in chat (deleted at once) or as a plain DM.
 
 Needs exactly **5** hiding places: each pool room holds one pinned witness with a "Hear the witness" button. Every member
 hears their own private testimony (generated from a private seed, never a fixed list, and checked by a brute-force solver to
@@ -73,7 +74,7 @@ acrostic spells the trigger and that no answer appears in the public poem. Then 
 - The Hall of Secrets starts with a "what is this?" post (tiers, how it works, where the current poem is pinned). *Go live* and *Refresh Hall posts* create it if missing, at the top; posting the poem keeps its poem-channel line up to date. Its text lives in `embeds.intro_embed`.
 - The announcement channel gets a one-line, non-pinging "X has solved <puzzle> (Tier) · finder #N" for every solve. Off by default.
 - The bot deletes the "pinned a message" notice so it cannot point at the object.
-- A multi-word trigger (like `mock turtle soup`) can be up to 40 characters and 4 spaces; spaces and punctuation are ignored.
+- A multi-word trigger can be up to 40 characters and 4 spaces; spaces and punctuation are ignored.
 - Posting the poem pins it and unpins the previous poem in that channel. Turning the hunt off silences triggers, reactions and clue delivery; turning it on resumes.
 - Two wrong hunt objects lock a member out of the riddle for 24 hours; then they get two fresh tries on the same riddle.
 - *Go live* posts the puzzle's (empty) Hall entry at once, so the Hall reads in release order.
