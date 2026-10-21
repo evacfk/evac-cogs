@@ -72,9 +72,10 @@ Everything is under `[p]puzzle`. "Admin" means admin or Manage Server.
   out of rotation for good / bring it back. Images are retired automatically
   when someone wins them. If the game paused because nothing eligible was
   left, adding or unretiring an image restarts it on its own.
-- `[p]puzzle images` — list the pool with IDs, piece counts and which one is
-  active, plus a labeled thumbnail grid so you can tell images apart at a
-  glance instead of relying on filenames.
+- `[p]puzzle images` (mod/admin/owner) — list the pool with IDs, piece counts
+  and which one is active, plus a labeled thumbnail grid so you can tell
+  images apart at a glance instead of relying on filenames. Not available to
+  regular members because the preview reveals upcoming puzzles.
 - `[p]puzzle migratepool` (admin) — one-time cleanup for images added by an
   older version of the cog (converts the old grid format, backfills
   duplicate-detection hashes). Safe to run any time; it only touches entries

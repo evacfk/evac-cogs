@@ -1569,8 +1569,10 @@ class Puzzle(commands.Cog):
             await ctx.send(f"The game had paused with an empty pool, so I started it again with image #{resumed}.")
 
     @puzzle.command(name="images")
+    @checks.mod_or_permissions(manage_guild=True)
     async def puzzle_images(self, ctx: commands.Context):
-        """List the images currently in the pool."""
+        """List the images currently in the pool (mods and admins only: the
+        preview shows upcoming puzzles)."""
         pool = await self.config.guild(ctx.guild).pool()
         if not pool:
             await ctx.send("The image pool is empty.")
