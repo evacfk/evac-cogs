@@ -65,6 +65,10 @@ async def _trail_text_apply(cog, guild, member, values):
     return await cog._apply_trail_text(guild, member, values)
 
 
+async def _sandbox_apply(cog, guild, member, channel):
+    return await cog._apply_sandbox(guild, member, channel)
+
+
 async def _blocked_apply(cog, guild, member, role):
     return await cog._apply_blocked_role(guild, member, role)
 
@@ -116,6 +120,8 @@ async def _puzzles(cog, guild):
         placed = len(objects.get(pid, {}))
         if puzzle.get("kind") == "trail":
             bits.append(f"tea tables {placed}/{len(trail_rooms)}" if trail_rooms else "no trail rooms yet")
+            if await conf.trail_sandbox_id():
+                bits.append("REHEARSAL (tables in the sandbox channel)")
             if puzzle.get("wip"):
                 bits.append("admins only")
         else:
@@ -178,6 +184,10 @@ def build_specs():
                            value=lambda v: " ".join(f"<#{c}>" for c in (v or [])), placeholder="#post1 #post2 ... (12 planned)"),),
              help=f"The public rooms that each hold a tea table: 12 planned, at most {TRAIL_MAX_ROOMS}. Paste links as mentions or IDs. "
                   "Changing them moves everyone's sisters, so do it between puzzles."),
+        Spec("trail_sandbox", "Rehearsal channel (Treacle Well)", "Hunt", "channel", get=_conf("trail_sandbox_id"),
+             apply=_sandbox_apply, fmt=_channel_fmt, clearable=True,
+             help="Run the whole trail in one private channel: every tea table is posted there, labelled with the room it "
+                  "stands in for, and no real room is touched. Clear it to launch for real, then Set up objects."),
         Spec("blocked_role", "Roles that cannot play (Lurker)", "Hunt", "role", get=_conf("blocked_role_id"),
              apply=_blocked_apply, fmt=_role_fmt, clearable=True,
              help="Members with this role are ignored by every secret: no clues, no clicks, no answers. Their progress just waits."),

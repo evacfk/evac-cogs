@@ -564,6 +564,8 @@ class SecretHunt(commands.Cog):
         conf = self.config.guild(guild)
         if not any(PUZZLES.get(p, {}).get("kind") == "trail" for p in await conf.published()):
             return
+        if await conf.trail_sandbox_id():
+            return  # a rehearsal: the real rooms hold nothing, so there is nothing to keep open
         for cid in await conf.trail():
             channel = self._lookup(guild, cid)
             if channel is None:  # archived threads are not always cached
@@ -809,6 +811,7 @@ class SecretHunt(commands.Cog):
         puzzle, conf = PUZZLES[pid], self.config.guild(guild)
         report = []
         rooms = await self._rooms_of(guild, puzzle)
+        sandbox = (self._lookup(guild, await conf.trail_sandbox_id() or 0) if puzzle.get("kind") == "trail" else None)
         async with conf.objects() as objects:
             by_channel = objects.setdefault(pid, {})
             for cid in rooms:
@@ -818,6 +821,15 @@ class SecretHunt(commands.Cog):
                     continue
                 if str(cid) in by_channel and not force:
                     report.append(f"- {channel.mention}: already set up")
+                    continue
+                if sandbox is not None:  # rehearsal: this room's tea table stands in the sandbox channel, labelled
+                    try:
+                        msg = await sandbox.send(embed=embeds.object_embed(puzzle, channel.name), view=views.TrailView(self))
+                    except _DISCORD_ERRORS as err:
+                        report.append(f"- {channel.mention}: failed in the sandbox ({type(err).__name__})")
+                        continue
+                    by_channel[str(cid)] = msg.id
+                    report.append(f"- {channel.mention}: tea table posted in {sandbox.mention} (rehearsal)")
                     continue
                 if getattr(channel, "archived", False):  # a quiet forum post may have auto-archived
                     try:
@@ -943,6 +955,21 @@ class SecretHunt(commands.Cog):
                     objects.pop(pid, None)
         return (f"Trail rooms set ({len(found)}). Now press Set up objects on the Treacle Well. Changing them mid-puzzle "
                 "moves people's sisters, so do it between puzzles.")
+
+    async def _apply_sandbox(self, guild, member, channel) -> str:
+        """Rehearse the Treacle Well in one (private) channel: every tea table is posted there, labelled with the room it
+        stands in for. Clearing it goes back to the real rooms. Either way the posted tables are forgotten."""
+        conf = self.config.guild(guild)
+        await conf.trail_sandbox_id.set(channel.id if channel else None)
+        async with conf.objects() as objects:
+            for pid, puzzle in PUZZLES.items():
+                if puzzle.get("kind") == "trail":
+                    objects.pop(pid, None)
+        if channel:
+            return (f"Rehearsal on: Set up objects will post all the tea tables in {channel.mention}, one per room, and "
+                    "touch no real room. Post the poem in a private channel too.")
+        return ("Rehearsal off. Press Set up objects (or Redo objects) to put the tea tables in the real rooms. "
+                "Tables left in the old channel just stop working; delete them.")
 
     async def _apply_blocked_role(self, guild, member, role) -> str:
         """Members with this role (Lurker) are ignored by every puzzle; their progress just waits."""

@@ -92,7 +92,7 @@ def test_spec_keys_are_unique_and_every_tab_fits_a_dropdown():
         tabs.setdefault(s.tab, []).append(s)
     assert set(tabs) == {"Hunt", "Puzzles", "Roles"}
     assert all(len(v) <= 25 for v in tabs.values())
-    assert {x.key for x in tabs["Hunt"]} == {"enabled", "test_mode", "pool", "pool_text", "trail_text", "blocked_role", "hall", "announce",
+    assert {x.key for x in tabs["Hunt"]} == {"enabled", "test_mode", "pool", "pool_text", "trail_text", "trail_sandbox", "blocked_role", "hall", "announce",
                                           "hall_refresh"}
     assert {x.key for x in tabs["Roles"]} == {"role_hard", "role_expert", "create_roles", "badges"}  # Medium has no role
     assert not any(s.key == "role_easy" for s in specs)  # Easy never has a role

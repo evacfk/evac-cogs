@@ -553,3 +553,70 @@ def test_the_readme_and_info_json_describe_mechanics_only():
             assert e not in text
     for line in WELL["poem"]:
         assert line.lower() not in text
+
+
+# ---------------------------------------------------------------- rehearsal in one channel
+
+async def rehearse(env):
+    box = env.g.add_channel(500, "owner-private")
+    for room in env.rooms:  # forget the tables the fixture put in the real rooms
+        room.sent.clear()
+    await env.cog._apply_sandbox(env.g, env.admin, box)
+    report = await env.cog._setup_objects(env.g, PID)
+    return box, report
+
+
+async def test_rehearsal_posts_every_tea_table_in_one_labelled_channel_and_touches_no_room(env):
+    box, report = await rehearse(env)
+    tables = [m for m in box.sent if m.kw.get("view") is not None]
+    assert len(tables) == 12 and all("rehearsal" in line for line in report)
+    assert sorted(m.embed.title for m in tables) == sorted(f"A tea table \N{EM DASH} {n}" for n in NAMES)
+    assert all(not r.sent for r in env.rooms)  # nothing is posted or pinned in any real room
+    assert sorted((await env.conf.objects())[PID]) == sorted(str(r.id) for r in env.rooms)
+
+
+async def test_the_whole_chain_can_be_played_inside_the_sandbox(env):
+    box, _ = await rehearse(env)
+    await wake(env, env.admin)
+    p = plan_of(env, env.admin.id)
+    for k, room in enumerate(p["chain"]):
+        message = next(m for m in box.sent if m.embed is not None and m.embed.title.endswith(NAMES[room]))
+        inter = tk.FakeInteraction(env.g, env.admin, message)
+        await env.cog.handle_trail(inter, "look")
+        assert str(p["numbers"][k]) in inter.replies[0][0]
+    assert (await state(env, env.admin))["found"] == 3
+
+
+async def test_a_wrong_sandbox_table_is_just_a_tea_table_like_a_wrong_room(env):
+    box, _ = await rehearse(env)
+    await wake(env, env.admin)
+    p = plan_of(env, env.admin.id)
+    wrong = next(r for r in range(12) if r not in p["chain"])
+    message = next(m for m in box.sent if m.embed is not None and m.embed.title.endswith(NAMES[wrong]))
+    inter = tk.FakeInteraction(env.g, env.admin, message)
+    await env.cog.handle_trail(inter, "look")
+    assert inter.replies[0][0] in WELL["wrong_look"]
+
+
+async def test_turning_the_rehearsal_off_forgets_the_sandbox_tables_and_goes_back_to_the_rooms(env):
+    box, _ = await rehearse(env)
+    await env.cog._apply_sandbox(env.g, env.admin, None)
+    assert PID not in await env.conf.objects() and await env.conf.trail_sandbox_id() is None
+    await env.cog._setup_objects(env.g, PID)
+    assert all(any(m.kw.get("view") is not None and m.pinned for m in r.sent) for r in env.rooms)
+
+
+async def test_the_loop_does_not_reopen_rooms_during_a_rehearsal(env):
+    await rehearse(env)
+    env.rooms[2].archived = True
+    await env.cog._deliver_due(env.g, env.clock.now)
+    assert env.rooms[2].archived is True
+
+
+async def test_a_sandbox_that_cannot_be_posted_to_is_reported_per_room(env):
+    box = env.g.add_channel(500, "owner-private")
+    await env.cog._apply_sandbox(env.g, env.admin, box)
+    box.fail_send = True
+    report = await env.cog._setup_objects(env.g, PID)
+    assert len(report) == 12 and all("failed in the sandbox" in line for line in report)
+    assert PID not in {k for k, v in (await env.conf.objects()).items() if v}

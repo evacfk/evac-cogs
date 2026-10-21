@@ -14,9 +14,11 @@ def witness_embed(puzzle: dict) -> discord.Embed:
     return discord.Embed(title=puzzle["object_title"], description=puzzle["object_text"], color=discord.Color.dark_grey())
 
 
-def object_embed(puzzle: dict) -> discord.Embed:
-    # Identical in every channel on purpose: a decoy must look exactly like the real object.
-    return discord.Embed(title=puzzle["object_title"], description=puzzle["object_text"], color=discord.Color.dark_grey())
+def object_embed(puzzle: dict, label: str = "") -> discord.Embed:
+    # Identical in every channel on purpose: a decoy must look exactly like the real object. `label` is only used by the
+    # trail sandbox, where one channel holds every room's object and each must say which room it stands in for.
+    title = puzzle["object_title"] + (f" \N{EM DASH} {label}" if label else "")
+    return discord.Embed(title=title, description=puzzle["object_text"], color=discord.Color.dark_grey())
 
 
 def status_embed(version: str, lines: dict) -> discord.Embed:

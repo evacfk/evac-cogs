@@ -42,6 +42,8 @@ clue again. Three wrong tables in a row make the tea tables rest for 30 minutes.
 - Needs **trail rooms** (public forum posts or channels, 12 planned, at least 6 while it is unfinished), set under Hunt with
   *Trail rooms*. *Set up objects* pins a tea table in each. It does not use the 2-5 hiding place pool.
 - While unfinished it is playable by admins and Manage Server members only; everyone else's reactions are just removed.
+- *Rehearsal channel* (Hunt): while set, *Set up objects* posts every tea table into that one private channel, each
+  labelled with the room it stands in for, and touches no real room. Clear it and press *Set up objects* to launch for real.
 - The delivery loop reopens trail rooms that auto-archived. `preview treacle_well` DMs you your own trail (spoilers).
 
 ## Who can play
