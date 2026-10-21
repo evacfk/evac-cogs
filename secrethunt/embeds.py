@@ -9,9 +9,10 @@ def poem_embed(puzzle: dict) -> discord.Embed:
     return discord.Embed(title=puzzle["poem_title"], description=body, color=discord.Color.gold())
 
 
-def witness_embed(puzzle: dict) -> discord.Embed:
+def witness_embed(puzzle: dict, label: str = "") -> discord.Embed:
     """The pinned object of a trial puzzle: identical in every room, because every room holds a witness."""
-    return discord.Embed(title=puzzle["object_title"], description=puzzle["object_text"], color=discord.Color.dark_grey())
+    title = puzzle["object_title"] + (f" \N{EM DASH} {label}" if label else "")
+    return discord.Embed(title=title, description=puzzle["object_text"], color=discord.Color.dark_grey())
 
 
 def object_embed(puzzle: dict, label: str = "") -> discord.Embed:

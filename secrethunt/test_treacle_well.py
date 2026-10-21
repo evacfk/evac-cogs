@@ -555,97 +555,99 @@ def test_the_readme_and_info_json_describe_mechanics_only():
         assert line.lower() not in text
 
 
-# ---------------------------------------------------------------- rehearsal in one channel
+# ---------------------------------------------------------------- the test channel (rehearse in one private channel)
 
 async def rehearse(env):
+    """Test mode on with a private test channel, then Set up objects on the Treacle Well."""
     box = env.g.add_channel(500, "owner-private")
     for room in env.rooms:  # forget the tables the fixture put in the real rooms
         room.sent.clear()
-    await env.cog._apply_sandbox(env.g, env.admin, box)
+    env.poem.sent.clear()
+    await env.conf.objects.set({})
+    await env.conf.poem_ids.set({})
+    env.cog._poem_ids.clear()
+    await env.cog._apply_test_channel(env.g, env.admin, box)
+    await env.cog._apply_test_mode(env.g, env.admin, True)
     report = (await env.cog._apply_setup(env.g, env.admin, PID)).split("\n")
     return box, report
 
 
-async def test_rehearsal_posts_every_tea_table_in_one_labelled_channel_and_touches_no_room(env):
+def tables_in(box):
+    return [m for m in box.sent if m.kw.get("view") is not None]
+
+
+async def test_test_mode_posts_every_tea_table_in_one_labelled_channel_and_touches_no_room(env):
     box, report = await rehearse(env)
-    tables = [m for m in box.sent if m.kw.get("view") is not None]
+    tables = tables_in(box)
     assert len(tables) == 12 and sum("rehearsal" in line for line in report) == 13  # 12 tables and the poem
     assert sorted(m.embed.title for m in tables) == sorted(f"A tea table \N{EM DASH} {n}" for n in NAMES)
-    assert all(not r.sent for r in env.rooms)  # nothing is posted or pinned in any real room
-    assert sorted((await env.conf.objects())[PID]) == sorted(str(r.id) for r in env.rooms)
+    assert all(not r.sent for r in env.rooms) and not env.poem.sent  # nothing is posted or pinned anywhere real
+    assert PID not in await env.conf.objects()
+    assert sorted((await env.conf.test_objects())[PID]) == sorted(str(r.id) for r in env.rooms)
 
 
-async def test_the_whole_chain_can_be_played_inside_the_sandbox(env):
+async def test_the_test_channel_does_nothing_while_test_mode_is_off(env):
+    box = env.g.add_channel(500, "owner-private")
+    await env.cog._apply_test_channel(env.g, env.admin, box)
+    for room in env.rooms:
+        room.sent.clear()
+    await env.conf.objects.set({})
+    await env.cog._apply_setup(env.g, env.admin, PID)
+    assert not box.sent and all(any(m.pinned for m in r.sent) for r in env.rooms)
+
+
+async def test_the_whole_chain_can_be_played_inside_the_test_channel(env):
     box, _ = await rehearse(env)
-    await wake(env, env.admin)
+    await wake_in(env, box, env.admin)
     p = plan_of(env, env.admin.id)
     for k, room in enumerate(p["chain"]):
-        message = next(m for m in box.sent if m.embed is not None and m.embed.title.endswith(NAMES[room]))
+        message = next(m for m in tables_in(box) if m.embed.title.endswith(NAMES[room]))
         inter = tk.FakeInteraction(env.g, env.admin, message)
         await env.cog.handle_trail(inter, "look")
         assert str(p["numbers"][k]) in inter.replies[0][0]
     assert (await state(env, env.admin))["found"] == 3
 
 
-async def test_a_wrong_sandbox_table_is_just_a_tea_table_like_a_wrong_room(env):
+async def wake_in(env, box, m):
+    poem = next(x for x in box.sent if x.pinned)
+    for emoji in (TEA, HONEY, SLEEP):
+        payload = types.SimpleNamespace(guild_id=env.g.id, user_id=m.id, message_id=poem.id, channel_id=box.id, emoji=emoji)
+        await env.cog._on_reaction(payload)
+        env.clock.now += 1
+    return poem
+
+
+async def test_the_rehearsal_poem_is_posted_in_the_same_channel_and_works_end_to_end(env):
     box, _ = await rehearse(env)
-    await wake(env, env.admin)
+    poem = await wake_in(env, box, env.admin)
+    assert poem.embed.title == WELL["poem_title"] and (await env.conf.poem_ids()) == {str(poem.id): PID}
+    assert [e for e, _u in poem.removed] == [TEA, HONEY, SLEEP]
+    assert (await state(env, env.admin))["step"] == 2 and "Elsie" in env.admin.dms[-1]
+
+
+async def test_a_wrong_test_table_is_just_a_tea_table_like_a_wrong_room(env):
+    box, _ = await rehearse(env)
+    await wake_in(env, box, env.admin)
     p = plan_of(env, env.admin.id)
     wrong = next(r for r in range(12) if r not in p["chain"])
-    message = next(m for m in box.sent if m.embed is not None and m.embed.title.endswith(NAMES[wrong]))
+    message = next(m for m in tables_in(box) if m.embed.title.endswith(NAMES[wrong]))
     inter = tk.FakeInteraction(env.g, env.admin, message)
     await env.cog.handle_trail(inter, "look")
     assert inter.replies[0][0] in WELL["wrong_look"]
 
 
-async def test_turning_the_rehearsal_off_forgets_the_sandbox_tables_and_goes_back_to_the_rooms(env):
-    box, _ = await rehearse(env)
-    await env.cog._apply_sandbox(env.g, env.admin, None)
-    assert PID not in await env.conf.objects() and await env.conf.trail_sandbox_id() is None
-    await env.cog._setup_objects(env.g, PID)
-    assert all(any(m.kw.get("view") is not None and m.pinned for m in r.sent) for r in env.rooms)
-
-
-async def test_the_loop_does_not_reopen_rooms_during_a_rehearsal(env):
-    await rehearse(env)
-    env.rooms[2].archived = True
-    await env.cog._deliver_due(env.g, env.clock.now)
-    assert env.rooms[2].archived is True
-
-
-async def test_a_sandbox_that_cannot_be_posted_to_is_reported_per_room(env):
-    box = env.g.add_channel(500, "owner-private")
-    await env.cog._apply_sandbox(env.g, env.admin, box)
-    box.fail_send = True
-    report = await env.cog._setup_objects(env.g, PID)
-    assert len(report) == 12 and all("failed in the sandbox" in line for line in report)
-    assert PID not in {k for k, v in (await env.conf.objects()).items() if v}
-
-
-async def test_the_rehearsal_poem_is_posted_in_the_same_channel_and_works_end_to_end(env):
-    box, _ = await rehearse(env)
-    poem = next(m for m in box.sent if m.pinned)
-    assert poem.embed.title == WELL["poem_title"] and (await env.conf.poem_ids()).get(str(poem.id)) == PID
-    for emoji in (TEA, HONEY, SLEEP):
-        payload = types.SimpleNamespace(guild_id=env.g.id, user_id=env.admin.id, message_id=poem.id, channel_id=box.id,
-                                        emoji=emoji)
-        await env.cog._on_reaction(payload)
-        env.clock.now += 1
-    assert [e for e, _u in poem.removed] == [TEA, HONEY, SLEEP]
-    assert (await state(env, env.admin))["step"] == 2 and "Elsie" in env.admin.dms[-1]
-
-
-async def test_the_poem_command_goes_to_the_rehearsal_channel_wherever_you_asked(env):
+async def test_the_poem_command_goes_to_the_test_channel_but_remembers_the_real_one(env):
     box, _ = await rehearse(env)
     other = env.g.add_channel(600, "somewhere-public")
     out = await env.cog._apply_poem(env.g, env.admin, other, PID)
-    assert "rehearsal" in out and not other.sent
+    assert "test channel" in out and not other.sent
     posts = [m for m in box.sent if m.embed is not None and m.embed.title == WELL["poem_title"]]
     assert len(posts) == 2 and [m.pinned for m in posts] == [False, True]  # the newest replaces the old
-    assert len(await env.conf.poem_ids()) == 2  # the fixture's real poem plus this one; the replaced one is forgotten
+    assert (await env.conf.poem_targets())[PID] == other.id
+    assert list((await env.conf.poem_ids()).values()) == [PID] and len(await env.conf.poem_ids()) == 1
 
 
-async def test_the_private_rehearsal_channel_never_appears_in_the_public_intro(env):
+async def test_the_private_test_channel_never_appears_in_the_public_intro(env):
     box, _ = await rehearse(env)
     assert str(box.id) not in await env.conf.poems()
 
@@ -660,17 +662,160 @@ async def test_setting_up_again_does_not_repost_the_poem_but_redo_does(env):
     assert count() == 2
 
 
-async def test_turning_the_rehearsal_off_stops_its_poem_counting(env):
+async def test_turning_test_mode_off_posts_the_real_poem_and_objects_and_stops_the_rehearsal(env):
     box, _ = await rehearse(env)
-    poem = next(m for m in box.sent if m.pinned)
-    await env.cog._apply_sandbox(env.g, env.admin, None)
-    assert str(poem.id) not in await env.conf.poem_ids()
-    payload = types.SimpleNamespace(guild_id=env.g.id, user_id=env.admin.id, message_id=poem.id, channel_id=box.id, emoji=TEA)
+    other = env.g.add_channel(600, "wonderland-secrets")
+    await env.cog._apply_poem(env.g, env.admin, other, PID)  # rehearsed: lands in the box, target remembered
+    rehearsal_poem = next(m for m in box.sent if m.pinned)
+    assert not other.sent
+    out = await env.cog._apply_test_mode(env.g, env.admin, False)
+    assert out.startswith("Test mode off.") and "The Treacle Well: objects ready in the real rooms" in out
+    assert any(m.pinned and m.embed.title == WELL["poem_title"] for m in other.sent)  # the real poem, in its channel
+    assert all(any(m.kw.get("view") is not None and m.pinned for m in r.sent) for r in env.rooms)  # real tables
+    assert await env.conf.test_objects() == {} and await env.conf.test_poems() == {}
+    assert str(rehearsal_poem.id) not in await env.conf.poem_ids()
+    real = next(m for m in other.sent if m.pinned)
+    assert (await env.conf.poem_ids()).get(str(real.id)) == PID
+    # reactions on the dead rehearsal poem no longer start anything
+    payload = types.SimpleNamespace(guild_id=env.g.id, user_id=env.admin.id, message_id=rehearsal_poem.id,
+                                    channel_id=box.id, emoji=TEA)
     await env.cog._on_reaction(payload)
-    assert poem.removed == []
+    assert rehearsal_poem.removed == []
+
+
+async def test_turning_test_mode_off_without_a_known_poem_channel_says_so(env):
+    box, _ = await rehearse(env)  # the poem was never given a regular channel in this guild config
+    await env.conf.poem_targets.set({})
+    out = await env.cog._apply_test_mode(env.g, env.admin, False)
+    assert "no regular poem channel known" in out and len(tables_in(box)) == 12
+    assert all(any(m.kw.get("view") is not None for m in r.sent) for r in env.rooms)
+
+
+async def test_turning_test_mode_off_with_nothing_rehearsed_posts_nothing(env):
+    await env.cog._apply_test_mode(env.g, env.admin, True)
+    before = [len(r.sent) for r in env.rooms] + [len(env.poem.sent)]
+    assert await env.cog._apply_test_mode(env.g, env.admin, False) == "Test mode off."
+    assert [len(r.sent) for r in env.rooms] + [len(env.poem.sent)] == before
+
+
+async def test_turning_test_mode_off_reports_a_trail_that_is_not_ready_instead_of_crashing(env):
+    box, _ = await rehearse(env)
+    await env.conf.trail.set([r.id for r in env.rooms[:3]])  # fewer than the puzzle needs
+    out = await env.cog._apply_test_mode(env.g, env.admin, False)
+    assert "NOT set up" in out
+
+
+async def test_the_loop_reopens_trail_rooms_only_once_real_tables_exist(env):
+    await rehearse(env)
+    env.rooms[2].archived = True
+    await env.cog._deliver_due(env.g, env.clock.now)
+    assert env.rooms[2].archived is True  # a rehearsal: the real rooms hold nothing to keep open
+    await env.cog._apply_test_mode(env.g, env.admin, False)
+    env.rooms[2].archived = True
+    await env.cog._deliver_due(env.g, env.clock.now)
+    assert env.rooms[2].archived is False
+
+
+async def test_a_test_channel_that_cannot_be_posted_to_is_reported_per_room(env):
+    box = env.g.add_channel(500, "owner-private")
+    await env.cog._apply_test_channel(env.g, env.admin, box)
+    await env.cog._apply_test_mode(env.g, env.admin, True)
+    await env.conf.objects.set({})
+    box.fail_send = True
+    report = await env.cog._setup_objects(env.g, PID)
+    assert len(report) == 12 and all("failed in the test channel" in line for line in report)
+
+
+async def test_changing_the_trail_rooms_forgets_the_rehearsal_tables(env):
+    await rehearse(env)
+    await env.cog._apply_trail_text(env.g, env.admin, {"rooms": " ".join(str(r.id) for r in env.rooms[:8])})
+    assert PID not in await env.conf.test_objects()
+
+
+# ---- every other puzzle can be rehearsed too
+
+async def test_every_kind_of_puzzle_rehearses_in_the_test_channel(env, monkeypatch):
+    """Easy (reaction), Easy (buttons) and the Knave's Trial each get labelled copies of their object in the box."""
+    five = [env.g.add_thread(700 + i, n) for i, n in enumerate(["gaming", "music", "memes", "movies", "cuddle"])]
+    await env.conf.pool.set([c.id for c in five])
+    box = env.g.add_channel(500, "owner-private")
+    await env.cog._apply_test_channel(env.g, env.admin, box)
+    await env.cog._apply_test_mode(env.g, env.admin, True)
+    for pid in ("late_rabbit", "looking_glass", "knaves_trial"):
+        out = await env.cog._apply_setup(env.g, env.admin, pid)
+        assert out.count("(rehearsal)") == 6, pid  # five objects and the poem
+    assert all(not c.sent for c in five)  # not one real room was touched
+    labels = [m.embed.title for m in box.sent if m.embed is not None]
+    assert "A pocket watch \N{EM DASH} gaming" in labels and "A looking glass \N{EM DASH} cuddle" in labels
+    assert "A witness waits here \N{EM DASH} movies" in labels
+    assert len([m for m in box.sent if m.kw.get("view") is not None]) == 10  # glass buttons + witness buttons
+    assert set(await env.conf.test_objects()) == {"late_rabbit", "looking_glass", "knaves_trial"}
+
+
+async def test_a_rehearsed_easy_puzzle_can_be_played_from_the_test_channel(env):
+    five = [env.g.add_thread(700 + i, n) for i, n in enumerate(["gaming", "music", "memes", "movies", "cuddle"])]
+    await env.conf.pool.set([c.id for c in five])
+    await env.conf.published.set(["looking_glass"])
+    box = env.g.add_channel(500, "owner-private")
+    await env.cog._apply_test_channel(env.g, env.admin, box)
+    await env.cog._apply_test_mode(env.g, env.admin, True)
+    await env.cog._apply_setup(env.g, env.admin, "looking_glass")
+    glass = PUZZLES["looking_glass"]
+    await env.cog._run_trigger(env.g, env.admin, "looking_glass", env.clock.now)
+    st = (await env.cog.config.member(env.admin).puzzles())["looking_glass"]
+    room = five[st["variant"] % 5]
+    key = glass["buttons"][st["variant"] % len(glass["buttons"])]
+    message = next(m for m in box.sent if m.embed is not None and m.embed.title.endswith(f"\N{EM DASH} {room.name}"))
+    inter = tk.FakeInteraction(env.g, env.admin, message)
+    await env.cog.handle_click(inter, key)
+    assert inter.replies[0][0] == glass["found"]  # the right button on the right (labelled) copy
+
+
+async def test_turning_test_mode_off_launches_every_rehearsed_puzzle(env):
+    five = [env.g.add_thread(700 + i, n) for i, n in enumerate(["gaming", "music", "memes", "movies", "cuddle"])]
+    await env.conf.pool.set([c.id for c in five])
+    box = env.g.add_channel(500, "owner-private")
+    await env.cog._apply_test_channel(env.g, env.admin, box)
+    await env.cog._apply_test_mode(env.g, env.admin, True)
+    real_poem = env.g.add_channel(650, "secrets-poems")
+    await env.cog._apply_setup(env.g, env.admin, "late_rabbit")
+    await env.cog._apply_poem(env.g, env.admin, real_poem, "late_rabbit")
+    assert not real_poem.sent
+    out = await env.cog._apply_test_mode(env.g, env.admin, False)
+    assert "The Late Rabbit" in out
+    posted = [m for m in real_poem.sent if m.embed is not None]  # (the fake adds a pin notice under real discord.py)
+    assert [m.embed.title for m in posted] == [PUZZLES["late_rabbit"]["poem_title"]] and posted[0].pinned
+    assert all(any(m.pinned for m in c.sent) for c in five)
 
 
 def test_cuddle_and_the_other_unusual_room_names_get_a_written_clue():
     for name in ("cuddle", "Witch Bunny", "animal of the day", "deep dives", "Cool Tech Stuff", "Food, Recipes, and Cooking",
                  "pretty cool books", "gaming", "memes", "music", "movies", "anime"):
         assert engine.pointer_for(WELL, name, 0) and "letters" not in engine.pointer_for(WELL, name, 0), name
+
+
+# ---- pasting rooms
+
+@pytest.mark.parametrize("token, expected", [
+    ("<#123456789>", 123456789), ("123456789", 123456789),
+    ("https://discord.com/channels/9328/123456789", 123456789),
+    ("https://discord.com/channels/9328/123456789/555", 123456789),
+    ("https://discord.com/channels/@me/55", None), ("nope", None), ("", None),
+])
+async def test_rooms_can_be_pasted_as_mentions_ids_or_links(env, token, expected):
+    assert env.cog._channel_id_of(token) == expected
+
+
+async def test_a_link_to_cuddle_can_replace_a_trail_room(env):
+    cuddle = env.g.add_channel(777, "cuddle")
+    rooms = [f"<#{r.id}>" for r in env.rooms[:11]] + [f"https://discord.com/channels/1/{cuddle.id}"]
+    await env.cog._apply_trail_text(env.g, env.admin, {"rooms": " ".join(rooms)})
+    assert (await env.conf.trail())[-1] == 777
+
+
+async def test_the_test_channel_can_be_cleared(env):
+    box = env.g.add_channel(500, "owner-private")
+    await env.cog._apply_test_channel(env.g, env.admin, box)
+    assert await env.conf.test_channel_id() == 500
+    assert "cleared" in await env.cog._apply_test_channel(env.g, env.admin, None)
+    assert await env.conf.test_channel_id() is None

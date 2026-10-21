@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 import time
 from collections import deque
 from typing import Union
@@ -113,6 +114,19 @@ class SecretHunt(commands.Cog):
         """True for a member holding the "blocked" role (Lurker). Every puzzle ignores them: their progress just waits."""
         rid = await self.config.guild(guild).blocked_role_id()
         return bool(rid) and any(getattr(r, "id", None) == rid for r in getattr(member, "roles", []))
+
+    async def _find_object(self, conf, message_id: int):
+        """(puzzle id, room id) of the object on this message: a real one, or a rehearsal copy in the test channel."""
+        return (engine.find_object(await conf.objects(), message_id)
+                or engine.find_object(await conf.test_objects(), message_id))
+
+    async def _rehearsal_box(self, guild):
+        """The test channel while Test mode is on and one is set, else None. While it is set, every puzzle's poem and
+        objects are posted there (nothing public changes); turning Test mode off posts them for real."""
+        conf = self.config.guild(guild)
+        if not await conf.test_mode():
+            return None
+        return self._lookup(guild, await conf.test_channel_id() or 0)
 
     @staticmethod
     def _can_play(member, puzzle: dict) -> bool:
@@ -306,7 +320,7 @@ class SecretHunt(commands.Cog):
         conf = self.config.guild(guild)
         if not await conf.enabled():
             return
-        hit = engine.find_object(await conf.objects(), payload.message_id)
+        hit = await self._find_object(conf, payload.message_id)
         if hit is None:
             return
         pid, channel_id = hit
@@ -409,7 +423,7 @@ class SecretHunt(commands.Cog):
         conf = self.config.guild(guild)
         if not await conf.enabled() or await self._blocked(guild, member):
             return None
-        hit = engine.find_object(await conf.objects(), message.id)
+        hit = await self._find_object(conf, message.id)
         puzzle = PUZZLES.get(hit[0]) if hit else None
         rooms = await conf.trail()
         if puzzle is None or puzzle.get("kind") != "trail" or hit[1] not in rooms or not self._can_play(member, puzzle):
@@ -464,7 +478,7 @@ class SecretHunt(commands.Cog):
         conf = self.config.guild(guild)
         if not await conf.enabled() or await self._blocked(guild, member):
             return None
-        hit = engine.find_object(await conf.objects(), message.id)
+        hit = await self._find_object(conf, message.id)
         puzzle = PUZZLES.get(hit[0]) if hit else None
         pool = await conf.pool()
         if puzzle is None or puzzle.get("kind") != "button" or len(pool) < POOL_MIN:
@@ -503,7 +517,7 @@ class SecretHunt(commands.Cog):
         conf = self.config.guild(guild)
         if not await conf.enabled() or await self._blocked(guild, member):
             return None
-        hit = engine.find_object(await conf.objects(), message.id)
+        hit = await self._find_object(conf, message.id)
         puzzle = PUZZLES.get(hit[0]) if hit else None
         pool = await conf.pool()
         if puzzle is None or puzzle.get("kind") != "trial" or len(pool) != puzzle["needs_pool"] or hit[1] not in pool:
@@ -564,8 +578,9 @@ class SecretHunt(commands.Cog):
         conf = self.config.guild(guild)
         if not any(PUZZLES.get(p, {}).get("kind") == "trail" for p in await conf.published()):
             return
-        if await conf.trail_sandbox_id():
-            return  # a rehearsal: the real rooms hold nothing, so there is nothing to keep open
+        live = await conf.objects()
+        if not any(live.get(p) for p, puzzle in PUZZLES.items() if puzzle.get("kind") == "trail"):
+            return  # only a rehearsal so far: the real rooms hold nothing to keep open
         for cid in await conf.trail():
             channel = self._lookup(guild, cid)
             if channel is None:  # archived threads are not always cached
@@ -806,13 +821,26 @@ class SecretHunt(commands.Cog):
 
     # ------------------------------------------------------------------ admin: objects and poem
 
+    def _object_message(self, puzzle: dict, label: str = "") -> dict:
+        """The embed (and buttons) of a puzzle's hunt object. `label` names the room a rehearsal copy stands in for."""
+        kind = puzzle.get("kind")
+        if kind == "button":
+            return {"embed": embeds.object_embed(puzzle, label), "view": views.ObjectView(self)}
+        if kind == "trial":
+            return {"embed": embeds.witness_embed(puzzle, label), "view": views.WitnessView(self)}
+        if kind == "trail":
+            return {"embed": embeds.object_embed(puzzle, label), "view": views.TrailView(self)}
+        return {"embed": embeds.object_embed(puzzle, label)}
+
     async def _setup_objects(self, guild, pid: str, force: bool = False) -> list[str]:
-        """Post and pin the hunt object in every pool channel (once per puzzle unless forced). Returns report lines."""
+        """Post and pin the hunt object in every pool channel (once per puzzle unless forced). Returns report lines.
+        While Test mode is on with a test channel set, the objects are posted there instead, one per room and labelled
+        with it, and nothing real is touched."""
         puzzle, conf = PUZZLES[pid], self.config.guild(guild)
         report = []
         rooms = await self._rooms_of(guild, puzzle)
-        sandbox = (self._lookup(guild, await conf.trail_sandbox_id() or 0) if puzzle.get("kind") == "trail" else None)
-        async with conf.objects() as objects:
+        box = await self._rehearsal_box(guild)
+        async with (conf.test_objects() if box is not None else conf.objects()) as objects:
             by_channel = objects.setdefault(pid, {})
             for cid in rooms:
                 channel = self._lookup(guild, cid)
@@ -822,14 +850,14 @@ class SecretHunt(commands.Cog):
                 if str(cid) in by_channel and not force:
                     report.append(f"- {channel.mention}: already set up")
                     continue
-                if sandbox is not None:  # rehearsal: this room's tea table stands in the sandbox channel, labelled
+                if box is not None:  # rehearsal: this room's object stands in the test channel, labelled
                     try:
-                        msg = await sandbox.send(embed=embeds.object_embed(puzzle, channel.name), view=views.TrailView(self))
+                        msg = await box.send(**self._object_message(puzzle, channel.name))
                     except _DISCORD_ERRORS as err:
-                        report.append(f"- {channel.mention}: failed in the sandbox ({type(err).__name__})")
+                        report.append(f"- {channel.mention}: failed in the test channel ({type(err).__name__})")
                         continue
                     by_channel[str(cid)] = msg.id
-                    report.append(f"- {channel.mention}: tea table posted in {sandbox.mention} (rehearsal)")
+                    report.append(f"- {channel.mention}: object posted in {box.mention} (rehearsal)")
                     continue
                 if getattr(channel, "archived", False):  # a quiet forum post may have auto-archived
                     try:
@@ -837,14 +865,7 @@ class SecretHunt(commands.Cog):
                     except _DISCORD_ERRORS:
                         pass
                 try:
-                    if puzzle.get("kind") == "button":
-                        msg = await channel.send(embed=embeds.object_embed(puzzle), view=views.ObjectView(self))
-                    elif puzzle.get("kind") == "trial":
-                        msg = await channel.send(embed=embeds.witness_embed(puzzle), view=views.WitnessView(self))
-                    elif puzzle.get("kind") == "trail":
-                        msg = await channel.send(embed=embeds.object_embed(puzzle), view=views.TrailView(self))
-                    else:
-                        msg = await channel.send(embed=embeds.object_embed(puzzle))
+                    msg = await channel.send(**self._object_message(puzzle))
                     await msg.pin()
                 except _DISCORD_ERRORS as err:
                     report.append(f"- {channel.mention}: failed ({type(err).__name__}); needs Send Messages (in Threads), "
@@ -900,7 +921,9 @@ class SecretHunt(commands.Cog):
             tier_roles.append(f"{tier}: {role.mention if role else 'not set'}")
         lines = {
             "Enabled": "yes" if await conf.enabled() else "no",
-            "Test mode": "on (clues arrive in 30 seconds)" if await conf.test_mode() else "off",
+            "Test mode": ("on (clues arrive in 30 seconds"
+                          + ((lambda ch: f"; rehearsing in {ch.mention}" if ch else "")(
+                              self._lookup(guild, await conf.test_channel_id() or 0))) + ")") if await conf.test_mode() else "off",
             "Pool": ", ".join(f"<#{c}>" if self._lookup(guild, c) else f"**MISSING** `{c}`" for c in pool)
                     or "not set (open `.secrethunt`)",
             "Roles": "easy and medium: none (by design), " + ", ".join(tier_roles),
@@ -928,6 +951,7 @@ class SecretHunt(commands.Cog):
         conf = self.config.guild(guild)
         await conf.pool.set([c.id for c in channels])
         await conf.objects.set({})  # the old objects no longer match the variants
+        await conf.test_objects.set({})
         return ("Pool set: " + ", ".join(c.mention for c in channels)
                 + ". Now set up each puzzle's objects under Puzzles. Changing the pool mid-puzzle moves "
                   "people's hiding places, so do it between puzzles.")
@@ -936,8 +960,8 @@ class SecretHunt(commands.Cog):
         """The Treacle Well's trail rooms from pasted mentions or ids (forum posts are threads)."""
         found, bad = [], []
         for token in (values.get("rooms") or "").replace(",", " ").split():
-            digits = token[2:-1] if token.startswith("<#") and token.endswith(">") else token
-            channel = self._lookup(guild, int(digits)) if digits.isdigit() else None
+            cid = self._channel_id_of(token)
+            channel = self._lookup(guild, cid) if cid else None
             if channel is None:
                 bad.append(token)
             elif channel.id not in [c.id for c in found]:
@@ -949,61 +973,90 @@ class SecretHunt(commands.Cog):
             raise PanelError(f"Give me {max(low, len(trail.SISTERS))} to {TRAIL_MAX_ROOMS} different rooms (12 planned).")
         conf = self.config.guild(guild)
         await conf.trail.set([c.id for c in found])
-        async with conf.objects() as objects:  # the old tea tables no longer match the rooms
-            for pid, puzzle in PUZZLES.items():
-                if puzzle.get("kind") == "trail":
-                    objects.pop(pid, None)
+        for store in (conf.objects, conf.test_objects):  # the old tea tables no longer match the rooms
+            async with store() as objects:
+                for pid, puzzle in PUZZLES.items():
+                    if puzzle.get("kind") == "trail":
+                        objects.pop(pid, None)
         return (f"Trail rooms set ({len(found)}). Now press Set up objects on the Treacle Well. Changing them mid-puzzle "
                 "moves people's sisters, so do it between puzzles.")
 
-    async def _forget_sandbox_poem(self, guild) -> None:
+    async def _forget_rehearsal(self, guild) -> None:
+        """Drop every rehearsal copy from the books: its objects stop answering and its poems stop counting reactions."""
         conf = self.config.guild(guild)
-        old = await conf.sandbox_poem()
+        old = await conf.test_poems()
         async with conf.poem_ids() as ids:
-            ids.pop(str(old), None)
+            for mid in old.values():
+                ids.pop(str(mid), None)
             self._poem_ids[guild.id] = {int(k): v for k, v in ids.items()}
-        await conf.sandbox_poem.set(0)
+        await conf.test_poems.set({})
+        await conf.test_objects.set({})
 
-    async def _post_sandbox_poem(self, guild, pid: str, box) -> str:
-        """The rehearsal's poem. Kept out of `poems` on purpose: that list is printed in the public Hall intro."""
+    async def _post_test_poem(self, guild, pid: str, box) -> str:
+        """A puzzle's rehearsal poem, in the test channel. Kept out of `poems`: that list is printed in the public Hall intro."""
         conf = self.config.guild(guild)
+        puzzle = PUZZLES[pid]
         try:
-            posted = await box.send(embed=embeds.poem_embed(PUZZLES[pid]))
+            posted = await box.send(embed=embeds.poem_embed(puzzle))
         except _DISCORD_ERRORS as err:
-            raise PanelError(f"I could not post in the rehearsal channel ({type(err).__name__}).")
-        old = await conf.sandbox_poem()
-        if old:
-            try:
-                await box.get_partial_message(old).unpin(reason="A new rehearsal poem replaces it")
-            except _DISCORD_ERRORS:
-                pass
-        await self._forget_sandbox_poem(guild)
-        note = ""
+            raise PanelError(f"I could not post in the test channel ({type(err).__name__}).")
+        notes = ""
         try:
             await posted.pin(reason="Rehearsal poem")
         except _DISCORD_ERRORS:
-            note = " I could not pin it, which is fine for a rehearsal."
+            notes = " I could not pin it, which is fine for a rehearsal."
+        async with conf.test_poems() as poems:
+            old = poems.get(pid)
+            poems[pid] = posted.id
         async with conf.poem_ids() as ids:
-            ids[str(posted.id)] = pid
+            if old:
+                ids.pop(str(old), None)
+                try:
+                    await box.get_partial_message(old).unpin(reason="A new rehearsal poem replaces it")
+                except _DISCORD_ERRORS:
+                    pass
+            if puzzle.get("kind") == "trail":  # only a trail reads reactions on its poem
+                ids[str(posted.id)] = pid
             self._poem_ids[guild.id] = {int(k): v for k, v in ids.items()}
-        await conf.sandbox_poem.set(posted.id)
-        return f"Poem posted in the rehearsal channel {box.mention}.{note}"
+        return f"{puzzle['title']}: poem posted in the test channel {box.mention} (rehearsal).{notes}"
 
-    async def _apply_sandbox(self, guild, member, channel) -> str:
-        """Rehearse the Treacle Well in one (private) channel: every tea table is posted there, labelled with the room it
-        stands in for. Clearing it goes back to the real rooms. Either way the posted tables are forgotten."""
-        conf = self.config.guild(guild)
-        await self._forget_sandbox_poem(guild)  # reactions on the old rehearsal poem stop counting
-        await conf.trail_sandbox_id.set(channel.id if channel else None)
-        async with conf.objects() as objects:
-            for pid, puzzle in PUZZLES.items():
-                if puzzle.get("kind") == "trail":
-                    objects.pop(pid, None)
+    async def _apply_test_channel(self, guild, member, channel) -> str:
+        """The private channel that rehearsals run in. Anything already rehearsed is forgotten."""
+        await self._forget_rehearsal(guild)
+        await self.config.guild(guild).test_channel_id.set(channel.id if channel else None)
         if channel:
-            return (f"Rehearsal on: Set up objects will post the poem and all the tea tables in {channel.mention}, one per "
-                    "room, and touch no real room.")
-        return ("Rehearsal off. Press Set up objects (or Redo objects) to put the tea tables in the real rooms. "
-                "Tables left in the old channel just stop working; delete them.")
+            return (f"Test channel: {channel.mention}. While Test mode is on, Set up objects and the poem post there, one "
+                    "object per room, labelled with the room, and nothing real is touched. Turning Test mode off posts "
+                    "the poems and objects for real.")
+        return "Test channel cleared. Test mode now only shortens the waits."
+
+    async def _launch_rehearsed(self, guild, member) -> str:
+        """Test mode was turned off: every puzzle that was rehearsed gets its real objects and its poem in its regular channel."""
+        conf = self.config.guild(guild)
+        rehearsed = set(await conf.test_objects()) | set(await conf.test_poems())
+        had_poem = set(await conf.test_poems())
+        targets = await conf.poem_targets()
+        await self._forget_rehearsal(guild)
+        lines = []
+        for pid, puzzle in PUZZLES.items():
+            if pid not in rehearsed:
+                continue
+            try:
+                lines.append(f"- {puzzle['title']}: objects ready in the real rooms\n"
+                             + await self._apply_setup(guild, member, pid))
+            except PanelError as err:
+                lines.append(f"- {puzzle['title']}: objects NOT set up ({err})")
+            if pid in had_poem:
+                target = self._lookup(guild, targets.get(pid) or 0)
+                if target is None:
+                    lines.append(f"- {puzzle['title']}: no regular poem channel known. Pick one under Puzzles, "
+                                 "\"Post the newest poem in...\".")
+                    continue
+                try:
+                    lines.append(f"- {puzzle['title']}: " + await self._apply_poem(guild, member, target, pid))
+                except PanelError as err:
+                    lines.append(f"- {puzzle['title']}: poem NOT posted ({err})")
+        return "Test mode off." + ("\n" + "\n".join(lines) if lines else "")
 
     async def _apply_blocked_role(self, guild, member, role) -> str:
         """Members with this role (Lurker) are ignored by every puzzle; their progress just waits."""
@@ -1011,12 +1064,23 @@ class SecretHunt(commands.Cog):
         return (f"Members with {role.mention} cannot take part in any secret." if role
                 else "Every member can take part again.")
 
+    @staticmethod
+    def _channel_id_of(token: str):
+        """A channel or forum-post id from a mention (<#id>), a bare id or a pasted Discord link; None when it is none."""
+        token = token.strip()
+        if token.startswith("<#") and token.endswith(">"):
+            token = token[2:-1]
+        if token.startswith("http"):  # .../channels/<guild>/<channel>[/<message>]
+            numbers = re.findall(r"\d+", token.split("/channels/", 1)[-1])
+            return int(numbers[1]) if len(numbers) >= 2 else None
+        return int(token) if token.isdigit() else None
+
     async def _apply_pool_text(self, guild, member, values: dict) -> str:
-        """The pool from pasted mentions or ids (forum posts are threads, which a dropdown may not offer)."""
+        """The pool from pasted mentions, ids or links (forum posts are threads, which a dropdown may not offer)."""
         found, bad = [], []
         for token in (values.get("channels") or "").replace(",", " ").split():
-            digits = token[2:-1] if token.startswith("<#") and token.endswith(">") else token
-            channel = self._lookup(guild, int(digits)) if digits.isdigit() else None
+            cid = self._channel_id_of(token)
+            channel = self._lookup(guild, cid) if cid else None
             if channel is None:
                 bad.append(token)
             elif channel.id not in [c.id for c in found]:
@@ -1038,10 +1102,9 @@ class SecretHunt(commands.Cog):
                 raise PanelError("Set the pool first (Hunt tab).")
             self._check_pool_size(puzzle_id, pool)
         lines = await self._setup_objects(guild, puzzle_id, force)
-        if PUZZLES[puzzle_id].get("kind") == "trail":  # a rehearsal runs end to end from its one channel: poem included
-            box = self._lookup(guild, await conf.trail_sandbox_id() or 0)
-            if box is not None and (force or not await conf.sandbox_poem()):
-                lines.append("- " + await self._post_sandbox_poem(guild, puzzle_id, box))
+        box = await self._rehearsal_box(guild)
+        if box is not None and (force or puzzle_id not in await conf.test_poems()):
+            lines.append("- " + await self._post_test_poem(guild, puzzle_id, box))  # a rehearsal runs end to end from one channel
         return "\n".join(lines)
 
     @staticmethod
@@ -1082,10 +1145,11 @@ class SecretHunt(commands.Cog):
         pid = puzzle_id or await conf.active()
         if pid not in PUZZLES:
             raise PanelError("No puzzle is started. Start one under Puzzles first.")
-        if PUZZLES[pid].get("kind") == "trail":
-            box = self._lookup(guild, await conf.trail_sandbox_id() or 0)
-            if box is not None:  # a rehearsal: the poem goes in the rehearsal channel, wherever you asked
-                return await self._post_sandbox_poem(guild, pid, box)
+        async with conf.poem_targets() as targets:  # remembered, so turning Test mode off knows where it belongs
+            targets[pid] = target.id
+        box = await self._rehearsal_box(guild)
+        if box is not None:  # a rehearsal: the poem goes in the test channel, wherever you asked
+            return await self._post_test_poem(guild, pid, box)
         try:
             posted = await target.send(embed=embeds.poem_embed(PUZZLES[pid]))
         except _DISCORD_ERRORS as err:
@@ -1130,8 +1194,17 @@ class SecretHunt(commands.Cog):
         return "The hunt is on."
 
     async def _apply_test_mode(self, guild, member, on: bool) -> str:
-        await self.config.guild(guild).test_mode.set(bool(on))
-        return f"Test mode {'on: the morning wait is 30 seconds' if on else 'off'}."
+        conf = self.config.guild(guild)
+        was = await conf.test_mode()
+        await conf.test_mode.set(bool(on))
+        if on:
+            box = self._lookup(guild, await conf.test_channel_id() or 0)
+            return ("Test mode on: waits are 30 seconds. " + (
+                f"Set up objects and the poem now post in {box.mention}, labelled, and touch no real room."
+                if box else "Set a Test channel (Hunt tab) to rehearse privately; until then setup still posts for real."))
+        if not was:
+            return "Test mode off."
+        return await self._launch_rehearsed(guild, member)
 
     async def _apply_hall(self, guild, member, channel) -> str:
         """Set (or clear) the Hall of Secrets channel. Each puzzle gets one post there listing its solvers."""

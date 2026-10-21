@@ -49,8 +49,10 @@ DEFAULT_GUILD = {
     "hall_messages": {}, "poems": {}, "hall_intro": 0,     # puzzle id -> that puzzle's Hall post
     "poem_ids": {},          # poem message id (str) -> puzzle id, so a reaction on a poem can be told which puzzle it starts
     "trail": [],             # channel/forum-post ids that hold the Treacle Well's tea tables
-    "sandbox_poem": 0,       # message id of the Treacle Well poem posted in the rehearsal channel (not in `poems`: that feeds a public post)
-    "trail_sandbox_id": None,  # when set, the Treacle Well's tea tables are all posted here (one per room), not in the real rooms
+    "test_channel_id": None, # while Test mode is on, every puzzle's poem and objects are posted here instead (a private channel)
+    "test_objects": {},      # puzzle id -> {room id (str): message id} of the rehearsal copies of the objects (kept apart from `objects`)
+    "test_poems": {},        # puzzle id -> message id of its rehearsal poem (kept out of `poems`: that feeds a public post)
+    "poem_targets": {},      # puzzle id -> the channel its real poem goes to (remembered even when a rehearsal took the post)
     "blocked_role_id": None, # members with this role (Lurker) are ignored by every puzzle
     "test_mode": False,
 }

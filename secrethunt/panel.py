@@ -65,8 +65,8 @@ async def _trail_text_apply(cog, guild, member, values):
     return await cog._apply_trail_text(guild, member, values)
 
 
-async def _sandbox_apply(cog, guild, member, channel):
-    return await cog._apply_sandbox(guild, member, channel)
+async def _test_channel_apply(cog, guild, member, channel):
+    return await cog._apply_test_channel(guild, member, channel)
 
 
 async def _blocked_apply(cog, guild, member, role):
@@ -120,12 +120,13 @@ async def _puzzles(cog, guild):
         placed = len(objects.get(pid, {}))
         if puzzle.get("kind") == "trail":
             bits.append(f"tea tables {placed}/{len(trail_rooms)}" if trail_rooms else "no trail rooms yet")
-            if await conf.trail_sandbox_id():
-                bits.append("REHEARSAL (tables in the sandbox channel)")
+
             if puzzle.get("wip"):
                 bits.append("admins only")
         else:
             bits.append(f"objects {placed}/{len(pool)}" if pool else "no pool yet")
+        if (await conf.test_objects()).get(pid):
+            bits.append("REHEARSING in the test channel")
         if pid in published:
             bits.append(f"{started} started, {len(finishers.get(pid, []))} solved")
         out.append((pid, f"{puzzle['title']} ({puzzle['tier']})", " · ".join(bits)))
@@ -169,7 +170,10 @@ def build_specs():
         Spec("enabled", "The hunt is on", "Hunt", "toggle", get=_conf("enabled"), apply=_enabled_apply,
              help="Needs a pool and a live puzzle. Turning it off keeps everyone's progress."),
         Spec("test_mode", "Test mode", "Hunt", "toggle", get=_conf("test_mode"), apply=_test_apply,
-             help="The morning wait becomes 30 seconds so you can run a whole chain yourself."),
+             confirm="Turning Test mode off posts everything you rehearsed for real: the real objects, and each poem in its "
+                     "regular channel. Continue?", confirm_if=lambda v: not v,
+             help="Waits become 30 seconds so you can run a whole chain yourself. With a Test channel set, setup and poems "
+                  "go there instead of the real rooms until you turn it off."),
         Spec("pool", "Hiding places (pool)", "Hunt", "channel", get=_conf("pool"), apply=_pool_apply, fmt=_pool_fmt,
              multi=POOL_MAX, min_multi=POOL_MIN,
              confirm="Changing the pool moves everyone's hiding place and forgets the posted objects. Do it between puzzles. Continue?",
@@ -184,10 +188,10 @@ def build_specs():
                            value=lambda v: " ".join(f"<#{c}>" for c in (v or [])), placeholder="#post1 #post2 ... (12 planned)"),),
              help=f"The public rooms that each hold a tea table: 12 planned, at most {TRAIL_MAX_ROOMS}. Paste links as mentions or IDs. "
                   "Changing them moves everyone's sisters, so do it between puzzles."),
-        Spec("trail_sandbox", "Rehearsal channel (Treacle Well)", "Hunt", "channel", get=_conf("trail_sandbox_id"),
-             apply=_sandbox_apply, fmt=_channel_fmt, clearable=True,
-             help="Run the whole trail in one private channel: every tea table is posted there, labelled with the room it "
-                  "stands in for, and no real room is touched. Clear it to launch for real, then Set up objects."),
+        Spec("test_channel", "Test channel (rehearse any puzzle)", "Hunt", "channel", get=_conf("test_channel_id"),
+             apply=_test_channel_apply, fmt=_channel_fmt, clearable=True,
+             help="A private channel. While Test mode is on, Set up objects and the poem post here instead of the real "
+                  "rooms (each object labelled with its room). Turn Test mode off to post them for real."),
         Spec("blocked_role", "Roles that cannot play (Lurker)", "Hunt", "role", get=_conf("blocked_role_id"),
              apply=_blocked_apply, fmt=_role_fmt, clearable=True,
              help="Members with this role are ignored by every secret: no clues, no clicks, no answers. Their progress just waits."),
