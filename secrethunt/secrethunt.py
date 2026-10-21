@@ -956,18 +956,52 @@ class SecretHunt(commands.Cog):
         return (f"Trail rooms set ({len(found)}). Now press Set up objects on the Treacle Well. Changing them mid-puzzle "
                 "moves people's sisters, so do it between puzzles.")
 
+    async def _forget_sandbox_poem(self, guild) -> None:
+        conf = self.config.guild(guild)
+        old = await conf.sandbox_poem()
+        async with conf.poem_ids() as ids:
+            ids.pop(str(old), None)
+            self._poem_ids[guild.id] = {int(k): v for k, v in ids.items()}
+        await conf.sandbox_poem.set(0)
+
+    async def _post_sandbox_poem(self, guild, pid: str, box) -> str:
+        """The rehearsal's poem. Kept out of `poems` on purpose: that list is printed in the public Hall intro."""
+        conf = self.config.guild(guild)
+        try:
+            posted = await box.send(embed=embeds.poem_embed(PUZZLES[pid]))
+        except _DISCORD_ERRORS as err:
+            raise PanelError(f"I could not post in the rehearsal channel ({type(err).__name__}).")
+        old = await conf.sandbox_poem()
+        if old:
+            try:
+                await box.get_partial_message(old).unpin(reason="A new rehearsal poem replaces it")
+            except _DISCORD_ERRORS:
+                pass
+        await self._forget_sandbox_poem(guild)
+        note = ""
+        try:
+            await posted.pin(reason="Rehearsal poem")
+        except _DISCORD_ERRORS:
+            note = " I could not pin it, which is fine for a rehearsal."
+        async with conf.poem_ids() as ids:
+            ids[str(posted.id)] = pid
+            self._poem_ids[guild.id] = {int(k): v for k, v in ids.items()}
+        await conf.sandbox_poem.set(posted.id)
+        return f"Poem posted in the rehearsal channel {box.mention}.{note}"
+
     async def _apply_sandbox(self, guild, member, channel) -> str:
         """Rehearse the Treacle Well in one (private) channel: every tea table is posted there, labelled with the room it
         stands in for. Clearing it goes back to the real rooms. Either way the posted tables are forgotten."""
         conf = self.config.guild(guild)
+        await self._forget_sandbox_poem(guild)  # reactions on the old rehearsal poem stop counting
         await conf.trail_sandbox_id.set(channel.id if channel else None)
         async with conf.objects() as objects:
             for pid, puzzle in PUZZLES.items():
                 if puzzle.get("kind") == "trail":
                     objects.pop(pid, None)
         if channel:
-            return (f"Rehearsal on: Set up objects will post all the tea tables in {channel.mention}, one per room, and "
-                    "touch no real room. Post the poem in a private channel too.")
+            return (f"Rehearsal on: Set up objects will post the poem and all the tea tables in {channel.mention}, one per "
+                    "room, and touch no real room.")
         return ("Rehearsal off. Press Set up objects (or Redo objects) to put the tea tables in the real rooms. "
                 "Tables left in the old channel just stop working; delete them.")
 
@@ -1003,7 +1037,12 @@ class SecretHunt(commands.Cog):
             if len(pool) < POOL_MIN:
                 raise PanelError("Set the pool first (Hunt tab).")
             self._check_pool_size(puzzle_id, pool)
-        return "\n".join(await self._setup_objects(guild, puzzle_id, force))
+        lines = await self._setup_objects(guild, puzzle_id, force)
+        if PUZZLES[puzzle_id].get("kind") == "trail":  # a rehearsal runs end to end from its one channel: poem included
+            box = self._lookup(guild, await conf.trail_sandbox_id() or 0)
+            if box is not None and (force or not await conf.sandbox_poem()):
+                lines.append("- " + await self._post_sandbox_poem(guild, puzzle_id, box))
+        return "\n".join(lines)
 
     @staticmethod
     def _check_trail_size(puzzle_id: str, rooms) -> None:
@@ -1043,6 +1082,10 @@ class SecretHunt(commands.Cog):
         pid = puzzle_id or await conf.active()
         if pid not in PUZZLES:
             raise PanelError("No puzzle is started. Start one under Puzzles first.")
+        if PUZZLES[pid].get("kind") == "trail":
+            box = self._lookup(guild, await conf.trail_sandbox_id() or 0)
+            if box is not None:  # a rehearsal: the poem goes in the rehearsal channel, wherever you asked
+                return await self._post_sandbox_poem(guild, pid, box)
         try:
             posted = await target.send(embed=embeds.poem_embed(PUZZLES[pid]))
         except _DISCORD_ERRORS as err:

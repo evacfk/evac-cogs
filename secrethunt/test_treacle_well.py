@@ -562,14 +562,14 @@ async def rehearse(env):
     for room in env.rooms:  # forget the tables the fixture put in the real rooms
         room.sent.clear()
     await env.cog._apply_sandbox(env.g, env.admin, box)
-    report = await env.cog._setup_objects(env.g, PID)
+    report = (await env.cog._apply_setup(env.g, env.admin, PID)).split("\n")
     return box, report
 
 
 async def test_rehearsal_posts_every_tea_table_in_one_labelled_channel_and_touches_no_room(env):
     box, report = await rehearse(env)
     tables = [m for m in box.sent if m.kw.get("view") is not None]
-    assert len(tables) == 12 and all("rehearsal" in line for line in report)
+    assert len(tables) == 12 and sum("rehearsal" in line for line in report) == 13  # 12 tables and the poem
     assert sorted(m.embed.title for m in tables) == sorted(f"A tea table \N{EM DASH} {n}" for n in NAMES)
     assert all(not r.sent for r in env.rooms)  # nothing is posted or pinned in any real room
     assert sorted((await env.conf.objects())[PID]) == sorted(str(r.id) for r in env.rooms)
@@ -620,3 +620,57 @@ async def test_a_sandbox_that_cannot_be_posted_to_is_reported_per_room(env):
     report = await env.cog._setup_objects(env.g, PID)
     assert len(report) == 12 and all("failed in the sandbox" in line for line in report)
     assert PID not in {k for k, v in (await env.conf.objects()).items() if v}
+
+
+async def test_the_rehearsal_poem_is_posted_in_the_same_channel_and_works_end_to_end(env):
+    box, _ = await rehearse(env)
+    poem = next(m for m in box.sent if m.pinned)
+    assert poem.embed.title == WELL["poem_title"] and (await env.conf.poem_ids()).get(str(poem.id)) == PID
+    for emoji in (TEA, HONEY, SLEEP):
+        payload = types.SimpleNamespace(guild_id=env.g.id, user_id=env.admin.id, message_id=poem.id, channel_id=box.id,
+                                        emoji=emoji)
+        await env.cog._on_reaction(payload)
+        env.clock.now += 1
+    assert [e for e, _u in poem.removed] == [TEA, HONEY, SLEEP]
+    assert (await state(env, env.admin))["step"] == 2 and "Elsie" in env.admin.dms[-1]
+
+
+async def test_the_poem_command_goes_to_the_rehearsal_channel_wherever_you_asked(env):
+    box, _ = await rehearse(env)
+    other = env.g.add_channel(600, "somewhere-public")
+    out = await env.cog._apply_poem(env.g, env.admin, other, PID)
+    assert "rehearsal" in out and not other.sent
+    posts = [m for m in box.sent if m.embed is not None and m.embed.title == WELL["poem_title"]]
+    assert len(posts) == 2 and [m.pinned for m in posts] == [False, True]  # the newest replaces the old
+    assert len(await env.conf.poem_ids()) == 2  # the fixture's real poem plus this one; the replaced one is forgotten
+
+
+async def test_the_private_rehearsal_channel_never_appears_in_the_public_intro(env):
+    box, _ = await rehearse(env)
+    assert str(box.id) not in await env.conf.poems()
+
+
+async def test_setting_up_again_does_not_repost_the_poem_but_redo_does(env):
+    box, _ = await rehearse(env)
+    count = lambda: len([m for m in box.sent if m.embed is not None and m.embed.title == WELL["poem_title"]])
+    assert count() == 1
+    await env.cog._apply_setup(env.g, env.admin, PID)
+    assert count() == 1
+    await env.cog._apply_setup(env.g, env.admin, PID, force=True)
+    assert count() == 2
+
+
+async def test_turning_the_rehearsal_off_stops_its_poem_counting(env):
+    box, _ = await rehearse(env)
+    poem = next(m for m in box.sent if m.pinned)
+    await env.cog._apply_sandbox(env.g, env.admin, None)
+    assert str(poem.id) not in await env.conf.poem_ids()
+    payload = types.SimpleNamespace(guild_id=env.g.id, user_id=env.admin.id, message_id=poem.id, channel_id=box.id, emoji=TEA)
+    await env.cog._on_reaction(payload)
+    assert poem.removed == []
+
+
+def test_cuddle_and_the_other_unusual_room_names_get_a_written_clue():
+    for name in ("cuddle", "Witch Bunny", "animal of the day", "deep dives", "Cool Tech Stuff", "Food, Recipes, and Cooking",
+                 "pretty cool books", "gaming", "memes", "music", "movies", "anime"):
+        assert engine.pointer_for(WELL, name, 0) and "letters" not in engine.pointer_for(WELL, name, 0), name

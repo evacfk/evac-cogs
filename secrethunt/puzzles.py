@@ -306,6 +306,10 @@ TREACLE_WELL = {
         "travel": "the room where everyone has been somewhere else",
         "photo": "the room where the pictures are kept and the stories behind them are told",
         "game": "the room where games are argued over and nobody agrees on the best one",
+        "cuddle": "the room where the whole court gathers, always busy, always talking",
+        "animal": "the room where a different creature is introduced every morning",
+        "witch": "the room where a bunny in a pointed hat keeps its spells",
+        "dive": "the room where one question goes down and down and never quite reaches the bottom",
     },
     "letter_variants": [1],
     "wrong_look": [
