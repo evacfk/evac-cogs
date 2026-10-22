@@ -294,8 +294,9 @@ def build_specs():
                   "Edit moves a feed to other channels; Remove stops it and leaves the channel."),
         Spec("hide_preview", "Preview: hide the \U0001F916 channels", TAB_INTERESTS, "action", apply=_hide_preview_apply,
              button="Preview (changes nothing)",
-             help="Step 1. Lists every text channel whose name starts with \U0001F916, flags the ones that are NOT a feed or "
-                  "interest channel, and shows which buttons and feeds would go. Nothing changes."),
+             help="Step 1. Looks only inside the NSFW category and lists the text channels whose name starts with \U0001F916, "
+                  "flags the ones that are NOT a feed or interest channel, and shows which buttons and feeds would go. "
+                  "Nothing changes."),
         Spec("hide_channels", "Hide or unhide the \U0001F916 channels\u2026", TAB_INTERESTS, "choice", get=_hidden_get,
              apply=_hide_apply, confirm="Hide the channels from the last preview? Everyone except you and the bots loses "
                                         "access until you unhide.",

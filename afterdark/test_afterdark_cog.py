@@ -96,6 +96,7 @@ class FakeChannel:
     def __init__(self, cid, name="chan"):
         self.id, self.name = cid, name
         self.overwrites = {}
+        self.category_id = None
         self.sent = []
         self.messages = {}
 

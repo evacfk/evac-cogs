@@ -20,8 +20,13 @@ async def robot_world(w):
     """Feet interest with three robot-prefixed channels, a plain channel, and a few kinds of overwrite."""
     await add_two_feet_channels(w)
     w.feet.name, w.feet2.name, w.feet3.name = BOT + "feet", BOT + "user-feet", BOT + "anime-feet"
+    w.category = w.guild.add_channel(C.DEFAULT_HIDE_CATEGORY_ID, "NSFW")
     w.plain = w.guild.add_channel(900050, "general")
     w.other = w.guild.add_channel(900060, BOT + "bot-commands")     # a robot channel that is NOT an interest
+    w.nsfw_plain = w.guild.add_channel(900070, "nsfw-chat")         # in the category but no robot emoji
+    w.outside = w.guild.add_channel(900080, BOT + "tickets")        # robot emoji but outside the category
+    for ch in (w.feet, w.feet2, w.feet3, w.other, w.nsfw_plain):
+        ch.category_id = C.DEFAULT_HIDE_CATEGORY_ID
     w.admin = w.member("admin")
     w.joined = [w.member(f"m{i}") for i in range(2)]
     for m in w.joined:
@@ -37,6 +42,10 @@ async def robot_world(w):
         ch.overwrites[w.guild.default_role] = ow(view_channel=False)
     w.plain.overwrites[w.joined[0]] = ow(view_channel=True)
     return w
+
+
+def await_ids(w):
+    return {int(k) for k in w.cog.config.guild(w.guild).store["hidden_channels"]}
 
 
 async def hide(w, admin=None):
@@ -55,6 +64,8 @@ async def test_preview_changes_nothing_and_flags_non_feed_channels(w):
     msg = await w.cog._apply_hide_preview(w.guild, w.admin)
     assert {c.id: dict(c.overwrites) for c in w.guild.channels.values()} == before
     assert "Preview only" in msg and "#" + BOT + "feet" in msg and "general" not in msg
+    assert "tickets" not in msg                                 # robot emoji, but outside the category
+    assert "Left alone" in msg and "nsfw-chat" in msg           # in the category, no robot emoji
     assert "CHECK THESE" in msg and "bot-commands" in msg.split("CHECK THESE")[1]
     assert "Feet" in msg                                       # the button that would go
     assert await w.cog.config.guild(w.guild).hidden_channels() == {}
@@ -82,6 +93,9 @@ async def test_hide_locks_out_members_but_keeps_you_the_bots_and_plain_channels(
         assert view_of(ch, w.integration) is True
     assert w.feet.overwrites[w.mod_role].manage_messages is True   # other flags are untouched
     assert view_of(w.plain, w.joined[0]) is True                # a channel without the prefix is left alone
+    w.outside.overwrites[w.joined[0]] = ow(view_channel=True)
+    assert view_of(w.outside, w.joined[0]) is True and w.outside.id not in await_ids(w)
+    assert w.nsfw_plain.overwrites == {}                        # in the category, but no robot emoji
     assert "Hid 4 channel(s)" in msg
 
 
@@ -207,3 +221,18 @@ async def test_panel_lists_hidden_interests(w):
     assert "HIDDEN" in rows[0][2]
     specs = {s.key for s in panel_mod.build_specs()}
     assert {"hide_preview", "hide_channels"} <= specs
+
+
+async def test_nothing_happens_when_the_category_is_missing(w):
+    await robot_world(w)
+    await set_cfg(w, hide_category_id=123)
+    await expect_refused(w.cog._apply_hide_preview(w.guild, w.admin), "doesn't exist")
+
+
+async def test_a_channel_moved_out_of_the_category_after_the_preview_is_not_hidden(w):
+    await robot_world(w)
+    await w.cog._apply_hide_preview(w.guild, w.admin)
+    w.other.category_id = 555
+    before = dict(w.other.overwrites)
+    await w.cog._apply_hide(w.guild, w.admin, "hide")
+    assert w.other.overwrites == before and str(w.other.id) not in await w.cog.config.guild(w.guild).hidden_channels()

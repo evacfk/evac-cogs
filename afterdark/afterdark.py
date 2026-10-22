@@ -1754,8 +1754,14 @@ class AfterDark(commands.Cog):
         new.view_channel = value
         return new
 
-    def _prefixed_channels(self, guild) -> list:
-        return sorted((c for c in guild.text_channels if c.name.startswith(C.HIDE_PREFIX)), key=lambda c: c.name)
+    @staticmethod
+    def _in_hide_scope(channel, category_id: int) -> bool:
+        """Inside the NSFW category AND named with the robot emoji. Nothing else is ever hidden."""
+        return bool(category_id) and getattr(channel, "category_id", None) == category_id \
+            and channel.name.startswith(C.HIDE_PREFIX)
+
+    def _prefixed_channels(self, guild, category_id: int) -> list:
+        return sorted((c for c in guild.text_channels if self._in_hide_scope(c, category_id)), key=lambda c: c.name)
 
     def _hide_plan(self, guild, channel, keep_member):
         """(new overwrites, snapshot) for one channel. @everyone is denied, and every member or role that
@@ -1829,9 +1835,13 @@ class AfterDark(commands.Cog):
         """Dry run: list what a hide would do, change nothing, and arm the hide for 15 minutes."""
         cfg = await self.config.guild(guild).all()
         hidden = {int(c) for c in cfg["hidden_channels"]}
-        matches = self._prefixed_channels(guild)
+        category_id = int(cfg["hide_category_id"] or 0)
+        category = guild.get_channel(category_id) if category_id else None
+        if category is None:
+            raise PanelError(f"The NSFW category (id {category_id}) doesn't exist here, so there is nothing to hide.")
+        matches = self._prefixed_channels(guild, category_id)
         if not matches:
-            raise PanelError(f"No text channel starts with {C.HIDE_PREFIX}.")
+            raise PanelError(f"No text channel in {category.name} starts with {C.HIDE_PREFIX}.")
         todo = [c for c in matches if c.id not in hidden]
         if not todo:
             raise PanelError(f"All {len(matches)} {C.HIDE_PREFIX} channel(s) are already hidden.")
@@ -1850,9 +1860,13 @@ class AfterDark(commands.Cog):
 
         def names(chs):
             return ", ".join(f"#{c.name}" for c in chs) or "none"
-        lines = [f"Preview only, nothing changed. Would hide {len(todo)} channel(s) from everyone except you and the bots.",
+        skipped = sorted((c for c in guild.text_channels if getattr(c, "category_id", None) == category_id
+                          and not c.name.startswith(C.HIDE_PREFIX)), key=lambda c: c.name)
+        lines = [f"Preview only, nothing changed. Would hide {len(todo)} channel(s) in {category.name} from everyone except you and the bots.",
                  f"Feed or interest channels ({len(mine)}): {names(mine)}",
                  f"OTHER {C.HIDE_PREFIX} channels, not a feed or interest ({len(other)}), CHECK THESE: {names(other)}"]
+        if skipped:
+            lines.append(f"Left alone (in the category, no {C.HIDE_PREFIX}): {names(skipped)}")
         if buttons:
             lines.append("Buttons removed: " + ", ".join(buttons))
         if pausing:
@@ -1875,7 +1889,7 @@ class AfterDark(commands.Cog):
         channels = []
         for cid in preview.get("ids", []):
             ch = guild.get_channel(int(cid))
-            if ch is not None and ch.name.startswith(C.HIDE_PREFIX) and ch.id not in hidden:
+            if ch is not None and self._in_hide_scope(ch, int(cfg["hide_category_id"] or 0)) and ch.id not in hidden:
                 channels.append(ch)
         if not channels:
             raise PanelError("Nothing from the preview is left to hide (renamed, deleted or already hidden). "
