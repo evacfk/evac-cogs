@@ -102,7 +102,7 @@ def test_tabs_and_specs():
     for s in specs:
         tabs.setdefault(s.tab, []).append(s.key)
     assert tabs == {
-        "Feeds": ["feeds", "mode_all", "reset_all"],
+        "Feeds": ["feeds", "mode_all", "pause_all", "reset_all"],
         "Queue": ["queue_channel", "queue_gates", "queue_clear"],
         "Posting & polling": ["polling", "x_button", "redgifs", "log_channel"],
         "Discovery": ["category", "prefix", "denied"],
@@ -247,6 +247,20 @@ async def test_a_long_feed_list_is_paged_and_a_late_feed_can_be_managed():
     await p._on_item(Click(admin, ["sub59"]))
     await p._make_item_action(0)(Click(admin))
     assert (await cog.config.mappings())["sub59"]["paused"] is True
+
+
+async def test_pause_all_asks_first_and_resume_restores():
+    cog = make(mappings=maps("a", "b"))
+    p, admin = await open_it(cog)
+    await go(p, admin, "Feeds", "pause_all")
+    await p._on_choice(Click(admin, ["pause"]))
+    assert p.mode == "confirm" and not any(m["paused"] for m in (await cog.config.mappings()).values())
+    await p._on_confirm(Click(admin))
+    assert all(m["paused"] for m in (await cog.config.mappings()).values())
+    await go(p, admin, "Feeds", "pause_all")
+    await p._on_choice(Click(admin, ["resume"]))
+    await p._on_confirm(Click(admin))
+    assert not any(m["paused"] for m in (await cog.config.mappings()).values())
 
 
 async def test_mode_all_and_remove_every_feed_ask_first():

@@ -161,7 +161,7 @@ def make(posts=None, mappings=None, mods=(1,), queue_channel=True, **cfg):
         queue_channel_id=10 if queue_channel else None, queue_min_score=3, queue_min_age_minutes=60,
         queue_max_pending=40, x_button=True, log_channel_id=30, posted_map={}, learned_topics={},
         new_channel_category_id=None, new_channel_prefix="", poll_interval_seconds=120, stagger_seconds=0,
-        fetch_limit=25, dedup_ttl_days=7, redgifs_mode="upload",
+        fetch_limit=25, dedup_ttl_days=7, redgifs_mode="upload", paused_by_all=[],
     )
     values.update(cfg)
     cog.config = SimpleNamespace(**{k: Val(v) for k, v in values.items()})
@@ -519,6 +519,49 @@ async def test_switch_mode_and_mode_all():
     assert {m["approval"] for m in (await cog.config.mappings()).values()} == {"auto"}
     await cog._apply_mode_all(GUILD, ME, "manual")
     assert {m["approval"] for m in (await cog.config.mappings()).values()} == {"manual"}
+
+
+async def test_pause_all_then_resume_leaves_manual_pauses_alone():
+    cog = make(mappings={
+        "a": SubredditMapping(subreddit="a").to_dict(),
+        "b": SubredditMapping(subreddit="b").to_dict(),
+        "manual": SubredditMapping(subreddit="manual", paused=True).to_dict()})
+    msg = await cog._apply_pause_all(GUILD, ME, "pause")
+    assert "Paused 2 of 3" in msg
+    assert all(m["paused"] for m in (await cog.config.mappings()).values())
+    assert sorted(await cog.config.paused_by_all()) == ["a", "b"]
+    assert "Resumed 2" in await cog._apply_pause_all(GUILD, ME, "resume")
+    paused = {n: m["paused"] for n, m in (await cog.config.mappings()).items()}
+    assert paused == {"a": False, "b": False, "manual": True}
+    assert await cog.config.paused_by_all() == []
+
+
+async def test_pause_all_keeps_channels_keywords_and_approval():
+    before = SubredditMapping(subreddit="a", channel_ids=[20], approval="auto", require_keywords=["x"]).to_dict()
+    cog = make(mappings={"a": dict(before)})
+    await cog._apply_pause_all(GUILD, ME, "pause")
+    await cog._apply_pause_all(GUILD, ME, "resume")
+    assert (await cog.config.mappings())["a"] == before
+
+
+async def test_pause_all_twice_and_resume_with_a_removed_feed():
+    cog = make(mappings={"a": SubredditMapping(subreddit="a").to_dict(),
+                         "b": SubredditMapping(subreddit="b").to_dict()})
+    await cog._apply_pause_all(GUILD, ME, "pause")
+    assert "Paused 0 of 2" in await cog._apply_pause_all(GUILD, ME, "pause")     # nothing new, list kept
+    assert sorted(await cog.config.paused_by_all()) == ["a", "b"]
+    async with cog.config.mappings() as live:
+        live.pop("b")
+    assert "Resumed 1" in await cog._apply_pause_all(GUILD, ME, "resume")
+    assert (await cog.config.mappings())["a"]["paused"] is False
+    assert "pause or resume" in await run(cog._apply_pause_all(GUILD, ME, "sometimes"))
+
+
+async def test_a_paused_feed_does_not_poll():
+    cog = make({"feet": [post("a")]})
+    await cog._apply_pause_all(GUILD, ME, "pause")
+    await cog._run_poll_cycle()
+    assert not FEET_CH.sent and not QUEUE_CH.sent
 
 
 async def test_add_maps_every_subreddit_and_refuses_a_non_nsfw_channel():

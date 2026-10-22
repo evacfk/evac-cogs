@@ -74,6 +74,10 @@ async def _mode_all_apply(cog, guild, member, mode):
     return await cog._apply_mode_all(guild, member, mode)
 
 
+async def _pause_all_apply(cog, guild, member, action):
+    return await cog._apply_pause_all(guild, member, action)
+
+
 async def _none(cog, guild):
     return None
 
@@ -180,6 +184,12 @@ def build_specs():
              choices=(("Manual: posts wait in the mod queue", constants.APPROVAL_MANUAL),
                       ("Auto: posts go straight to the channel", constants.APPROVAL_AUTO)),
              confirm="Change the approval mode of EVERY subreddit feed at once?", fmt=lambda v, g: "pick a mode to apply to all feeds"),
+        Spec("pause_all", "Pause or resume every feed…", "Feeds", "choice", get=_none, apply=_pause_all_apply,
+             choices=(("Pause every feed", "pause"),
+                      ("Resume the feeds this paused (manual pauses stay)", "resume")),
+             confirm="Pause or resume EVERY subreddit feed at once?", fmt=lambda v, g: "pick pause or resume for all feeds",
+             help="Stops all posting without touching channels, keywords or approval modes. Resume only wakes the feeds "
+                  "that Pause-every-feed stopped, so feeds you paused yourself stay paused."),
         Spec("reset_all", "Remove every feed", "Feeds", "action", apply=_reset_all_apply, button="Remove all feeds",
              confirm="Remove EVERY subreddit mapping, forget what was already posted and discard the waiting queue? Settings, the denied list and learned topics are kept.",
              help="Start over. Cards already in the queue channel stay in Discord but stop working."),

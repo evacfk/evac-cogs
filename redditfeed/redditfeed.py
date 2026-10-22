@@ -44,6 +44,7 @@ class RedditFeed(DashboardIntegration, commands.Cog):
             dedup_store={},
             dedup_ttl_days=constants.DEFAULT_DEDUP_TTL_DAYS,
             denied_subreddits=[],   # rejected in `discover`; never suggested again
+            paused_by_all=[],        # feeds the panel's "pause every feed" paused, so "resume" leaves manual pauses alone
             queue={},                # queue message id -> QueueEntry.to_dict()
             queue_channel_id=None,   # mod-only channel where manual-mode posts wait
             queue_min_score=constants.DEFAULT_QUEUE_MIN_SCORE,
@@ -797,6 +798,45 @@ class RedditFeed(DashboardIntegration, commands.Cog):
                 mappings[name] = mapping.to_dict()
             count = len(mappings)
         return f"{count} subreddit(s) are now **{parsed}**."
+
+    async def _apply_pause_all(self, guild, member, action: str) -> str:
+        """Pause every feed, or resume exactly the feeds a previous pause-all paused.
+        Feeds that were already paused by hand are never touched by either, so resuming
+        doesn't wake something a moderator stopped on purpose. Keywords, channels and
+        approval modes are untouched: this only flips the paused flag."""
+        paused = engine.parse_pause_action(action)
+        if paused is None:
+            raise PanelError("Pick pause or resume.")
+        by_all = [str(n) for n in await self.config.paused_by_all()]
+        changed = 0
+        async with self.config.mappings() as mappings:
+            if paused:
+                for name, raw in list(mappings.items()):
+                    mapping = SubredditMapping.from_dict(raw)
+                    if mapping.paused:
+                        continue
+                    mapping.paused = True
+                    mappings[name] = mapping.to_dict()
+                    if name not in by_all:
+                        by_all.append(name)
+                    changed += 1
+            else:
+                for name in by_all:
+                    raw = mappings.get(name)      # a feed removed since then is simply gone
+                    if not raw:
+                        continue
+                    mapping = SubredditMapping.from_dict(raw)
+                    if mapping.paused:
+                        mapping.paused = False
+                        mappings[name] = mapping.to_dict()
+                        changed += 1
+                by_all = []
+            total = len(mappings)
+        await self.config.paused_by_all.set(by_all)
+        if paused:
+            return (f"Paused {changed} of {total} feed(s); the rest were already paused. "
+                    "Nothing posts until you resume them. Posts already waiting in the queue can still be approved.")
+        return f"Resumed {changed} feed(s). Feeds you had paused by hand stay paused."
 
     async def _apply_reset_all(self, guild, member, _value=None) -> str:
         """Remove EVERY subreddit mapping and forget what was already posted. Settings, the denied list and learned topics are kept."""
