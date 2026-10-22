@@ -185,6 +185,14 @@ def lapsed_remove(lapsed: Dict[str, List[int]], key: str, uid: int) -> Dict[str,
 
 # ------------------------------------------------------------------- helpers
 
+def clip_text(text: str, limit: int) -> str:
+    """Cut at a line boundary so a long list never ends mid-name."""
+    if len(text) <= limit:
+        return text
+    cut = text[: limit - 1].rsplit("\n", 1)[0]
+    return cut + "\n…"
+
+
 _KEY_RE = re.compile(r"[^a-z0-9-]+")
 
 

@@ -129,6 +129,8 @@ class FakeChannel:
 class FakeBotMember:
     """The bot's own member: hashable (it keys channel overwrites) and carries its top role."""
 
+    id = 99
+
     def __init__(self, top_role):
         self.top_role = top_role
 

@@ -541,7 +541,7 @@ class AfterDark(commands.Cog):
             return await self._reply(interaction, "This only works inside the server.")
         cfg = await self.config.guild(guild).all()
         interest = self._interests(cfg).get(key)
-        if interest is None:
+        if interest is None or self._interest_hidden(interest, cfg):
             return await self._reply(interaction, "That one is closed.")
         rabbit = guild.get_role(cfg["rabbit_role_id"])
         if rabbit is None or rabbit not in member.roles:
@@ -752,6 +752,8 @@ class AfterDark(commands.Cog):
         plan_remove: List[Tuple[object, Interest, str]] = []
         plan_warn: List[Tuple[object, Interest, float]] = []
         for key, interest in interests.items():
+            if self._interest_hidden(interest, cfg):
+                continue          # nobody can post in a hidden channel, so nobody is warned or removed for it
             entries = state.setdefault(key, {})
             role = guild.get_role(interest.role_id) if interest.role_id else None
             for member in list(role.members) if role is not None else []:
@@ -1150,6 +1152,13 @@ class AfterDark(commands.Cog):
 
     # --------------------------------------------------------- panel / posts
 
+    @staticmethod
+    def _interest_hidden(interest: Interest, cfg: dict) -> bool:
+        """True while ANY of the interest's channels is hidden: its button goes away and nobody can join,
+        because a join would give them a per-user allow on a channel that is meant to be hidden."""
+        hidden = {int(c) for c in (cfg.get("hidden_channels") or {})}
+        return any(c in hidden for c in interest.channel_ids)
+
     async def _register_interest_view(self, guild):
         cfg = await self.config.guild(guild).all()
         old = self._interest_views.pop(guild.id, None)
@@ -1158,9 +1167,27 @@ class AfterDark(commands.Cog):
         interests = list(self._interests(cfg).values())
         if not interests:
             return
-        view = InterestView(self, interests)
+        view = InterestView(self, [i for i in interests if not self._interest_hidden(i, cfg)])
         self._interest_views[guild.id] = view
         self.bot.add_view(view)
+
+    async def _refresh_panel(self, guild) -> str:
+        """Re-register the buttons and edit the posted member panel to match. Returns a sentence for the reply."""
+        await self._register_interest_view(guild)
+        cfg = await self.config.guild(guild).all()
+        saved, view = cfg["panel_post"], self._interest_views.get(guild.id)
+        if not saved or view is None:
+            return ""
+        channel = guild.get_channel(saved.get("channel_id") or 0)
+        if channel is None:
+            return " The member panel's channel is gone; re-post it with `.afterdark panel #channel`."
+        visible = [i for i in self._interests(cfg).values() if not self._interest_hidden(i, cfg)]
+        try:
+            message = await channel.fetch_message(saved["message_id"])
+            await message.edit(embed=embeds.panel_embed(visible, cfg["warn_days"], cfg["remove_days"]), view=view)
+        except (discord.NotFound, discord.HTTPException, KeyError):
+            return " I couldn't update the member panel message; re-post it with `.afterdark panel #channel`."
+        return " Updated the buttons on the member panel."
 
     async def _post_or_edit(self, guild, channel, saved: dict, *, embed, view) -> "discord.Message":
         """Edit the previously posted message if it still exists, else send a new one."""
@@ -1250,6 +1277,8 @@ class AfterDark(commands.Cog):
         interest = self._interests(cfg).get(key)
         if interest is None:
             return await ctx.send("No such interest. See `.afterdark interest list`.")
+        if self._interest_hidden(interest, cfg):
+            return await ctx.send(f"{interest.name} is hidden right now. Unhide the channels first (`.afterdark`, Interests & feeds).")
         rabbit = ctx.guild.get_role(cfg["rabbit_role_id"])
         if rabbit is None or rabbit not in member.roles:
             return await ctx.send("They aren't in Rabbit Hole yet. `.afterdark grant` first.")
@@ -1508,8 +1537,9 @@ class AfterDark(commands.Cog):
             return await ctx.send("Add an interest first in `.afterdark` (Interests).")
         channel = channel or ctx.channel
         await self._register_interest_view(ctx.guild)
-        view = self._interest_views.get(ctx.guild.id) or InterestView(self, interests.values())
-        embed = embeds.panel_embed(interests.values(), cfg["warn_days"], cfg["remove_days"])
+        visible = [i for i in interests.values() if not self._interest_hidden(i, cfg)]
+        view = self._interest_views.get(ctx.guild.id) or InterestView(self, visible)
+        embed = embeds.panel_embed(visible, cfg["warn_days"], cfg["remove_days"])
         try:
             message = await self._post_or_edit(ctx.guild, channel, cfg["panel_post"], embed=embed, view=view)
         except (discord.Forbidden, discord.HTTPException) as exc:
@@ -1608,7 +1638,7 @@ class AfterDark(commands.Cog):
         await self._register_interest_view(guild)
         still_used = {c for other in interests.values() for c in Interest.from_dict(other).channel_ids}
         exclusive = [c for c in gone.channel_ids if c not in still_used]
-        paused = await self._pause_feeds_on(guild, member, set(exclusive))
+        paused = [label for _fid, label in await self._pause_feeds_on(guild, member, set(exclusive))]
         # Close the channels: a removed interest must not leave members with a view of its channel.
         hidden, failed, cleared = [], [], 0
         for channel_id in exclusive:
@@ -1621,6 +1651,10 @@ class AfterDark(commands.Cog):
                 cleared += count
             else:
                 failed.append(channel.mention)
+        snaps = dict(await self.config.guild(guild).hidden_channels())
+        forgot = [snaps.pop(str(c), None) is not None for c in exclusive]     # a list, so every channel is forgotten
+        if any(forgot):
+            await self.config.guild(guild).hidden_channels.set(snaps)
         # Forget who was tracked or lapsed under this key, so a later interest with the same key
         # starts clean and the sweep never warns people who no longer have the channel.
         state = await self._get_state(guild)
@@ -1708,6 +1742,207 @@ class AfterDark(commands.Cog):
             log.warning("afterdark: could not hide %s: %s", channel.id, exc)
             return False, 0
         return True, cleared
+
+    # ------------------------------------------------------------------
+    # Hide every bot channel (name starts with the robot emoji), reversibly
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _with_view(overwrite, value):
+        """A copy of an overwrite with only "View Channel" changed (None = neutral)."""
+        new = discord.PermissionOverwrite.from_pair(*overwrite.pair())
+        new.view_channel = value
+        return new
+
+    def _prefixed_channels(self, guild) -> list:
+        return sorted((c for c in guild.text_channels if c.name.startswith(C.HIDE_PREFIX)), key=lambda c: c.name)
+
+    def _hide_plan(self, guild, channel, keep_member):
+        """(new overwrites, snapshot) for one channel. @everyone is denied, and every member or role that
+        could see it gets "View Channel" turned OFF in place (their other flags stay), so unhiding can flip
+        exactly those back. The bot, other bots, integration roles and `keep_member` keep their access."""
+        old = dict(channel.overwrites)
+        default_ow = old.get(guild.default_role)
+        snapshot = {"flipped": [], "added": [],
+                    "default_view": getattr(default_ow, "view_channel", None) if default_ow is not None else None}
+        new = {}
+        for target, ow in old.items():
+            if target == guild.default_role:
+                continue
+            keep = (target == guild.me or target == keep_member
+                    or getattr(target, "bot", False) or getattr(target, "managed", False))
+            if not keep and getattr(ow, "view_channel", None) is True:
+                new[target] = self._with_view(ow, False)
+                snapshot["flipped"].append(target.id)
+            else:
+                new[target] = ow
+        new[guild.default_role] = (self._with_view(default_ow, False) if default_ow is not None
+                                   else discord.PermissionOverwrite(view_channel=False))
+        for who, flags in ((guild.me, dict(view_channel=True, send_messages=True, attach_files=True,
+                                           embed_links=True, read_message_history=True)),
+                           (keep_member, dict(view_channel=True, read_message_history=True, add_reactions=True))):
+            if who is None:
+                continue
+            ow = new.get(who)
+            if ow is None:
+                new[who] = discord.PermissionOverwrite(**flags)
+                snapshot["added"].append(who.id)          # unhide takes this overwrite away again
+            elif getattr(ow, "view_channel", None) is not True:
+                new[who] = self._with_view(ow, True)
+        return new, snapshot
+
+    def _unhide_plan(self, guild, channel, snapshot: dict) -> dict:
+        """Undo _hide_plan: flip back only the targets it flipped (and only if they are still denied)."""
+        flipped = {int(i) for i in snapshot.get("flipped", [])}
+        added = {int(i) for i in snapshot.get("added", [])}
+        new = {}
+        for target, ow in dict(channel.overwrites).items():
+            if getattr(target, "id", None) in added and target != guild.default_role:
+                continue              # hide created this one for the bot or you; it wasn't there before
+            if target == guild.default_role:
+                prior = snapshot.get("default_view")
+                new[target] = ow if getattr(ow, "view_channel", None) == prior else self._with_view(ow, prior)
+            elif getattr(target, "id", None) in flipped and getattr(ow, "view_channel", None) is False:
+                new[target] = self._with_view(ow, True)
+            else:
+                new[target] = ow
+        return new
+
+    async def _edit_all(self, changes, reason: str):
+        """Apply [(channel, old overwrites, new overwrites)] one by one; if any fails, put the finished
+        ones back and raise, so a hide or unhide is all or nothing."""
+        done = []
+        for channel, old, new in changes:
+            try:
+                await channel.edit(overwrites=new, reason=reason)
+            except (discord.Forbidden, discord.HTTPException) as exc:
+                for back, previous, _n in reversed(done):
+                    try:
+                        await back.edit(overwrites=previous, reason="AfterDark: rolling back")
+                    except (discord.Forbidden, discord.HTTPException):
+                        log.warning("afterdark: rollback failed in %s", back.id)
+                raise PanelError(f"I couldn't change #{channel.name} ({exc}). Nothing was changed. "
+                                 "The bot needs Manage Channel and Manage Permissions there.")
+            done.append((channel, old, new))
+
+    async def _apply_hide_preview(self, guild, member, _value=None) -> str:
+        """Dry run: list what a hide would do, change nothing, and arm the hide for 15 minutes."""
+        cfg = await self.config.guild(guild).all()
+        hidden = {int(c) for c in cfg["hidden_channels"]}
+        matches = self._prefixed_channels(guild)
+        if not matches:
+            raise PanelError(f"No text channel starts with {C.HIDE_PREFIX}.")
+        todo = [c for c in matches if c.id not in hidden]
+        if not todo:
+            raise PanelError(f"All {len(matches)} {C.HIDE_PREFIX} channel(s) are already hidden.")
+        await self.config.guild(guild).hide_preview.set({"ts": self._clock(), "ids": [c.id for c in todo]})
+        interests = self._interests(cfg)
+        known = {c for i in interests.values() for c in i.channel_ids}
+        feeds = await self._feed_rows(guild)
+        for _fid, _label, ids, _p, _a in feeds:
+            known.update(ids)
+        mine = [c for c in todo if c.id in known]
+        other = [c for c in todo if c.id not in known]
+        after = hidden | {c.id for c in todo}
+        buttons = [i.name for i in interests.values()
+                   if any(c in after for c in i.channel_ids) and not self._interest_hidden(i, cfg)]
+        pausing = [label for _f, label, ids, is_paused, _a in feeds if not is_paused and all(c in after for c in ids)]
+
+        def names(chs):
+            return ", ".join(f"#{c.name}" for c in chs) or "none"
+        lines = [f"Preview only, nothing changed. Would hide {len(todo)} channel(s) from everyone except you and the bots.",
+                 f"Feed or interest channels ({len(mine)}): {names(mine)}",
+                 f"OTHER {C.HIDE_PREFIX} channels, not a feed or interest ({len(other)}), CHECK THESE: {names(other)}"]
+        if buttons:
+            lines.append("Buttons removed: " + ", ".join(buttons))
+        if pausing:
+            lines.append("Feeds paused: " + ", ".join(pausing))
+        lines.append("To go ahead, pick \"Hide the channels from the last preview\" and confirm within 15 minutes.")
+        return engine.clip_text("\n".join(lines), 1900)
+
+    async def _apply_hide(self, guild, member, action: str) -> str:
+        action = (action or "").strip().lower()
+        if action == "unhide":
+            return await self._unhide_all(guild, member)
+        if action != "hide":
+            raise PanelError("Pick hide or unhide.")
+        cfg = await self.config.guild(guild).all()
+        preview = cfg["hide_preview"]
+        if not preview or self._clock() - float(preview.get("ts", 0)) > C.HIDE_PREVIEW_TTL:
+            raise PanelError("Run the preview first. It lists what will be hidden, and a hide only uses a preview "
+                             "from the last 15 minutes.")
+        hidden = {int(c) for c in cfg["hidden_channels"]}
+        channels = []
+        for cid in preview.get("ids", []):
+            ch = guild.get_channel(int(cid))
+            if ch is not None and ch.name.startswith(C.HIDE_PREFIX) and ch.id not in hidden:
+                channels.append(ch)
+        if not channels:
+            raise PanelError("Nothing from the preview is left to hide (renamed, deleted or already hidden). "
+                             "Run the preview again.")
+        changes, snaps = [], {}
+        for ch in channels:
+            new, snap = self._hide_plan(guild, ch, member)
+            changes.append((ch, dict(ch.overwrites), new))
+            snaps[str(ch.id)] = snap
+        await self._edit_all(changes, "AfterDark: hiding bot channels")
+        await self.config.guild(guild).hidden_channels.set({**cfg["hidden_channels"], **snaps})
+        await self.config.guild(guild).hide_preview.set({})
+        now_hidden = hidden | {c.id for c in channels}
+        paused = await self._pause_feeds_on(guild, member, now_hidden)
+        if paused:
+            await self.config.guild(guild).hidden_feeds.set(list(cfg["hidden_feeds"]) + [fid for fid, _l in paused])
+        interests = self._interests(cfg)
+        gone = [i.name for i in interests.values() if any(c.id in {x.id for x in channels} for c in
+                                                         self._interest_channels(guild, i)) and not self._interest_hidden(i, cfg)]
+        note = await self._refresh_panel(guild)
+        out = f"Hid {len(channels)} channel(s): " + ", ".join(f"#{c.name}" for c in channels) + "."
+        out += " Everyone except you and the bots lost access; unhide restores it exactly."
+        if paused:
+            out += f" Paused {len(paused)} feed(s): {', '.join(l for _f, l in paused)}."
+        if gone:
+            out += f" Buttons removed: {', '.join(gone)}."
+        return out + note
+
+    async def _unhide_all(self, guild, member) -> str:
+        cfg = await self.config.guild(guild).all()
+        snaps = cfg["hidden_channels"]
+        if not snaps:
+            raise PanelError("Nothing is hidden.")
+        changes, restored = [], []
+        for cid_s, snap in snaps.items():
+            ch = guild.get_channel(int(cid_s))
+            if ch is None:
+                continue            # deleted while hidden: nothing to restore
+            changes.append((ch, dict(ch.overwrites), self._unhide_plan(guild, ch, snap)))
+            restored.append(ch)
+        await self._edit_all(changes, "AfterDark: unhiding bot channels")
+        hidden = {int(c) for c in snaps}
+        await self.config.guild(guild).hidden_channels.set({})
+        resumed = []
+        rows = {row[0]: row for row in await self._feed_rows(guild)}
+        for fid in cfg["hidden_feeds"]:
+            row = rows.get(fid)
+            if row is not None and row[3]:      # still paused: resume it
+                try:
+                    await self._apply_feed_pause(guild, member, fid)
+                    resumed.append(row[1])
+                except PanelError as exc:
+                    log.warning("afterdark: could not resume %s: %s", row[1], exc)
+        await self.config.guild(guild).hidden_feeds.set([])
+        # Nobody could post while it was hidden, so the inactivity clocks start fresh.
+        state, now = await self._get_state(guild), self._clock()
+        for key, interest in self._interests(cfg).items():
+            if any(c in hidden for c in interest.channel_ids):
+                for entry in state.get(key, {}).values():
+                    entry["since"], entry["last"], entry["warned"] = now, now, 0.0
+                self._mark_dirty(guild.id)
+        await self._flush_state(guild.id)
+        note = await self._refresh_panel(guild)
+        out = f"Unhid {len(restored)} channel(s): " + ", ".join(f"#{c.name}" for c in restored) + "."
+        if resumed:
+            out += f" Resumed {len(resumed)} feed(s): {', '.join(resumed)}."
+        return out + " Members' access is back as it was; inactivity clocks restarted." + note
 
     @staticmethod
     def _real_channels(guild, picked) -> list:
@@ -1852,13 +2087,13 @@ class AfterDark(commands.Cog):
         """Pause every active feed that posts ONLY to these channels. Feeds that also post elsewhere are left alone."""
         if not channel_ids:
             return []
-        paused = []
+        paused = []     # (feed id, label)
         for item_id, label, ids, is_paused, _approval in await self._feed_rows(guild):
             if is_paused or not all(c in channel_ids for c in ids):
                 continue
             try:
                 await self._apply_feed_pause(guild, member, item_id)
-                paused.append(label)
+                paused.append((item_id, label))
             except PanelError as exc:
                 log.warning("afterdark: could not pause %s: %s", label, exc)
         return paused
@@ -1876,6 +2111,7 @@ class AfterDark(commands.Cog):
             f"{i.emoji if engine.valid_emoji(i.emoji) else ''} `{k}` -> "
             + ", ".join(f"<#{c}>" for c in i.channel_ids)
             + f"{f' role <@&{i.role_id}>' if i.role_id else ''} ({len(state.get(k, {}))} tracked)"
+            + (" HIDDEN" if self._interest_hidden(i, cfg) else "")
             for k, i in interests.items()
         ]
         await ctx.send("\n".join(lines), allowed_mentions=discord.AllowedMentions.none())

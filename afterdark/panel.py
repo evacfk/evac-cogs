@@ -100,7 +100,8 @@ async def _get_interests(cog, guild):
         emoji = interest.emoji + " " if engine.valid_emoji(interest.emoji) else ""
         channels = ", ".join(f"<#{c}>" for c in interest.channel_ids)
         role = f" · role <@&{interest.role_id}>" if interest.role_id else ""
-        out.append((key, f"{emoji}{interest.name}", f"{channels}{role}"))
+        hidden = " · HIDDEN" if cog._interest_hidden(interest, cfg) else ""
+        out.append((key, f"{emoji}{interest.name}", f"{channels}{role}{hidden}"))
     return out
 
 
@@ -119,6 +120,18 @@ async def _interest_save(cog, guild, member, item_id, values, picked):
 
 async def _interest_remove(cog, guild, member, item_id):
     return await cog._apply_interest_remove(guild, member, item_id)
+
+
+async def _hide_preview_apply(cog, guild, member, _value):
+    return await cog._apply_hide_preview(guild, member)
+
+
+async def _hide_apply(cog, guild, member, action):
+    return await cog._apply_hide(guild, member, action)
+
+
+async def _hidden_get(cog, guild):
+    return len(await cog.config.guild(guild).hidden_channels())
 
 
 async def _toggle_invites(cog, guild, member, value):
@@ -279,6 +292,18 @@ def build_specs():
              help="Reddit subreddits and Telegram topics that post into a channel. Add one with a subreddit or a topic, "
                   "and either a new channel or existing ones; name an interest to add the channel to it. "
                   "Edit moves a feed to other channels; Remove stops it and leaves the channel."),
+        Spec("hide_preview", "Preview: hide the \U0001F916 channels", TAB_INTERESTS, "action", apply=_hide_preview_apply,
+             button="Preview (changes nothing)",
+             help="Step 1. Lists every text channel whose name starts with \U0001F916, flags the ones that are NOT a feed or "
+                  "interest channel, and shows which buttons and feeds would go. Nothing changes."),
+        Spec("hide_channels", "Hide or unhide the \U0001F916 channels\u2026", TAB_INTERESTS, "choice", get=_hidden_get,
+             apply=_hide_apply, confirm="Hide the channels from the last preview? Everyone except you and the bots loses "
+                                        "access until you unhide.",
+             confirm_if=lambda v: v == "hide",
+             choices=(("Hide the channels from the last preview", "hide"), ("Unhide everything I hid", "unhide")),
+             fmt=lambda v, g: f"{v} hidden" if v else "nothing hidden",
+             help="Step 2. Hide pauses their feeds and removes their buttons; members keep their access underneath, "
+                  "so Unhide restores everything. Other bots keep access so they can still post."),
         Spec("interest_category", "Category for new channels", TAB_INTERESTS, "channel", get=_cfg("interest_category_id"),
              apply=_category_apply, fmt=_category_fmt, channel_types=("category",), clearable=True,
              help="Where channels created from the forms above go. Needed only if you create channels here."),

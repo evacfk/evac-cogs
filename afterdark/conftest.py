@@ -34,6 +34,18 @@ if _discord is not None and not hasattr(_discord, "__version__"):
             def __init__(self, **kwargs):
                 self.__dict__.update(kwargs)
 
+            def __getattr__(self, name):      # like discord.py: a flag nobody set reads as None
+                if name.startswith("_"):
+                    raise AttributeError(name)
+                return None
+
+            def pair(self):
+                return (self, None)
+
+            @classmethod
+            def from_pair(cls, allow, deny):
+                return cls(**vars(allow))
+
         _discord.PermissionOverwrite = _PermissionOverwrite
 
     class _Button:

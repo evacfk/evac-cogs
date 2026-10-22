@@ -84,6 +84,8 @@ RULES_TEXT = """**Welcome to the Rabbit Hole.** This is an adults-only space ins
 ACCESS_MODES = ("roles", "overwrites")
 # Discord allows 100 permission overwrites per channel; refuse before the cap.
 OVERWRITE_SOFT_CAP = 95
+HIDE_PREFIX = "🤖"      # channels whose name starts with this can be hidden in one go
+HIDE_PREVIEW_TTL = 900          # seconds a preview stays valid for the hide that follows it
 
 GUILD_DEFAULTS = dict(
     adult_role_id=DEFAULT_ADULT_ROLE_ID,
@@ -135,6 +137,9 @@ GUILD_DEFAULTS = dict(
     interest_state={},           # key -> {str(uid): {"since","last","warned"}}
     rabbit_post={},              # {"channel_id","message_id"}
     panel_post={},               # {"channel_id","message_id"}
+    hidden_channels={},          # str(channel id) -> {"flipped": [target ids], "default_view": bool|None}; how to undo a hide
+    hidden_feeds=[],             # feed ids ("r:name"/"t:id") that a hide paused, so unhide resumes only those
+    hide_preview={},             # {"ts", "ids"}: what the last preview listed; a hide only acts on this
 )
 
 # Activity timestamps are only rewritten when this old, so a chatty member does
