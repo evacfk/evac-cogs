@@ -32,19 +32,24 @@ have exactly one valid answer).
 - Set it up in the same panel: pool (exactly 5), *Set up objects*, *Go live*, post the poem. Test mode shrinks the lockout,
   cooldown, adjournment and hint waits to 30 seconds.
 
-## The Treacle Well (Medium, `treacle_well`, in progress: stages 5-6 still to come)
-A six-stage trail of different tasks played in the server and in DMs, built in three pushes. Everything personal (which rooms,
-which numbers and words) is generated per member from a private seed, so one member's route is useless to another. There is no
-typed trigger: the pinned poem is a riddle, and the member answers it by reacting to the poem (the bot removes every reaction
-at once, so the poem always looks untouched). Built so far: stage 1 (the poem), stage 2 (three rooms found one after
-another, each with a pinned tea table and a **Look** button; its replies are private), stage 3 (a word test played by DM:
-the member asks the bot about single words, then answers one long message) and stage 4 (a pour-and-toast task using the
-**Pour** and **Toast** buttons on two of the tea tables). DM the bot `recap` to get the current clue again. Three wrong
-tables in a row make the tea tables rest for 30 minutes; a failed word test rests 15 minutes and re-rolls the words; three
-wrong toasts rest the cups for an hour.
-- Needs **trail rooms** (public forum posts or channels, 12 planned, at least 6 while it is unfinished), set under Hunt with
-  *Trail rooms*. *Set up objects* pins a tea table in each. It does not use the 2-5 hiding place pool.
-- While unfinished it is playable by admins and Manage Server members only; everyone else's reactions are just removed.
+## The Treacle Well (Medium, `treacle_well`, six stages)
+A six-stage trail of different tasks played in the server and in DMs. Everything personal (which rooms, which numbers, words,
+buttons and the final answer) is generated per member from a private seed, so one member's route is useless to another. There
+is no typed trigger: the pinned poem is a riddle, and the member answers it by reacting to the poem (the bot removes every
+reaction at once, so the poem always looks untouched).
+- **Stage 1** the poem. **Stage 2** three rooms found one after another, each with a pinned tea table and a **Look** button
+  (replies are private). **Stage 3** a word test played by DM: the member asks the bot about single words, then answers one long
+  message. **Stage 4** a pour-and-toast task using the **Pour** and **Toast** buttons on two of the tea tables. **Stage 5** four
+  ordered "this button in that room" steps given as short verses. **Stage 6** a six-letter answer, DM'd to the bot.
+- Members DM the bot `recap` for the current clue and `hint` when stuck: a stage's first hint comes 24 hours after it opened, the
+  second 12 hours later, at most 2 per stage (Test mode: 30 seconds). While a Knave's Trial round is open `hint` belongs to it.
+- Penalties: three wrong tables in a row rest the tea tables 30 minutes; a failed word test rests 15 minutes; three wrong toasts
+  rest the cups an hour; five slips in a day close the tables for two hours; a wrong final answer costs an hour.
+- The Hall shows each solver's hints and how many days it took. `.secrethunt status` shows a funnel (members at each stage,
+  median minutes per finished stage, hints taken). `.secrethunt who <member>` shows one member's counters.
+- Needs **trail rooms** (public forum posts or channels, 12 planned, at least 6), set under Hunt with *Trail rooms*. *Set up
+  objects* pins a tea table in each. It does not use the 2-5 hiding place pool.
+- While marked unfinished it is playable by admins and Manage Server members only; everyone else's reactions are just removed.
 - The delivery loop reopens trail rooms that auto-archived. `preview treacle_well` DMs you your own trail (spoilers).
 
 ## Rehearsing (Test channel)

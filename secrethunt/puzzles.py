@@ -268,7 +268,7 @@ TREACLE_WELL = {
         "\N{TEACUP WITHOUT HANDLE} *The Dormouse stirs, blinks, and begins his tale at once, as if he had never stopped.*\n\n"
         "There were three little sisters, and they lived at the bottom of a well. Elsie was the eldest. "
         "**Find her**: she sits at a tea table in {pointer}. Press **Look** on it.\n\n"
-        "*Lost the thread? Whisper me* `recap`."
+        "*Lost the thread? Whisper me* `recap`. *Stuck for a good while? Whisper* `hint`."
     ),
     "sisters": [
         # Elsie
@@ -292,7 +292,7 @@ TREACLE_WELL = {
         "**everything**, and I will not say why.\"\n\n"
         "Whisper me a word, **one word at a time**, and I will say whether I can draw it. When you think you know what I "
         "can draw, say `ready` and I will test you.\n\n"
-        "*Lost the thread? Whisper me* `recap`."
+        "*Lost the thread? Whisper me* `recap`. *Stuck for a good while? Whisper* `hint`."
     ),
     "probe_yes": "\N{TEACUP WITHOUT HANDLE} **{word}**: *he nods slowly.* \"I can draw that.\"",
     "probe_no": "\N{TEACUP WITHOUT HANDLE} **{word}**: *he shakes his head.* \"I cannot draw that.\"",
@@ -319,7 +319,7 @@ TREACLE_WELL = {
         "\"Now the pouring. Go to {pour_pointer} and press **Pour** once for every lump, every spoonful and every pour the "
         "three sisters spoke of, all of them together. Then carry your cup to {toast_pointer} and press **Toast**. If "
         "you pour wrong, the cup tips itself out.\"\n\n"
-        "*Lost the thread? Whisper me* `recap`."
+        "*Lost the thread? Whisper me* `recap`. *Stuck for a good while? Whisper* `hint`."
     ),
     # stage 4: the Long Pour (buttons)
     "pour_ok": "\N{TEACUP WITHOUT HANDLE} *You pour.* The cup holds **{n}**.",
@@ -338,8 +338,55 @@ TREACLE_WELL = {
     ),
     "stage4_done": (
         "\N{TEACUP WITHOUT HANDLE} *The Dormouse drinks, sighs and smiles.* \"That is exactly how much she poured. Keep "
-        "this: **{token}**.\"\n\n*He falls asleep with his head on the table. The rest of the tale is not written yet.*"
+        "this: **{token}**.\"\n\n"
+        "*He settles his head on his arm and recites, half asleep, the four courtesies a guest owes the table. Pay them in "
+        "order, each in its own place:*\n\n{verses}\n\n"
+        "*Pay them one after another. A slip, and he starts again from the first.*\n\n"
+        "*Lost the thread? Whisper me* `recap`. *Stuck for a good while? Whisper* `hint`."
     ),
+    # stage 5: the Courtesies (buttons). One verse per button, in the order of the steps; each ends with where it is paid.
+    "verse_label": ["The first courtesy.", "The second courtesy.", "The third courtesy.", "The last courtesy."],
+    "verse_place": "*It is paid in {pointer}.*",
+    "verses": {
+        "look": "*The Cat gives no answers; he grins all the day.*\n*Look at the table, and touch not a tray.*",
+        "pour": "*A Hatter will tell you the rule of the pot:*\n*it is tipped for the cup, whether thirsty or not.*",
+        "bow": "*The Queen is not pleased, though she's never been wrong;*\n*so bend at the middle, and not for too long.*",
+        "toast": "*The March Hare has a cup, and he lifts it up high;*\n*lift yours to the room, and drink to the sky.*",
+    },
+    "courtesy_ok": {
+        "look": "\N{TEACUP WITHOUT HANDLE} *The Cat's grin hangs in the air a moment longer than the Cat.* A courtesy paid (**{done} of 4**).",
+        "pour": "\N{TEACUP WITHOUT HANDLE} *The Hatter nods once, which is as warm as he gets.* A courtesy paid (**{done} of 4**).",
+        "bow": "\N{TEACUP WITHOUT HANDLE} *Somewhere, the Queen almost approves.* A courtesy paid (**{done} of 4**).",
+        "toast": "\N{TEACUP WITHOUT HANDLE} *The March Hare clinks his cup against nothing at all.* A courtesy paid (**{done} of 4**).",
+    },
+    "courtesy_lost": (
+        "\N{TEACUP WITHOUT HANDLE} *A teacup rattles in its saucer, and the Dormouse wakes with a start.* \"No, no, no. "
+        "From the very first, if you please.\""
+    ),
+    "courtesy_rest": "\N{SLEEPING SYMBOL} *The tables have closed for the evening.* They will open {until}.",
+    "courtesy_rest_start": (
+        "\N{SLEEPING SYMBOL} *A bell rings somewhere, and every table is cleared at once.* Too many slips today. "
+        "They will open {until}."
+    ),
+    "stage5_done": (
+        "\N{TEACUP WITHOUT HANDLE} *The last courtesy is paid, and every cup on the table turns, very slowly, to face you.*\n\n"
+        "\"There,\" says the Dormouse. \"Keep this: **{token}**.\"\n\n"
+        "\"Now the end of the tale, the only part I can tell without falling asleep. You hold six words: the three the "
+        "sisters kept, and one each from the Muchness, the Pour and the Courtesies. I tell them in this order: "
+        "**{tale}**. Take the first letter of each, in that order, run them together, and whisper me the six letters. "
+        "That is the bottom of the well.\"\n\n"
+        "*Lost the thread? Whisper me* `recap`. *Stuck for a good while? Whisper* `hint`."
+    ),
+    # stage 6: the Bottom of the Well (DM)
+    "answer_wrong": (
+        "\N{TEACUP WITHOUT HANDLE} *The Dormouse listens, and shakes his head very slowly.* \"That is not the bottom of "
+        "the well.\" You may try again {until}."
+    ),
+    "answer_rest": "\N{SLEEPING SYMBOL} *The Dormouse has dozed off.* You may try again {until}.",
+    # hints (DM `hint`), per stage
+    "hint": "\N{TEACUP WITHOUT HANDLE} *The Dormouse mumbles in his sleep:* \"{hint}\"\n\n*(hint {n} of {max} for this part of the tale)*",
+    "hint_early": "\N{TEACUP WITHOUT HANDLE} *The Dormouse is not ready to say more yet.* Ask again {when}.",
+    "hint_max": "\N{TEACUP WITHOUT HANDLE} *The Dormouse has said all he will say about this part.*",
     # how each room is named in a sister's line: a written description when the room's title contains the keyword, the
     # letter clue otherwise (and always for the steps in `letter_variants`)
     "pointers": {

@@ -1,7 +1,7 @@
 """Config defaults and fixed values for secrethunt (Secrets of Wonderland)."""
 from zoneinfo import ZoneInfo
 
-COG_VERSION = "1.12.0"
+COG_VERSION = "1.13.0"
 CONFIG_IDENTIFIER = 0x5EC8E7A1
 HOME_TZ = ZoneInfo("America/Los_Angeles")
 
@@ -33,6 +33,12 @@ TRAIL_MUCHNESS_REST_MINUTES = 15   # stage 3: a wrong test is followed by this l
 TRAIL_POUR_CAP = 99                # stage 4: the cup holds no more than this many pours
 TRAIL_POUR_WRONGS = 3              # stage 4: this many wrong toasts in a row and the cups are washed...
 TRAIL_POUR_REST_MINUTES = 60       # ...for this long (test mode: TEST_DELAY_SECONDS)
+TRAIL_COURTESY_SLIPS = 5           # stage 5: this many wrong presses in a day and the tables close...
+TRAIL_COURTESY_REST_MINUTES = 120  # ...for this long (test mode: TEST_DELAY_SECONDS)
+TRAIL_ANSWER_REST_MINUTES = 60     # stage 6: a wrong answer costs this long (test mode: TEST_DELAY_SECONDS)
+TRAIL_HINT_FIRST_HOURS = 24        # a stage's first hint comes this long after the stage opened...
+TRAIL_HINT_GAP_HOURS = 12          # ...and the second this long after the first (test mode: TEST_DELAY_SECONDS)
+TRAIL_HINTS_PER_STAGE = 2
 ICON_MAX_BYTES = 256 * 1024
 HALL_BUDGET = 3800                 # characters of solver names per Hall of Secrets post (embed limit is 4096)
 

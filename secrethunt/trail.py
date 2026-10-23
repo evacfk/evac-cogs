@@ -7,6 +7,8 @@ seed (salt + puzzle + member), so nothing needs storing but a few counters. Stag
   2  The Three Sisters   find three rooms one after another; each sister's line holds the riddle for the next
   3  The Muchness        the Dormouse draws only some words (a hidden rule per member); probe it by DM, then pass a test
   4  The Long Pour       press Pour exactly N times in one room (N = the sisters' numbers added up), then Toast in another
+  5  The Courtesies      four ordered "this button, in that room" steps, each given as a verse
+  6  The Bottom of the Well  the first letters of the six collected words, in the order the tale tells them, by DM
 
 The draw order in `plan` is part of the contract: later stages only APPEND draws, so a member's earlier choices (their
 three rooms, their numbers) never change when a new stage ships.
@@ -19,11 +21,17 @@ from collections import deque
 
 from . import engine
 from .constants import (
-    TEST_DELAY_SECONDS, TRAIL_MUCHNESS_REST_MINUTES, TRAIL_PROBES_PER_DAY, TRAIL_POUR_CAP, TRAIL_POUR_REST_MINUTES,
-    TRAIL_POUR_WRONGS, TRAIL_REACT_WINDOW, TRAIL_REACTS_PER_HOUR, TRAIL_REST_MINUTES, TRAIL_WRONG_LOOKS,
+    TEST_DELAY_SECONDS, TRAIL_ANSWER_REST_MINUTES, TRAIL_COURTESY_REST_MINUTES, TRAIL_COURTESY_SLIPS,
+    TRAIL_HINT_FIRST_HOURS, TRAIL_HINT_GAP_HOURS, TRAIL_HINTS_PER_STAGE, TRAIL_MUCHNESS_REST_MINUTES,
+    TRAIL_PROBES_PER_DAY, TRAIL_POUR_CAP, TRAIL_POUR_REST_MINUTES, TRAIL_POUR_WRONGS, TRAIL_REACT_WINDOW,
+    TRAIL_REACTS_PER_HOUR, TRAIL_REST_MINUTES, TRAIL_WRONG_LOOKS,
 )
 
 SISTERS = ("Elsie", "Lacie", "Tillie")
+BUTTONS = ("look", "pour", "bow", "toast")
+COURTESIES = 4                  # stage 5: how many steps
+# The six words stage 6 uses, in the order they are collected (the three sisters', then one from each of stages 3-5).
+SOURCE_LABELS = ("Elsie's word", "Lacie's word", "Tillie's word", "the Muchness word", "the Pour word", "the Courtesies word")
 NUMBER_RANGE = (2, 13)          # each sister's number; stage 4's count is their sum, so 6 to 39
 
 # Stage 1. Each slot accepts a few look-alike emoji so a fair reading of the poem is never refused. The poem names
@@ -85,8 +93,19 @@ def plan(seed_text: str, n_rooms: int) -> dict:
     rule = RULES[rng.randrange(len(RULES))]                        # stage 3: the Dormouse's hidden rule
     pour_room, toast_room = rng.sample(range(n_rooms), 2)          # stage 4: where to pour and where to toast
     extra = rng.sample([w for w in TOKEN_WORDS if w not in tokens], 3)  # the words stages 3, 4 and 5 give
+    courtesy_rooms = rng.sample(range(n_rooms), COURTESIES)        # stage 5: four different rooms...
+    courtesy_buttons = rng.sample(BUTTONS, COURTESIES)             # ...each paid with a different button
+    tale = rng.sample(range(len(SOURCE_LABELS)), len(SOURCE_LABELS))  # stage 6: the order the tale tells the six words
+    words = tokens + extra
     return {"chain": chain, "numbers": numbers, "tokens": tokens, "rule": rule, "pour_room": pour_room,
-            "toast_room": toast_room, "extra_tokens": extra, "pour_total": sum(numbers), "seed": seed_text}
+            "toast_room": toast_room, "extra_tokens": extra, "pour_total": sum(numbers), "seed": seed_text,
+            "courtesy_rooms": courtesy_rooms, "courtesy_buttons": courtesy_buttons, "tale": tale,
+            "answer": "".join(words[i][0] for i in tale)}
+
+
+def tale_text(p: dict) -> str:
+    """The order the tale tells the six words, as the Dormouse says it (names the sources, never the words)."""
+    return ", ".join(SOURCE_LABELS[i] for i in p["tale"])
 
 
 # ---------------------------------------------------------------- state
@@ -112,6 +131,14 @@ def ensure(state: dict) -> dict:
     state.setdefault("pours", 0)          # stage 4: pours so far in the pour room
     state.setdefault("pour_wrongs", 0)    # stage 4: wrong toasts in a row
     state.setdefault("pour_rest_until", 0.0)  # stage 4: the cups are being washed until then
+    state.setdefault("courtesy", 0)       # stage 5: steps paid so far (0-3)
+    state.setdefault("slips", 0)          # stage 5: wrong presses today...
+    state.setdefault("slip_date", "")     # ...(Pacific date they were counted on)
+    state.setdefault("courtesy_rest_until", 0.0)  # stage 5: the tables are closed until then
+    state.setdefault("answer_wrongs", 0)  # stage 6: wrong answers
+    state.setdefault("answer_rest_until", 0.0)    # stage 6: no answers until then
+    state.setdefault("hints_by", {})      # stage number (str) -> when each hint was taken
+    state.setdefault("hints", 0)          # hints taken in all (the Hall shows it)
     return state
 
 
@@ -426,3 +453,157 @@ def toast(state, room_index: int, p: dict, now: float, test_mode: bool = False):
         state["pour_wrongs"] = 0
         return "miscount_rest", state["pour_rest_until"]
     return "miscount", counted
+
+
+# ---------------------------------------------------------------- stage 5: the Courtesies
+
+def courtesy(state, room_index: int, key: str, p: dict, now: float, test_mode: bool = False):
+    """A tea table button (`key`) was pressed in trail room `room_index` while the member is on stage 5. Returns
+    (action, detail):
+
+      idle        not on stage 5
+      rest        the tables are closed (detail = when they open)
+      sister      Look in one of the sisters' rooms that is not the next courtesy: she is simply heard again, free
+      ok          the next courtesy was paid (detail = (its index 0-2, its button))
+      passed      the fourth courtesy was paid: on to stage 6
+      wrong       a wrong press; any progress is lost (detail = True when there was progress to lose)
+      rest_start  that was the fifth wrong press today: the tables close (detail = when they open)
+    """
+    if not state or state.get("stage") != engine.STAGE_RIDDLE or state.get("step") != 5:
+        return "idle", None
+    ensure(state)
+    until = state["courtesy_rest_until"]
+    if until > now:
+        return "rest", until
+    if until:
+        state["courtesy_rest_until"], state["slips"] = 0.0, 0
+    k = state["courtesy"]
+    if (room_index, key) == (p["courtesy_rooms"][k], p["courtesy_buttons"][k]):
+        state["courtesy"] = k + 1
+        if k + 1 == COURTESIES:
+            state["step"], state["courtesy"] = 6, 0
+            _log(state, 5)["solved"] = now
+            state["log"]["6"] = {"opened": now, "solved": 0.0}
+            return "passed", None
+        return "ok", (k, key)
+    if key == "look" and room_index in p["chain"]:
+        return "sister", p["chain"].index(room_index)
+    lost = k > 0
+    state["courtesy"] = 0
+    today = engine.pacific_date(now)
+    if state["slip_date"] != today:
+        state["slip_date"], state["slips"] = today, 0
+    state["slips"] += 1
+    if state["slips"] >= TRAIL_COURTESY_SLIPS:
+        state["courtesy_rest_until"] = now + (TEST_DELAY_SECONDS if test_mode else TRAIL_COURTESY_REST_MINUTES * 60)
+        state["slips"] = 0
+        return "rest_start", state["courtesy_rest_until"]
+    return "wrong", lost
+
+
+# ---------------------------------------------------------------- stage 6: the Bottom of the Well
+
+def answer(state, text: str, p: dict, now: float, test_mode: bool = False):
+    """A DM from a member on stage 6. Returns (action, detail): ignore (not a six-letter word: costs nothing, may be
+    meant for another puzzle), rest (detail = when answers open again), solved, or wrong (detail = when they may try again)."""
+    if not state or state.get("stage") != engine.STAGE_RIDDLE or state.get("step") != 6:
+        return "ignore", None
+    ensure(state)
+    typed = engine.normalize(text)
+    if not (typed.isalpha() and len(typed) == len(p["answer"])):
+        return "ignore", None
+    until = state["answer_rest_until"]
+    if until > now:
+        return "rest", until
+    if typed == p["answer"]:
+        state["stage"], state["solved_ts"] = engine.STAGE_SOLVED, now
+        _log(state, 6)["solved"] = now
+        return "solved", None
+    state["answer_wrongs"] += 1
+    state["answer_rest_until"] = now + (TEST_DELAY_SECONDS if test_mode else TRAIL_ANSWER_REST_MINUTES * 60)
+    return "wrong", state["answer_rest_until"]
+
+
+# ---------------------------------------------------------------- hints (per stage: 24 h after it opens, then 12 h, at most 2)
+
+def hint(state, now: float, test_mode: bool = False):
+    """`hint` by DM. Returns (action, detail): idle (no trail), max, early (detail = when the next one comes), or ok
+    (detail = which hint of this stage, 1 or 2)."""
+    if not state or state.get("stage") != engine.STAGE_RIDDLE:
+        return "idle", None
+    ensure(state)
+    step = state["step"]
+    taken = state["hints_by"].setdefault(str(step), [])
+    if len(taken) >= TRAIL_HINTS_PER_STAGE:
+        return "max", None
+    wait = (TEST_DELAY_SECONDS if test_mode else
+            (TRAIL_HINT_GAP_HOURS if taken else TRAIL_HINT_FIRST_HOURS) * 3600)
+    since = taken[-1] if taken else (_log(state, step)["opened"] or state.get("started_ts", now))
+    if now < since + wait:
+        return "early", since + wait
+    taken.append(now)
+    state["hints"] += 1
+    return "ok", len(taken)
+
+
+def hint_text(step: int, n: int, p: dict, state: dict, rooms: list) -> str:
+    """What hint `n` (1 or 2) of stage `step` says. Always true, never the answer outright. `rooms` is a list of
+    (name, mention) per trail room, in the configured order."""
+    def first_letter(name):
+        return next((c.upper() for c in name if c.isalpha()), "?")
+    if step == 2:
+        name, _mention = rooms[p["chain"][min(state.get("found", 0), len(p["chain"]) - 1)]]
+        return (f"The room you are looking for starts with the letter {first_letter(name)}." if n == 1
+                else f"The name of the room you are looking for is {len(name.split())} word{'' if len(name.split()) == 1 else 's'} long.")
+    if step == 3:
+        rule = tuple(p["rule"])
+        rng = random.Random(f"{p['seed']}:hint3:{n}")
+        secret = set(p["tokens"]) | set(p["extra_tokens"])  # a hint never says one of the member's own six words
+        yes = rng.sample([w for w in WORDS if holds(rule, w) and w not in secret], 2)
+        no = rng.choice([w for w in WORDS if not holds(rule, w) and w not in secret])
+        return (f"He can draw **{yes[0]}**." if n == 1 else f"He can draw **{yes[1]}** too, but he cannot draw **{no}**.")
+    if step == 4:
+        return ("Each of the three sisters said a number, and every one of them counts." if n == 1
+                else f"The total is an {'odd' if p['pour_total'] % 2 else 'even'} number.")
+    if step == 5:
+        if n == 1:
+            return f"The first courtesy is paid in {rooms[p['courtesy_rooms'][0]][1]}."
+        return "The four rooms, in order: " + ", ".join(rooms[r][1] for r in p["courtesy_rooms"]) + "."
+    return ("Six words matter: the three the sisters kept, and one each from the Muchness, the Pour and the Courtesies."
+            if n == 1 else f"The tale starts with {SOURCE_LABELS[p['tale'][0]]}; take its first letter.")
+
+
+# ---------------------------------------------------------------- the funnel (for `.secrethunt status`) and the Hall
+
+def took_label(started: float, solved: float) -> str:
+    """How long a solver took, for the Hall: 'under a day', '1 day', '3 days'."""
+    days = (solved - started) / 86400
+    if days < 1:
+        return "solved in under a day"
+    n = round(days)
+    return f"solved in {n} day" + ("" if n == 1 else "s")
+
+
+def funnel(states) -> dict:
+    """{'at': {stage: members now there}, 'solved': n, 'median_minutes': {stage: median minutes of finished stages}, 'hints': n}
+    over the trail states of every member who woke the Dormouse."""
+    at = {step: 0 for step in range(2, 7)}
+    spent = {step: [] for step in range(2, 7)}
+    solved = hints = 0
+    for state in states:
+        ensure(state)
+        hints += state["hints"]
+        if state.get("stage") == engine.STAGE_SOLVED:
+            solved += 1
+        else:
+            at[state["step"]] = at.get(state["step"], 0) + 1
+        for step, rec in state["log"].items():
+            if rec.get("opened") and rec.get("solved"):
+                spent.setdefault(int(step), []).append((rec["solved"] - rec["opened"]) / 60)
+    median = {}
+    for step, minutes in spent.items():
+        if minutes:
+            minutes.sort()
+            mid = len(minutes) // 2
+            median[step] = round(minutes[mid] if len(minutes) % 2 else (minutes[mid - 1] + minutes[mid]) / 2)
+    return {"at": at, "solved": solved, "median_minutes": median, "hints": hints}

@@ -940,8 +940,8 @@ async def test_the_long_pour_counts_pours_and_the_right_toast_finishes_stage_fou
     await pour_n(env, m, p["pour_total"] - 2, p["pour_room"])
     assert (await state(env, m))["pours"] == p["pour_total"] == sum(p["numbers"])
     out = await look(env, m, p["toast_room"], "toast")
-    done = WELL["stage4_done"].format(token=p["extra_tokens"][1])
-    assert out == done and m.dms[-1] == done
+    done = env.cog._stage4_done_text(env.g, WELL, [r.id for r in env.rooms], p)
+    assert out == done and m.dms[-1] == done and p["extra_tokens"][1] in done
     st = await state(env, m)
     assert st["step"] == 5 and st["clue"] == done and await say(env, m, "recap") == done
 
@@ -1009,7 +1009,9 @@ async def test_the_whole_trail_to_stage_four_runs_in_the_test_channel(env):
     await pass_stage3(env, env.admin)
     for _ in range(p["pour_total"]):
         await press(p["pour_room"], "pour")
-    assert WELL["stage4_done"].format(token=p["extra_tokens"][1]) == await press(p["toast_room"], "toast")
+    out = await press(p["toast_room"], "toast")
+    assert env.admin.dms[-1] == out  # the same words by DM and in the private reply
+    assert p["extra_tokens"][1] in env.admin.dms[-1]
     assert (await state(env, env.admin))["step"] == 5
 
 
@@ -1041,7 +1043,7 @@ def test_stage_three_and_four_texts_format_cleanly():
     keys = dict(word="w", words="a, b", until="<t:1:R>", token="t", pour_pointer="P", toast_pointer="T", n=3)
     for field in ("stage3_intro", "probe_yes", "probe_no", "probe_saving", "probe_tired", "test_intro", "test_again",
                   "test_rest", "test_failed", "test_malformed", "stage3_done", "pour_ok", "pour_wrong", "pour_full", "pour_rest",
-                  "toast_wrong", "toast_empty", "toast_miscount", "toast_miscount_rest", "stage4_done"):
+                  "toast_wrong", "toast_empty", "toast_miscount", "toast_miscount_rest"):
         assert "{" not in WELL[field].format_map(keys), field
 
 
@@ -1269,3 +1271,332 @@ async def test_the_launch_form_takes_a_title_or_part_of_one(fresh):
         await schedule(fresh, puzzle="zzz")
     with pytest.raises(PanelError, match="several"):
         await schedule(fresh, puzzle="the")
+
+
+# ---------------------------------------------------------------- stages 5 and 6, hints, funnel, the Hall
+
+async def through_stage4(env, uid=31):
+    m = await through_stage2(env, uid)
+    await pass_stage3(env, m)
+    p = plan_of(env, uid)
+    await pour_n(env, m, p["pour_total"], p["pour_room"])
+    await look(env, m, p["toast_room"], "toast")
+    assert (await state(env, m))["step"] == 5
+    return m, p
+
+
+async def pay_all(env, m, p):
+    out = None
+    for k in range(4):
+        out = await look(env, m, p["courtesy_rooms"][k], p["courtesy_buttons"][k])
+    return out
+
+
+async def through_stage5(env, uid=41):
+    m, p = await through_stage4(env, uid)
+    await pay_all(env, m, p)
+    assert (await state(env, m))["step"] == 6
+    return m, p
+
+
+async def test_stage_four_hands_over_four_verses_in_the_members_own_order_with_a_clue_for_each_room(env):
+    m, p = await through_stage4(env)
+    text = m.dms[-1]
+    assert p["extra_tokens"][1] in text and (await state(env, m))["clue"] == text
+    spots = [text.index(WELL["verses"][b]) for b in p["courtesy_buttons"]]
+    assert spots == sorted(spots)  # the verses come in step order
+    for k in range(4):
+        pointer = trail.room_pointer(WELL, NAMES[p["courtesy_rooms"][k]], 5 + k)
+        assert WELL["verse_place"].format(pointer=pointer) in text
+    assert await say(env, m, "recap") == text
+
+
+async def test_each_courtesy_paid_in_order_is_acknowledged_and_the_last_hands_over_the_tale(env):
+    m, p = await through_stage4(env)
+    for k in range(3):
+        out = await look(env, m, p["courtesy_rooms"][k], p["courtesy_buttons"][k])
+        assert out == WELL["courtesy_ok"][p["courtesy_buttons"][k]].format(done=k + 1)
+    last = await look(env, m, p["courtesy_rooms"][3], p["courtesy_buttons"][3])
+    assert m.dms[-1] == last and p["extra_tokens"][2] in last and trail.tale_text(p) in last
+    assert not any(w in last for w in p["tokens"] + p["extra_tokens"][:2])  # the tale names sources, never the earlier words
+    st = await state(env, m)
+    assert st["step"] == 6 and st["clue"] == last and await say(env, m, "recap") == last
+
+
+async def test_a_wrong_press_during_the_courtesies_starts_them_again_and_the_wrong_room_costs_nothing_extra(env):
+    m, p = await through_stage4(env)
+    await look(env, m, p["courtesy_rooms"][0], p["courtesy_buttons"][0])
+    stray = next(r for r in range(12) if r not in p["courtesy_rooms"] and r not in p["chain"])
+    assert await look(env, m, stray, "pour") == WELL["courtesy_lost"]
+    assert (await state(env, m))["courtesy"] == 0
+    assert await look(env, m, stray, "pour") in WELL["wrong_look"]  # nothing to lose now: just a tea table
+    assert await look(env, m, p["courtesy_rooms"][0], p["courtesy_buttons"][0]) == WELL["courtesy_ok"][p["courtesy_buttons"][0]].format(done=1)
+
+
+async def test_five_slips_close_the_tables_for_two_hours(env):
+    m, p = await through_stage4(env)
+    stray = next(r for r in range(12) if r not in p["courtesy_rooms"] and r not in p["chain"])
+    for _ in range(4):
+        await look(env, m, stray, "bow")
+    out = await look(env, m, stray, "bow")
+    assert "Too many slips" in out
+    assert "closed for the evening" in await look(env, m, p["courtesy_rooms"][0], p["courtesy_buttons"][0])
+    env.clock.now += 2 * 3600 + 1
+    assert "A courtesy paid" in await look(env, m, p["courtesy_rooms"][0], p["courtesy_buttons"][0])
+
+
+async def test_a_sister_can_still_be_heard_again_during_the_courtesies_at_no_cost(env):
+    m, p = await through_stage4(env)
+    room = p["chain"][0]
+    if (room, "look") == (p["courtesy_rooms"][0], p["courtesy_buttons"][0]):
+        pytest.skip("this member's first courtesy is looking in that very room")
+    out = await look(env, m, room)
+    assert str(p["numbers"][0]) in out and (await state(env, m))["slips"] == 0
+
+
+async def test_closed_dms_at_stage_four_and_five_tell_the_member_and_resend_on_the_next_press(env):
+    m = await through_stage2(env, 42)
+    await pass_stage3(env, m)
+    p = plan_of(env, 42)
+    await pour_n(env, m, p["pour_total"], p["pour_room"])
+    m.dm_closed = True
+    assert DM_CLOSED_NOTE in await look(env, m, p["toast_room"], "toast")
+    m.dm_closed = False
+    await look(env, m, p["courtesy_rooms"][0], p["courtesy_buttons"][0])
+    assert m.dms[-1] == env.cog._stage4_done_text(env.g, WELL, [r.id for r in env.rooms], p)  # the verses finally arrive
+    assert "dm_pending" not in await state(env, m)
+
+
+async def test_the_six_letters_by_dm_solve_the_trail_and_everything_that_follows_a_solve_happens(env):
+    announce = env.g.add_channel(600, "announce")
+    await env.conf.announce_channel_id.set(announce.id)
+    m, p = await through_stage5(env)
+    await env.cog._refresh_hall(env.g, PID, create=True)
+    reply = await say(env, m, p["answer"].upper())
+    assert reply == WELL["solved"].format(rank="\n\nYou were finder **#1**.")
+    st = await state(env, m)
+    assert st["stage"] == engine.STAGE_SOLVED and st["rank"] == 1 and await env.conf.finishers() == {PID: [m.id]}
+    assert "solved" in announce.sent[-1].content and m.mention in announce.sent[-1].content
+    hall = next(x for x in env.hall.sent if x.embed is not None and "Treacle" in x.embed.title)
+    assert "user" in hall.embed.description and "no hints" in hall.embed.description and "solved in" in hall.embed.description
+    assert await look(env, m, 0) == WELL["already"] and await look(env, m, 0, "pour") == WELL["already"]
+    n = len(m.dms)
+    assert await say(env, m, p["answer"]) is None and len(m.dms) == n  # solved: nothing more to answer
+
+
+async def test_a_wrong_answer_costs_an_hour_and_other_dms_cost_nothing(env):
+    m, p = await through_stage5(env)
+    for text in ("hello", "something long that is not an answer", "abc"):
+        assert await say(env, m, text) is None
+    assert (await state(env, m))["answer_wrongs"] == 0
+    wrong = "zzzzzz" if p["answer"] != "zzzzzz" else "yyyyyy"
+    first = await say(env, m, wrong)
+    assert first and "not the bottom of the well" in first
+    assert "dozed off" in await say(env, m, p["answer"])
+    env.clock.now += 3601
+    assert await say(env, m, p["answer"]) == WELL["solved"].format(rank="\n\nYou were finder **#1**.")
+
+
+async def test_an_exact_easy_answer_is_still_the_easy_puzzles_on_stage_six(env):
+    m, p = await through_stage5(env)
+    await env.conf.published.set(["late_rabbit", PID])
+    async with env.cog.config.member(m).puzzles() as states:
+        states["late_rabbit"] = {**engine.new_state(0, env.clock.now), "stage": engine.STAGE_FINAL}
+    await say(env, m, "hatter")  # six letters, and the Late Rabbit's answer for variant 0
+    assert (await env.cog.config.member(m).puzzles())["late_rabbit"]["stage"] == engine.STAGE_SOLVED
+    assert (await state(env, m))["answer_wrongs"] == 0
+
+
+async def test_solvers_are_ranked_in_finishing_order_and_the_hall_lists_them_all(env):
+    a, pa = await through_stage5(env, 51)
+    b, pb = await through_stage5(env, 52)
+    await say(env, b, pb["answer"])
+    await say(env, a, pa["answer"])
+    assert await env.conf.finishers() == {PID: [b.id, a.id]}
+    assert (await state(env, b))["rank"] == 1 and (await state(env, a))["rank"] == 2
+
+
+async def test_hints_by_dm_wait_then_help_then_stop(env):
+    m = await through_stage2(env, 61)
+    p = plan_of(env, 61)
+    await look(env, m, p["chain"][0])  # (this is stage 3 for him now: three sisters were found by through_stage2)
+    first = await say(env, m, "hint")
+    assert "not ready" in first
+    env.clock.now += 86400
+    h1 = await say(env, m, "hint")
+    assert "hint 1 of 2" in h1 and "He can draw" in h1
+    assert "not ready" in await say(env, m, "hint")
+    env.clock.now += 12 * 3600
+    assert "hint 2 of 2" in await say(env, m, "hint")
+    assert "said all he will say" in await say(env, m, "hint")
+    assert (await state(env, m))["hints"] == 2
+
+
+async def test_a_stage_two_hint_names_the_letter_of_the_room_being_sought(env):
+    m = member(env, 62)
+    await wake(env, m)
+    p = plan_of(env, 62)
+    env.clock.now += 86400
+    text = await say(env, m, "hint")
+    assert f"letter {NAMES[p['chain'][0]][0].upper()}" in text
+
+
+async def test_hints_belong_to_the_knaves_trial_while_one_of_its_rounds_is_open(env):
+    m = await through_stage2(env, 63)
+    env.clock.now += 86400
+    open_trial = {"knaves_trial": {"stage": engine.STAGE_RIDDLE}}
+    assert env.cog._trial_open(open_trial, ["knaves_trial"]) is True
+    assert env.cog._trial_open({"knaves_trial": {"stage": engine.STAGE_SOLVED}}, ["knaves_trial"]) is False
+    assert env.cog._trial_open({}, ["knaves_trial", PID]) is False
+
+
+async def test_a_hint_from_someone_with_no_trail_is_not_answered_by_the_dormouse(env):
+    stranger = member(env, 64)
+    assert await say(env, stranger, "hint") is None
+
+
+async def test_status_shows_the_funnel_and_who_shows_the_new_columns(env):
+    a, _ = await through_stage2(env, 71), None
+    b, pb = await through_stage5(env, 72)
+    text = (await env.cog._status_embed(env.g)).description
+    assert "funnel" in text and "stage 3: 1" in text and "stage 6: 1" in text and "solved 0" in text
+
+    class Ctx:
+        def __init__(self):
+            self.guild, self.out = env.g, []
+
+        async def send(self, content=None, **kw):
+            self.out.append(content)
+    ctx = Ctx()
+    await env.cog.secrethunt_who.callback(env.cog, ctx, b)
+    assert "stage 6" in ctx.out[0] and "courtesies paid 0/4" in ctx.out[0] and "hints 0" in ctx.out[0]
+    await say(env, b, pb["answer"])
+    ctx = Ctx()
+    await env.cog.secrethunt_who.callback(env.cog, ctx, b)
+    assert "solved" in ctx.out[0]
+
+
+async def test_secrets_command_lists_a_solved_trail_with_its_hints_and_days(env):
+    m, p = await through_stage5(env, 81)
+    env.clock.now += 3 * 86400
+    await say(env, m, p["answer"])
+
+    class Ctx:
+        def __init__(self):
+            self.guild, self.author, self.out = env.g, m, []
+
+        async def send(self, content=None, **kw):
+            self.out.append(kw.get("embed") or content)
+    ctx = Ctx()
+    await env.cog.secrets_cmd.callback(env.cog, ctx, m)
+    text = ctx.out[0].description
+    assert "Treacle" in text and "no hints" in text and "solved in 3 days" in text
+
+
+async def test_preview_shows_stages_five_and_six_and_the_answer_matches_the_plan(env):
+    await env.cog._apply_preview(env.g, env.admin, PID)
+    text = env.admin.dms[-1]
+    p = plan_of(env, env.admin.id)
+    assert f"`{p['answer']}`" in text and trail.tale_text(p) in text and "Stage 5:" in text
+    for k in range(4):
+        assert p["courtesy_buttons"][k].title() in text and f"<#{env.rooms[p['courtesy_rooms'][k]].id}>" in text
+
+
+async def test_the_whole_trail_runs_in_the_test_channel_to_the_end(env):
+    box, _ = await rehearse(env)
+    await wake_in(env, box, env.admin)
+    uid = env.admin.id
+    p = plan_of(env, uid)
+
+    def tbl(room):
+        return next(m for m in tables_in(box) if m.embed.title.endswith(NAMES[room]))
+
+    async def press(room, key):
+        inter = tk.FakeInteraction(env.g, env.admin, tbl(room))
+        await env.cog.handle_trail(inter, key)
+        return inter.replies[0][0]
+
+    for room in p["chain"]:
+        await press(room, "look")
+    await pass_stage3(env, env.admin)
+    for _ in range(p["pour_total"]):
+        await press(p["pour_room"], "pour")
+    await press(p["toast_room"], "toast")
+    for k in range(4):
+        await press(p["courtesy_rooms"][k], p["courtesy_buttons"][k])
+    assert (await state(env, env.admin))["step"] == 6
+    assert await say(env, env.admin, p["answer"]) == WELL["solved"].format(rank="\n\nYou were finder **#1**.")
+
+
+async def test_twenty_synthetic_members_play_the_whole_puzzle_through_the_cog(env):
+    members = []
+    for uid in range(200, 220):
+        m, p = await through_stage5(env, uid)
+        members.append((m, p))
+    for m, p in members:
+        await say(env, m, p["answer"])
+    assert len((await env.conf.finishers())[PID]) == 20
+    for m, _ in members:
+        assert (await state(env, m))["stage"] == engine.STAGE_SOLVED
+    assert len({p["answer"] for _, p in members}) > 15  # personal answers: not one shared word
+
+
+async def test_a_member_cannot_use_another_members_answer(env):
+    a, pa = await through_stage5(env, 91)
+    b, pb = await through_stage5(env, 92)
+    if pa["answer"] == pb["answer"]:
+        pytest.skip("the two members happen to share an answer")
+    assert "not the bottom" in await say(env, b, pa["answer"])
+
+
+def test_the_new_stage_texts_format_cleanly():
+    keys = dict(until="<t:1:R>", token="t", verses="v", tale="a, b", hint="h", n=1, max=2, when="<t:1:R>", done=2, pointer="p")
+    for field in ("stage4_done", "stage5_done", "courtesy_lost", "courtesy_rest", "courtesy_rest_start", "answer_wrong",
+                  "answer_rest", "hint", "hint_early", "hint_max", "verse_place"):
+        assert "{" not in WELL[field].format_map(keys), field
+    for text in WELL["courtesy_ok"].values():
+        assert "{" not in text.format(done=1)
+
+
+def test_the_readme_and_info_never_contain_a_token_word_an_answer_an_emoji_or_a_verse():
+    import json
+    import os
+    here = os.path.dirname(__file__)
+    readme = open(os.path.join(here, "README.md")).read().lower()
+    info = open(os.path.join(here, "info.json")).read().lower()
+    for text, name in ((readme, "README"), (info, "info.json")):
+        for word in trail.TOKEN_WORDS:
+            assert not re.search(rf"\b{word}\b", text), (name, word)
+        for group in trail.EMOJI_SLOTS:
+            assert not any(e.lower() in text for e in group), name
+        for verse in WELL["verses"].values():
+            assert verse.split("\n")[0].strip("*").lower() not in text, name
+        for rule in trail.RULES:
+            assert not re.search(r"\b" + re.escape(trail.rule_text(rule).lower()) + r"\b", text), (name, rule)
+    json.loads(info)
+
+
+import re  # noqa: E402
+
+
+async def test_hint_goes_to_an_open_knaves_trial_round_not_the_dormouse(env):
+    from secrethunt import trial
+    m = await through_stage2(env, 66)
+    extra = [env.g.add_thread(900 + i, f"witness{i}") for i in range(5)]
+    await env.conf.pool.set([c.id for c in extra])
+    await env.conf.published.set([PID, "knaves_trial"])
+    async with env.cog.config.member(m).puzzles() as states:
+        states["knaves_trial"] = trial.ensure(engine.new_state(0, env.clock.now))
+    reply = await say(env, m, "hint")
+    assert reply is not None and "Dormouse" not in reply  # the trial answered (too early for its first hint)
+    assert (await state(env, m))["hints"] == 0
+    async with env.cog.config.member(m).puzzles() as states:
+        states["knaves_trial"]["stage"] = engine.STAGE_SOLVED  # round over: the Dormouse may answer again
+    env.clock.now += 86400
+    assert "Dormouse" in await say(env, m, "hint")
+
+
+async def test_a_suspects_name_on_stage_six_is_not_taken_for_a_wrong_answer(env):
+    m, p = await through_stage5(env, 67)
+    assert await say(env, m, "Hatter") is None
+    assert (await state(env, m))["answer_wrongs"] == 0
