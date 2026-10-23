@@ -339,7 +339,7 @@ def as_member(mod, monkeypatch):
 
 def test_module_imports_and_defines_cog(mod):
     assert hasattr(mod, "Lurker")
-    assert mod.VERSION == "2.5.0"
+    assert mod.VERSION == "2.6.0"
     for name in ("lurker_version", "lurker_backfill", "lurker_backfill_confirm",
                  "lurker_sweep_preview", "lurker_sweep_run", "lurker_report",
                  "lurker_report_send", "lurker_exempt_audit"):
@@ -877,8 +877,27 @@ async def test_reactivation_posts_welcome_back_notice_to_mod_chat(env, as_member
     assert len(mod_chat.sent) == 1
     text, kw = mod_chat.sent[0]
     assert f"<@{m.id}>" in text
-    assert "welcome" in text.lower()
-    assert "allowed_mentions" in kw  # never pings the member from mod chat
+    assert "👀" in text
+    assert "90 days" in text  # _stale() puts their last activity 90 days back
+    assert "allowed_mentions" in kw  # never pings the member
+
+
+async def test_welcome_back_says_a_while_when_nothing_is_known(env, as_member):
+    m = await _flagged_member(env, 27)
+    env.cog._cache[env.guild.id].pop(m.id, None)  # no tracked activity
+    m.joined_at = None                            # and no join date
+    chan = FakeChannel(912520841613418596)
+    await _post_in_lurker_channel(env, m, welcome=chan)
+    assert len(chan.sent) == 1 and "a while" in chan.sent[0][0]
+
+
+async def test_welcome_back_falls_back_to_join_date(env, as_member):
+    m = await _flagged_member(env, 28)
+    env.cog._cache[env.guild.id].pop(m.id, None)
+    m.joined_at = NOW - timedelta(days=200)
+    chan = FakeChannel(912520841613418596)
+    await _post_in_lurker_channel(env, m, welcome=chan)
+    assert "200 days" in chan.sent[0][0]
 
 
 async def test_welcome_notice_only_for_self_reactivation_not_mod_restore(env):

@@ -103,5 +103,28 @@ def test_should_record_skips_fresh_timestamps_and_refreshes_stale_ones():
     assert engine.should_record(NOW - 10 * DAY, NOW)            # old -> refresh
 
 
+def test_days_away_uses_tracked_then_join_then_unknown():
+    assert engine.days_away(NOW - 45 * DAY, NOW - 900 * DAY, NOW) == 45
+    assert engine.days_away(None, NOW - 200 * DAY, NOW) == 200
+    assert engine.days_away(None, None, NOW) is None
+    assert engine.days_away(NOW + 3600, None, NOW) == 0          # clock skew never goes negative
+    assert engine.days_away(NOW - (45 * DAY + 3600), None, NOW) == 45  # whole days, rounded down
+
+
+def test_away_phrase():
+    assert engine.away_phrase(None) == "a while"
+    assert engine.away_phrase(0) == "less than a day"
+    assert engine.away_phrase(1) == "1 day"
+    assert engine.away_phrase(45) == "45 days"
+
+
+def test_every_welcome_back_line_renders_with_user_days_and_lurker_emoji():
+    for line in engine.WELCOME_BACK_LINES:
+        text = engine.welcome_back_message("<@5>", 45, line)
+        assert "<@5>" in text and "45 days" in text and "👀" in text
+        assert "{" not in text  # no unfilled placeholder
+    assert "<@5>" in engine.welcome_back_message("<@5>", None)   # default template works
+
+
 def test_should_record_never_keeps_a_future_timestamp():
     assert engine.should_record(NOW + 3600, NOW)                # clock went backwards

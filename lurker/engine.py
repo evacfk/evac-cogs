@@ -57,6 +57,42 @@ def is_inactive(cached: Optional[float], joined: Optional[float], cutoff: float)
     return resolve_last_active(cached, joined) < cutoff
 
 
+def days_away(cached: Optional[float], joined: Optional[float], now: float) -> Optional[int]:
+    """Whole days since the member was last seen, or None when nothing is known.
+
+    Uses the same fallback as flagging (tracked activity, else join date), so the
+    number matches what made them a lurker in the first place.
+    """
+    last = resolve_last_active(cached, joined)
+    if last <= 0:
+        return None
+    return max(0, int((now - last) // DAY))
+
+
+def away_phrase(days: Optional[int]) -> str:
+    """'45 days', '1 day', 'less than a day', or 'a while' when unknown."""
+    if days is None:
+        return "a while"
+    if days < 1:
+        return "less than a day"
+    return f"{days} day" if days == 1 else f"{days} days"
+
+
+# 👀 is the lurker. {user} is the member mention, {away} is away_phrase().
+WELCOME_BACK_LINES = (
+    "👀 {user} just came back from lurking after {away}! Welcome home, we kept your spot warm. 🏡",
+    "👀 Look who's back! {user} is out of the shadows after {away}. Pull up a chair, you're home. 🛋️",
+    "👀 {user} has emerged from lurking after {away}. We missed you, make yourself at home! 💛",
+    "👀 The lurker returns! {user} is back after {away}. Your seat's right where you left it. 🏡",
+    "👀 {user} stepped out of the shadows after {away}. Welcome back to Wonderland, we're glad you're here! 💛",
+)
+
+
+def welcome_back_message(user: str, days: Optional[int], template: Optional[str] = None) -> str:
+    """Render the public welcome-back line. `template` defaults to the first line."""
+    return (template or WELCOME_BACK_LINES[0]).format(user=user, away=away_phrase(days))
+
+
 def merge_last_active(existing: Dict[int, float], scanned: Dict[int, float]) -> Dict[int, float]:
     """Union of two {user_id: ts} maps, keeping the newest timestamp per user.
 

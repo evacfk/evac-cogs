@@ -1,6 +1,7 @@
 import asyncio
 import io
 import logging
+import random
 import weakref
 from datetime import datetime, timedelta, timezone
 from typing import Dict, List, Optional, Set, Tuple
@@ -17,9 +18,10 @@ from .settings_panel import PanelError, open_panel
 
 log = logging.getLogger("red.evac-cogs.lurker")
 
-VERSION = "2.5.0"
+VERSION = "2.6.0"
 
-# #mod-chat: mods get a "welcome them back" post whenever a lurker reactivates themselves.
+# #mod-chat by default: a "welcome back after N days" post whenever a lurker reactivates
+# themselves. Point it at a member-facing channel in `.lurkerset` so members see it.
 DEFAULT_WELCOME_CHANNEL_ID = 912520841613418596
 
 
@@ -472,16 +474,25 @@ class Lurker(DashboardIntegration, commands.Cog):
                 self._record_event(guild.id, "unflag", member, source)
             return len(to_add)
 
-    async def _announce_return(self, member: discord.Member):
-        """Tell mods a lurker just came back so they can welcome them. Never raises."""
+    def _days_away(self, member: discord.Member) -> Optional[int]:
+        """Days since the member's last known activity. Must run BEFORE the unflag,
+        which resets their clock to now. Lurkers can't see channels, so their stored
+        timestamp is still the moment they went quiet."""
+        cached = self._cache.get(member.guild.id, {}).get(member.id)
+        joined = member.joined_at.timestamp() if member.joined_at else None
+        return engine.days_away(cached, joined, datetime.now(timezone.utc).timestamp())
+
+    async def _announce_return(self, member: discord.Member, days: Optional[int] = None):
+        """Post a welcome-back line for a lurker who just reactivated. Never raises."""
         try:
             channel_id = await self.config.guild(member.guild).welcome_channel_id()
             channel = member.guild.get_channel(channel_id) if channel_id else None
             if channel is None:
                 return
             await channel.send(
-                f"👋 {member.mention} ({member}) just came back from the lurker channel. "
-                f"Say hi and welcome them back!",
+                engine.welcome_back_message(
+                    member.mention, days, random.choice(engine.WELCOME_BACK_LINES)
+                ),
                 allowed_mentions=discord.AllowedMentions.none(),
             )
         except (discord.Forbidden, discord.HTTPException):
@@ -506,6 +517,7 @@ class Lurker(DashboardIntegration, commands.Cog):
             role_id = await self.config.guild(guild).lurker_role_id()
             lurker_role = guild.get_role(role_id) if role_id else None
             if lurker_role and lurker_role in message.author.roles:
+                days_gone = self._days_away(message.author)
                 try:
                     await message.delete()
                 except (discord.Forbidden, discord.NotFound):
@@ -522,7 +534,7 @@ class Lurker(DashboardIntegration, commands.Cog):
                         f"Failed to unflag {message.author} ({message.author.id}) in {guild}"
                     )
                 else:
-                    await self._announce_return(message.author)
+                    await self._announce_return(message.author, days_gone)
                 return
 
         self._touch(guild.id, message.author.id)
