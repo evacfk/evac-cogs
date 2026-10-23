@@ -1410,6 +1410,28 @@ class SecretHunt(commands.Cog):
                 continue
         return None
 
+    def _find_channel(self, guild, token: str):
+        """A channel from what was typed: a #mention, an ID, a link, or its NAME (`announcements`, `#announcements`; emoji
+        and dashes in the real name are ignored, and a part of a name works when it fits exactly one channel)."""
+        cid = self._channel_id_of(token.strip())
+        channel = self._lookup(guild, cid) if cid else None
+        if channel is not None:
+            return channel
+        def squash(text):
+            return re.sub(r"[^a-z0-9]", "", text.lower())
+        wanted = squash(token.lstrip("#"))
+        text = getattr(guild, "text_channels", None)
+        pool = list(text) if text is not None else list(guild.channels.values())
+        exact = [c for c in pool if squash(c.name) == wanted]
+        part = [c for c in pool if wanted and wanted in squash(c.name)]
+        hits = exact if len(exact) == 1 else (part if not exact else exact)
+        if len(hits) == 1:
+            return hits[0]
+        if hits:
+            raise PanelError("That fits several channels: " + ", ".join(c.mention for c in hits[:6])
+                             + ". Paste the one you mean as a #mention or an ID.")
+        raise PanelError(f"I couldn't find a channel called `{token}`. Type its name, a #mention or an ID.")
+
     @staticmethod
     def _find_puzzle(text) -> str:
         """A puzzle from what was typed: its id, its title, or any part of either that fits exactly one puzzle."""
@@ -1455,10 +1477,13 @@ class SecretHunt(commands.Cog):
         if at < time.time() + 60:
             raise PanelError("That time has already passed (times are Pacific).")
         token = (values.get("channel") or "").strip()
-        cid = self._channel_id_of(token) if token else (await conf.poem_targets()).get(pid)
-        channel = self._lookup(guild, cid) if cid else None
-        if channel is None:
-            raise PanelError("Tell me which channel gets the poem (a #mention or an ID).")
+        if token:
+            channel = self._find_channel(guild, token)
+        else:
+            cid = (await conf.poem_targets()).get(pid)
+            channel = self._lookup(guild, cid) if cid else None
+            if channel is None:
+                raise PanelError("Tell me which channel gets the poem (its name, a #mention or an ID).")
         if puzzle.get("kind") == "trail":
             self._check_trail_size(pid, await conf.trail())
         else:

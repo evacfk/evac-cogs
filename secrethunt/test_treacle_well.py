@@ -1140,7 +1140,7 @@ async def test_a_bad_launch_time_is_refused_and_nothing_is_saved(fresh, when, wh
 async def test_a_launch_needs_a_known_puzzle_and_a_channel(fresh):
     with pytest.raises(PanelError, match="don't know"):
         await schedule(fresh, puzzle="nope")
-    with pytest.raises(PanelError, match="which channel"):
+    with pytest.raises(PanelError, match="couldn.t find a channel"):
         await schedule(fresh, channel="<#999999>")
 
 
@@ -1618,3 +1618,21 @@ async def test_an_ordinary_member_plays_stage_one_through_the_real_flags(env, mo
     ordinary.guild_permissions = types.SimpleNamespace(administrator=False, manage_guild=False)
     await wake(env, ordinary)
     assert (await state(env, ordinary)) is not None and ordinary.dms
+
+
+async def test_the_launch_form_finds_a_channel_by_name_with_or_without_hash_and_emoji(fresh):
+    news = fresh.g.add_channel(700, "\N{PUBLIC ADDRESS LOUDSPEAKER}\N{KATAKANA MIDDLE DOT}announcements")
+    fresh.g.add_channel(701, "mod-chat")
+    for typed in ("announcements", "#announcements", "#Announcements", "announce", f"<#{news.id}>", str(news.id)):
+        await schedule(fresh, channel=typed)
+        assert (await fresh.conf.launches())[PID]["channel"] == news.id, typed
+
+
+async def test_an_unknown_or_ambiguous_channel_name_is_refused_with_a_helpful_message(fresh):
+    fresh.g.add_channel(710, "general-chat")
+    fresh.g.add_channel(711, "general-talk")
+    with pytest.raises(PanelError, match="several channels"):
+        await schedule(fresh, channel="general")
+    with pytest.raises(PanelError, match="couldn't find a channel called"):
+        await schedule(fresh, channel="nonexistent-room")
+    assert await fresh.conf.launches() == {}
