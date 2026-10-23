@@ -251,8 +251,8 @@ def build_specs():
         Spec("launch", "Schedule a launch", "Puzzles", "modal", get=_launch_get, apply=_launch_apply, fmt=_launch_fmt,
              button="Schedule…",
              fields=(Field("puzzle", "Puzzle (name)", value=lambda v: PUZZLES.get((v or {}).get("pid"), {}).get("title", ""), max_length=60),
-                     Field("when", "When (Pacific, YYYY-MM-DD HH:MM). Empty = cancel", value=_launch_when, required=False,
-                           max_length=25),
+                     Field("when", "When (Pacific) YYYY-MM-DD HH:MM", value=_launch_when, required=False, max_length=25,
+                           placeholder="Empty = cancel the scheduled launch"),
                      Field("channel", "Channel for the poem (name, #mention or ID)", required=False, max_length=60,
                            value=lambda v: f"<#{v['channel']}>" if (v or {}).get("channel") else "")),
              help="At that time the puzzle goes live and its poem is posted and pinned. The hunt must be on, Test mode off and "

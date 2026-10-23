@@ -713,3 +713,22 @@ def test_a_synthetic_solver_finishes_the_whole_trail_for_a_few_hundred_members()
         typed = "".join(heard[i][0] for i in p["tale"])
         assert trail.answer(state, typed, p, now) == ("solved", None) and state["stage"] == engine.STAGE_SOLVED
         assert all(state["log"][str(s)]["solved"] for s in range(2, 7))
+
+
+def test_every_stage_message_fits_discords_2000_character_limit_even_with_letter_clue_rooms():
+    from secrethunt.puzzles import PUZZLES
+    well = PUZZLES["treacle_well"]
+    long_names = [f"{'extremely long room title ' * 3}{i}" for i in range(12)]  # no keyword: the letter clue is used
+    for names in (long_names, ["Gaming"] * 12):
+        for uid in range(300):
+            p = trail.plan(trail.seed("s", "treacle_well", uid), 12)
+            verses = []
+            for k in range(4):
+                pointer = trail.room_pointer(well, names[p["courtesy_rooms"][k]], 5 + k)
+                verses.append(f"**{well['verse_label'][k]}**\n{well['verses'][p['courtesy_buttons'][k]]}\n"
+                              + well["verse_place"].format(pointer=pointer))
+            texts = [well["stage4_done"].format(token="marmalade", verses="\n\n".join(verses)),
+                     well["stage5_done"].format(token="marmalade", tale=trail.tale_text(p)),
+                     well["stage3_done"].format(token="marmalade", pour_pointer=trail.room_pointer(well, names[p["pour_room"]], 3),
+                                                toast_pointer=trail.room_pointer(well, names[p["toast_room"]], 4))]
+            assert all(len(t) < 2000 for t in texts)
