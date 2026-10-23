@@ -122,6 +122,10 @@ async def _interest_remove(cog, guild, member, item_id):
     return await cog._apply_interest_remove(guild, member, item_id)
 
 
+async def _interest_visibility(cog, guild, member, item_id):
+    return await cog._apply_interest_visibility(guild, member, item_id)
+
+
 async def _hide_preview_apply(cog, guild, member, _value):
     return await cog._apply_hide_preview(guild, member)
 
@@ -279,10 +283,12 @@ def build_specs():
         # ---------------------------------------------------------------- interests and feeds
         Spec("interests", "Interests", TAB_INTERESTS, "collection", get=_get_interests, item_get=_interest_get,
              save=_interest_save, remove=_interest_remove, fields=interest_fields,
+             item_actions=(ItemAction("Show / hide", _interest_visibility),),
              pick=Pick("channel", "Also open these existing channels (skip if you named a new one)", 0, 25,
                        defaults=lambda r: [r["channel_id"]] + list(r.get("extra_channel_ids") or []) if r else []),
              help="Members join with a button and get access to the interest's channels one by one (no role). "
                   "After saving, re-post the member panel with `.afterdark panel #channel` so the buttons match. "
+                  "Select an interest and press Show / hide to bring just that one back (or hide it again). "
                   "Remove also hides its channels from everyone except you and the bot."),
         Spec("feeds", "Feeds", TAB_INTERESTS, "collection", get=_get_feeds, item_get=_feed_get,
              save=_feed_save, remove=_feed_remove, fields=feed_fields,

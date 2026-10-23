@@ -236,3 +236,76 @@ async def test_a_channel_moved_out_of_the_category_after_the_preview_is_not_hidd
     before = dict(w.other.overwrites)
     await w.cog._apply_hide(w.guild, w.admin, "hide")
     assert w.other.overwrites == before and str(w.other.id) not in await w.cog.config.guild(w.guild).hidden_channels()
+
+
+async def pics_world(f):
+    """Feet (three channels) and Pics (one channel), each with a feed and a joined member; everything hidden."""
+    w = await robot_world(f)
+    w.pics = w.guild.add_channel(900090, BOT + "pics")
+    w.pics.category_id = C.DEFAULT_HIDE_CATEGORY_ID
+    w.pics.overwrites[w.guild.default_role] = ow(view_channel=False)     # private, like every interest channel
+    cfg = await w.cog.config.guild(w.guild).interests()
+    cfg["pics"] = {"key": "pics", "name": "Pics", "emoji": "y", "channel_id": 900090, "role_id": None}
+    await set_cfg(w, interests=cfg)
+    await w.cog._register_interest_view(w.guild)
+    await w.cog.handle_interest_toggle(FakeInteraction(w.joined[1], w.guild), "pics")
+    from afterdark.test_afterdark_feeds import save
+    await save(w, None, {"reddit": "feetfeed"}, [w.feet])
+    await save(w, None, {"reddit": "picsfeed"}, [w.pics])
+    state = await w.cog._get_state(w.guild)
+    for key in ("feet", "pics"):
+        state[key][str(w.joined[1].id)] = {"since": NOW - 50 * C.DAY, "last": NOW - 50 * C.DAY, "warned": 0.0}
+    await hide(w)
+    return w
+
+
+def labels(w):
+    return [getattr(b, "label", None) for b in w.cog._interest_views[w.guild.id].children]
+
+
+async def test_show_one_interest_brings_back_only_that_one(f):
+    w = await pics_world(f)
+    assert labels(w) == ["Leave Rabbit Hole"]
+    msg = await w.cog._apply_interest_visibility(w.guild, w.admin, "pics")
+    assert "Buttons back: Pics" in msg and "Resumed 1 feed(s): r/picsfeed" in msg
+    assert view_of(w.pics, w.joined[1]) is True and view_of(w.pics, w.guild.default_role) is False  # members back, not public
+    assert all(view_of(c, w.joined[1]) is False for c in (w.feet, w.feet2, w.feet3))              # feet stays hidden
+    data = w.reddit.config.mappings.data
+    assert not data["picsfeed"]["paused"] and data["feetfeed"]["paused"]
+    assert labels(w) == ["Pics", "Leave Rabbit Hole"]
+    assert set(await w.cog.config.guild(w.guild).hidden_channels()) == {str(c.id) for c in (w.feet, w.feet2, w.feet3, w.other)}
+    assert await w.cog.config.guild(w.guild).hidden_feeds() == ["r:feetfeed"]
+    state = await w.cog._get_state(w.guild)
+    assert state["pics"][str(w.joined[1].id)]["last"] == NOW                  # its clocks restarted
+    assert state["feet"][str(w.joined[1].id)]["last"] == NOW - 50 * C.DAY     # feet's did not
+    it = FakeInteraction(w.joined[1], w.guild)
+    await w.cog.handle_interest_toggle(it, "feet")
+    assert it.replies[-1] == "That one is closed."
+
+
+async def test_show_several_then_hide_one_again_without_a_preview(f):
+    w = await pics_world(f)
+    await w.cog._apply_interest_visibility(w.guild, w.admin, "pics")
+    await w.cog._apply_interest_visibility(w.guild, w.admin, "feet")
+    assert labels(w) == ["Feet", "Pics", "Leave Rabbit Hole"]
+    assert not any(m["paused"] for m in w.reddit.config.mappings.data.values())
+    assert set(await w.cog.config.guild(w.guild).hidden_channels()) == {str(w.other.id)}   # only the non-interest 🤖 channel
+    assert view_of(w.other, w.guild.default_role) is False
+    msg = await w.cog._apply_interest_visibility(w.guild, w.admin, "pics")                 # toggles back to hidden
+    assert "Hid 1 channel(s)" in msg and "Buttons removed: Pics" in msg
+    assert view_of(w.pics, w.joined[1]) is False and w.reddit.config.mappings.data["picsfeed"]["paused"]
+    assert labels(w) == ["Feet", "Leave Rabbit Hole"]
+
+
+async def test_visibility_button_refuses_an_interest_outside_the_category(w):
+    await robot_world(w)
+    for c in (w.feet, w.feet2, w.feet3):
+        c.category_id = None
+    await expect_refused(w.cog._apply_interest_visibility(w.guild, w.admin, "feet"), "nothing to hide")
+    await expect_refused(w.cog._apply_interest_visibility(w.guild, w.admin, "zzz"), "No such interest")
+
+
+async def test_interests_tab_has_the_show_hide_button(w):
+    from afterdark import panel as panel_mod
+    spec = next(s for s in panel_mod.build_specs() if s.key == "interests")
+    assert [a.label for a in spec.item_actions] == ["Show / hide"]
