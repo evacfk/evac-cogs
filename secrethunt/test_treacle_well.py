@@ -1636,3 +1636,59 @@ async def test_an_unknown_or_ambiguous_channel_name_is_refused_with_a_helpful_me
     with pytest.raises(PanelError, match="couldn't find a channel called"):
         await schedule(fresh, channel="nonexistent-room")
     assert await fresh.conf.launches() == {}
+
+
+# ---------------------------------------------------------------- old tea tables after the rooms were re-pasted
+
+async def repaste(env):
+    """What happens when the trail rooms are pasted again: the cog forgets its tables (the old ones stay pinned)."""
+    await env.cog._apply_trail_text(env.g, env.admin, {"rooms": " ".join(f"<#{r.id}>" for r in env.rooms)})
+    assert PID not in await env.conf.objects()
+
+
+async def test_an_old_pinned_table_keeps_working_after_the_rooms_are_pasted_again(env):
+    m = member(env, 400)
+    await wake(env, m)
+    p = plan_of(env, 400)
+    old = table(env, p["chain"][0])
+    await repaste(env)
+    inter = tk.FakeInteraction(env.g, m, old)
+    await env.cog.handle_trail(inter, "look")
+    assert str(p["numbers"][0]) in inter.replies[0][0] and inter.replies[0][0] != "Nothing happens."
+    assert (await state(env, m))["found"] == 1
+
+
+async def test_setting_up_again_replaces_the_old_tables_so_each_room_holds_one(env):
+    old = [table(env, i) for i in range(12)]
+    await repaste(env)
+    report = await env.cog._setup_objects(env.g, PID)
+    assert sum("removed 1 old tea table" in line for line in report) == 12
+    for i, room in enumerate(env.rooms):
+        pinned = [m for m in room.sent if m.pinned and m.kw.get("view") is not None]
+        assert len(pinned) == 1 and pinned[0] is not old[i] and old[i].deleted and not old[i].pinned
+    assert sorted((await env.conf.objects())[PID]) == sorted(str(r.id) for r in env.rooms)
+
+
+async def test_a_lookalike_from_someone_else_or_in_another_channel_is_still_ignored(env, caplog):
+    m = member(env, 401)
+    await wake(env, m)
+    other = env.g.add_channel(950, "elsewhere")
+    stranger = tk.FakeMember(env.g, 402)
+    fake_here = await env.rooms[0].send(embed=table(env, 0).embed, view=object())
+    fake_here.author = stranger
+    fake_there = await other.send(embed=table(env, 0).embed, view=object())
+    await repaste(env)
+    for message in (fake_here, fake_there):
+        inter = tk.FakeInteraction(env.g, m, message)
+        await env.cog.handle_trail(inter, "look")
+        assert inter.replies[0][0] == "Nothing happens."
+    assert "tea table click ignored" in caplog.text
+
+
+async def test_a_click_that_is_ignored_says_why_in_the_log(env, caplog):
+    m = member(env, 403)
+    await wake(env, m)
+    await env.conf.enabled.set(False)
+    inter = tk.FakeInteraction(env.g, m, table(env, 0))
+    await env.cog.handle_trail(inter, "look")
+    assert inter.replies[0][0] == "Nothing happens." and "the hunt is switched off" in caplog.text

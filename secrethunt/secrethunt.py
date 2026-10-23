@@ -443,6 +443,21 @@ class SecretHunt(commands.Cog):
         return puzzle["stage3_done"].format(token=plan["extra_tokens"][0], pour_pointer=pour or "a room I cannot name",
                                             toast_pointer=toast or "a room I cannot name")
 
+    async def _stale_table(self, guild, message, rooms: list):
+        """(puzzle id, room id) for a tea table the bot posted earlier and no longer tracks (the rooms were re-pasted and the
+        tables set up again, leaving the old ones pinned). It still belongs to the room it is in, so it keeps working."""
+        channel_id = getattr(getattr(message, "channel", None), "id", None)
+        author = getattr(message, "author", None)
+        if channel_id not in rooms or (author is not None and author.id != getattr(self.bot.user, "id", None)):
+            return None
+        titles = [e.title for e in getattr(message, "embeds", None) or []] or (
+            [message.embed.title] if getattr(message, "embed", None) is not None else [])
+        published = await self.config.guild(guild).published()
+        for pid, puzzle in PUZZLES.items():
+            if puzzle.get("kind") == "trail" and puzzle["object_title"] in titles and pid in published:
+                return pid, channel_id
+        return None
+
     def _stage4_done_text(self, guild, puzzle: dict, rooms: list, plan: dict) -> str:
         """The Dormouse's words after stage 4: his token and the four courtesies as verses (also what `recap` repeats)."""
         verses = []
@@ -478,13 +493,24 @@ class SecretHunt(commands.Cog):
         if guild is None or message is None or getattr(member, "bot", False):
             return None
         conf = self.config.guild(guild)
-        if not await conf.enabled() or await self._blocked(guild, member):
+
+        def ignored(why: str):
+            log.warning("secrethunt: tea table click ignored (%s): message %s in channel %s, user %s", why, message.id,
+                        getattr(getattr(message, "channel", None), "id", None), member.id)
             return None
-        hit = await self._find_object(conf, message.id)
-        puzzle = PUZZLES.get(hit[0]) if hit else None
+        if not await conf.enabled():
+            return ignored("the hunt is switched off")
+        if await self._blocked(guild, member):
+            return ignored("the member holds the blocked role")
         rooms = await conf.trail()
-        if puzzle is None or puzzle.get("kind") != "trail" or hit[1] not in rooms or not self._can_play(member, puzzle):
-            return None
+        hit = await self._find_object(conf, message.id) or await self._stale_table(guild, message, rooms)
+        puzzle = PUZZLES.get(hit[0]) if hit else None
+        if puzzle is None:
+            return ignored("this message is not a tea table the bot knows")
+        if puzzle.get("kind") != "trail" or hit[1] not in rooms:
+            return ignored("this room is not one of the trail rooms")
+        if not self._can_play(member, puzzle):
+            return ignored("the puzzle is admins-only")
         pid, room = hit[0], rooms.index(hit[1])
         now, test_mode, salt = time.time(), await conf.test_mode(), await self._salt(guild)
         dm_after = resend = None
@@ -1062,6 +1088,10 @@ class SecretHunt(commands.Cog):
                         await channel.edit(archived=False)
                     except _DISCORD_ERRORS:
                         pass
+                if puzzle.get("kind") == "trail":
+                    gone = await self._remove_old_tables(channel, puzzle)
+                    if gone:
+                        report.append(f"- {channel.mention}: removed {gone} old tea table{'' if gone == 1 else 's'}")
                 try:
                     msg = await channel.send(**self._object_message(puzzle))
                     await msg.pin()
@@ -1073,6 +1103,34 @@ class SecretHunt(commands.Cog):
                 await self._delete_pin_notice(channel)
                 report.append(f"- {channel.mention}: object pinned")
         return report
+
+    async def _remove_old_tables(self, channel, puzzle: dict) -> int:
+        """Unpin and delete this puzzle's earlier pinned tables (posted by the bot) in a room before a fresh one goes up, so
+        a room never holds two. How many were removed."""
+        pins = getattr(channel, "pins", None)
+        if pins is None:
+            return 0
+        try:
+            result = pins()
+            items = [m async for m in result] if hasattr(result, "__aiter__") else await result
+        except _DISCORD_ERRORS:
+            return 0
+        removed = 0
+        for m in items:
+            author = getattr(m, "author", None)
+            if author is not None and author.id != getattr(self.bot.user, "id", None):
+                continue
+            titles = [e.title for e in getattr(m, "embeds", None) or []] or (
+                [m.embed.title] if getattr(m, "embed", None) is not None else [])
+            if puzzle["object_title"] not in titles:
+                continue
+            try:
+                await m.unpin(reason="Replaced by a fresh tea table")
+                await m.delete()
+                removed += 1
+            except _DISCORD_ERRORS:
+                pass
+        return removed
 
     async def _delete_pin_notice(self, channel):
         """Pinning posts a 'pinned a message' line that would advertise the object; remove it."""

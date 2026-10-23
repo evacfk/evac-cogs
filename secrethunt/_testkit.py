@@ -212,6 +212,9 @@ class FakeChannel:
     def get_partial_message(self, mid):
         return next((m for m in self.sent if m.id == mid), None) or _Partial(mid)
 
+    async def pins(self):
+        return [m for m in self.sent if m.pinned]
+
     async def history(self, limit=None):
         for m in list(reversed(self.sent))[:limit]:
             yield m
