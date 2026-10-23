@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
+from types import SimpleNamespace
 from typing import Any, Awaitable, Callable, Optional, Sequence
 
 import discord
@@ -62,6 +63,11 @@ class Pick:
     min_values: int = 1
     max_values: int = 1
     defaults: Optional[Callable[[Any], Sequence[int]]] = None   # record values -> preselected ids
+    # Optional second select (one role) under the first. When role_label is set the screen has a Save button
+    # instead of saving on the first selection, and the chosen role id (or "") goes to save() as values["role"].
+    # A select the user never touched keeps its defaults, so pressing Save can't wipe an existing choice.
+    role_label: str = ""
+    role_defaults: Optional[Callable[[Any], Sequence[int]]] = None   # record values -> preselected role ids
 
 
 @dataclass
@@ -232,6 +238,8 @@ class SettingsPanel(discord.ui.View):
         self.page = 0                 # collections longer than one dropdown are paged
         self._value_select = None
         self._pick_select = None
+        self._role_select = None
+        self._pick_touched: set = set()
         self._pager = None
 
     # ---- lookups
@@ -338,7 +346,11 @@ class SettingsPanel(discord.ui.View):
         if self.mode == "confirm" and self.pending:
             body = f"⚠️ **{self.pending['text']}**\n\nPress **Confirm** to go ahead or **Cancel** to leave it as it is."
         elif self.mode == "pick" and self.pending:
-            body = f"**{self.pending['label']}**\nChoose below, then it saves."
+            if self.pending["pick"].role_label:
+                body = (f"**{self.pending['label']}**\n{self.pending['pick'].role_label}\n\n"
+                        "Choose below, then press **Save**. Anything you leave alone stays as it is.")
+            else:
+                body = f"**{self.pending['label']}**\nChoose below, then it saves."
         body = clip(body, 3800)
         parts = []
         if self.intro and self.mode == "main":
@@ -354,7 +366,7 @@ class SettingsPanel(discord.ui.View):
 
     def rebuild(self) -> None:
         self.clear_items()
-        self._value_select = self._pick_select = None
+        self._value_select = self._pick_select = self._role_select = None
         self._pager = None
         if self.mode == "confirm":
             self._add_button("Confirm", "success", self._on_confirm, row=0)
@@ -362,7 +374,12 @@ class SettingsPanel(discord.ui.View):
             return
         if self.mode == "pick":
             self._add_pick_select()
-            self._add_button("Cancel", "secondary", self._on_cancel, row=1)
+            if self.pending["pick"].role_label:
+                self._add_role_select()
+                self._add_button("Save", "success", self._on_pick_save, row=2)
+                self._add_button("Cancel", "secondary", self._on_cancel, row=2)
+            else:
+                self._add_button("Cancel", "secondary", self._on_cancel, row=1)
             return
         self._add_tab_select()
         self._add_setting_select()
@@ -484,8 +501,20 @@ class SettingsPanel(discord.ui.View):
             dtype = discord.SelectDefaultValueType.channel if pick.kind == "channel" else discord.SelectDefaultValueType.role
             kwargs["default_values"] = [discord.SelectDefaultValue(id=i, type=dtype) for i in ids[: pick.max_values]]
         select = cls(**kwargs)
-        select.callback = self._on_pick_done
+        select.callback = self._on_pick_hold if pick.role_label else self._on_pick_done
         self._pick_select = select
+        self.add_item(select)
+
+    def _add_role_select(self) -> None:
+        pick = self.pending["pick"]
+        kwargs = dict(placeholder=clip(pick.role_label, 100), min_values=0, max_values=1, row=1)
+        ids = self.pending.get("role_defaults") or []
+        if ids:
+            kwargs["default_values"] = [discord.SelectDefaultValue(id=i, type=discord.SelectDefaultValueType.role)
+                                        for i in ids[:1]]
+        select = discord.ui.RoleSelect(**kwargs)
+        select.callback = self._on_role_hold
+        self._role_select = select
         self.add_item(select)
 
     # ---- core: run a change and redraw
@@ -627,6 +656,13 @@ class SettingsPanel(discord.ui.View):
             return {}
         return await spec.item_get(self.cog, self.guild, self.item_id) or {}
 
+    def _pick_pending(self, spec: Spec, values: dict, adding: bool, record: dict) -> dict:
+        self._pick_touched = set()
+        return {"pick": spec.pick, "label": spec.pick.label, "values": values,
+                "item": None if adding else self.item_id, "spec": spec.key,
+                "defaults": list(spec.pick.defaults(record)) if spec.pick.defaults and record else [],
+                "role_defaults": list(spec.pick.role_defaults(record)) if spec.pick.role_defaults and record else []}
+
     async def _on_item_edit(self, interaction) -> None:
         spec = self.current_spec()
         adding = self.item_id == NEW_ITEM
@@ -641,9 +677,7 @@ class SettingsPanel(discord.ui.View):
                 if spec.pick is not None:
                     await self._defer(modal_interaction)
                     self.mode = "pick"
-                    self.pending = {"pick": spec.pick, "label": spec.pick.label, "values": values,
-                                    "item": None if adding else self.item_id, "spec": spec.key,
-                                    "defaults": list(spec.pick.defaults(record)) if spec.pick.defaults and record else []}
+                    self.pending = self._pick_pending(spec, values, adding, record)
                     await self.redraw(modal_interaction)
                     return
                 await self._run(modal_interaction, lambda: spec.save(
@@ -658,9 +692,33 @@ class SettingsPanel(discord.ui.View):
             return
         await self._defer(interaction)
         self.mode = "pick"
-        self.pending = {"pick": spec.pick, "label": spec.pick.label, "values": {}, "item": None if adding else self.item_id,
-                        "spec": spec.key, "defaults": list(spec.pick.defaults(record)) if spec.pick.defaults and record else []}
+        self.pending = self._pick_pending(spec, {}, adding, record)
         await self.redraw(interaction)
+
+    async def _on_pick_hold(self, interaction) -> None:
+        """The channel select on a screen with a Save button: remember it was used, save nothing yet."""
+        self._pick_touched.add("channel")
+        await self._defer(interaction)
+
+    async def _on_role_hold(self, interaction) -> None:
+        self._pick_touched.add("role")
+        await self._defer(interaction)
+
+    async def _on_pick_save(self, interaction) -> None:
+        pending, spec = self.pending, self.current_spec()
+        if "channel" in self._pick_touched and self._pick_select is not None:
+            picked = list(self._pick_select.values)
+        else:
+            picked = [SimpleNamespace(id=int(i)) for i in pending.get("defaults") or []]
+        if "role" in self._pick_touched and self._role_select is not None:
+            role_ids = [r.id for r in self._role_select.values]
+        else:
+            role_ids = [int(i) for i in pending.get("role_defaults") or []]
+        values = dict(pending["values"])
+        values["role"] = str(role_ids[0]) if role_ids else ""
+        self.mode, self.pending = "main", None
+        await self._run(interaction, lambda: spec.save(
+            self.cog, self.guild, interaction.user, pending["item"], values, picked))
 
     async def _on_pick_done(self, interaction) -> None:
         pending, spec = self.pending, self.current_spec()

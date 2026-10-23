@@ -233,21 +233,26 @@ async def test_interest_collection_add_edit_remove(w):
     click = Click(admin)
     await p._on_item_edit(click)
     modal = click.response.modal
-    assert set(modal.boxes) == {"name", "emoji", "new_channel", "join_message"}  # no role: access is per member
-    modal.boxes["name"]._value, modal.boxes["emoji"]._value = "Feet", "\U0001F9B6"
+    assert set(modal.boxes) == {"name", "new_channel", "join_message"}      # no emoji; channels and role come next
+    modal.boxes["name"]._value = "Feet"
     modal.boxes["new_channel"]._value, modal.boxes["join_message"]._value = "", "hello"
     await modal.on_submit(Click(admin))
     assert p.mode == "pick"
-    sel = child(p, discord.ui.ChannelSelect)
-    assert sel.min_values == 0 and sel.max_values == 25
+    sel, rsel = child(p, discord.ui.ChannelSelect), child(p, discord.ui.RoleSelect)
+    assert sel.min_values == 0 and sel.max_values == 25 and rsel.max_values == 1
+    child(p, discord.ui.Button, label="Save")
     sel._values = [SimpleNamespace(id=FEET_CHANNEL), SimpleNamespace(id=900001)]
+    await p._on_pick_hold(Click(admin))
+    rsel._values = [SimpleNamespace(id=7000000000000001)]
+    await p._on_role_hold(Click(admin))
+    assert not await w.cog.config.guild(w.guild).interests()               # selecting alone saves nothing
     done = Click(admin)
-    await p._on_pick_done(done)
+    await p._on_pick_save(done)
     saved = (await w.cog.config.guild(w.guild).interests())["feet"]
-    assert saved["emoji"] == "\U0001F9B6" and saved["join_message"] == "hello"
+    assert saved["join_message"] == "hello" and saved["role_id"] == 7000000000000001 and saved["emoji"] == ""
     assert [saved["channel_id"]] + saved["extra_channel_ids"] == [FEET_CHANNEL, 900001]
     assert "✅" in last_note(done)
-    # edit: the form is prefilled and the channel dropdown preselects the current channels
+    # edit: the form is prefilled and the screen preselects the current channels and role
     await p._on_item(Click(admin, ["feet"]))
     click = Click(admin)
     await p._on_item_edit(click)
@@ -255,7 +260,12 @@ async def test_interest_collection_add_edit_remove(w):
     assert modal.boxes["name"].default == "Feet" and modal.boxes["join_message"].default == "hello"
     await modal.on_submit(Click(admin))
     assert [d.id for d in child(p, discord.ui.ChannelSelect).default_values] == [FEET_CHANNEL, 900001]
-    await p._on_cancel(Click(admin))
+    assert [d.id for d in child(p, discord.ui.RoleSelect).default_values] == [7000000000000001]
+    await p._on_pick_save(Click(admin))                                    # untouched: nothing is wiped
+    kept = (await w.cog.config.guild(w.guild).interests())["feet"]
+    assert kept["role_id"] == 7000000000000001 and [kept["channel_id"]] + kept["extra_channel_ids"] == [FEET_CHANNEL, 900001]
+    await p._on_item(Click(admin, ["feet"]))
+    await p._on_item_edit(Click(admin))
     await p._on_item_remove(Click(admin))
     assert not await w.cog.config.guild(w.guild).interests()
 

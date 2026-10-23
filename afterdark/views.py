@@ -7,7 +7,6 @@ from typing import Iterable
 import discord
 
 from . import constants as C
-from . import engine
 from .models import Interest
 
 
@@ -71,8 +70,6 @@ class InterestView(discord.ui.View):
         for interest in list(interests)[: self.MAX_BUTTONS]:
             button = discord.ui.Button(
                 label=interest.name,
-                # An already-stored bad emoji must never make the whole panel fail.
-                emoji=interest.emoji if engine.valid_emoji(interest.emoji) else None,
                 style=discord.ButtonStyle.secondary,
                 custom_id=C.INTEREST_ID_PREFIX + interest.key,
             )

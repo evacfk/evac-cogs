@@ -4,7 +4,6 @@ Each spec reads Config through the cog and writes only through the cog's `_apply
 validation is the same as ever. No discord objects are created here, only plain specs.
 """
 from . import constants as C
-from . import engine
 from .models import Interest
 from .settings_panel import Field, ItemAction, PanelError, Pick, Spec
 
@@ -97,11 +96,10 @@ async def _get_interests(cog, guild):
     cfg = await cog.config.guild(guild).all()
     out = []
     for key, interest in cog._interests(cfg).items():
-        emoji = interest.emoji + " " if engine.valid_emoji(interest.emoji) else ""
         channels = ", ".join(f"<#{c}>" for c in interest.channel_ids)
         role = f" · role <@&{interest.role_id}>" if interest.role_id else ""
         hidden = " · HIDDEN" if cog._interest_hidden(interest, cfg) else ""
-        out.append((key, f"{emoji}{interest.name}", f"{channels}{role}{hidden}"))
+        out.append((key, interest.name, f"{channels}{role}{hidden}"))
     return out
 
 
@@ -208,8 +206,6 @@ def build_specs():
     interest_fields = (
         Field("name", "Name (also the button text)", value=lambda r: r.get("name", ""), max_length=80,
               placeholder="Feet"),
-        Field("emoji", "Button emoji (optional)", value=lambda r: r.get("emoji", ""), required=False, max_length=64,
-              placeholder="\U0001F9B6"),
         Field("new_channel", "Create a new channel named (optional)", required=False, max_length=90,
               placeholder="feet-pics (age-restricted, hidden until members join)"),
         Field("join_message", "Message shown to them when they join", value=lambda r: r.get("join_message", ""),
@@ -284,9 +280,12 @@ def build_specs():
         Spec("interests", "Interests", TAB_INTERESTS, "collection", get=_get_interests, item_get=_interest_get,
              save=_interest_save, remove=_interest_remove, fields=interest_fields,
              item_actions=(ItemAction("Show / hide", _interest_visibility),),
-             pick=Pick("channel", "Also open these existing channels (skip if you named a new one)", 0, 25,
-                       defaults=lambda r: [r["channel_id"]] + list(r.get("extra_channel_ids") or []) if r else []),
-             help="Members join with a button and get access to the interest's channels one by one (no role). "
+             pick=Pick("channel", "Existing channels this interest opens", 0, 25,
+                       defaults=lambda r: [r["channel_id"]] + list(r.get("extra_channel_ids") or []) if r else [],
+                       role_label="Role it gives (optional). Empty = members get access one by one, no role.",
+                       role_defaults=lambda r: [r["role_id"]] if r and r.get("role_id") else []),
+             help="Members join with a button. Add or Edit asks for the channels it opens (existing ones, or a new one by name) and an "
+                  "optional role to give instead of per-member access. "
                   "After saving, re-post the member panel with `.afterdark panel #channel` so the buttons match. "
                   "Select an interest and press Show / hide to bring just that one back (or hide it again). "
                   "Remove also hides its channels from everyone except you and the bot."),

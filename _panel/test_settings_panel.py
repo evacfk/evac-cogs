@@ -614,3 +614,83 @@ async def test_paging_resets_when_the_setting_changes_and_short_lists_have_no_pa
     store.d["items"] = {"x": {"name": "X", "n": 1}}
     await pick_setting(panel, owner, "items")
     assert not any(isinstance(c, discord.ui.Button) and c.row == 4 and c.label in ("◀", "▶") for c in panel.children)
+
+
+# ---- a pick screen with a role select and a Save button (opt-in through Pick.role_label)
+
+async def make_role_pick(store=None):
+    store = store or Store()
+    sp = specs()
+    items = sp[-1]
+    items.pick = Pick("channel", "Pick channels", 0, 5, defaults=lambda r: [11, 12],
+                      role_label="Role (optional)", role_defaults=lambda r: [77] if r and r.get("n") else [])
+    owner = member()
+    panel = SettingsPanel(store, SimpleNamespace(id=9), owner, sp, title="T")
+    await panel.refresh_data()
+    panel.rebuild()
+    panel.tab = "Things"
+    await pick_setting(panel, owner, "items")
+    return panel, store, owner
+
+
+async def open_pick(panel, owner, item):
+    await panel._on_item(FakeInteraction(owner, [item]))
+    it = FakeInteraction(owner)
+    await panel._on_item_edit(it)
+    modal = it.response.modal
+    modal.boxes["name"]._value = "Fresh"
+    await modal.on_submit(FakeInteraction(owner))
+    assert panel.mode == "pick"
+
+
+async def test_role_pick_screen_has_both_selects_and_a_save_button():
+    panel, store, owner = await make_role_pick()
+    await open_pick(panel, owner, NEW_ITEM)
+    child(panel, discord.ui.ChannelSelect)
+    child(panel, discord.ui.RoleSelect)
+    child(panel, discord.ui.Button, label="Save")
+    child(panel, discord.ui.Button, label="Cancel")
+    assert "press **Save**" in panel.build_embed().description
+
+
+async def test_selecting_does_not_save_until_save_is_pressed():
+    panel, store, owner = await make_role_pick()
+    await open_pick(panel, owner, NEW_ITEM)
+    child(panel, discord.ui.ChannelSelect)._values = [SimpleNamespace(id=1), SimpleNamespace(id=2)]
+    await panel._on_pick_hold(FakeInteraction(owner))
+    child(panel, discord.ui.RoleSelect)._values = [SimpleNamespace(id=5)]
+    await panel._on_role_hold(FakeInteraction(owner))
+    assert store.calls == [] and panel.mode == "pick"
+    await panel._on_pick_save(FakeInteraction(owner))
+    assert store.calls[-1] == ("save", None, {"name": "Fresh", "role": "5"}, [1, 2]) and panel.mode == "main"
+
+
+async def test_save_without_touching_anything_keeps_the_existing_choices():
+    panel, store, owner = await make_role_pick()
+    await open_pick(panel, owner, "x")                 # x has n=1, so role default 77 and channel defaults 11, 12
+    assert [d.id for d in child(panel, discord.ui.RoleSelect).default_values] == [77]
+    await panel._on_pick_save(FakeInteraction(owner))
+    assert store.calls[-1] == ("save", "x", {"name": "Fresh", "role": "77"}, [11, 12])
+
+
+async def test_clearing_the_role_select_removes_the_role():
+    panel, store, owner = await make_role_pick()
+    await open_pick(panel, owner, "x")
+    child(panel, discord.ui.RoleSelect)._values = []
+    await panel._on_role_hold(FakeInteraction(owner))
+    await panel._on_pick_save(FakeInteraction(owner))
+    assert store.calls[-1][2]["role"] == "" and store.calls[-1][3] == [11, 12]
+
+
+async def test_new_record_untouched_selects_save_empty():
+    panel, store, owner = await make_role_pick()
+    await open_pick(panel, owner, NEW_ITEM)
+    await panel._on_pick_save(FakeInteraction(owner))
+    assert store.calls[-1] == ("save", None, {"name": "Fresh", "role": ""}, [])
+
+
+async def test_cancel_on_the_role_pick_screen_saves_nothing():
+    panel, store, owner = await make_role_pick()
+    await open_pick(panel, owner, NEW_ITEM)
+    await panel._on_cancel(FakeInteraction(owner))
+    assert panel.mode == "main" and store.calls == []

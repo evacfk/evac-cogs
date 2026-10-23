@@ -320,7 +320,7 @@ class AfterDark(commands.Cog):
 
     async def _grant_interest_access(self, member, interest: Interest, cfg: dict) -> Tuple[bool, str]:
         guild = member.guild
-        if cfg["access_mode"] == "roles":
+        if interest.role_id or cfg["access_mode"] == "roles":        # a role on the interest wins; else per-member access
             role = guild.get_role(interest.role_id) if interest.role_id else None
             if role is None:
                 return False, "no role is configured for this interest"
@@ -1555,7 +1555,7 @@ class AfterDark(commands.Cog):
         await ctx.send_help()
 
     async def _apply_interest_save(self, guild, member, item_id, values: dict, picked) -> str:
-        """Create an interest (item_id None) or replace an existing one's name, emoji, role, join
+        """Create an interest (item_id None) or replace an existing one's name, role, join
         message and channels. `picked` is the list of channels it opens."""
         interests = dict(await self.config.guild(guild).interests())
         name_text = (values.get("name") or "").strip()
@@ -1589,23 +1589,24 @@ class AfterDark(commands.Cog):
             role_id = int(digits)
         elif existing is not None and "role" in values:
             role_id = None
+        if role_id and role_id != (existing.role_id if existing is not None else None):
+            if not self._can_manage(guild, guild.get_role(role_id)):
+                raise PanelError("I can't hand out that role (it's above my highest role, or a bot or booster role). "
+                                 "Move my role above it, or pick another.")
         created = None
         if new_channel_name:
             created = await self._make_interest_channel(guild, member, new_channel_name)
             channel_ids.append(created.id)
-        # The form has separate boxes, so a word typed in the emoji box is simply not an emoji:
-        # drop it (Discord rejects the whole member panel on an invalid button emoji).
-        emoji_text = (values.get("emoji") or "").strip()
-        emoji, name = (emoji_text if engine.valid_emoji(emoji_text) else ""), name_text
+        name = name_text
         if existing is None:
-            interest = Interest(key=key, name=name or key.title(), emoji=emoji, channel_id=channel_ids[0],
+            interest = Interest(key=key, name=name or key.title(), emoji="", channel_id=channel_ids[0],
                                 role_id=role_id, extra_channel_ids=channel_ids[1:])
             added = channel_ids
         else:
             interest = existing
             added = [c for c in channel_ids if c not in interest.channel_ids]
             interest.channel_id, interest.extra_channel_ids = channel_ids[0], channel_ids[1:]
-            interest.emoji = emoji
+            interest.emoji = ""           # buttons carry no emoji any more; scrub what older versions saved
             if name:
                 interest.name = name
             interest.role_id = role_id
@@ -1618,8 +1619,10 @@ class AfterDark(commands.Cog):
         notes = ""
         if mode == "roles" and not interest.role_id:
             notes += " Warning: mode is roles but no role was given, so joins will fail until you add one."
-        if not engine.valid_emoji(interest.emoji):
-            notes += " (No valid emoji, so the button has none.)"
+        if interest.role_id:
+            role = guild.get_role(interest.role_id)
+            notes += (f" Tapping the button now gives members the {role.name if role else 'chosen'} role, so that role must "
+                      "already be allowed to see the channel(s).")
         if existing is not None and added:
             notes += " Members who already joined get the new channels when they click the button again, or use `.afterdark grantinterest`."
         listing = ", ".join(f"#{guild.get_channel(c).name}" if guild.get_channel(c) else str(c) for c in interest.channel_ids)
@@ -2161,7 +2164,7 @@ class AfterDark(commands.Cog):
             return await ctx.send("No interests yet.")
         state = await self._get_state(ctx.guild)
         lines = [
-            f"{i.emoji if engine.valid_emoji(i.emoji) else ''} `{k}` -> "
+            f"`{k}` -> "
             + ", ".join(f"<#{c}>" for c in i.channel_ids)
             + f"{f' role <@&{i.role_id}>' if i.role_id else ''} ({len(state.get(k, {}))} tracked)"
             + (" HIDDEN" if self._interest_hidden(i, cfg) else "")

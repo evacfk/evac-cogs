@@ -1,5 +1,7 @@
 """Hiding every robot-prefixed channel: dry run first, fully reversible, and it maps back onto the
 interests (buttons) and feeds that used those channels."""
+from types import SimpleNamespace
+
 import discord
 import pytest
 
@@ -14,6 +16,15 @@ BOT = C.HIDE_PREFIX + "・"
 
 def ow(**kw):
     return discord.PermissionOverwrite(**kw)
+
+
+def ow_state(o):
+    """Comparable contents of an overwrite, for both the stand-in and real discord.py."""
+    return dict(vars(o)) if hasattr(o, "__dict__") else tuple(p.value for p in o.pair())
+
+
+def forbidden():
+    return discord.Forbidden(SimpleNamespace(status=403, reason="Forbidden"), "no perms")
 
 
 async def robot_world(w):
@@ -101,11 +112,11 @@ async def test_hide_locks_out_members_but_keeps_you_the_bots_and_plain_channels(
 
 async def test_unhide_restores_everything_exactly(w):
     await robot_world(w)
-    snapshot = {c.id: {t: dict(vars(o)) for t, o in c.overwrites.items()} for c in (w.feet, w.feet2, w.feet3, w.other)}
+    snapshot = {c.id: {t: ow_state(o) for t, o in c.overwrites.items()} for c in (w.feet, w.feet2, w.feet3, w.other)}
     await hide(w)
     msg = await w.cog._apply_hide(w.guild, w.admin, "unhide")
     for c in (w.feet, w.feet2, w.feet3, w.other):
-        after = {t: dict(vars(o)) for t, o in c.overwrites.items()}
+        after = {t: ow_state(o) for t, o in c.overwrites.items()}
         before = {t: v for t, v in snapshot[c.id].items()}
         assert after == before, c.name
     assert await w.cog.config.guild(w.guild).hidden_channels() == {} and "Unhid 4" in msg
@@ -195,7 +206,7 @@ async def test_feeds_pause_with_the_hide_and_resume_on_unhide(f):
 async def test_a_failed_edit_changes_nothing(w):
     await robot_world(w)
     before = {c.id: dict(c.overwrites) for c in (w.feet, w.feet2, w.feet3, w.other)}
-    w.feet3.edit_error = discord.Forbidden("no perms")
+    w.feet3.edit_error = forbidden()
     await w.cog._apply_hide_preview(w.guild, w.admin)
     with pytest.raises(PanelError, match="Nothing was changed"):
         await w.cog._apply_hide(w.guild, w.admin, "hide")

@@ -333,11 +333,12 @@ async def expect_refused(coro, text):
     assert text in str(err.value)
 
 
-async def add_feet(w, mode="roles"):
+async def add_feet(w, mode="roles", role=True):
+    """The feet interest. role=False is the usual per-member setup; an interest WITH a role hands out that role."""
     await set_cfg(
         w,
         interests={"feet": {"key": "feet", "name": "Feet", "emoji": "x",
-                            "channel_id": FEET_CHANNEL, "role_id": FEET_ROLE}},
+                            "channel_id": FEET_CHANNEL, "role_id": FEET_ROLE if role else None}},
         access_mode=mode,
     )
 
@@ -459,12 +460,13 @@ async def test_interest_join_then_leave_roles_mode(w):
 
 
 async def test_interest_overwrite_mode_and_cleanup_of_both_kinds(w):
-    await add_feet(w, mode="overwrites")
+    await add_feet(w, mode="overwrites", role=False)
     m = w.member()
     m.roles.append(w.rabbit)
     await w.cog.handle_interest_toggle(FakeInteraction(m, w.guild), "feet")
     assert m in w.feet.overwrites and w.feet_role not in m.roles
-    # Flip to roles mode while the member also holds the role: removal cleans both.
+    # The interest is later tied to a role while the member also holds it: removal cleans both.
+    await add_feet(w, mode="overwrites")
     m.roles.append(w.feet_role)
     removed = await w.cog._revoke_all(m, reason="test")
     assert m not in w.feet.overwrites and w.feet_role not in m.roles and w.rabbit not in m.roles
@@ -472,7 +474,7 @@ async def test_interest_overwrite_mode_and_cleanup_of_both_kinds(w):
 
 
 async def test_interest_overwrite_cap_refuses(w):
-    await add_feet(w, mode="overwrites")
+    await add_feet(w, mode="overwrites", role=False)
     for i in range(C.OVERWRITE_SOFT_CAP):
         w.feet.overwrites[object()] = None
     m = w.member()
@@ -1202,37 +1204,23 @@ async def test_defaults_match_the_agreed_design(w):
     assert 554841909412102169 in cfg["adult_age_role_ids"]  # 30+ role included
 
 
-# ------------------------------------------------ v1.1.0: emoji guard + manual interest access
-
-def test_valid_emoji_accepts_real_and_rejects_words():
-    assert engine.valid_emoji("\U0001F9B6")
-    assert engine.valid_emoji("<:foot:123456789012345678>")
-    assert engine.valid_emoji("<a:wave:123456789012345678>")
-    for bad in ("", "Feet", "x", ":foot:", "feet1", "<:foot:12>", "  "):
-        assert not engine.valid_emoji(bad)
-
-
-def test_split_emoji_and_name_moves_a_word_into_the_name():
-    assert engine.split_emoji_and_name("Feet", "Lovers") == ("", "Feet Lovers")
-    assert engine.split_emoji_and_name("\U0001F9B6", "Feet") == ("\U0001F9B6", "Feet")
-    assert engine.split_emoji_and_name("", "Feet") == ("", "Feet")
-
+# ------------------------------------------------ v1.1.0: manual interest access
 
 async def test_default_access_mode_is_per_user_overwrites(w):
     assert await w.cog.config.guild(w.guild).access_mode() == "overwrites"
 
 
-async def test_interest_save_with_a_word_in_the_emoji_slot_keeps_the_panel_valid(w):
-    msg = await save_interest(w, None, {"name": "Feet", "emoji": "Feet"}, [w.feet])
-    cfg = await w.cog.config.guild(w.guild).all()
-    assert cfg["interests"]["feet"]["emoji"] == "" and cfg["interests"]["feet"]["name"] == "Feet"
-    assert "No valid emoji" in msg
-
-
-def test_interest_view_drops_an_invalid_stored_emoji(w):
+async def test_buttons_carry_no_emoji_even_if_an_old_one_was_stored(w):
     from .models import Interest
-    view = ad.InterestView(w.cog, [Interest(key="feet", name="Feet", emoji="Feet", channel_id=1, role_id=None)])
-    assert view.children[0].emoji is None
+    view = ad.InterestView(w.cog, [Interest(key="feet", name="Feet", emoji="\U0001F9B6", channel_id=1, role_id=None)])
+    assert view.children[0].emoji is None and view.children[0].label == "Feet"
+
+
+async def test_saving_scrubs_a_stored_emoji_and_ignores_one_in_the_values(w):
+    w.cog.config.guild(w.guild).store["interests"] = {
+        "feet": {"key": "feet", "name": "Feet", "emoji": "\U0001F9B6", "channel_id": FEET_CHANNEL, "role_id": None}}
+    await save_interest(w, "feet", {"name": "Feet", "emoji": "\U0001F9B6"}, [w.feet])
+    assert (await w.cog.config.guild(w.guild).interests())["feet"]["emoji"] == ""
 
 
 def test_panel_embed_is_white_and_carries_the_rules():
@@ -1257,7 +1245,7 @@ def test_panel_embed_no_longer_lists_channels_twice():
 
 
 async def test_grantinterest_gives_a_per_user_overwrite_and_clears_a_lapse(w):
-    await add_feet(w, mode="overwrites")
+    await add_feet(w, mode="overwrites", role=False)
     m = w.member()
     await set_cfg(w, lapsed={"feet": [m.id]})
     m.roles.append(w.rabbit)
@@ -1281,7 +1269,7 @@ async def test_grantinterest_requires_rabbit_hole_and_not_excluded(w):
 
 
 async def test_revokeinterest_removes_access_without_recording_a_lapse(w):
-    await add_feet(w, mode="overwrites")
+    await add_feet(w, mode="overwrites", role=False)
     m = w.member()
     m.roles.append(w.rabbit)
     await w.cog.handle_interest_toggle(FakeInteraction(m, w.guild), "feet")
@@ -1313,7 +1301,7 @@ async def test_save_keeps_every_picked_channel_in_order(w):
     await save_interest(w, None, {"name": "Feet toes", "emoji": "\U0001F9B6"}, [w.feet, c1, c2, c1])
     i = (await w.cog.config.guild(w.guild).interests())["feet-toes"]
     assert [i["channel_id"]] + i["extra_channel_ids"] == [FEET_CHANNEL, 900001, 900002]
-    assert i["emoji"] == "\U0001F9B6" and i["name"] == "Feet toes"
+    assert i["emoji"] == "" and i["name"] == "Feet toes"
 
 
 async def test_editing_replaces_channels_and_keeps_the_rest(w):
@@ -1465,7 +1453,7 @@ async def test_remove_says_so_when_the_bot_cannot_change_the_channel(w):
     await add_two_feet_channels(w)
     m = w.member()
     w.feet.overwrites[m] = object()
-    w.feet.edit_error = discord.Forbidden("no perms")
+    w.feet.edit_error = discord.Forbidden(SimpleNamespace(status=403, reason="Forbidden"), "no perms")
     msg = await w.cog._apply_interest_remove(w.guild, w.member("admin"), "feet")
     assert m in w.feet.overwrites and "NOT" in msg and not await w.cog.config.guild(w.guild).interests()
 
@@ -1949,3 +1937,59 @@ async def test_verifiedrole_setting_and_clearing(w):
     await w.cog._apply_role(w.guild, admin, "verified_role_id", None)
     assert await w.cog.config.guild(w.guild).verified_role_id() == 0
     await expect_refused(w.cog._apply_role(w.guild, admin, "rabbit_role_id", None), "required")
+
+# ------------------------------------------------ an interest tied to an existing role
+
+async def test_an_interest_with_a_role_hands_out_that_role_even_in_overwrites_mode(w):
+    await add_feet(w, mode="overwrites")                  # the default mode: per-member permissions
+    m = w.member()
+    m.roles.append(w.rabbit)
+    it = FakeInteraction(m, w.guild)
+    await w.cog.handle_interest_toggle(it, "feet")
+    assert w.feet_role in m.roles and m not in w.feet.overwrites       # the role, not a per-member overwrite
+    await w.cog.handle_interest_toggle(FakeInteraction(m, w.guild), "feet")
+    assert w.feet_role not in m.roles                                  # tapping again takes it back
+
+
+async def test_an_interest_without_a_role_still_uses_per_member_access(w):
+    await set_cfg(w, access_mode="overwrites", interests={"feet": {
+        "key": "feet", "name": "Feet", "emoji": "", "channel_id": FEET_CHANNEL, "role_id": None}})
+    m = w.member()
+    m.roles.append(w.rabbit)
+    await w.cog.handle_interest_toggle(FakeInteraction(m, w.guild), "feet")
+    assert m in w.feet.overwrites and w.feet_role not in m.roles
+
+
+async def test_saving_with_a_role_ties_the_interest_to_it_and_says_so(w):
+    msg = await save_interest(w, None, {"name": "Feet", "role": str(FEET_ROLE)}, [w.feet])
+    assert (await w.cog.config.guild(w.guild).interests())["feet"]["role_id"] == FEET_ROLE
+    assert "gives members the cat role" in msg
+
+
+async def test_clearing_the_role_goes_back_to_per_member_access(w):
+    await add_feet(w, mode="overwrites")
+    await save_interest(w, "feet", {"name": "Feet", "role": ""}, [w.feet])
+    assert (await w.cog.config.guild(w.guild).interests())["feet"]["role_id"] is None
+
+
+async def test_a_role_the_bot_cannot_hand_out_is_refused_at_save_time(w):
+    high = w.guild.add_role(8800, "Boss", position=500)
+    managed = w.guild.add_role(8801, "Integration", managed=True)
+    await expect_refused(save_interest(w, None, {"name": "Feet", "role": str(high.id)}, [w.feet]), "can't hand out")
+    await expect_refused(save_interest(w, None, {"name": "Feet", "role": str(managed.id)}, [w.feet]), "can't hand out")
+    assert not await w.cog.config.guild(w.guild).interests()
+
+
+async def test_editing_other_things_does_not_recheck_an_unchanged_role(w):
+    await add_feet(w, mode="overwrites")
+    w.feet_role.position = 500                              # now above the bot, but the interest already had it
+    await save_interest(w, "feet", {"name": "Feet 2", "role": str(FEET_ROLE)}, [w.feet])
+    assert (await w.cog.config.guild(w.guild).interests())["feet"]["name"] == "Feet 2"
+
+
+def test_the_interest_form_has_no_emoji_and_the_pick_screen_has_a_role_select():
+    from afterdark import panel as panel_mod
+    spec = next(s for s in panel_mod.build_specs() if s.key == "interests")
+    assert [f.key for f in spec.fields] == ["name", "new_channel", "join_message"]
+    assert spec.pick.role_label and spec.pick.role_defaults({"role_id": 5}) == [5] and spec.pick.role_defaults({}) == []
+    assert spec.pick.defaults({"channel_id": 1, "extra_channel_ids": [2]}) == [1, 2]
