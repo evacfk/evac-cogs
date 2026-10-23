@@ -1049,3 +1049,211 @@ def test_the_new_public_and_dm_text_never_leaks_a_rule():
     body = " ".join(WELL[k] for k in ("stage3_intro", "test_intro", "test_failed", "probe_saving", "stage3_done")).lower()
     for text in ("contains the letter", "starts with", "ends with", "vowel", "even number", "double letter"):
         assert text not in body, text
+
+
+# ---------------------------------------------------------------- closed DMs, scheduled launches, status
+
+from datetime import datetime  # noqa: E402
+
+from secrethunt.constants import HOME_TZ  # noqa: E402
+from secrethunt.puzzles import DM_CLOSED_NOTE, DM_CLOSED_PUBLIC  # noqa: E402
+
+
+def pacific(ts):
+    return datetime.fromtimestamp(ts, HOME_TZ).strftime("%Y-%m-%d %H:%M")
+
+
+async def test_closed_dms_on_the_third_sister_tell_the_member_privately_and_retry_on_the_next_press(env):
+    m = member(env, 21)
+    await wake(env, m)
+    p = plan_of(env, 21)
+    await look(env, m, p["chain"][0])
+    await look(env, m, p["chain"][1])
+    m.dm_closed = True
+    out = await look(env, m, p["chain"][2])
+    assert DM_CLOSED_NOTE in out and str(p["numbers"][2]) in out
+    assert (await state(env, m)).get("dm_pending") is True
+    m.dm_closed = False
+    await look(env, m, p["chain"][2])  # any press: the bounced DM is sent again
+    assert m.dms[-1] == WELL["stage3_intro"] and "dm_pending" not in await state(env, m)
+    n = len(m.dms)
+    await look(env, m, p["chain"][2])
+    assert len(m.dms) == n  # and only once
+
+
+async def test_a_still_closed_dm_keeps_the_note_coming(env):
+    m = member(env, 22)
+    await wake(env, m)
+    p = plan_of(env, 22)
+    m.dm_closed = True
+    for room in p["chain"]:
+        await look(env, m, room)
+    assert DM_CLOSED_NOTE in await look(env, m, p["chain"][0]) and (await state(env, m))["dm_pending"] is True
+
+
+async def test_closed_dms_at_stage_one_undo_the_start_and_say_so_in_the_channel(env):
+    m = member(env, 23)
+    m.dm_closed = True
+    await wake(env, m)
+    assert await state(env, m) is None
+    notice = env.poem.sent[-1]
+    assert notice.content == DM_CLOSED_PUBLIC.format(mention=m.mention) and notice.kw["delete_after"] == 15
+    m.dm_closed = False
+    await wake(env, m)
+    assert (await state(env, m)) is not None and m.dms[-1] == (await state(env, m))["clue"]
+
+
+async def test_the_dm_closed_texts_never_name_a_stage_or_answer():
+    for text in (DM_CLOSED_NOTE, DM_CLOSED_PUBLIC):
+        assert "tea" not in text.lower().replace("tea table", "") and "stage" not in text.lower()
+
+
+async def schedule(env, when=None, channel=None, puzzle=PID, **kw):
+    when = pacific(env.clock.now + 7200) if when is None else when
+    return await env.cog._apply_launch(env.g, env.admin, {"puzzle": puzzle, "when": when,
+                                                         "channel": channel if channel is not None else f"<#{env.poem.id}>", **kw})
+
+
+@pytest.fixture
+async def fresh(env, monkeypatch):
+    """A finished puzzle that is not live yet, with its real objects placed and the hunt on."""
+    await env.conf.published.set([])
+    await env.conf.active.set("")
+    return env
+
+
+async def test_a_wip_puzzle_cannot_be_scheduled(env, monkeypatch):
+    monkeypatch.setitem(env.mod.PUZZLES, PID, {**WELL, "wip": True})
+    with pytest.raises(PanelError, match="still being built"):
+        await schedule(env)
+
+
+@pytest.mark.parametrize("when,why", [("tomorrow 9am", "couldn't read"), ("2020-01-01 09:00", "already passed")])
+async def test_a_bad_launch_time_is_refused_and_nothing_is_saved(fresh, when, why):
+    with pytest.raises(PanelError, match=why):
+        await schedule(fresh, when=when)
+    assert await fresh.conf.launches() == {}
+
+
+async def test_a_launch_needs_a_known_puzzle_and_a_channel(fresh):
+    with pytest.raises(PanelError, match="Unknown puzzle"):
+        await schedule(fresh, puzzle="nope")
+    with pytest.raises(PanelError, match="which channel"):
+        await schedule(fresh, channel="<#999999>")
+
+
+async def test_scheduling_reads_pacific_time_in_both_clock_styles(fresh):
+    text = await schedule(fresh, when="2099-10-24 9:00am")
+    want = datetime(2099, 10, 24, 9, 0, tzinfo=HOME_TZ).timestamp()
+    assert (await fresh.conf.launches())[PID]["at"] == want and f"<t:{int(want)}:F>" in text
+    await schedule(fresh, when="2099-10-24 09:00")
+    assert (await fresh.conf.launches())[PID]["at"] == want
+
+
+async def test_a_launch_runs_once_at_its_time_going_live_and_posting_the_poem(fresh):
+    await schedule(fresh)
+    at = (await fresh.conf.launches())[PID]["at"]
+    before = len(fresh.poem.sent)
+    await fresh.cog._run_launches(fresh.g, at - 1)
+    assert await fresh.conf.published() == [] and len(fresh.poem.sent) == before  # not yet
+    fresh.admin.dms.clear()
+    await fresh.cog._run_launches(fresh.g, at + 5)
+    assert await fresh.conf.published() == [PID] and await fresh.conf.active() == PID
+    poem = next(m for m in fresh.poem.sent if m.pinned and m.embed is not None and m.embed.title == WELL["poem_title"])
+    assert (await fresh.conf.poem_ids())[str(poem.id)] == PID
+    launch = (await fresh.conf.launches())[PID]
+    assert launch["state"] == "done" and "launched on schedule" in fresh.admin.dms[-1]
+    sent = len(fresh.poem.sent)
+    await fresh.cog._run_launches(fresh.g, at + 600)
+    assert len(fresh.poem.sent) == sent  # never twice
+
+
+async def test_the_loop_tick_runs_the_launch_even_while_the_hunt_is_off(fresh):
+    await fresh.conf.enabled.set(True)
+    await schedule(fresh)
+    at = (await fresh.conf.launches())[PID]["at"]
+    await fresh.cog._deliver_due(fresh.g, at + 1)
+    assert await fresh.conf.published() == [PID]
+
+
+async def test_a_launch_that_is_not_ready_fails_loudly_and_changes_nothing_public(fresh):
+    await fresh.conf.enabled.set(False)
+    await fresh.conf.objects.set({})
+    text = await schedule(fresh)
+    assert "Not ready yet" in text and "switched off" in text and "objects are not set up" in text
+    at = (await fresh.conf.launches())[PID]["at"]
+    before = len(fresh.poem.sent)
+    fresh.admin.dms.clear()
+    await fresh.cog._run_launches(fresh.g, at + 1)
+    assert await fresh.conf.published() == [] and len(fresh.poem.sent) == before
+    assert (await fresh.conf.launches())[PID]["state"] == "failed" and "NOT launched" in fresh.admin.dms[-1]
+
+
+async def test_test_mode_blocks_a_launch_until_it_is_turned_off(fresh):
+    await fresh.conf.test_mode.set(True)
+    assert "Test mode is still on" in await schedule(fresh)
+    at = (await fresh.conf.launches())[PID]["at"]
+    await fresh.cog._run_launches(fresh.g, at + 1)
+    assert await fresh.conf.published() == []
+
+
+async def test_an_hour_before_a_launch_that_is_not_ready_warns_once(fresh):
+    await fresh.conf.enabled.set(False)
+    await schedule(fresh)
+    at = (await fresh.conf.launches())[PID]["at"]
+    fresh.admin.dms.clear()
+    await fresh.cog._run_launches(fresh.g, at - 7200 + 10)
+    assert fresh.admin.dms == []  # still hours away
+    await fresh.cog._run_launches(fresh.g, at - 3000)
+    assert len(fresh.admin.dms) == 1 and "not ready" in fresh.admin.dms[0]
+    await fresh.cog._run_launches(fresh.g, at - 2000)
+    assert len(fresh.admin.dms) == 1
+    assert (await fresh.conf.launches())[PID]["state"] == "pending"
+
+
+async def test_a_ready_launch_sends_no_warning(fresh):
+    await schedule(fresh)
+    at = (await fresh.conf.launches())[PID]["at"]
+    fresh.admin.dms.clear()
+    await fresh.cog._run_launches(fresh.g, at - 3000)
+    assert fresh.admin.dms == []
+
+
+async def test_an_empty_time_cancels_and_cancelling_nothing_says_so(fresh):
+    await schedule(fresh)
+    assert "cancelled" in await schedule(fresh, when="")
+    assert await fresh.conf.launches() == {}
+    with pytest.raises(PanelError, match="No launch is scheduled"):
+        await schedule(fresh, when="")
+
+
+async def test_turning_test_mode_off_leaves_a_scheduled_puzzle_for_its_time(fresh):
+    box = fresh.g.add_channel(777, "test")
+    await fresh.conf.test_channel_id.set(box.id)
+    await fresh.cog._apply_test_mode(fresh.g, fresh.admin, True)
+    await fresh.cog._apply_setup(fresh.g, fresh.admin, PID, True)
+    await schedule(fresh)
+    before = len(fresh.poem.sent)
+    out = await fresh.cog._apply_test_mode(fresh.g, fresh.admin, False)
+    assert "scheduled for" in out and len(fresh.poem.sent) == before
+    assert str(table(fresh, 0)) and (await fresh.conf.objects())[PID]  # but the real objects are in place
+
+
+async def test_status_lists_every_trail_room_by_name_and_flags_a_missing_one(env):
+    await env.conf.trail.set([r.id for r in env.rooms] + [987654321])
+    embed = await env.cog._status_embed(env.g)
+    text = embed.description
+    assert "13 set" in text and "gaming" in text and "**MISSING** `987654321`" in text
+
+
+async def test_status_shows_a_scheduled_launch(fresh):
+    await schedule(fresh)
+    assert "Scheduled launches" in (await fresh.cog._status_embed(fresh.g)).description
+
+
+async def test_the_panel_offers_the_schedule_form_prefilled(fresh):
+    from secrethunt import panel
+    spec = next(s for s in panel.build_specs() if s.key == "launch")
+    value = await spec.get(fresh.cog, fresh.g)
+    assert spec.fields[0].value(value) == value["pid"]
+    assert datetime.strptime(spec.fields[1].value(value), "%Y-%m-%d %H:%M")

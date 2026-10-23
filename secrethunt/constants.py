@@ -1,10 +1,11 @@
 """Config defaults and fixed values for secrethunt (Secrets of Wonderland)."""
 from zoneinfo import ZoneInfo
 
-COG_VERSION = "1.11.0"
+COG_VERSION = "1.12.0"
 CONFIG_IDENTIFIER = 0x5EC8E7A1
 HOME_TZ = ZoneInfo("America/Los_Angeles")
 
+LAUNCH_WARN_SECONDS = 3600      # a scheduled launch that is not ready gets one warning DM this long before it is due
 TICK_SECONDS = 60                  # how often the delivery loop looks for clues that have come due
 WATCH_EMOJI = "\N{MANTELPIECE CLOCK}"   # the reaction that "clicks" a hunt object (compared without the VS16)
 
@@ -60,6 +61,7 @@ DEFAULT_GUILD = {
     "poem_targets": {},      # puzzle id -> the channel its real poem goes to (remembered even when a rehearsal took the post)
     "blocked_role_id": None, # members with this role (Lurker) are ignored by every puzzle
     "test_mode": False,
+    "launches": {},          # puzzle id -> {at, channel, by, state: pending|running|done|failed, note, warned}: a scheduled go-live + poem
 }
 
 DEFAULT_MEMBER = {

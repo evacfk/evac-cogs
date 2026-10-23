@@ -108,6 +108,40 @@ async def _none(cog, guild):
     return None
 
 
+async def _launch_get(cog, guild):
+    """Everything the launch form needs: the saved schedules, plus the puzzle and channel to prefill."""
+    conf = cog.config.guild(guild)
+    launches = await conf.launches()
+    pending = [p for p, l in launches.items() if l.get("state") == "pending" and p in PUZZLES]
+    pid = pending[0] if pending else (await conf.active())
+    item = launches.get(pid) or {}
+    channel = item.get("channel") or (await conf.poem_targets()).get(pid)
+    return {"launches": launches, "pid": pid, "channel": channel, "at": item.get("at") if item.get("state") == "pending" else None}
+
+
+def _launch_fmt(value, guild):
+    items = [(p, l) for p, l in (value or {}).get("launches", {}).items() if p in PUZZLES]
+    if not items:
+        return "none scheduled"
+    return "; ".join(f"{PUZZLES[p]['title']} <t:{int(l['at'])}:R> ({l['state']})" for p, l in items)
+
+
+def _launch_when(value):
+    from datetime import datetime, timedelta
+    from .constants import HOME_TZ
+    at = (value or {}).get("at")
+    if at:
+        return datetime.fromtimestamp(at, HOME_TZ).strftime("%Y-%m-%d %H:%M")
+    nxt = datetime.now(HOME_TZ).replace(hour=9, minute=0, second=0, microsecond=0)
+    if nxt <= datetime.now(HOME_TZ):
+        nxt += timedelta(days=1)
+    return nxt.strftime("%Y-%m-%d %H:%M")
+
+
+async def _launch_apply(cog, guild, member, values):
+    return await cog._apply_launch(guild, member, values)
+
+
 async def _puzzles(cog, guild):
     conf = cog.config.guild(guild)
     published, finishers, objects = await conf.published(), await conf.finishers(), await conf.objects()
@@ -125,6 +159,9 @@ async def _puzzles(cog, guild):
                 bits.append("admins only")
         else:
             bits.append(f"objects {placed}/{len(pool)}" if pool else "no pool yet")
+        launch = (await conf.launches()).get(pid) or {}
+        if launch.get("state") == "pending":
+            bits.append(f"LAUNCHES <t:{int(launch['at'])}:R>")
         if (await conf.test_objects()).get(pid):
             bits.append("REHEARSING in the test channel")
         if pid in published:
@@ -210,6 +247,15 @@ def build_specs():
                  ItemAction("Go live", _action("_apply_start"), style="success"),
                  ItemAction("DM me answers", _action("_apply_preview")),
              ), help="Set up the objects, go live, then turn the hunt on under Hunt."),
+        Spec("launch", "Schedule a launch", "Puzzles", "modal", get=_launch_get, apply=_launch_apply, fmt=_launch_fmt,
+             button="Schedule…",
+             fields=(Field("puzzle", "Puzzle id", value=lambda v: (v or {}).get("pid") or "", max_length=40),
+                     Field("when", "When (Pacific, YYYY-MM-DD HH:MM). Empty = cancel", value=_launch_when, required=False,
+                           max_length=25),
+                     Field("channel", "Channel for the poem (mention or ID)", required=False, max_length=60,
+                           value=lambda v: f"<#{v['channel']}>" if (v or {}).get("channel") else "")),
+             help="At that time the puzzle goes live and its poem is posted and pinned. The hunt must be on, Test mode off and "
+                  "the objects set up; I DM you an hour before if something is missing, and again when it has run."),
         Spec("poem", "Post the newest poem in…", "Puzzles", "channel", get=_none, apply=_poem_apply,
              fmt=lambda v, g: "pick a channel to post and pin it there",
              help="Posts the newest live puzzle's public poem and pins it, replacing the previous poem there."),

@@ -383,3 +383,9 @@ TREACLE_WELL = {
 }
 
 PUZZLES = {p["id"]: p for p in (LATE_RABBIT, LOOKING_GLASS, KNAVE_TRIAL, TREACLE_WELL)}
+
+
+# Shown to a member (privately) whose DMs are closed at a moment the bot needed to send one.
+DM_CLOSED_NOTE = ("I couldn't send you a DM. Open the server menu, then Privacy Settings, switch on Direct Messages, "
+                  "and I will send it again the next time you press a button on a tea table.")
+DM_CLOSED_PUBLIC = "{mention} I could not reach your DMs. Open them and try once more."

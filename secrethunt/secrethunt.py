@@ -20,6 +20,7 @@ import logging
 import re
 import time
 from collections import deque
+from datetime import datetime
 from typing import Union
 
 import discord
@@ -29,10 +30,10 @@ from . import embeds, engine, trail, trial, views
 from . import panel as panel_specs
 from .settings_panel import PanelError, open_panel
 from .constants import (
-    COG_VERSION, CONFIG_IDENTIFIER, DEFAULT_GUILD, DEFAULT_MEMBER, HINT_MAX, ICON_MAX_BYTES, NO_ROLE_TIERS, POOL_MAX,
-    POOL_MIN, TICK_SECONDS, TIER_ROLE_NAMES, TRAIL_MAX_ROOMS, WATCH_EMOJI,
+    COG_VERSION, CONFIG_IDENTIFIER, DEFAULT_GUILD, DEFAULT_MEMBER, HINT_MAX, HOME_TZ, ICON_MAX_BYTES, LAUNCH_WARN_SECONDS,
+    NO_ROLE_TIERS, POOL_MAX, POOL_MIN, TICK_SECONDS, TIER_ROLE_NAMES, TRAIL_MAX_ROOMS, WATCH_EMOJI,
 )
-from .puzzles import PUZZLES
+from .puzzles import DM_CLOSED_NOTE, DM_CLOSED_PUBLIC, PUZZLES
 
 log = logging.getLogger("red.evac-cogs.secrethunt")
 _DISCORD_ERRORS = (discord.Forbidden, discord.NotFound, discord.HTTPException)
@@ -222,7 +223,7 @@ class SecretHunt(commands.Cog):
         if not await self._run_trigger(guild, message.author, pid, time.time()):
             try:
                 await message.channel.send(
-                    f"{message.author.mention} I could not reach your DMs. Open them and try once more.",
+                    DM_CLOSED_PUBLIC.format(mention=message.author.mention),
                     delete_after=15, allowed_mentions=discord.AllowedMentions(users=[message.author]),
                 )
             except _DISCORD_ERRORS:
@@ -384,7 +385,17 @@ class SecretHunt(commands.Cog):
                 state["clue"] = trail.first_clue(puzzle, self._pointer(guild, puzzle, rooms, plan, 0))
                 states[pid] = state
         history.clear()
-        await self._dm(member, state["clue"])
+        if not await self._dm(member, state["clue"]):
+            async with self._lock(guild.id):  # nothing was delivered: undo the start so reacting again works once DMs are open
+                async with self.config.member(member).puzzles() as states:
+                    states.pop(pid, None)
+            channel = self._lookup(guild, payload.channel_id)
+            if channel is not None:
+                try:
+                    await channel.send(DM_CLOSED_PUBLIC.format(mention=member.mention), delete_after=15,
+                                       allowed_mentions=discord.AllowedMentions(users=[member]))
+                except _DISCORD_ERRORS:
+                    pass
 
     def _pointer(self, guild, puzzle: dict, rooms: list, plan: dict, step: int):
         """How trail room `plan['chain'][step]` is named in a clue; None when the room is gone."""
@@ -448,12 +459,14 @@ class SecretHunt(commands.Cog):
         if key == "bow":
             return puzzle["quiet"]  # Bow arrives with stage 5
         now, test_mode, salt = time.time(), await conf.test_mode(), await self._salt(guild)
-        dm_after = None
+        dm_after = resend = None
         async with self._lock(guild.id):
             async with self.config.member(member).puzzles() as states:
                 state = states.get(pid)
                 if not state:
                     return puzzle["idle"] if key == "look" else puzzle["quiet"]
+                if state.get("dm_pending") and state.get("clue"):
+                    resend = state["clue"]  # an earlier DM bounced: try again now that they pressed something
                 if len(rooms) < len(trail.SISTERS):
                     return None
                 plan = trail.plan(trail.seed(salt, pid, member.id), len(rooms))
@@ -490,8 +503,18 @@ class SecretHunt(commands.Cog):
                                 "rest": lambda: puzzle["pour_rest"].format(until=self._when(detail)),
                                 "passed": lambda: puzzle["stage4_done"].format(token=plan["extra_tokens"][1]),
                                 }.get(action, lambda: puzzle["quiet"])()
-        if dm_after:
-            await self._dm(member, dm_after)
+        send = dm_after or resend
+        if send:
+            delivered = await self._dm(member, send)
+            async with self._lock(guild.id):
+                async with self.config.member(member).puzzles() as states:
+                    if states.get(pid) is not None:
+                        if delivered:
+                            states[pid].pop("dm_pending", None)
+                        else:
+                            states[pid]["dm_pending"] = True
+            if not delivered:
+                text_out = f"{text_out}\n\n{DM_CLOSED_NOTE}"
         return text_out
 
     async def _trail_dm(self, guild, member, text: str, now: float) -> bool:
@@ -645,6 +668,7 @@ class SecretHunt(commands.Cog):
             await asyncio.sleep(TICK_SECONDS)
 
     async def _deliver_due(self, guild, now: float):
+        await self._run_launches(guild, now)  # a scheduled go-live must not wait on anything else
         if not await self.config.guild(guild).enabled():
             return
         await self._reopen_trail(guild)
@@ -1015,6 +1039,15 @@ class SecretHunt(commands.Cog):
             "Solve announcements": (lambda ch: ch.mention if ch else "off (open `.secrethunt`)")(
                 self._lookup(guild, await conf.announce_channel_id() or 0)),
         }
+        trail_ids = await conf.trail()
+        if trail_ids:
+            names = [(ch.name[:30] if ch is not None else f"**MISSING** `{cid}`")
+                     for cid in trail_ids for ch in [self._lookup(guild, cid)]]
+            lines["Trail rooms"] = f"{len(trail_ids)} set: " + ", ".join(names)
+        pending = [(pid, item) for pid, item in (await conf.launches()).items() if pid in PUZZLES]
+        if pending:
+            lines["Scheduled launches"] = ", ".join(
+                f"{PUZZLES[pid]['title']} {self._when(item['at'])} ({item['state']})" for pid, item in pending)
         for pid in await conf.published():
             started = sum(1 for d in members.values() if pid in d["puzzles"])
             lines[PUZZLES[pid]["title"] if pid in PUZZLES else pid] = (
@@ -1116,6 +1149,7 @@ class SecretHunt(commands.Cog):
         rehearsed = set(await conf.test_objects()) | set(await conf.test_poems())
         had_poem = set(await conf.test_poems())
         targets = await conf.poem_targets()
+        scheduled = {p: l for p, l in (await conf.launches()).items() if l.get("state") == "pending"}
         await self._forget_rehearsal(guild)
         lines = []
         for pid, puzzle in PUZZLES.items():
@@ -1126,6 +1160,9 @@ class SecretHunt(commands.Cog):
                              + await self._apply_setup(guild, member, pid))
             except PanelError as err:
                 lines.append(f"- {puzzle['title']}: objects NOT set up ({err})")
+            if pid in scheduled:  # its go-live and poem wait for the scheduled time
+                lines.append(f"- {puzzle['title']}: go-live and poem are scheduled for {self._when(scheduled[pid]['at'])}")
+                continue
             if pid in had_poem:
                 target = self._lookup(guild, targets.get(pid) or 0)
                 if target is None:
@@ -1257,6 +1294,132 @@ class SecretHunt(commands.Cog):
         if notes:
             raise PanelError(" ".join(notes))
         return f"Poem posted and pinned in {target.mention}."
+
+    # ------------------------------------------------------------------ scheduled launches
+
+    _WHEN_FORMATS = ("%Y-%m-%d %H:%M", "%Y-%m-%d %I:%M%p", "%Y-%m-%d %I:%M %p", "%Y-%m-%d %I%p")
+
+    @classmethod
+    def _parse_when(cls, text):
+        """Pacific wall-clock text ("2026-10-24 09:00" or "2026-10-24 9:00am") as a timestamp; None if unreadable."""
+        text = " ".join((text or "").split()).upper()
+        for fmt in cls._WHEN_FORMATS:
+            try:
+                return datetime.strptime(text, fmt).replace(tzinfo=HOME_TZ).timestamp()
+            except ValueError:
+                continue
+        return None
+
+    async def _launch_problems(self, guild, pid: str) -> list:
+        """What still stands between a scheduled puzzle and a clean launch (empty list = ready)."""
+        conf, out = self.config.guild(guild), []
+        if not await conf.enabled():
+            out.append("the hunt is switched off (Hunt tab, Turn on)")
+        if await conf.test_mode():
+            out.append("Test mode is still on (turning it off sets up the real objects)")
+        rooms = await self._rooms_of(guild, PUZZLES[pid])
+        placed = (await conf.objects()).get(pid, {})
+        if not rooms or not all(str(r) in placed for r in rooms):
+            out.append("the objects are not set up in the real rooms (Puzzles tab, Set up objects)")
+        return out
+
+    async def _apply_launch(self, guild, member, values: dict) -> str:
+        """Schedule (or, with an empty time, cancel) a puzzle's go-live: it is made live and its poem posted and pinned."""
+        conf = self.config.guild(guild)
+        pid = (values.get("puzzle") or "").strip().lower()
+        if pid not in PUZZLES:
+            raise PanelError("Unknown puzzle. Known: " + ", ".join(PUZZLES))
+        title, puzzle = PUZZLES[pid]["title"], PUZZLES[pid]
+        when_text = (values.get("when") or "").strip()
+        if not when_text:
+            async with conf.launches() as launches:
+                if launches.pop(pid, None) is None:
+                    raise PanelError(f"No launch is scheduled for {title}.")
+            return f"{title}: the scheduled launch is cancelled."
+        if puzzle.get("wip"):
+            raise PanelError(f"{title} is still being built and only admins can play it, so it can't be launched yet.")
+        at = self._parse_when(when_text)
+        if at is None:
+            raise PanelError("I couldn't read that time. Use Pacific time like `2026-10-24 09:00` or `2026-10-24 9:00am`.")
+        if at < time.time() + 60:
+            raise PanelError("That time has already passed (times are Pacific).")
+        token = (values.get("channel") or "").strip()
+        cid = self._channel_id_of(token) if token else (await conf.poem_targets()).get(pid)
+        channel = self._lookup(guild, cid) if cid else None
+        if channel is None:
+            raise PanelError("Tell me which channel gets the poem (a #mention or an ID).")
+        if puzzle.get("kind") == "trail":
+            self._check_trail_size(pid, await conf.trail())
+        else:
+            if len(await conf.pool()) < POOL_MIN:
+                raise PanelError("Set the pool first (Hunt tab).")
+            self._check_pool_size(pid, await conf.pool())
+        async with conf.launches() as launches:
+            launches[pid] = {"at": at, "channel": channel.id, "by": member.id, "state": "pending", "note": "", "warned": False}
+        async with conf.poem_targets() as targets:
+            targets[pid] = channel.id
+        text = (f"{title} will launch <t:{int(at)}:F> (<t:{int(at)}:R>): it goes live and its poem is posted and pinned in "
+                f"{channel.mention}.")
+        problems = await self._launch_problems(guild, pid)
+        if problems:
+            text += "\nNot ready yet: " + "; ".join(problems) + ". I will DM you an hour before if it still isn't."
+        return text
+
+    async def _tell_scheduler(self, guild, item: dict, text: str) -> None:
+        member = guild.get_member(item.get("by") or 0)
+        if member is not None:
+            await self._dm(member, text)
+
+    async def _run_launches(self, guild, now: float) -> None:
+        """Called every tick: warn an hour ahead if a scheduled launch is not ready, and run the ones that are due."""
+        conf = self.config.guild(guild)
+        for pid, item in (await conf.launches()).items():
+            if item.get("state") != "pending" or pid not in PUZZLES:
+                continue
+            title = PUZZLES[pid]["title"]
+            if item["at"] > now:
+                if item["at"] - now <= LAUNCH_WARN_SECONDS and not item.get("warned"):
+                    problems = await self._launch_problems(guild, pid)
+                    async with conf.launches() as launches:
+                        if pid in launches:
+                            launches[pid]["warned"] = True
+                    if problems:
+                        await self._tell_scheduler(guild, item, f"{title} launches {self._when(item['at'])} but is not ready: "
+                                                   + "; ".join(problems) + ".")
+                continue
+            async with self._lock(guild.id):  # mark first, run after: a second pass can never launch twice
+                async with conf.launches() as launches:
+                    if launches.get(pid, {}).get("state") != "pending":
+                        continue
+                    launches[pid]["state"] = "running"
+            try:
+                ok, note = await self._execute_launch(guild, pid, item)
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                log.exception("secrethunt scheduled launch of %s failed", pid)
+                ok, note = False, "something went wrong (it is in the bot log)"
+            async with conf.launches() as launches:
+                if pid in launches:
+                    launches[pid]["state"], launches[pid]["note"] = ("done" if ok else "failed"), note
+            await self._tell_scheduler(guild, item, f"{title}: " + note)
+
+    async def _execute_launch(self, guild, pid: str, item: dict):
+        problems = await self._launch_problems(guild, pid)
+        channel = self._lookup(guild, item["channel"])
+        if channel is None:
+            problems.append("the poem channel is gone")
+        if problems:
+            return False, "NOT launched: " + "; ".join(problems) + ". Fix it and schedule again (or go live by hand)."
+        try:
+            await self._apply_start(guild, None, pid)
+        except PanelError as err:
+            return False, f"NOT launched: {err}"
+        try:
+            poem = await self._apply_poem(guild, None, channel, pid)
+        except PanelError as err:
+            return False, f"it is live, but the poem has a problem: {err}"
+        return True, f"launched on schedule. {poem}"
 
     async def _apply_enabled(self, guild, member, on: bool) -> str:
         conf = self.config.guild(guild)

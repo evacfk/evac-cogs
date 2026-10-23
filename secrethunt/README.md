@@ -54,6 +54,19 @@ same channel. Nothing public changes, and a puzzle plays normally from that chan
 every rehearsed puzzle for real: its objects in the real rooms and its poem in the regular channel (the one last chosen
 under *Post the newest poem in...*). Test mode also shortens the waits to 30 seconds. With no Test channel, setup posts for real.
 
+## Scheduling a launch
+Under Puzzles, *Schedule a launch*: a puzzle id, a Pacific time (`2026-10-24 09:00` or `2026-10-24 9:00am`) and the channel for
+the poem. At that time (within a minute) the puzzle goes live and its poem is posted and pinned there. The hunt must be on, Test
+mode off and the objects set up; turning Test mode off leaves a scheduled puzzle's poem for its time. An hour before, the person
+who scheduled it gets a DM if something is missing, and another when it has run (or why it did not). Leave the time empty to
+cancel. A puzzle flagged `wip` cannot be scheduled. `.secrethunt status` lists every trail room by name (and flags a missing one)
+and any scheduled launch.
+
+## Closed DMs
+A member whose DMs are closed is told privately when a button needed to DM them (tea table buttons: the notice is in the private
+reply, and the DM is sent again at their next press). A typed trigger or a poem reaction has no private reply, so it posts a
+short notice that deletes itself after 15 seconds, and a Treacle Well start is undone so reacting again works.
+
 ## Who can play
 Under Hunt, *Roles that cannot play* (the Lurker role) makes every secret ignore those members: no clues, no clicks, no answers.
 A typed trigger word is still deleted from chat, and their progress waits for when they lose the role.
