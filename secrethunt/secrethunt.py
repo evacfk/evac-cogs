@@ -682,6 +682,11 @@ class SecretHunt(commands.Cog):
         except Exception:
             log.exception("secrethunt button click failed")
             text = None
+        if text is None:
+            msg = getattr(interaction, "message", None)
+            log.warning("secrethunt: hunt object click ignored (%s button): message %s in channel %s, user %s", key,
+                        getattr(msg, "id", None), getattr(getattr(msg, "channel", None), "id", None),
+                        getattr(getattr(interaction, "user", None), "id", None))
         try:
             await interaction.response.send_message(text or "Nothing happens.", ephemeral=True)
         except _DISCORD_ERRORS:
