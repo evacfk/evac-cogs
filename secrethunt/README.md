@@ -49,7 +49,7 @@ reaction at once, so the poem always looks untouched).
   median minutes per finished stage, hints taken). `.secrethunt who <member>` shows one member's counters.
 - Needs **trail rooms** (public forum posts or channels, 12 planned, at least 6), set under Hunt with *Trail rooms*. *Set up
   objects* pins a tea table in each. It does not use the 2-5 hiding place pool.
-- While marked unfinished it is playable by admins and Manage Server members only; everyone else's reactions are just removed.
+- A puzzle can carry a `wip` flag: while it is set only admins and Manage Server members can play it (and it cannot be scheduled). The Treacle Well is finished and carries no flag.
 - The delivery loop reopens trail rooms that auto-archived. `preview treacle_well` DMs you your own trail (spoilers).
 
 ## Rehearsing (Test channel)

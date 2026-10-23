@@ -1600,3 +1600,21 @@ async def test_a_suspects_name_on_stage_six_is_not_taken_for_a_wrong_answer(env)
     m, p = await through_stage5(env, 67)
     assert await say(env, m, "Hatter") is None
     assert (await state(env, m))["answer_wrongs"] == 0
+
+
+async def test_the_shipped_puzzle_is_open_to_ordinary_members_and_can_be_scheduled(env):
+    assert "wip" not in WELL  # WELL is the shipped definition; the fixture swaps a copy into the shared dict
+    ordinary = member(env, 300)
+    ordinary.guild_permissions = types.SimpleNamespace(administrator=False, manage_guild=False)
+    assert env.cog._can_play(ordinary, WELL) is True
+    await env.conf.published.set([])
+    when = pacific(env.clock.now + 7200)
+    assert "will launch" in await env.cog._apply_launch(env.g, env.admin, {"puzzle": "treacle", "when": when, "channel": f"<#{env.poem.id}>"})
+
+
+async def test_an_ordinary_member_plays_stage_one_through_the_real_flags(env, monkeypatch):
+    monkeypatch.setitem(env.mod.PUZZLES, PID, dict(WELL))  # exactly as shipped, no test override
+    ordinary = member(env, 301)
+    ordinary.guild_permissions = types.SimpleNamespace(administrator=False, manage_guild=False)
+    await wake(env, ordinary)
+    assert (await state(env, ordinary)) is not None and ordinary.dms

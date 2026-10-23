@@ -242,15 +242,13 @@ KNAVE_TRIAL = {
 
 # Medium #2. A six-stage trail of different tasks (act, search, experiment, count, navigate, assemble), played in the
 # server and in DMs. Everything personal is generated (trail.py); the story and the kinds of stage are shared.
-# `wip` keeps it playable by admins only until every stage is built.
 TREACLE_WELL = {
     "id": "treacle_well",
     "title": "The Treacle Well",
     "tier": "medium",
     "kind": "trail",             # a pinned tea table in every trail room (views.TrailView); no typed trigger
     "trigger_kind": "reactions", # the poem is a riddle of three pictures; the answer is three emoji, in order
-    "wip": True,                 # push 1 of 3: stages 1-2 only, admins only
-    "needs_trail": 12,           # public rooms that each hold a tea table (12 planned; the panel allows fewer while wip)
+    "needs_trail": 12,           # public rooms that each hold a tea table (12 planned; the panel allows 6 or more)
     "trail_min": 6,
     "poem_title": "Written on the Dormouse's teacup",
     "poem": [
