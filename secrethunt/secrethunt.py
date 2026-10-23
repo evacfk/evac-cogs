@@ -497,6 +497,9 @@ class SecretHunt(commands.Cog):
         def ignored(why: str):
             log.warning("secrethunt: tea table click ignored (%s): message %s in channel %s, user %s", why, message.id,
                         getattr(getattr(message, "channel", None), "id", None), member.id)
+            perms = getattr(member, "guild_permissions", None)
+            if getattr(perms, "administrator", False):  # an admin is testing: say why, privately (members still see nothing)
+                return f"(Admin only: this click was ignored because {why}.)"
             return None
         if not await conf.enabled():
             return ignored("the hunt is switched off")
@@ -1072,8 +1075,10 @@ class SecretHunt(commands.Cog):
                     report.append(f"- <#{cid}>: not found (was the post deleted?)")
                     continue
                 if str(cid) in by_channel and not force:
-                    report.append(f"- {channel.mention}: already set up")
-                    continue
+                    if puzzle.get("kind") != "trail" or await self._table_alive(channel, by_channel[str(cid)]):
+                        report.append(f"- {channel.mention}: already set up")
+                        continue
+                    report.append(f"- {channel.mention}: the recorded tea table was gone, posting a new one")
                 if box is not None:  # rehearsal: this room's object stands in the test channel, labelled
                     try:
                         msg = await box.send(**self._object_message(puzzle, channel.name))
@@ -1103,6 +1108,20 @@ class SecretHunt(commands.Cog):
                 await self._delete_pin_notice(channel)
                 report.append(f"- {channel.mention}: object pinned")
         return report
+
+    @staticmethod
+    async def _table_alive(channel, message_id: int) -> bool:
+        """Is the recorded tea table still in the room? (An unreadable room counts as alive: nothing is reposted blindly.)"""
+        fetch = getattr(channel, "fetch_message", None)
+        if fetch is None:
+            return True
+        try:
+            await fetch(message_id)
+        except discord.NotFound:
+            return False
+        except _DISCORD_ERRORS:
+            return True
+        return True
 
     async def _remove_old_tables(self, channel, puzzle: dict) -> int:
         """Unpin and delete this puzzle's earlier pinned tables (posted by the bot) in a room before a fresh one goes up, so

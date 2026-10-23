@@ -1,7 +1,7 @@
 """Config defaults and fixed values for secrethunt (Secrets of Wonderland)."""
 from zoneinfo import ZoneInfo
 
-COG_VERSION = "1.13.0"
+COG_VERSION = "1.13.1"
 CONFIG_IDENTIFIER = 0x5EC8E7A1
 HOME_TZ = ZoneInfo("America/Los_Angeles")
 

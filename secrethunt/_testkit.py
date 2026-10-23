@@ -212,6 +212,12 @@ class FakeChannel:
     def get_partial_message(self, mid):
         return next((m for m in self.sent if m.id == mid), None) or _Partial(mid)
 
+    async def fetch_message(self, mid):
+        msg = next((m for m in self.sent if m.id == mid and not m.deleted), None)
+        if msg is None:
+            raise http_error("NotFound")
+        return msg
+
     async def pins(self):
         return [m for m in self.sent if m.pinned]
 

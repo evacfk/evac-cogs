@@ -1692,3 +1692,26 @@ async def test_a_click_that_is_ignored_says_why_in_the_log(env, caplog):
     inter = tk.FakeInteraction(env.g, m, table(env, 0))
     await env.cog.handle_trail(inter, "look")
     assert inter.replies[0][0] == "Nothing happens." and "the hunt is switched off" in caplog.text
+
+
+async def test_set_up_objects_reposts_a_table_that_is_gone_and_keeps_a_live_one(env):
+    first = table(env, 0)
+    first.deleted = True  # someone deleted the recorded table in room 0
+    report = await env.cog._setup_objects(env.g, PID)
+    assert any("recorded tea table was gone" in line for line in report)
+    assert sum(1 for line in report if "already set up" in line) == len(env.rooms) - 1
+    fresh = [m for m in env.rooms[0].sent if m.kw.get("view") is not None and not m.deleted]
+    assert len(fresh) == 1 and fresh[0].id != first.id
+    objects = await env.conf.objects()
+    assert objects[PID][str(env.rooms[0].id)] == fresh[0].id
+
+
+async def test_an_admin_is_told_why_a_press_was_ignored_but_a_member_is_not(env):
+    stray = await env.rooms[0].send("hi")
+    adm = tk.FakeInteraction(env.g, env.admin, stray)
+    await env.cog.handle_trail(adm, "look")
+    assert "not a tea table" in adm.replies[0][0] and adm.replies[0][1] == {"ephemeral": True}
+    m = member(env, 12)
+    inter = tk.FakeInteraction(env.g, m, stray)
+    await env.cog.handle_trail(inter, "look")
+    assert inter.replies == [("Nothing happens.", {"ephemeral": True})]
