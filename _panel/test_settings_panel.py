@@ -643,6 +643,17 @@ async def open_pick(panel, owner, item):
     assert panel.mode == "pick"
 
 
+async def test_role_pick_screen_lists_current_channels_and_role():
+    panel, store, owner = await make_role_pick()
+    await open_pick(panel, owner, NEW_ITEM)
+    assert "none yet" in panel.build_embed().description
+    panel.pending["defaults"] = [11, 12]
+    panel.pending["role_defaults"] = [77]
+    text = panel.build_embed().description
+    assert "<#11>" in text and "<#12>" in text and "<@&77>" in text
+    assert "Tick more to add them" in text
+
+
 async def test_role_pick_screen_has_both_selects_and_a_save_button():
     panel, store, owner = await make_role_pick()
     await open_pick(panel, owner, NEW_ITEM)
@@ -650,7 +661,7 @@ async def test_role_pick_screen_has_both_selects_and_a_save_button():
     child(panel, discord.ui.RoleSelect)
     child(panel, discord.ui.Button, label="Save")
     child(panel, discord.ui.Button, label="Cancel")
-    assert "press **Save**" in panel.build_embed().description
+    assert "**Save**" in panel.build_embed().description
 
 
 async def test_selecting_does_not_save_until_save_is_pressed():

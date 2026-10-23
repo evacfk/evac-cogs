@@ -207,7 +207,7 @@ def build_specs():
         Field("name", "Name (also the button text)", value=lambda r: r.get("name", ""), max_length=80,
               placeholder="Feet"),
         Field("new_channel", "Create a new channel named (optional)", required=False, max_length=90,
-              placeholder="feet-pics (age-restricted, hidden until members join)"),
+              placeholder="Step 1 of 2. Existing channels and the role are picked on the next screen."),
         Field("join_message", "Message shown to them when they join", value=lambda r: r.get("join_message", ""),
               style="long", required=False, max_length=2000,
               placeholder="Leave empty for the default: You're in <name>."),

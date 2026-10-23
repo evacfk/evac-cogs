@@ -347,8 +347,13 @@ class SettingsPanel(discord.ui.View):
             body = f"⚠️ **{self.pending['text']}**\n\nPress **Confirm** to go ahead or **Cancel** to leave it as it is."
         elif self.mode == "pick" and self.pending:
             if self.pending["pick"].role_label:
-                body = (f"**{self.pending['label']}**\n{self.pending['pick'].role_label}\n\n"
-                        "Choose below, then press **Save**. Anything you leave alone stays as it is.")
+                chans = " ".join(f"<#{i}>" for i in self.pending.get("defaults") or []) or "none yet"
+                roles = " ".join(f"<@&{i}>" for i in self.pending.get("role_defaults") or []) or "none"
+                body = (f"**Step 2 of 2 — {self.pending['label']}**\n"
+                        f"Currently: {chans}\nRole: {roles}\n\n"
+                        "**Channels:** the dropdown below has the current ones ticked. Tick more to add them, untick to remove.\n"
+                        f"**Role:** {self.pending['pick'].role_label}\n\n"
+                        "Press **Save** when done. Anything you leave alone stays as it is.")
             else:
                 body = f"**{self.pending['label']}**\nChoose below, then it saves."
         body = clip(body, 3800)
