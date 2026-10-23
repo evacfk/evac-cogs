@@ -1310,6 +1310,19 @@ class SecretHunt(commands.Cog):
                 continue
         return None
 
+    @staticmethod
+    def _find_puzzle(text) -> str:
+        """A puzzle from what was typed: its id, its title, or any part of either that fits exactly one puzzle."""
+        text = " ".join((text or "").lower().split())
+        for pid, puzzle in PUZZLES.items():
+            if text in (pid, puzzle["title"].lower()):
+                return pid
+        hits = [pid for pid, puzzle in PUZZLES.items() if text and (text in pid.replace("_", " ") or text in puzzle["title"].lower())]
+        if len(hits) == 1:
+            return hits[0]
+        raise PanelError(("That fits several puzzles. " if hits else "I don't know that puzzle. ")
+                         + "Type its name, e.g. " + ", ".join(f"`{PUZZLES[p]['title']}`" for p in list(PUZZLES)[-3:]) + ".")
+
     async def _launch_problems(self, guild, pid: str) -> list:
         """What still stands between a scheduled puzzle and a clean launch (empty list = ready)."""
         conf, out = self.config.guild(guild), []
@@ -1326,9 +1339,7 @@ class SecretHunt(commands.Cog):
     async def _apply_launch(self, guild, member, values: dict) -> str:
         """Schedule (or, with an empty time, cancel) a puzzle's go-live: it is made live and its poem posted and pinned."""
         conf = self.config.guild(guild)
-        pid = (values.get("puzzle") or "").strip().lower()
-        if pid not in PUZZLES:
-            raise PanelError("Unknown puzzle. Known: " + ", ".join(PUZZLES))
+        pid = self._find_puzzle(values.get("puzzle"))
         title, puzzle = PUZZLES[pid]["title"], PUZZLES[pid]
         when_text = (values.get("when") or "").strip()
         if not when_text:

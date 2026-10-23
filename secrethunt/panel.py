@@ -113,7 +113,8 @@ async def _launch_get(cog, guild):
     conf = cog.config.guild(guild)
     launches = await conf.launches()
     pending = [p for p, l in launches.items() if l.get("state") == "pending" and p in PUZZLES]
-    pid = pending[0] if pending else (await conf.active())
+    unreleased = [p for p in PUZZLES if p not in await conf.published()]  # the next puzzle to release
+    pid = pending[0] if pending else (unreleased[0] if unreleased else await conf.active())
     item = launches.get(pid) or {}
     channel = item.get("channel") or (await conf.poem_targets()).get(pid)
     return {"launches": launches, "pid": pid, "channel": channel, "at": item.get("at") if item.get("state") == "pending" else None}
@@ -249,7 +250,7 @@ def build_specs():
              ), help="Set up the objects, go live, then turn the hunt on under Hunt."),
         Spec("launch", "Schedule a launch", "Puzzles", "modal", get=_launch_get, apply=_launch_apply, fmt=_launch_fmt,
              button="Schedule…",
-             fields=(Field("puzzle", "Puzzle id", value=lambda v: (v or {}).get("pid") or "", max_length=40),
+             fields=(Field("puzzle", "Puzzle (name)", value=lambda v: PUZZLES.get((v or {}).get("pid"), {}).get("title", ""), max_length=60),
                      Field("when", "When (Pacific, YYYY-MM-DD HH:MM). Empty = cancel", value=_launch_when, required=False,
                            max_length=25),
                      Field("channel", "Channel for the poem (mention or ID)", required=False, max_length=60,

@@ -1136,7 +1136,7 @@ async def test_a_bad_launch_time_is_refused_and_nothing_is_saved(fresh, when, wh
 
 
 async def test_a_launch_needs_a_known_puzzle_and_a_channel(fresh):
-    with pytest.raises(PanelError, match="Unknown puzzle"):
+    with pytest.raises(PanelError, match="don't know"):
         await schedule(fresh, puzzle="nope")
     with pytest.raises(PanelError, match="which channel"):
         await schedule(fresh, channel="<#999999>")
@@ -1254,6 +1254,18 @@ async def test_status_shows_a_scheduled_launch(fresh):
 async def test_the_panel_offers_the_schedule_form_prefilled(fresh):
     from secrethunt import panel
     spec = next(s for s in panel.build_specs() if s.key == "launch")
+    await fresh.conf.published.set([p for p in PUZZLES if p != PID])  # everything else is out: the next to release is the Well
     value = await spec.get(fresh.cog, fresh.g)
-    assert spec.fields[0].value(value) == value["pid"]
+    assert spec.fields[0].value(value) == WELL["title"]  # the next puzzle to release, by name
     assert datetime.strptime(spec.fields[1].value(value), "%Y-%m-%d %H:%M")
+
+
+async def test_the_launch_form_takes_a_title_or_part_of_one(fresh):
+    for typed in ("The Treacle Well", "treacle well", "treacle", "TREACLE_WELL"):
+        await schedule(fresh, puzzle=typed)
+        assert PID in await fresh.conf.launches()
+        await schedule(fresh, puzzle=typed, when="")
+    with pytest.raises(PanelError, match="don't know"):
+        await schedule(fresh, puzzle="zzz")
+    with pytest.raises(PanelError, match="several"):
+        await schedule(fresh, puzzle="the")
