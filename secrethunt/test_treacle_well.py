@@ -274,7 +274,7 @@ async def test_recap_resends_the_current_clue(env):
     assert await say(env, m, ".recap") == line  # the newest clue, and the prefix is tolerated
     await look(env, m, p["chain"][1])
     await look(env, m, p["chain"][2])
-    assert await say(env, m, "recap") == WELL["sisters_done_dm"]
+    assert await say(env, m, "recap") == WELL["stage3_intro"]
 
 
 async def test_a_wrong_table_says_so_privately_and_costs_nothing_until_the_third(env):
@@ -819,3 +819,233 @@ async def test_the_test_channel_can_be_cleared(env):
     assert await env.conf.test_channel_id() == 500
     assert "cleared" in await env.cog._apply_test_channel(env.g, env.admin, None)
     assert await env.conf.test_channel_id() is None
+
+
+# ---------------------------------------------------------------- stage 3: the Muchness (DM) and stage 4: the Long Pour
+
+async def through_stage2(env, uid=11):
+    m = member(env, uid)
+    await wake(env, m)
+    for room in plan_of(env, uid)["chain"]:
+        await look(env, m, room)
+    return m
+
+
+def drawable(env, uid, word):
+    return trail.holds(tuple(plan_of(env, uid)["rule"]), word)
+
+
+async def pass_stage3(env, m):
+    p = plan_of(env, m.id)
+    await say(env, m, "ready")
+    _w, yes = trail.make_test(p["seed"], (await state(env, m))["test_roll"], tuple(p["rule"]))
+    return await say(env, m, ", ".join(yes))
+
+
+async def test_the_third_sister_wakes_the_dormouse_and_stage_three_opens_by_dm(env):
+    m = await through_stage2(env)
+    assert m.dms[-1] == WELL["stage3_intro"]
+    st = await state(env, m)
+    assert st["step"] == 3 and st["clue"] == WELL["stage3_intro"]
+    assert await say(env, m, "recap") == WELL["stage3_intro"]
+
+
+async def test_words_asked_by_dm_get_true_verdicts_and_the_prefix_is_tolerated(env):
+    m = await through_stage2(env)
+    for word in ("apple", "cloud", "tulip", "jam", "fox"):
+        reply = await say(env, m, word)
+        want = WELL["probe_yes" if drawable(env, 11, word) else "probe_no"].format(word=word)
+        assert reply == want, word
+    assert await say(env, m, ".apple") == WELL["probe_yes" if drawable(env, 11, "apple") else "probe_no"].format(word="apple")
+
+
+async def test_words_from_a_member_who_is_not_on_stage_three_get_no_answer(env):
+    early = member(env, 12)
+    assert await say(env, early, "apple") is None
+    await wake(env, early)
+    n = len(early.dms)
+    assert await say(env, early, "apple") is None and len(early.dms) == n  # woke him, but stage 2 is not done
+
+
+async def test_the_test_is_taken_in_one_long_message_and_passing_opens_stage_four(env):
+    m = await through_stage2(env)
+    p = plan_of(env, 11)
+    intro = await say(env, m, "ready")
+    words = (await state(env, m))["test_words"]
+    assert len(words) == 8 and all(w in intro for w in words)
+    _w, yes = trail.make_test(p["seed"], 0, tuple(p["rule"]))
+    answer = ", ".join(yes)
+    done = await say(env, m, answer)
+    assert (await state(env, m))["step"] == 4 and done == (await state(env, m))["clue"]
+    assert p["extra_tokens"][0] in done
+    assert engine.pointer_for(WELL, NAMES[p["pour_room"]], 3) in done and engine.pointer_for(WELL, NAMES[p["toast_room"]], 4) in done
+    assert await say(env, m, "recap") == done
+
+
+async def test_a_long_test_answer_is_not_dropped_by_the_dm_length_guard(env):
+    m = await through_stage2(env)
+    await say(env, m, "ready")
+    words = (await state(env, m))["test_words"]
+    long_answer = ", ".join(words) + " and then some more words to pad this out"
+    assert 60 < len(long_answer) <= 120
+    assert await say(env, m, long_answer) is not None
+
+
+async def test_a_wrong_test_rests_and_the_next_test_has_fresh_words(env):
+    m = await through_stage2(env)
+    await say(env, m, "ready")
+    first = list((await state(env, m))["test_words"])
+    assert "think of new" in await say(env, m, "none")
+    assert "asleep" in await say(env, m, "ready")
+    env.clock.now += 15 * 60 + 1
+    await say(env, m, "ready")
+    assert (await state(env, m))["test_words"] != first and (await state(env, m))["step"] == 3
+
+
+async def test_a_malformed_test_answer_costs_nothing_and_a_test_word_is_not_judged(env):
+    m = await through_stage2(env)
+    await say(env, m, "ready")
+    words = (await state(env, m))["test_words"]
+    assert "does not count" in await say(env, m, "I really have no idea what to say")
+    assert "saved for the test" in await say(env, m, words[0])
+    assert (await state(env, m))["test_roll"] == 0 and (await state(env, m))["test_words"] == words
+
+
+async def test_an_exact_easy_answer_still_goes_to_the_easy_puzzle(env):
+    m = await through_stage2(env)
+    await env.conf.published.set(["late_rabbit", PID])
+    rabbit = PUZZLES["late_rabbit"]
+    await env.cog._run_trigger(env.g, m, "late_rabbit", env.clock.now)
+    async with env.cog.config.member(m).puzzles() as states:
+        states["late_rabbit"]["stage"] = engine.STAGE_FINAL
+        answer = rabbit["answers"][states["late_rabbit"]["variant"] % len(rabbit["answers"])]
+    await say(env, m, answer)
+    assert (await state(env, m))["probes"] == 0  # the trail never saw it
+    assert (await env.cog.config.member(m).puzzles())["late_rabbit"]["stage"] == engine.STAGE_SOLVED
+
+
+async def pour_n(env, m, n, room):
+    out = None
+    for _ in range(n):
+        out = await look(env, m, room, "pour")
+    return out
+
+
+async def test_the_long_pour_counts_pours_and_the_right_toast_finishes_stage_four(env):
+    m = await through_stage2(env)
+    await pass_stage3(env, m)
+    p = plan_of(env, 11)
+    assert await look(env, m, p["pour_room"], "pour") == WELL["pour_ok"].format(n=1)
+    assert await look(env, m, p["pour_room"], "pour") == WELL["pour_ok"].format(n=2)
+    await pour_n(env, m, p["pour_total"] - 2, p["pour_room"])
+    assert (await state(env, m))["pours"] == p["pour_total"] == sum(p["numbers"])
+    out = await look(env, m, p["toast_room"], "toast")
+    done = WELL["stage4_done"].format(token=p["extra_tokens"][1])
+    assert out == done and m.dms[-1] == done
+    st = await state(env, m)
+    assert st["step"] == 5 and st["clue"] == done and await say(env, m, "recap") == done
+
+
+async def test_a_wrong_toast_empties_the_cup_and_three_rest_the_cups(env):
+    m = await through_stage2(env)
+    await pass_stage3(env, m)
+    p = plan_of(env, 11)
+    for i in range(3):
+        await pour_n(env, m, p["pour_total"] + 1, p["pour_room"])
+        out = await look(env, m, p["toast_room"], "toast")
+        assert (await state(env, m))["pours"] == 0
+    assert "Enough tea" in out and "washed" in await look(env, m, p["pour_room"], "pour")
+    env.clock.now += 3601
+    assert await look(env, m, p["pour_room"], "pour") == WELL["pour_ok"].format(n=1)
+
+
+async def test_pour_and_toast_in_the_wrong_room_or_too_early_do_nothing_much(env):
+    m = await through_stage2(env)
+    p = plan_of(env, 11)
+    assert await look(env, m, p["pour_room"], "pour") == WELL["quiet"]  # still stage 3
+    await pass_stage3(env, m)
+    other = next(r for r in range(12) if r not in (p["pour_room"], p["toast_room"]))
+    assert await look(env, m, other, "pour") == WELL["pour_wrong"]
+    assert await look(env, m, other, "toast") == WELL["toast_wrong"]
+    assert await look(env, m, p["toast_room"], "toast") == WELL["toast_empty"]
+    assert (await state(env, m))["pours"] == 0
+
+
+async def test_looking_in_any_room_after_stage_two_costs_nothing(env):
+    m = await through_stage2(env)
+    p = plan_of(env, 11)
+    wrong = next(r for r in range(12) if r not in p["chain"])
+    for _ in range(6):
+        assert await look(env, m, wrong) in WELL["wrong_look"]
+    assert str(p["numbers"][0]) in await look(env, m, p["chain"][0])  # the sisters still replay
+
+
+async def test_a_blocked_member_on_stage_three_or_four_is_ignored(env):
+    lurker = env.g.add_role(55, "Lurker")
+    m = await through_stage2(env)
+    await env.conf.blocked_role_id.set(lurker.id)
+    m.roles.append(lurker)
+    n = len(m.dms)
+    assert await say(env, m, "apple") is None and len(m.dms) == n
+    assert await look(env, m, 0, "pour") == "Nothing happens."
+
+
+async def test_the_whole_trail_to_stage_four_runs_in_the_test_channel(env):
+    box, _ = await rehearse(env)
+    await wake_in(env, box, env.admin)
+    uid = env.admin.id
+    p = plan_of(env, uid)
+
+    def tbl(room):
+        return next(m for m in tables_in(box) if m.embed.title.endswith(NAMES[room]))
+
+    async def press(room, key):
+        inter = tk.FakeInteraction(env.g, env.admin, tbl(room))
+        await env.cog.handle_trail(inter, key)
+        return inter.replies[0][0]
+
+    for room in p["chain"]:
+        await press(room, "look")
+    await pass_stage3(env, env.admin)
+    for _ in range(p["pour_total"]):
+        await press(p["pour_room"], "pour")
+    assert WELL["stage4_done"].format(token=p["extra_tokens"][1]) == await press(p["toast_room"], "toast")
+    assert (await state(env, env.admin))["step"] == 5
+
+
+async def test_preview_shows_the_admin_their_rule_test_and_pour_count(env):
+    await env.cog._apply_preview(env.g, env.admin, PID)
+    text = env.admin.dms[-1]
+    p = plan_of(env, env.admin.id)
+    assert trail.rule_text(tuple(p["rule"])) in text and f"pour {p['pour_total']} times" in text
+    assert p["extra_tokens"][0] in text and p["extra_tokens"][1] in text
+    words, yes = trail.make_test(p["seed"], 0, tuple(p["rule"]))
+    assert ", ".join(words) in text
+
+
+async def test_who_shows_the_pours_and_failed_tests(env):
+    m = await through_stage2(env)
+
+    class Ctx:
+        def __init__(self):
+            self.guild, self.out = env.g, []
+
+        async def send(self, content=None, **kw):
+            self.out.append(content)
+    ctx = Ctx()
+    await env.cog.secrethunt_who.callback(env.cog, ctx, m)
+    assert "stage 3" in ctx.out[0] and "failed word tests 0" in ctx.out[0] and "pours 0" in ctx.out[0]
+
+
+def test_stage_three_and_four_texts_format_cleanly():
+    keys = dict(word="w", words="a, b", until="<t:1:R>", token="t", pour_pointer="P", toast_pointer="T", n=3)
+    for field in ("stage3_intro", "probe_yes", "probe_no", "probe_saving", "probe_tired", "test_intro", "test_again",
+                  "test_rest", "test_failed", "test_malformed", "stage3_done", "pour_ok", "pour_wrong", "pour_full", "pour_rest",
+                  "toast_wrong", "toast_empty", "toast_miscount", "toast_miscount_rest", "stage4_done"):
+        assert "{" not in WELL[field].format_map(keys), field
+
+
+def test_the_new_public_and_dm_text_never_leaks_a_rule():
+    body = " ".join(WELL[k] for k in ("stage3_intro", "test_intro", "test_failed", "probe_saving", "stage3_done")).lower()
+    for text in ("contains the letter", "starts with", "ends with", "vowel", "even number", "double letter"):
+        assert text not in body, text

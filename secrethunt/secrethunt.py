@@ -230,7 +230,7 @@ class SecretHunt(commands.Cog):
 
     async def _on_dm(self, message):
         text = (message.content or "").strip()
-        if not text or len(text) > 60:
+        if not text or len(text) > 120:
             return
         user = message.author
         now = time.time()
@@ -253,6 +253,8 @@ class SecretHunt(commands.Cog):
             if pid is not None:
                 if self._can_play(member, PUZZLES[pid]):
                     await self._run_trigger(guild, member, pid, now)
+                return
+            if await self._trail_dm(guild, member, low, now):
                 return
             if await self._try_guess(guild, member, low, now):
                 return
@@ -415,6 +417,20 @@ class SecretHunt(commands.Cog):
         except _DISCORD_ERRORS:
             pass
 
+    async def _room_pointer(self, guild, puzzle: dict, rooms: list, room_index: int, step: int):
+        """How trail room number `room_index` is named in a clue; None when the room is gone."""
+        channel = self._lookup(guild, rooms[room_index])
+        return trail.room_pointer(puzzle, channel.name, step) if channel is not None else None
+
+    def _stage3_done_text(self, guild, puzzle: dict, rooms: list, plan: dict) -> str:
+        """The Dormouse's words after stage 3: his token, and where to pour and toast (also what `recap` repeats)."""
+        pour = trail.room_pointer(puzzle, self._lookup(guild, rooms[plan["pour_room"]]).name, 3) \
+            if self._lookup(guild, rooms[plan["pour_room"]]) is not None else None
+        toast = trail.room_pointer(puzzle, self._lookup(guild, rooms[plan["toast_room"]]).name, 4) \
+            if self._lookup(guild, rooms[plan["toast_room"]]) is not None else None
+        return puzzle["stage3_done"].format(token=plan["extra_tokens"][0], pour_pointer=pour or "a room I cannot name",
+                                            toast_pointer=toast or "a room I cannot name")
+
     async def _trail_text(self, interaction, key: str):
         guild, member = interaction.guild, interaction.user
         message = getattr(interaction, "message", None)
@@ -429,33 +445,97 @@ class SecretHunt(commands.Cog):
         if puzzle is None or puzzle.get("kind") != "trail" or hit[1] not in rooms or not self._can_play(member, puzzle):
             return None
         pid, room = hit[0], rooms.index(hit[1])
-        if key != "look":
-            return puzzle["quiet"]  # Pour, Bow and Toast arrive with the later stages
+        if key == "bow":
+            return puzzle["quiet"]  # Bow arrives with stage 5
         now, test_mode, salt = time.time(), await conf.test_mode(), await self._salt(guild)
+        dm_after = None
         async with self._lock(guild.id):
             async with self.config.member(member).puzzles() as states:
                 state = states.get(pid)
                 if not state:
-                    return puzzle["idle"]
+                    return puzzle["idle"] if key == "look" else puzzle["quiet"]
                 if len(rooms) < len(trail.SISTERS):
                     return None
                 plan = trail.plan(trail.seed(salt, pid, member.id), len(rooms))
-                action, detail = trail.look(state, room, plan, now, test_mode)
-                if action == "sister":
-                    nxt = self._pointer(guild, puzzle, rooms, plan, detail + 1) if detail + 1 < len(trail.SISTERS) else None
-                    text = trail.sister_line(puzzle, detail, plan, nxt)
-                    state["clue"] = text if detail + 1 < len(trail.SISTERS) else puzzle["sisters_done_dm"]
-                    return text
-                if action == "replay":
-                    nxt = self._pointer(guild, puzzle, rooms, plan, detail + 1) if detail + 1 < len(trail.SISTERS) else None
-                    return trail.sister_line(puzzle, detail, plan, nxt)
-        if action == "rest":
-            return puzzle["rest"].format(until=self._when(detail))
-        if action == "rest_start":
-            return puzzle["rest_start"].format(until=self._when(detail))
-        if action == "wrong":
-            return puzzle["wrong_look"][state["wrong_looks"] % len(puzzle["wrong_look"])]
-        return puzzle["idle"]
+                if key == "look":
+                    action, detail = trail.look(state, room, plan, now, test_mode)
+                    if action in ("sister", "replay"):
+                        nxt = (await self._room_pointer(guild, puzzle, rooms, plan["chain"][detail + 1], detail + 1)
+                               if detail + 1 < len(trail.SISTERS) else None)
+                        text = trail.sister_line(puzzle, detail, plan, nxt)
+                        if action == "sister":
+                            if detail + 1 < len(trail.SISTERS):
+                                state["clue"] = text
+                            else:  # the third sister has spoken: the Dormouse wakes and stage 3 opens
+                                state["clue"] = dm_after = puzzle["stage3_intro"]
+                        text_out = text
+                    else:
+                        text_out = {"rest": lambda: puzzle["rest"].format(until=self._when(detail)),
+                                    "rest_start": lambda: puzzle["rest_start"].format(until=self._when(detail)),
+                                    "wrong": lambda: puzzle["wrong_look"][state["wrong_looks"] % len(puzzle["wrong_look"])],
+                                    }.get(action, lambda: puzzle["idle"])()
+                elif key == "pour":
+                    action, detail = trail.pour(state, room, plan, now, test_mode)
+                    text_out = {"poured": lambda: puzzle["pour_ok"].format(n=detail), "wrong": lambda: puzzle["pour_wrong"],
+                                "full": lambda: puzzle["pour_full"],
+                                "rest": lambda: puzzle["pour_rest"].format(until=self._when(detail)),
+                                }.get(action, lambda: puzzle["quiet"])()
+                else:  # toast
+                    action, detail = trail.toast(state, room, plan, now, test_mode)
+                    if action == "passed":
+                        state["clue"] = dm_after = puzzle["stage4_done"].format(token=plan["extra_tokens"][1])
+                    text_out = {"wrong": lambda: puzzle["toast_wrong"], "empty": lambda: puzzle["toast_empty"],
+                                "miscount": lambda: puzzle["toast_miscount"],
+                                "miscount_rest": lambda: puzzle["toast_miscount_rest"].format(until=self._when(detail)),
+                                "rest": lambda: puzzle["pour_rest"].format(until=self._when(detail)),
+                                "passed": lambda: puzzle["stage4_done"].format(token=plan["extra_tokens"][1]),
+                                }.get(action, lambda: puzzle["quiet"])()
+        if dm_after:
+            await self._dm(member, dm_after)
+        return text_out
+
+    async def _trail_dm(self, guild, member, text: str, now: float) -> bool:
+        """A DM from a member on stage 3 (the Dormouse's words): a word to ask about, `ready`, or the test answer. Goes
+        before the other puzzles' guesses (the words are ordinary words), except an exact answer of the member's own Easy
+        puzzle. True when it was handled."""
+        conf = self.config.guild(guild)
+        published = await conf.published()
+        pid = next((p for p in published if PUZZLES.get(p, {}).get("kind") == "trail"), None)
+        if pid is None:
+            return False
+        puzzle, rooms = PUZZLES[pid], await conf.trail()
+        if not self._can_play(member, puzzle) or len(rooms) < len(trail.SISTERS):
+            return False
+        test_mode, salt = await conf.test_mode(), await self._salt(guild)
+        plan = trail.plan(trail.seed(salt, pid, member.id), len(rooms))
+        reply = None
+        async with self._lock(guild.id):
+            async with self.config.member(member).puzzles() as states:
+                state = states.get(pid)
+                if not state or state.get("step") != 3 or state.get("stage") != engine.STAGE_RIDDLE:
+                    return False
+                if any((other := PUZZLES.get(p)) and (st := states.get(p)) and other.get("kind") not in ("trial", "trail")
+                       and st["stage"] == engine.STAGE_FINAL
+                       and engine.normalize(text) == engine.normalize(other["answers"][st["variant"] % len(other["answers"])])
+                       for p in published):
+                    return False
+                action, detail = trail.muchness(state, plan, text, now, test_mode)
+                words = ", ".join(detail) if action in ("ready", "test_open") else ""
+                if action == "passed":
+                    state["clue"] = reply = self._stage3_done_text(guild, puzzle, rooms, plan)
+                elif action == "probe":
+                    reply = puzzle["probe_yes" if detail[1] else "probe_no"].format(word=detail[0])
+                else:
+                    reply = {"saving": lambda: puzzle["probe_saving"], "tired": lambda: puzzle["probe_tired"],
+                             "ready": lambda: puzzle["test_intro"].format(words=words),
+                             "test_open": lambda: puzzle["test_again"].format(words=words),
+                             "resting": lambda: puzzle["test_rest"].format(until=self._when(detail)),
+                             "failed": lambda: puzzle["test_failed"].format(until=self._when(detail)),
+                             "malformed": lambda: puzzle["test_malformed"]}.get(action, lambda: None)()
+        if reply is None:
+            return False
+        await self._dm(member, reply)
+        return True
 
     async def handle_click(self, interaction, key: str):
         """A button under a hunt object was pressed. Whatever happens, the answer is private to the clicker, so a decoy
@@ -1272,6 +1352,13 @@ class SecretHunt(commands.Cog):
             pointer = self._pointer(guild, puzzle, rooms, plan, k)
             lines.append(f"{k + 1}. {name} is in {where}; the clue to reach her: {pointer or 'NONE (room missing)'}; "
                          f"her number {plan['numbers'][k]}, her word `{plan['tokens'][k]}`")
+        pour = await self._room_pointer(guild, puzzle, rooms, plan["pour_room"], 3)
+        toast = await self._room_pointer(guild, puzzle, rooms, plan["toast_room"], 4)
+        words, yes = trail.make_test(plan["seed"], 0, tuple(plan["rule"]))
+        lines.append(f"Stage 3: the Dormouse can draw words that {trail.rule_text(tuple(plan['rule']))}. Your first test is "
+                     f"{', '.join(words)} (he can draw: {', '.join(yes)}); his reward word is `{plan['extra_tokens'][0]}`.")
+        lines.append(f"Stage 4: pour {plan['pour_total']} times in <#{rooms[plan['pour_room']]}> (clue: {pour}), then Toast "
+                     f"in <#{rooms[plan['toast_room']]}> (clue: {toast}); his reward word is `{plan['extra_tokens'][1]}`.")
         if not await self._dm(member, "\n".join(lines)):
             raise PanelError("I could not DM you.")
         return "Sent you a DM with your own trail."
@@ -1406,7 +1493,8 @@ class SecretHunt(commands.Cog):
         for pid, st in states.items():
             if PUZZLES.get(pid, {}).get("kind") == "trail":
                 lines.append(f"**{pid}**: stage {st.get('step', 2)}; sisters found {st.get('found', 0)}/3; "
-                             f"wrong tables in a row {st.get('wrong_looks', 0)}")
+                             f"wrong tables in a row {st.get('wrong_looks', 0)}; failed word tests {st.get('test_roll', 0)}; "
+                             f"pours {st.get('pours', 0)}")
                 continue
             if PUZZLES.get(pid, {}).get("kind") == "trial":
                 lines.append(f"**{pid}**: {trial_names.get(st['stage'], st['stage'])}; re-rolls {st.get('roll', 0)}, "

@@ -283,11 +283,62 @@ TREACLE_WELL = {
         ("\N{TEACUP WITHOUT HANDLE} *Tillie yawns, and it is a very long yawn.*\n\n"
          "> \"**{number}** is how many I poured. I hid a **{token}** in the sugar bowl, so mind the sugar. "
          "That is all of us.\"\n\n"
-         "*The Dormouse is snoring. The next part of the tale is not written yet.*"),
+         "*Behind you, somebody clears his throat.*"),
     ],
-    "sisters_done_dm": (
-        "\N{TEACUP WITHOUT HANDLE} *All three sisters have spoken, and the Dormouse has fallen asleep on the teapot.* "
-        "Keep what they told you safe. The tale goes on soon."
+    # stage 3: the Muchness (DM)
+    "stage3_intro": (
+        "\N{TEACUP WITHOUT HANDLE} *The Dormouse sits bolt upright, wide awake for the first time all evening.*\n\n"
+        "\"The sisters drew everything that begins with an M, you know. Muchness. I can draw almost anything. But not "
+        "**everything**, and I will not say why.\"\n\n"
+        "Whisper me a word, **one word at a time**, and I will say whether I can draw it. When you think you know what I "
+        "can draw, say `ready` and I will test you.\n\n"
+        "*Lost the thread? Whisper me* `recap`."
+    ),
+    "probe_yes": "\N{TEACUP WITHOUT HANDLE} **{word}**: *he nods slowly.* \"I can draw that.\"",
+    "probe_no": "\N{TEACUP WITHOUT HANDLE} **{word}**: *he shakes his head.* \"I cannot draw that.\"",
+    "probe_saving": "\N{TEACUP WITHOUT HANDLE} *The Dormouse puts a finger to his lips.* \"That one is saved for the test.\"",
+    "probe_tired": "\N{TEACUP WITHOUT HANDLE} *The Dormouse yawns until his whiskers shake.* \"No more words today. Ask again tomorrow.\"",
+    "test_intro": (
+        "\N{TEACUP WITHOUT HANDLE} *He takes a deep breath.* \"Which of these can I draw? Say **all** of the ones I can "
+        "in one message, or say `none`.\"\n\n**{words}**"
+    ),
+    "test_again": (
+        "\N{TEACUP WITHOUT HANDLE} *The Dormouse taps the table.* \"I am still waiting. Which of these can I draw?\"\n\n**{words}**"
+    ),
+    "test_rest": "\N{SLEEPING SYMBOL} *The Dormouse is fast asleep again.* He will test you again {until}.",
+    "test_failed": (
+        "\N{TEACUP WITHOUT HANDLE} *He frowns and shakes his head.* \"No, no, no. That is not right. I will think of new "
+        "ones.\" He will test you again {until}."
+    ),
+    "test_malformed": (
+        "\N{TEACUP WITHOUT HANDLE} *The Dormouse tilts his head.* \"Say the words I can draw, with spaces or commas between "
+        "them, or say `none`.\" That one does not count against you."
+    ),
+    "stage3_done": (
+        "\N{TEACUP WITHOUT HANDLE} *The Dormouse beams.* \"Yes! You see the muchness of it! Keep this: **{token}**.\"\n\n"
+        "\"Now the pouring. Go to {pour_pointer} and press **Pour** once for every lump, every spoonful and every pour the "
+        "three sisters spoke of, all of them together. Then carry your cup to {toast_pointer} and press **Toast**. If "
+        "you pour wrong, the cup tips itself out.\"\n\n"
+        "*Lost the thread? Whisper me* `recap`."
+    ),
+    # stage 4: the Long Pour (buttons)
+    "pour_ok": "\N{TEACUP WITHOUT HANDLE} *You pour.* The cup holds **{n}**.",
+    "pour_wrong": "\N{TEACUP WITHOUT HANDLE} *You pour into a cup that is not his. The tea soaks into the cloth.*",
+    "pour_full": "\N{TEACUP WITHOUT HANDLE} *The cup is brim full and will not take another drop.*",
+    "pour_rest": "\N{SLEEPING SYMBOL} *The cups are being washed.* They will be ready {until}.",
+    "toast_wrong": "\N{TEACUP WITHOUT HANDLE} *You raise a toast to nobody in particular. Nobody drinks.*",
+    "toast_empty": "\N{TEACUP WITHOUT HANDLE} *You raise an empty cup. The Dormouse would like you to pour first.*",
+    "toast_miscount": (
+        "\N{TEACUP WITHOUT HANDLE} *The Dormouse sips, grimaces and tips the cup out on the grass.* \"That is not how much "
+        "she poured.\" The cup is empty again."
+    ),
+    "toast_miscount_rest": (
+        "\N{TEACUP WITHOUT HANDLE} *The Dormouse sips, grimaces and tips the cup out.* \"Enough tea for one hour!\" "
+        "The cups are being washed until {until}."
+    ),
+    "stage4_done": (
+        "\N{TEACUP WITHOUT HANDLE} *The Dormouse drinks, sighs and smiles.* \"That is exactly how much she poured. Keep "
+        "this: **{token}**.\"\n\n*He falls asleep with his head on the table. The rest of the tale is not written yet.*"
     ),
     # how each room is named in a sister's line: a written description when the room's title contains the keyword, the
     # letter clue otherwise (and always for the steps in `letter_variants`)
@@ -311,7 +362,7 @@ TREACLE_WELL = {
         "witch": "the room where a bunny in a pointed hat keeps its spells",
         "dive": "the room where one question goes down and down and never quite reaches the bottom",
     },
-    "letter_variants": [1],
+    "letter_variants": [1, 4],
     "wrong_look": [
         "\N{TEACUP WITHOUT HANDLE} *Only a tea table. The tea has gone cold and nobody has sat here.*",
         "\N{TEACUP WITHOUT HANDLE} *A teapot, a saucer, a crumb. Nothing that belongs to the tale.*",

@@ -1,7 +1,7 @@
 """Config defaults and fixed values for secrethunt (Secrets of Wonderland)."""
 from zoneinfo import ZoneInfo
 
-COG_VERSION = "1.10.0"
+COG_VERSION = "1.11.0"
 CONFIG_IDENTIFIER = 0x5EC8E7A1
 HOME_TZ = ZoneInfo("America/Los_Angeles")
 
@@ -27,6 +27,11 @@ TRAIL_REACT_WINDOW = 600           # Treacle Well stage 1: the three reactions m
 TRAIL_REACTS_PER_HOUR = 30         # ...and a member's reactions on the poem beyond this many per hour are ignored
 TRAIL_WRONG_LOOKS = 3              # stage 2: this many wrong tables in a row and the tea tables rest...
 TRAIL_REST_MINUTES = 30            # ...for this long (test mode: TEST_DELAY_SECONDS)
+TRAIL_PROBES_PER_DAY = 200         # stage 3: words a member can ask the Dormouse about per Pacific day
+TRAIL_MUCHNESS_REST_MINUTES = 15   # stage 3: a wrong test is followed by this long without a new one (fresh words after)
+TRAIL_POUR_CAP = 99                # stage 4: the cup holds no more than this many pours
+TRAIL_POUR_WRONGS = 3              # stage 4: this many wrong toasts in a row and the cups are washed...
+TRAIL_POUR_REST_MINUTES = 60       # ...for this long (test mode: TEST_DELAY_SECONDS)
 ICON_MAX_BYTES = 256 * 1024
 HALL_BUDGET = 3800                 # characters of solver names per Hall of Secrets post (embed limit is 4096)
 
