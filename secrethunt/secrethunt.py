@@ -421,13 +421,26 @@ class SecretHunt(commands.Cog):
         """A button under a tea table was pressed. The reply is private, so a wrong table looks like any other."""
         try:
             text = await self._trail_text(interaction, key)
-        except Exception:
+        except Exception as err:
             log.exception("secrethunt tea table click failed")
             text = None
+            msg, who = getattr(interaction, "message", None), getattr(interaction, "user", None)
+            if getattr(interaction, "guild", None) is not None and msg is not None and who is not None:
+                await self._note_click(interaction.guild, f"error {type(err).__name__}: {err}", msg, who)
         try:
             await interaction.response.send_message(text or "Nothing happens.", ephemeral=True)
         except _DISCORD_ERRORS:
             pass
+
+    async def _note_click(self, guild, why: str, message, member) -> None:
+        """Keep the last few unanswered tea table clicks (shown in status), so a "Nothing happens" can be explained
+        without reading container logs."""
+        try:
+            async with self.config.guild(guild).click_log() as entries:
+                entries.append([time.time(), str(why)[:80], member.id, getattr(getattr(message, "channel", None), "id", None)])
+                del entries[:-8]
+        except Exception:
+            log.exception("secrethunt could not record an ignored click")
 
     async def _room_pointer(self, guild, puzzle: dict, rooms: list, room_index: int, step: int):
         """How trail room number `room_index` is named in a clue; None when the room is gone."""
@@ -494,7 +507,8 @@ class SecretHunt(commands.Cog):
             return None
         conf = self.config.guild(guild)
 
-        def ignored(why: str):
+        async def ignored(why: str):
+            await self._note_click(guild, why, message, member)
             log.warning("secrethunt: tea table click ignored (%s): message %s in channel %s, user %s", why, message.id,
                         getattr(getattr(message, "channel", None), "id", None), member.id)
             perms = getattr(member, "guild_permissions", None)
@@ -502,18 +516,18 @@ class SecretHunt(commands.Cog):
                 return f"(Admin only: this click was ignored because {why}.)"
             return None
         if not await conf.enabled():
-            return ignored("the hunt is switched off")
+            return await ignored("the hunt is switched off")
         if await self._blocked(guild, member):
-            return ignored("the member holds the blocked role")
+            return await ignored("the member holds the blocked role")
         rooms = await conf.trail()
         hit = await self._find_object(conf, message.id) or await self._stale_table(guild, message, rooms)
         puzzle = PUZZLES.get(hit[0]) if hit else None
         if puzzle is None:
-            return ignored("this message is not a tea table the bot knows")
+            return await ignored("this message is not a tea table the bot knows")
         if puzzle.get("kind") != "trail" or hit[1] not in rooms:
-            return ignored("this room is not one of the trail rooms")
+            return await ignored("this room is not one of the trail rooms")
         if not self._can_play(member, puzzle):
-            return ignored("the puzzle is admins-only")
+            return await ignored("the puzzle is admins-only")
         pid, room = hit[0], rooms.index(hit[1])
         now, test_mode, salt = time.time(), await conf.test_mode(), await self._salt(guild)
         dm_after = resend = None
@@ -1226,6 +1240,10 @@ class SecretHunt(commands.Cog):
                 at = " · ".join(f"stage {k}: {v}" for k, v in f["at"].items())
                 med = ", ".join(f"{k}: {v} min" for k, v in sorted(f["median_minutes"].items())) or "nobody has finished a stage"
                 lines[f"{PUZZLES[pid]['title']} funnel"] = f"{at} · solved {f['solved']} · hints {f['hints']} · median per stage ({med})"
+        recent = await conf.click_log()
+        if recent:
+            lines["Unanswered tea table clicks"] = "\n".join(
+                f"<t:{int(t)}:t> <@{u}> in <#{c}>: {why}" for t, why, u, c in recent[-5:])[:1000]
         pending = [(pid, item) for pid, item in (await conf.launches()).items() if pid in PUZZLES]
         if pending:
             lines["Scheduled launches"] = ", ".join(

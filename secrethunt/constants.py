@@ -1,7 +1,7 @@
 """Config defaults and fixed values for secrethunt (Secrets of Wonderland)."""
 from zoneinfo import ZoneInfo
 
-COG_VERSION = "1.13.2"
+COG_VERSION = "1.13.3"
 CONFIG_IDENTIFIER = 0x5EC8E7A1
 HOME_TZ = ZoneInfo("America/Los_Angeles")
 
@@ -67,6 +67,7 @@ DEFAULT_GUILD = {
     "poem_targets": {},      # puzzle id -> the channel its real poem goes to (remembered even when a rehearsal took the post)
     "blocked_role_id": None, # members with this role (Lurker) are ignored by every puzzle
     "test_mode": False,
+    "click_log": [],         # the last few tea table clicks that got no answer: [time, why, user, channel]
     "launches": {},          # puzzle id -> {at, channel, by, state: pending|running|done|failed, note, warned}: a scheduled go-live + poem
 }
 

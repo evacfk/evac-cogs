@@ -1715,3 +1715,17 @@ async def test_an_admin_is_told_why_a_press_was_ignored_but_a_member_is_not(env)
     inter = tk.FakeInteraction(env.g, m, stray)
     await env.cog.handle_trail(inter, "look")
     assert inter.replies == [("Nothing happens.", {"ephemeral": True})]
+
+
+async def test_an_unanswered_press_is_recorded_and_shown_in_status(env):
+    m = member(env, 13)
+    stray = await env.rooms[0].send("hi")
+    await env.cog.handle_trail(tk.FakeInteraction(env.g, m, stray), "look")
+    entries = await env.conf.click_log()
+    assert len(entries) == 1 and entries[0][2] == 13 and "not a tea table" in entries[0][1]
+    embed = await env.cog._status_embed(env.g)
+    assert "Unanswered tea table clicks" in embed.description and "<@13>" in embed.description
+    assert len(embed.description) < 4000
+    for _ in range(12):
+        await env.cog.handle_trail(tk.FakeInteraction(env.g, m, stray), "look")
+    assert len(await env.conf.click_log()) == 8
