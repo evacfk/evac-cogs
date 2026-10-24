@@ -76,11 +76,14 @@ class SecretHunt(commands.Cog):
         for view in list(self._sent_views):  # a view posted with a message answers that message's buttons for as long as it
             view.stop()                      # is registered, ahead of the persistent ones, so it must not outlive this copy
 
+    def _view_store(self):
+        return getattr(getattr(self.bot, "_connection", None), "_view_store", None)
+
     def _message_views(self) -> list:
         """[(message id, button)] for every hunt button discord.py holds a view for on one specific message. It asks those
         before the persistent views, so a view an older copy of this cog left behind answers with that copy's code.
         Reads discord.py's private view table, so it never raises: nothing found means nothing is reported."""
-        store = getattr(getattr(self.bot, "_connection", None), "_view_store", None)
+        store = self._view_store()
         found = []
         try:
             for mid, table in list(getattr(store, "_views", {}).items()):
@@ -463,12 +466,13 @@ class SecretHunt(commands.Cog):
 
     async def handle_trail(self, interaction, key: str):
         """A button under a tea table was pressed. The reply is private, so a wrong table looks like any other."""
-        outcome = "answered"
+        outcome, trace = "answered", {}
         try:
-            text = await self._trail_text(interaction, key)
+            text = await self._trail_text(interaction, key, trace)
         except Exception as err:
             log.exception("secrethunt tea table click failed")
             text, outcome = None, "error"
+            trace["result"] = "error"
             msg, who = getattr(interaction, "message", None), getattr(interaction, "user", None)
             if getattr(interaction, "guild", None) is not None and msg is not None and who is not None:
                 await self._note_click(interaction.guild, f"tea table ({key}): error {type(err).__name__}: {err}", msg, who)
@@ -481,6 +485,20 @@ class SecretHunt(commands.Cog):
             await self._note_click(getattr(interaction, "guild", None), f"tea table ({key}): reply failed, {type(err).__name__}",
                                    getattr(interaction, "message", None), getattr(interaction, "user", None))
         await self._note_press("tea table", key, interaction, outcome)
+        await self._note_member_press(interaction, key, trace)
+
+    async def _note_member_press(self, interaction, key: str, trace: dict) -> None:
+        """Keep a member's last few tea table presses (room, button, what it did) for `.secrethunt who`, so a stuck member's
+        route can be checked without asking them. It records what they were told, never where the right room is."""
+        guild, member = getattr(interaction, "guild", None), getattr(interaction, "user", None)
+        if guild is None or member is None or getattr(member, "bot", False):
+            return
+        try:
+            async with self.config.member(member).presses() as rows:
+                rows.append([time.time(), trace.get("room"), key, str(trace.get("result") or "answered")[:60]])
+                del rows[:-6]
+        except Exception:
+            log.exception("secrethunt could not record a member's press")
 
     async def _note_click(self, guild, why: str, message, member) -> None:
         """Keep the last few unanswered button clicks (shown in status), so a "Nothing happens" can be explained
@@ -581,9 +599,11 @@ class SecretHunt(commands.Cog):
         return any(PUZZLES.get(p, {}).get("kind") == "trial" and states.get(p) and trial.round_of(states[p])
                    for p in published)
 
-    async def _trail_text(self, interaction, key: str):
+    async def _trail_text(self, interaction, key: str, trace: dict = None):
+        trace = {} if trace is None else trace
         guild, member = interaction.guild, interaction.user
         message = getattr(interaction, "message", None)
+        trace["room"] = getattr(getattr(message, "channel", None), "id", None)
         if guild is None or message is None or getattr(member, "bot", False):
             log.warning("secrethunt: tea table click dropped (guild %s, message %s, bot %s)", getattr(guild, "id", None),
                         getattr(message, "id", None), getattr(member, "bot", False))
@@ -594,6 +614,7 @@ class SecretHunt(commands.Cog):
         conf = self.config.guild(guild)
 
         async def ignored(why: str):
+            trace["result"] = f"ignored: {why}"
             await self._note_click(guild, f"tea table ({key}): {why}", message, member)
             log.warning("secrethunt: tea table click ignored (%s): message %s in channel %s, user %s", why, message.id,
                         getattr(getattr(message, "channel", None), "id", None), member.id)
@@ -621,8 +642,10 @@ class SecretHunt(commands.Cog):
             async with self.config.member(member).puzzles() as states:
                 state = states.get(pid)
                 if not state:
+                    trace["result"] = "has not started"
                     return puzzle["idle"] if key == "look" else puzzle["quiet"]
                 if state.get("stage") == engine.STAGE_SOLVED:
+                    trace["result"] = "already solved"
                     return puzzle["already"]
                 if state.get("dm_pending") and state.get("clue"):
                     resend = state["clue"]  # an earlier DM bounced: try again now that they pressed something
@@ -631,6 +654,7 @@ class SecretHunt(commands.Cog):
                 plan = trail.plan(trail.seed(salt, pid, member.id), len(rooms))
                 if state.get("step") == 5:  # every button belongs to the Courtesies now
                     action, detail = trail.courtesy(state, room, key, plan, now, test_mode)
+                    trace["result"] = f"courtesy {action}" + (f" {detail + 1}" if action == "sister" else "")
                     if action == "sister":  # Look in a sister's room that is not the next courtesy: she is heard again, free
                         nxt = (await self._room_pointer(guild, puzzle, rooms, plan["chain"][detail + 1], detail + 1)
                                if detail + 1 < len(trail.SISTERS) else None)
@@ -648,9 +672,14 @@ class SecretHunt(commands.Cog):
                     else:
                         text_out = puzzle["idle"]
                 elif key == "bow":
+                    trace["result"] = "bow"
                     text_out = puzzle["quiet"]
                 elif key == "look":
                     action, detail = trail.look(state, room, plan, now, test_mode)
+                    if action in ("sister", "replay"):
+                        trace["result"] = f"heard sister {detail + 1}" + (" again" if action == "replay" else "")
+                    else:
+                        trace["result"] = f"look: {action}"
                     if action in ("sister", "replay"):
                         nxt = (await self._room_pointer(guild, puzzle, rooms, plan["chain"][detail + 1], detail + 1)
                                if detail + 1 < len(trail.SISTERS) else None)
@@ -668,12 +697,14 @@ class SecretHunt(commands.Cog):
                                     }.get(action, lambda: puzzle["idle"])()
                 elif key == "pour":
                     action, detail = trail.pour(state, room, plan, now, test_mode)
+                    trace["result"] = f"pour: {action}"
                     text_out = {"poured": lambda: puzzle["pour_ok"].format(n=detail), "wrong": lambda: puzzle["pour_wrong"],
                                 "full": lambda: puzzle["pour_full"],
                                 "rest": lambda: puzzle["pour_rest"].format(until=self._when(detail)),
                                 }.get(action, lambda: puzzle["quiet"])()
                 else:  # toast
                     action, detail = trail.toast(state, room, plan, now, test_mode)
+                    trace["result"] = f"toast: {action}"
                     if action == "passed":
                         state["clue"] = dm_after = self._stage4_done_text(guild, puzzle, rooms, plan)
                     text_out = {"wrong": lambda: puzzle["toast_wrong"], "empty": lambda: puzzle["toast_empty"],
@@ -1363,7 +1394,7 @@ class SecretHunt(commands.Cog):
             lines["Unanswered button clicks"] = "\n".join(
                 f"<t:{int(t)}:t> <@{u}> in <#{c}>: {why}" for t, why, u, c in recent[-5:])[:1000]
         held = self._message_views()
-        if held:  # TEMPORARY (1.13.5): who answers the buttons on each posted object
+        if self._view_store() is not None:  # TEMPORARY (1.13.5): who answers the buttons on each posted object
             mine = {m for m, item in held if getattr(getattr(item, "view", None), "cog", None) is self}
             older = {m for m, item in held} - mine
             lines["Button handlers"] = (f"{len(mine)} posted objects answered by this copy, {len(older)} by an older copy"
@@ -2031,6 +2062,10 @@ class SecretHunt(commands.Cog):
                              f"failed word tests {st.get('test_roll', 0)}; pours {st.get('pours', 0)}; "
                              f"courtesies paid {st.get('courtesy', 0)}/4; wrong answers {st.get('answer_wrongs', 0)}; "
                              f"hints {st.get('hints', 0)}")
+                rows = await self.config.member(member).presses()
+                if rows:
+                    lines.append("recent tea table presses: " + "; ".join(
+                        f"<t:{int(t)}:t> <#{room}> {key} \N{RIGHTWARDS ARROW} {what}" for t, room, key, what in rows[-6:]))
                 continue
             if PUZZLES.get(pid, {}).get("kind") == "trial":
                 lines.append(f"**{pid}**: {trial_names.get(st['stage'], st['stage'])}; re-rolls {st.get('roll', 0)}, "

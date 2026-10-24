@@ -1947,3 +1947,65 @@ async def test_status_says_who_answers_the_buttons(env):
 async def test_without_discords_private_view_table_nothing_breaks(env):
     assert env.cog._message_views() == [] and env.cog._drop_stale_views() == 0
     assert "Button handlers" not in (await env.cog._status_embed(env.g)).description
+
+
+# ---------------------------------------------------------------- `who` shows a member's recent tea table presses (1.13.6)
+
+async def who(env, m):
+    class Ctx:
+        def __init__(self):
+            self.guild, self.out = env.g, []
+
+        async def send(self, content=None, **kw):
+            self.out.append(content)
+    ctx = Ctx()
+    await env.cog.secrethunt_who.callback(env.cog, ctx, m)
+    return ctx.out[0]
+
+
+async def test_who_shows_whether_a_stuck_member_pressed_a_sisters_room_or_a_wrong_one(env):
+    m = member(env, 21)
+    await wake(env, m)
+    chain = plan_of(env, 21)["chain"]
+    wrong = next(i for i in range(12) if i not in chain)
+    await look(env, m, wrong)
+    await look(env, m, chain[0])
+    out = await who(env, m)
+    assert f"<#{env.rooms[wrong].id}> look \N{RIGHTWARDS ARROW} look: wrong" in out
+    assert f"<#{env.rooms[chain[0]].id}> look \N{RIGHTWARDS ARROW} heard sister 1" in out
+    assert "sisters found 1/3" in out
+    assert f"<#{env.rooms[chain[1]].id}>" not in out and f"<#{env.rooms[chain[2]].id}>" not in out  # the route is never shown
+
+
+async def test_who_says_when_a_press_was_ignored_or_the_member_had_not_started(env):
+    fresh = member(env, 22)
+    await wake(env, fresh)
+    await env.conf.enabled.set(False)
+    await look(env, fresh, 0)
+    out = await who(env, fresh)
+    assert "look \N{RIGHTWARDS ARROW} ignored: the hunt is switched off" in out
+    await env.conf.enabled.set(True)
+    chain = plan_of(env, 22)["chain"]
+    await look(env, fresh, chain[0])
+    await look(env, fresh, chain[0])
+    assert "heard sister 1 again" in await who(env, fresh)
+    newcomer = member(env, 23)  # never woke the Dormouse: the press is still noted, as that
+    await look(env, newcomer, 0)
+    assert (await env.cog.config.member(newcomer).presses())[-1][1:] == [env.rooms[0].id, "look", "has not started"]
+
+
+async def test_a_member_keeps_only_their_last_six_presses_and_they_leave_with_their_data(env):
+    m = member(env, 24)
+    await wake(env, m)
+    for _ in range(9):
+        await look(env, m, 0, "bow")
+    rows = await env.cog.config.member(m).presses()
+    assert len(rows) == 6 and {r[3] for r in rows} == {"bow"}
+    await env.cog.red_delete_data_for_user(requester="user", user_id=m.id)
+    assert await env.cog.config.member(m).presses() == []
+
+
+async def test_status_reports_a_readable_but_empty_view_table(env):
+    real_store(env)
+    embed = await env.cog._status_embed(env.g)
+    assert "**Button handlers:** 0 posted objects answered by this copy, 0 by an older copy; 0 older views stopped at load" in embed.description

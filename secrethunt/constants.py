@@ -1,7 +1,7 @@
 """Config defaults and fixed values for secrethunt (Secrets of Wonderland)."""
 from zoneinfo import ZoneInfo
 
-COG_VERSION = "1.13.5"
+COG_VERSION = "1.13.6"
 CONFIG_IDENTIFIER = 0x5EC8E7A1
 HOME_TZ = ZoneInfo("America/Los_Angeles")
 
@@ -74,4 +74,5 @@ DEFAULT_GUILD = {
 
 DEFAULT_MEMBER = {
     "puzzles": {},           # puzzle id -> state dict (see engine.new_state)
+    "presses": [],           # the last few tea table presses: [time, room id, button, what happened] (shown by `who`)
 }
