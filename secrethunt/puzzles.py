@@ -295,6 +295,13 @@ TREACLE_WELL = {
     "probe_yes": "\N{TEACUP WITHOUT HANDLE} **{word}**: *he nods slowly.* \"I can draw that.\"",
     "probe_no": "\N{TEACUP WITHOUT HANDLE} **{word}**: *he shakes his head.* \"I cannot draw that.\"",
     "probe_saving": "\N{TEACUP WITHOUT HANDLE} *The Dormouse puts a finger to his lips.* \"That one is saved for the test.\"",
+    "probe_pause": (
+        "\N{TEACUP WITHOUT HANDLE} *The Dormouse's eyelids droop.* \"Ten words is a great many for a sleepy mouse. "
+        "Let me rest.\" He will listen again {until}."
+    ),
+    "probe_resting": (
+        "\N{TEACUP WITHOUT HANDLE} *The Dormouse is fast asleep, one paw in the sugar bowl.* He will wake {until}."
+    ),
     "probe_tired": "\N{TEACUP WITHOUT HANDLE} *The Dormouse yawns until his whiskers shake.* \"No more words today. Ask again tomorrow.\"",
     "test_intro": (
         "\N{TEACUP WITHOUT HANDLE} *He takes a deep breath.* \"Which of these can I draw? Say **all** of the ones I can "

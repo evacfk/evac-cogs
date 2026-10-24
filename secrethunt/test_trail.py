@@ -377,10 +377,32 @@ def test_a_single_word_is_always_a_question_never_an_answer():
 def test_questions_are_capped_per_day_and_reset_the_next_day():
     state, p = on_stage3()
     words = list(trail.WORDS)
+    now = T0
     for i in range(trail.TRAIL_PROBES_PER_DAY):
-        assert trail.muchness(state, p, words[i % len(words)], T0)[0] == "probe"
-    assert trail.muchness(state, p, "apple", T0) == ("tired", None)
+        assert trail.muchness(state, p, words[i % len(words)], now)[0] in ("probe", "probe_pause")
+        now += trail.TRAIL_PROBE_PAUSE_MINUTES * 60 + 1  # wait out any rest between runs
+    assert trail.muchness(state, p, "apple", now) == ("tired", None)
     assert trail.muchness(state, p, "apple", T0 + 86400 + 1)[0] == "probe"
+    assert trail.TRAIL_PROBES_PER_DAY == 30
+
+
+def test_the_dormouse_rests_after_every_ten_words_and_the_rest_ends():
+    state, p = on_stage3()
+    words = list(trail.WORDS)
+    for i in range(trail.TRAIL_PROBE_BURST - 1):
+        assert trail.muchness(state, p, words[i], T0)[0] == "probe"
+    action, detail = trail.muchness(state, p, words[9], T0)
+    assert action == "probe_pause" and detail[2] == T0 + trail.TRAIL_PROBE_PAUSE_MINUTES * 60
+    assert trail.muchness(state, p, words[10], T0 + 599) == ("pausing", detail[2])
+    assert state["probes"] == 10  # a word asked while he sleeps costs nothing
+    assert trail.muchness(state, p, words[10], T0 + 601)[0] == "probe" and state["probes"] == 11
+
+
+def test_the_rest_between_words_does_not_block_the_test():
+    state, p = on_stage3()
+    for i in range(trail.TRAIL_PROBE_BURST):
+        trail.muchness(state, p, list(trail.WORDS)[i], T0)
+    assert trail.muchness(state, p, "ready", T0 + 1)[0] == "ready"
 
 
 def test_nonsense_is_ignored():

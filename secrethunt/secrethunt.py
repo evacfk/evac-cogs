@@ -790,8 +790,12 @@ class SecretHunt(commands.Cog):
                         state["clue"] = reply = self._stage3_done_text(guild, puzzle, rooms, plan)
                     elif action == "probe":
                         reply = puzzle["probe_yes" if detail[1] else "probe_no"].format(word=detail[0])
+                    elif action == "probe_pause":
+                        reply = puzzle["probe_yes" if detail[1] else "probe_no"].format(word=detail[0]) + "\n\n" + \
+                            puzzle["probe_pause"].format(until=self._when(detail[2]))
                     else:
                         reply = {"saving": lambda: puzzle["probe_saving"], "tired": lambda: puzzle["probe_tired"],
+                                 "pausing": lambda: puzzle["probe_resting"].format(until=self._when(detail)),
                                  "ready": lambda: puzzle["test_intro"].format(words=words),
                                  "test_open": lambda: puzzle["test_again"].format(words=words),
                                  "resting": lambda: puzzle["test_rest"].format(until=self._when(detail)),

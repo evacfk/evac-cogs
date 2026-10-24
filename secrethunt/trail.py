@@ -23,7 +23,7 @@ from . import engine
 from .constants import (
     TEST_DELAY_SECONDS, TRAIL_ANSWER_REST_MINUTES, TRAIL_COURTESY_REST_MINUTES, TRAIL_COURTESY_SLIPS,
     TRAIL_HINT_FIRST_HOURS, TRAIL_HINT_GAP_HOURS, TRAIL_HINTS_PER_STAGE, TRAIL_MUCHNESS_REST_MINUTES,
-    TRAIL_PROBES_PER_DAY, TRAIL_POUR_CAP, TRAIL_POUR_REST_MINUTES, TRAIL_POUR_WRONGS, TRAIL_REACT_WINDOW,
+    TRAIL_PROBE_BURST, TRAIL_PROBE_PAUSE_MINUTES, TRAIL_PROBES_PER_DAY, TRAIL_POUR_CAP, TRAIL_POUR_REST_MINUTES, TRAIL_POUR_WRONGS, TRAIL_REACT_WINDOW,
     TRAIL_REACTS_PER_HOUR, TRAIL_REST_MINUTES, TRAIL_WRONG_LOOKS,
 )
 
@@ -124,6 +124,7 @@ def ensure(state: dict) -> dict:
     state.setdefault("clue", "")          # the text `recap` sends again
     state.setdefault("log", {})           # step -> {"opened": ts, "solved": ts}, for the funnel
     state.setdefault("probes", 0)         # stage 3: words asked about today...
+    state.setdefault("probe_pause_until", 0.0)  # stage 3: the Dormouse rests between runs of ten words until then
     state.setdefault("probe_date", "")    # ...(Pacific date they were counted on)
     state.setdefault("test_words", [])    # stage 3: the eight words of the open test, empty when none is open
     state.setdefault("test_roll", 0)      # stage 3: how many tests have been failed (each gets fresh words)
@@ -340,6 +341,8 @@ def muchness(state, plan_: dict, text: str, now: float, test_mode: bool = False)
 
       not_here    this member is not on stage 3
       probe       one word asked about (detail = (word, can_draw))
+      probe_pause that word was the last of a run of ten: answered, and the Dormouse rests (detail = (word, can_draw, until))
+      pausing     the Dormouse is resting between runs (detail = when it ends)
       saving      that word is in the open test, so no verdict (detail = word)
       tired       too many words asked about today
       ready       a test begins (detail = its eight words)
@@ -386,10 +389,15 @@ def muchness(state, plan_: dict, text: str, now: float, test_mode: bool = False)
         return "saving", word
     today = engine.pacific_date(now)
     if state["probe_date"] != today:
-        state["probe_date"], state["probes"] = today, 0
+        state["probe_date"], state["probes"], state["probe_pause_until"] = today, 0, 0.0
     if state["probes"] >= TRAIL_PROBES_PER_DAY:
         return "tired", None
+    if state["probe_pause_until"] > now:
+        return "pausing", state["probe_pause_until"]
     state["probes"] += 1
+    if state["probes"] % TRAIL_PROBE_BURST == 0 and state["probes"] < TRAIL_PROBES_PER_DAY:
+        state["probe_pause_until"] = now + (TEST_DELAY_SECONDS if test_mode else TRAIL_PROBE_PAUSE_MINUTES * 60)
+        return "probe_pause", (word, holds(rule, word), state["probe_pause_until"])
     return "probe", (word, holds(rule, word))
 
 
