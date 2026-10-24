@@ -19,6 +19,7 @@ import asyncio
 import logging
 import re
 import time
+import weakref
 from collections import deque
 from datetime import datetime
 from typing import Union
@@ -53,6 +54,8 @@ class SecretHunt(commands.Cog):
         self._locks: dict[int, asyncio.Lock] = {}
         self._poem_ids: dict[int, dict[int, str]] = {}   # guild id -> {poem message id: puzzle id}, loaded on first use
         self._poem_hist: dict[tuple, deque] = {}         # (guild, member, puzzle) -> recent poem reactions (memory only)
+        self._sent_views = weakref.WeakSet()  # the views posted with a hunt object: discord.py keeps each one per message
+        self._purged = 0                      # old copies' message views stopped when this cog loaded (shown in status)
         self._task = self.bot.loop.create_task(self._loop())
 
     async def cog_load(self):
@@ -62,6 +65,7 @@ class SecretHunt(commands.Cog):
         self.bot.add_view(self._witness_view)
         self._trail_view = views.TrailView(self)
         self.bot.add_view(self._trail_view)
+        self._purged = self._drop_stale_views()
 
     def cog_unload(self):
         self._task.cancel()
@@ -69,6 +73,46 @@ class SecretHunt(commands.Cog):
             view = getattr(self, name, None)
             if view is not None:
                 view.stop()
+        for view in list(self._sent_views):  # a view posted with a message answers that message's buttons for as long as it
+            view.stop()                      # is registered, ahead of the persistent ones, so it must not outlive this copy
+
+    def _message_views(self) -> list:
+        """[(message id, button)] for every hunt button discord.py holds a view for on one specific message. It asks those
+        before the persistent views, so a view an older copy of this cog left behind answers with that copy's code.
+        Reads discord.py's private view table, so it never raises: nothing found means nothing is reported."""
+        store = getattr(getattr(self.bot, "_connection", None), "_view_store", None)
+        found = []
+        try:
+            for mid, table in list(getattr(store, "_views", {}).items()):
+                if mid is None:
+                    continue
+                found += [(mid, item) for (_kind, cid), item in list(table.items()) if str(cid).startswith("secrethunt:")]
+        except Exception:
+            log.exception("secrethunt could not read the button table")
+        return found
+
+    def _drop_stale_views(self) -> int:
+        """Stop every hunt view that an earlier copy of this cog left registered for a message (an unload only stopped the
+        copy's own three persistent views). The message's buttons then fall back to this copy's. How many were stopped."""
+        stopped = {}
+        try:
+            for _mid, item in self._message_views():
+                view = getattr(item, "view", None)
+                if view is not None and getattr(view, "cog", None) is not self:
+                    stopped[id(view)] = view
+            for view in stopped.values():
+                view.stop()
+        except Exception:
+            log.exception("secrethunt could not clear the old button handlers")
+        if stopped:
+            log.warning("secrethunt: stopped %s button views left behind by an earlier copy of this cog", len(stopped))
+        return len(stopped)
+
+    def _sent_view(self, cls):
+        """A fresh view for a message about to be posted, remembered so this copy can stop it when it unloads."""
+        view = cls(self)
+        self._sent_views.add(view)
+        return view
 
     def _lock(self, guild_id: int) -> asyncio.Lock:
         return self._locks.setdefault(guild_id, asyncio.Lock())
@@ -1145,11 +1189,11 @@ class SecretHunt(commands.Cog):
         """The embed (and buttons) of a puzzle's hunt object. `label` names the room a rehearsal copy stands in for."""
         kind = puzzle.get("kind")
         if kind == "button":
-            return {"embed": embeds.object_embed(puzzle, label), "view": views.ObjectView(self)}
+            return {"embed": embeds.object_embed(puzzle, label), "view": self._sent_view(views.ObjectView)}
         if kind == "trial":
-            return {"embed": embeds.witness_embed(puzzle, label), "view": views.WitnessView(self)}
+            return {"embed": embeds.witness_embed(puzzle, label), "view": self._sent_view(views.WitnessView)}
         if kind == "trail":
-            return {"embed": embeds.object_embed(puzzle, label), "view": views.TrailView(self)}
+            return {"embed": embeds.object_embed(puzzle, label), "view": self._sent_view(views.TrailView)}
         return {"embed": embeds.object_embed(puzzle, label)}
 
     async def _setup_objects(self, guild, pid: str, force: bool = False) -> list[str]:
@@ -1318,6 +1362,12 @@ class SecretHunt(commands.Cog):
         if recent:
             lines["Unanswered button clicks"] = "\n".join(
                 f"<t:{int(t)}:t> <@{u}> in <#{c}>: {why}" for t, why, u, c in recent[-5:])[:1000]
+        held = self._message_views()
+        if held:  # TEMPORARY (1.13.5): who answers the buttons on each posted object
+            mine = {m for m, item in held if getattr(getattr(item, "view", None), "cog", None) is self}
+            older = {m for m, item in held} - mine
+            lines["Button handlers"] = (f"{len(mine)} posted objects answered by this copy, {len(older)} by an older copy"
+                                        f"; {self._purged} older views stopped at load")
         presses = await conf.press_log()
         if presses:  # TEMPORARY (1.13.4): which handler received each press, and what it did
             lines["Latest button presses"] = "\n".join(

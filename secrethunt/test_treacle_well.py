@@ -3,6 +3,7 @@ trail setup, the lurker block and the admins-only guard while the puzzle is unfi
 
 Run against fakes: they prove the logic and clean imports under the stub, not live Discord behaviour (persistent buttons,
 ephemeral replies, reaction removal, pins in forum posts, archived-thread behaviour, relative timestamps rendering)."""
+import asyncio
 import importlib
 import sys
 import time
@@ -1870,3 +1871,79 @@ async def test_a_press_without_a_message_is_recorded_not_silently_dropped(env, c
     assert inter.replies == [("Nothing happens.", {"ephemeral": True})]
     assert (await env.conf.click_log())[-1][1] == "tea table (look): the press carried no message"
     assert "tea table click dropped" in caplog.text
+
+
+# ---------------------------------------------------------------- old copies of the cog must not keep answering buttons (1.13.5)
+# discord.py registers a view posted with a message for THAT message and asks it before the persistent views, so after a
+# `.cog update` the tables an earlier copy posted were still answered by the earlier copy's code until Red restarted.
+
+class OldCopy:
+    """Stands in for an earlier instance of the cog: its code answers, and records, every press."""
+    def __init__(self):
+        self.pressed = []
+
+    async def handle_trail(self, interaction, key):
+        self.pressed.append(interaction.message.id)
+
+
+def real_store(env):
+    discord_view = pytest.importorskip("discord.ui.view")
+    store = discord_view.ViewStore(types.SimpleNamespace())
+    env.bot._connection = types.SimpleNamespace(_view_store=store)
+    return store
+
+
+def tap(store, message_id):
+    inter = types.SimpleNamespace(message=types.SimpleNamespace(id=message_id), guild=None, user=None, response=None,
+                                  data={"custom_id": "secrethunt:trail:look", "component_type": 2}, _state=None)
+    store.dispatch_view(2, "secrethunt:trail:look", inter)
+
+
+async def test_every_view_posted_with_an_object_is_stopped_when_the_cog_unloads(env):
+    sent = [m.kw["view"] for room in env.rooms for m in room.sent if m.kw.get("view") is not None]
+    assert len(sent) == 12 and all(not v.is_finished() for v in sent)
+    env.cog.cog_unload()
+    assert all(v.is_finished() for v in sent)
+
+
+async def test_an_older_copys_view_on_a_posted_table_is_stopped_at_load_and_the_new_copy_answers(env, monkeypatch):
+    store = real_store(env)
+    old = OldCopy()
+    store.add_view(env.mod.views.TrailView(old), 555)                      # a table the earlier copy posted
+    persistent = env.mod.views.TrailView(env.cog)
+    store.add_view(persistent)                                              # this copy's persistent buttons
+    answered = []
+
+    async def mine(interaction, key):
+        answered.append(interaction.message.id)
+    monkeypatch.setattr(env.cog, "handle_trail", mine)
+    tap(store, 555)
+    await asyncio.sleep(0.05)
+    assert old.pressed == [555] and answered == []                         # the bug: the old copy still answers
+    store.add_view(env.mod.views.TrailView(old), 555)
+    assert env.cog._drop_stale_views() == 1
+    tap(store, 555)
+    await asyncio.sleep(0.05)
+    assert old.pressed == [555] and answered == [555]                      # fixed: the new copy answers the old table
+
+
+async def test_a_view_of_this_copy_is_left_alone_by_the_purge(env):
+    store = real_store(env)
+    store.add_view(env.mod.views.TrailView(env.cog), 556)
+    assert env.cog._drop_stale_views() == 0 and {m for m, _i in env.cog._message_views()} == {556}
+
+
+async def test_status_says_who_answers_the_buttons(env):
+    store = real_store(env)
+    store.add_view(env.mod.views.TrailView(env.cog), 601)
+    store.add_view(env.mod.views.TrailView(OldCopy()), 602)
+    embed = await env.cog._status_embed(env.g)
+    assert "**Button handlers:** 1 posted objects answered by this copy, 1 by an older copy" in embed.description
+    env.cog._purged = env.cog._drop_stale_views()
+    embed = await env.cog._status_embed(env.g)
+    assert "1 posted objects answered by this copy, 0 by an older copy; 1 older views stopped at load" in embed.description
+
+
+async def test_without_discords_private_view_table_nothing_breaks(env):
+    assert env.cog._message_views() == [] and env.cog._drop_stale_views() == 0
+    assert "Button handlers" not in (await env.cog._status_embed(env.g)).description
