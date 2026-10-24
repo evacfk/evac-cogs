@@ -419,28 +419,65 @@ class SecretHunt(commands.Cog):
 
     async def handle_trail(self, interaction, key: str):
         """A button under a tea table was pressed. The reply is private, so a wrong table looks like any other."""
+        outcome = "answered"
         try:
             text = await self._trail_text(interaction, key)
         except Exception as err:
             log.exception("secrethunt tea table click failed")
-            text = None
+            text, outcome = None, "error"
             msg, who = getattr(interaction, "message", None), getattr(interaction, "user", None)
             if getattr(interaction, "guild", None) is not None and msg is not None and who is not None:
-                await self._note_click(interaction.guild, f"error {type(err).__name__}: {err}", msg, who)
+                await self._note_click(interaction.guild, f"tea table ({key}): error {type(err).__name__}: {err}", msg, who)
+        if not text:
+            outcome = "error" if outcome == "error" else "no answer"
         try:
             await interaction.response.send_message(text or "Nothing happens.", ephemeral=True)
-        except _DISCORD_ERRORS:
-            pass
+        except _DISCORD_ERRORS as err:
+            outcome += f", reply failed ({type(err).__name__})"
+            await self._note_click(getattr(interaction, "guild", None), f"tea table ({key}): reply failed, {type(err).__name__}",
+                                   getattr(interaction, "message", None), getattr(interaction, "user", None))
+        await self._note_press("tea table", key, interaction, outcome)
 
     async def _note_click(self, guild, why: str, message, member) -> None:
-        """Keep the last few unanswered tea table clicks (shown in status), so a "Nothing happens" can be explained
-        without reading container logs."""
+        """Keep the last few unanswered button clicks (shown in status), so a "Nothing happens" can be explained
+        without reading container logs. `why` starts with which handler gave the reply: tea table, hunt object or witness."""
+        if guild is None or member is None:
+            return
         try:
             async with self.config.guild(guild).click_log() as entries:
-                entries.append([time.time(), str(why)[:80], member.id, getattr(getattr(message, "channel", None), "id", None)])
+                entries.append([time.time(), str(why)[:140], member.id, getattr(getattr(message, "channel", None), "id", None)])
                 del entries[:-8]
         except Exception:
             log.exception("secrethunt could not record an ignored click")
+
+    async def _note_press(self, handler: str, key: str, interaction, outcome: str) -> None:
+        """TEMPORARY diagnostics (1.13.4): the last dozen button presses that reached this process, answered or not, with
+        the handler, the button, the message id and the button's custom id, so a "Nothing happens" can be traced to the
+        handler that gave it, or shown never to have arrived at all. Holds ids and counts only, never an answer."""
+        guild, message, who = (getattr(interaction, "guild", None), getattr(interaction, "message", None),
+                               getattr(interaction, "user", None))
+        if guild is None or who is None:
+            log.warning("secrethunt: %s press (%s) arrived without a guild or user: %s", handler, key, outcome)
+            return
+        data = getattr(interaction, "data", None)
+        cid = data.get("custom_id") if isinstance(data, dict) else None
+        try:
+            async with self.config.guild(guild).press_log() as entries:
+                entries.append([time.time(), f"{handler} {key}: {outcome}"[:100], who.id,
+                                getattr(getattr(message, "channel", None), "id", None), getattr(message, "id", None), cid])
+                del entries[:-12]
+        except Exception:
+            log.exception("secrethunt could not record a button press")
+
+    async def _ignore_press(self, guild, member, message, kind: str, why: str):
+        """A hunt object or witness press that gets no answer: note and log why. An admin is told privately (a member
+        sees only "Nothing happens.")."""
+        await self._note_click(guild, f"{kind}: {why}", message, member)
+        log.warning("secrethunt: %s click ignored (%s): message %s in channel %s, user %s", kind, why,
+                    getattr(message, "id", None), getattr(getattr(message, "channel", None), "id", None), member.id)
+        if getattr(getattr(member, "guild_permissions", None), "administrator", False):
+            return f"(Admin only: this click was ignored because {why}.)"
+        return None
 
     async def _room_pointer(self, guild, puzzle: dict, rooms: list, room_index: int, step: int):
         """How trail room number `room_index` is named in a clue; None when the room is gone."""
@@ -504,11 +541,16 @@ class SecretHunt(commands.Cog):
         guild, member = interaction.guild, interaction.user
         message = getattr(interaction, "message", None)
         if guild is None or message is None or getattr(member, "bot", False):
+            log.warning("secrethunt: tea table click dropped (guild %s, message %s, bot %s)", getattr(guild, "id", None),
+                        getattr(message, "id", None), getattr(member, "bot", False))
+            if guild is not None and member is not None:
+                await self._note_click(guild, "tea table (%s): %s" % (
+                    key, "the press carried no message" if message is None else "a bot pressed it"), message, member)
             return None
         conf = self.config.guild(guild)
 
         async def ignored(why: str):
-            await self._note_click(guild, why, message, member)
+            await self._note_click(guild, f"tea table ({key}): {why}", message, member)
             log.warning("secrethunt: tea table click ignored (%s): message %s in channel %s, user %s", why, message.id,
                         getattr(getattr(message, "channel", None), "id", None), member.id)
             perms = getattr(member, "guild_permissions", None)
@@ -541,7 +583,7 @@ class SecretHunt(commands.Cog):
                 if state.get("dm_pending") and state.get("clue"):
                     resend = state["clue"]  # an earlier DM bounced: try again now that they pressed something
                 if len(rooms) < len(trail.SISTERS):
-                    return None
+                    return await ignored(f"only {len(rooms)} trail rooms are set")
                 plan = trail.plan(trail.seed(salt, pid, member.id), len(rooms))
                 if state.get("step") == 5:  # every button belongs to the Courtesies now
                     action, detail = trail.courtesy(state, room, key, plan, now, test_mode)
@@ -691,34 +733,48 @@ class SecretHunt(commands.Cog):
     async def handle_click(self, interaction, key: str):
         """A button under a hunt object was pressed. Whatever happens, the answer is private to the clicker, so a decoy
         looks exactly like the real thing and nobody can watch someone else solve."""
+        outcome = "answered"
         try:
             text = await self._click_text(interaction, key)
-        except Exception:
+        except Exception as err:
             log.exception("secrethunt button click failed")
-            text = None
-        if text is None:
-            msg = getattr(interaction, "message", None)
-            log.warning("secrethunt: hunt object click ignored (%s button): message %s in channel %s, user %s", key,
-                        getattr(msg, "id", None), getattr(getattr(msg, "channel", None), "id", None),
-                        getattr(getattr(interaction, "user", None), "id", None))
+            text, outcome = None, "error"
+            msg, who = getattr(interaction, "message", None), getattr(interaction, "user", None)
+            await self._note_click(getattr(interaction, "guild", None), f"hunt object ({key}): error {type(err).__name__}: {err}",
+                                   msg, who)
+        if not text:
+            outcome = "error" if outcome == "error" else "no answer"
         try:
             await interaction.response.send_message(text or "Nothing happens.", ephemeral=True)
-        except _DISCORD_ERRORS:
-            pass
+        except _DISCORD_ERRORS as err:
+            outcome += f", reply failed ({type(err).__name__})"
+            await self._note_click(getattr(interaction, "guild", None), f"hunt object ({key}): reply failed, {type(err).__name__}",
+                                   getattr(interaction, "message", None), getattr(interaction, "user", None))
+        await self._note_press("hunt object", key, interaction, outcome)
 
     async def _click_text(self, interaction, key: str):
         guild, member = interaction.guild, interaction.user
         message = getattr(interaction, "message", None)
         if guild is None or message is None or getattr(member, "bot", False):
+            log.warning("secrethunt: hunt object click dropped (guild %s, message %s, bot %s)", getattr(guild, "id", None),
+                        getattr(message, "id", None), getattr(member, "bot", False))
             return None
         conf = self.config.guild(guild)
-        if not await conf.enabled() or await self._blocked(guild, member):
-            return None
+        kind = f"hunt object ({key})"
+        if not await conf.enabled():
+            return await self._ignore_press(guild, member, message, kind, "the hunt is switched off")
+        if await self._blocked(guild, member):
+            return await self._ignore_press(guild, member, message, kind, "the member holds the blocked role")
         hit = await self._find_object(conf, message.id)
         puzzle = PUZZLES.get(hit[0]) if hit else None
         pool = await conf.pool()
-        if puzzle is None or puzzle.get("kind") != "button" or len(pool) < POOL_MIN:
-            return None
+        if puzzle is None:
+            return await self._ignore_press(guild, member, message, kind, "this message is not a hunt object the bot knows")
+        if puzzle.get("kind") != "button":
+            return await self._ignore_press(guild, member, message, kind,
+                                            f"this message belongs to {hit[0]}, which has no {key} button")
+        if len(pool) < POOL_MIN:
+            return await self._ignore_press(guild, member, message, kind, f"only {len(pool)} hiding places are set")
         pid, channel_id = hit
         now, test_mode = time.time(), await conf.test_mode()
         async with self._lock(guild.id):
@@ -735,29 +791,47 @@ class SecretHunt(commands.Cog):
 
     async def handle_witness(self, interaction):
         """The button under a trial witness was pressed. The reply is private: it is this member's own testimony."""
+        outcome = "answered"
         try:
             text = await self._witness_text(interaction)
-        except Exception:
+        except Exception as err:
             log.exception("secrethunt witness button failed")
-            text = None
+            text, outcome = None, "error"
+            await self._note_click(getattr(interaction, "guild", None), f"witness: error {type(err).__name__}: {err}",
+                                   getattr(interaction, "message", None), getattr(interaction, "user", None))
+        if not text:
+            outcome = "error" if outcome == "error" else "no answer"
         try:
             await interaction.response.send_message(text or "Nothing happens.", ephemeral=True)
-        except _DISCORD_ERRORS:
-            pass
+        except _DISCORD_ERRORS as err:
+            outcome += f", reply failed ({type(err).__name__})"
+            await self._note_click(getattr(interaction, "guild", None), f"witness: reply failed, {type(err).__name__}",
+                                   getattr(interaction, "message", None), getattr(interaction, "user", None))
+        await self._note_press("witness", "hear", interaction, outcome)
 
     async def _witness_text(self, interaction):
         guild, member = interaction.guild, interaction.user
         message = getattr(interaction, "message", None)
         if guild is None or message is None or getattr(member, "bot", False):
+            log.warning("secrethunt: witness click dropped (guild %s, message %s, bot %s)", getattr(guild, "id", None),
+                        getattr(message, "id", None), getattr(member, "bot", False))
             return None
         conf = self.config.guild(guild)
-        if not await conf.enabled() or await self._blocked(guild, member):
-            return None
+        if not await conf.enabled():
+            return await self._ignore_press(guild, member, message, "witness", "the hunt is switched off")
+        if await self._blocked(guild, member):
+            return await self._ignore_press(guild, member, message, "witness", "the member holds the blocked role")
         hit = await self._find_object(conf, message.id)
         puzzle = PUZZLES.get(hit[0]) if hit else None
         pool = await conf.pool()
-        if puzzle is None or puzzle.get("kind") != "trial" or len(pool) != puzzle["needs_pool"] or hit[1] not in pool:
-            return None
+        if puzzle is None:
+            return await self._ignore_press(guild, member, message, "witness", "this message is not a hunt object the bot knows")
+        if puzzle.get("kind") != "trial":
+            return await self._ignore_press(guild, member, message, "witness", f"this message belongs to {hit[0]}, not a trial")
+        if len(pool) != puzzle["needs_pool"] or hit[1] not in pool:
+            return await self._ignore_press(guild, member, message, "witness",
+                                            f"the pool holds {len(pool)} places, the trial needs {puzzle['needs_pool']}, "
+                                            "or this room is not one of them")
         pid, witness = hit[0], pool.index(hit[1])
         salt, now = await self._salt(guild), time.time()
         async with self._lock(guild.id):
@@ -1242,8 +1316,13 @@ class SecretHunt(commands.Cog):
                 lines[f"{PUZZLES[pid]['title']} funnel"] = f"{at} · solved {f['solved']} · hints {f['hints']} · median per stage ({med})"
         recent = await conf.click_log()
         if recent:
-            lines["Unanswered tea table clicks"] = "\n".join(
+            lines["Unanswered button clicks"] = "\n".join(
                 f"<t:{int(t)}:t> <@{u}> in <#{c}>: {why}" for t, why, u, c in recent[-5:])[:1000]
+        presses = await conf.press_log()
+        if presses:  # TEMPORARY (1.13.4): which handler received each press, and what it did
+            lines["Latest button presses"] = "\n".join(
+                f"<t:{int(t)}:t> <@{u}> in <#{c}> msg `{m}` id `{cid}`: {what}"
+                for t, what, u, c, m, cid in presses[-6:])[:900]
         pending = [(pid, item) for pid, item in (await conf.launches()).items() if pid in PUZZLES]
         if pending:
             lines["Scheduled launches"] = ", ".join(

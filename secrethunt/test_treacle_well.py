@@ -1724,8 +1724,149 @@ async def test_an_unanswered_press_is_recorded_and_shown_in_status(env):
     entries = await env.conf.click_log()
     assert len(entries) == 1 and entries[0][2] == 13 and "not a tea table" in entries[0][1]
     embed = await env.cog._status_embed(env.g)
-    assert "Unanswered tea table clicks" in embed.description and "<@13>" in embed.description
+    assert "Unanswered button clicks" in embed.description and "<@13>" in embed.description
     assert len(embed.description) < 4000
     for _ in range(12):
         await env.cog.handle_trail(tk.FakeInteraction(env.g, m, stray), "look")
     assert len(await env.conf.click_log()) == 8
+
+
+# ---------------------------------------------------------------- button press diagnostics (1.13.4)
+# A "Nothing happens." can come from three handlers (tea table, hunt object, witness). Each one now records what it did
+# with every press and why it gave no answer, so the next failed press names its handler in `.secrethunt status`.
+
+def titled(room, title):
+    """The pinned object in a room whose embed title starts with `title` (a room can hold several hunt objects)."""
+    return next(m for m in room.sent if m.embed is not None and m.kw.get("view") is not None and m.embed.title.startswith(title))
+
+
+async def share_rooms(env, rooms):
+    """Make the live layout: the pool is five of the trail rooms, so those rooms hold a tea table AND the other objects."""
+    await env.conf.pool.set([r.id for r in rooms])
+    await env.conf.published.set([PID, "looking_glass", "knaves_trial"])
+    for pid in ("looking_glass", "knaves_trial"):
+        await env.cog._setup_objects(env.g, pid)
+
+
+async def test_a_member_with_roles_can_look_in_trail_rooms_that_also_hold_other_hunt_objects(env):
+    m = member(env, 11)
+    m.roles.append(env.g.add_role(77, "Member"))  # holds a role, but not the blocked one
+    await wake(env, m)
+    chain = plan_of(env, 11)["chain"]
+    await share_rooms(env, [env.rooms[i] for i in chain[:3]] + [env.rooms[i] for i in range(12) if i not in chain[:3]][:2])
+    for step, room in enumerate(chain[:3]):
+        assert len([x for x in env.rooms[room].sent if x.kw.get("view") is not None]) == 3  # tea table, glass, witness
+        inter = tk.FakeInteraction(env.g, m, titled(env.rooms[room], "A tea table"))
+        await env.cog.handle_trail(inter, "look")
+        assert inter.replies[0][0] != "Nothing happens." and (await state(env, m))["found"] == step + 1
+    assert await env.conf.click_log() == []  # nothing went unanswered
+
+
+async def test_pressing_the_glass_or_the_witness_in_a_shared_room_is_a_different_handler_with_its_own_answer(env):
+    m = member(env, 12)
+    await wake(env, m)
+    await share_rooms(env, env.rooms[:5])
+    glass = tk.FakeInteraction(env.g, m, titled(env.rooms[0], "A looking glass"))
+    await env.cog.handle_click(glass, "look")
+    assert glass.replies[0][0] == PUZZLES["looking_glass"]["idle"]  # this member has not started the glass
+    witness = tk.FakeInteraction(env.g, m, titled(env.rooms[0], "A witness waits here"))
+    await env.cog.handle_witness(witness)
+    assert witness.replies[0][0] == PUZZLES["knaves_trial"]["idle"]
+    assert (await state(env, m))["found"] == 0  # neither touched the tea table state
+    log_ = await env.conf.press_log()
+    assert [e[1] for e in log_] == ["hunt object look: answered", "witness hear: answered"]
+    assert await env.conf.click_log() == []
+
+
+async def test_a_look_press_on_a_hunt_object_the_bot_does_not_track_is_traced_to_its_handler(env, caplog):
+    m = member(env, 13)
+    await wake(env, m)
+    old = await env.rooms[0].send(embed=titled(env.rooms[0], "A tea table").embed, view=object())  # an untracked leftover
+    inter = tk.FakeInteraction(env.g, m, old)
+    inter.data = {"custom_id": "secrethunt:look"}
+    await env.cog.handle_click(inter, "look")
+    assert inter.replies == [("Nothing happens.", {"ephemeral": True})]
+    clicks, presses = await env.conf.click_log(), await env.conf.press_log()
+    assert len(clicks) == 1 and clicks[0][2] == 13 and clicks[0][3] == env.rooms[0].id
+    assert clicks[0][1] == "hunt object (look): this message is not a hunt object the bot knows"
+    assert presses[-1][1:] == ["hunt object look: no answer", 13, env.rooms[0].id, old.id, "secrethunt:look"]
+    assert "hunt object (look) click ignored (this message is not a hunt object" in caplog.text
+    embed = await env.cog._status_embed(env.g)
+    assert "Unanswered button clicks" in embed.description and "Latest button presses" in embed.description
+    assert f"`{old.id}`" in embed.description and "`secrethunt:look`" in embed.description
+
+
+async def test_an_untracked_witness_press_is_traced_too_and_an_admin_is_told_why(env):
+    m = member(env, 14)
+    stray = await env.rooms[1].send("hi")
+    inter = tk.FakeInteraction(env.g, m, stray)
+    await env.cog.handle_witness(inter)
+    assert inter.replies == [("Nothing happens.", {"ephemeral": True})]
+    assert (await env.conf.click_log())[-1][1] == "witness: this message is not a hunt object the bot knows"
+    assert (await env.conf.press_log())[-1][1] == "witness hear: no answer"
+    adm = tk.FakeInteraction(env.g, env.admin, stray)
+    await env.cog.handle_witness(adm)
+    assert "not a hunt object" in adm.replies[0][0] and adm.replies[0][0].startswith("(Admin only")
+    stray_click = tk.FakeInteraction(env.g, env.admin, stray)
+    await env.cog.handle_click(stray_click, "look")
+    assert stray_click.replies[0][0].startswith("(Admin only")
+
+
+async def test_a_press_on_the_wrong_kind_of_object_says_which_puzzle_owns_the_message(env):
+    m = member(env, 15)
+    await wake(env, m)
+    inter = tk.FakeInteraction(env.g, m, table(env, 0))  # a tea table pressed through the hunt object handler
+    await env.cog.handle_click(inter, "look")
+    assert inter.replies == [("Nothing happens.", {"ephemeral": True})]
+    assert (await env.conf.click_log())[-1][1] == "hunt object (look): this message belongs to treacle_well, which has no look button"
+    assert (await state(env, m))["found"] == 0
+
+
+async def test_a_reply_that_cannot_be_sent_is_recorded_for_every_handler(env):
+    m = member(env, 16)
+    await wake(env, m)
+
+    class Boom(tk.FakeInteraction):
+        def __init__(self, *a):
+            super().__init__(*a)
+            self.response = types.SimpleNamespace(send_message=self._boom)
+
+        async def _boom(self, content=None, **kw):
+            raise tk.http_error("NotFound")
+    await env.cog.handle_trail(Boom(env.g, m, table(env, 0)), "look")
+    entries = await env.conf.click_log()
+    assert entries[-1][1] == "tea table (look): reply failed, NotFound"
+    assert "reply failed (NotFound)" in (await env.conf.press_log())[-1][1]
+
+
+async def test_every_trail_press_is_recorded_whether_it_was_answered_or_not(env):
+    m = member(env, 17)
+    await wake(env, m)
+    await look(env, m, plan_of(env, 17)["chain"][0])
+    await look(env, m, plan_of(env, 17)["chain"][0], "pour")
+    await env.conf.enabled.set(False)
+    await look(env, m, 0)
+    what = [e[1] for e in await env.conf.press_log()]
+    assert what == ["tea table look: answered", "tea table pour: answered", "tea table look: no answer"]
+    assert (await env.conf.press_log())[0][2:4] == [17, env.rooms[plan_of(env, 17)["chain"][0]].id]
+
+
+async def test_the_press_log_keeps_a_dozen_and_the_status_still_fits_an_embed(env):
+    m = member(env, 18)
+    stray = await env.rooms[0].send("hi")
+    for _ in range(20):
+        await env.cog.handle_click(tk.FakeInteraction(env.g, m, stray), "look")
+        await env.cog.handle_trail(tk.FakeInteraction(env.g, m, stray), "look")
+    assert len(await env.conf.press_log()) == 12 and len(await env.conf.click_log()) == 8
+    assert len((await env.cog._status_embed(env.g)).description) <= 4096
+    text = "".join(str(e) for e in await env.conf.press_log()) + "".join(str(e) for e in await env.conf.click_log())
+    assert str(plan_of(env, 18)["answer"]) not in text  # ids and counts only, never an answer
+
+
+async def test_a_press_without_a_message_is_recorded_not_silently_dropped(env, caplog):
+    m = member(env, 19)
+    inter = tk.FakeInteraction(env.g, m, None)
+    await env.cog.handle_trail(inter, "look")
+    assert inter.replies == [("Nothing happens.", {"ephemeral": True})]
+    assert (await env.conf.click_log())[-1][1] == "tea table (look): the press carried no message"
+    assert "tea table click dropped" in caplog.text

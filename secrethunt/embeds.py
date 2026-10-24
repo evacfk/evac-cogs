@@ -23,8 +23,10 @@ def object_embed(puzzle: dict, label: str = "") -> discord.Embed:
 
 
 def status_embed(version: str, lines: dict) -> discord.Embed:
-    embed = discord.Embed(title="Secrets of Wonderland", description="\n".join(f"**{k}:** {v}" for k, v in lines.items()),
-                          color=discord.Color.gold())
+    text = "\n".join(f"**{k}:** {v}" for k, v in lines.items())
+    if len(text) > 4000:  # an embed description holds 4096; never let a long status fail to send
+        text = text[:3990].rsplit("\n", 1)[0] + "\n\N{HORIZONTAL ELLIPSIS}"
+    embed = discord.Embed(title="Secrets of Wonderland", description=text, color=discord.Color.gold())
     embed.set_footer(text=f"SecretHunt v{version}")
     return embed
 
