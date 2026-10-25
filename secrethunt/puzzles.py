@@ -292,6 +292,11 @@ TREACLE_WELL = {
         "can draw, say `ready` and I will test you.\n\n"
         "*Lost the thread? Whisper me* `recap`. *Stuck for a good while? Whisper* `hint`."
     ),
+    "stage3_nudge": (
+        "\N{TEACUP WITHOUT HANDLE} *The tables have nothing more for you. Somebody is awake now, and he does not speak "
+        "at tea tables.* Look in your **direct messages** with the bot: the Dormouse is whispering there. If you have "
+        "lost the thread, whisper him `recap`."
+    ),
     "probe_yes": "\N{TEACUP WITHOUT HANDLE} **{word}**: *he nods slowly.* \"I can draw that.\"",
     "probe_no": "\N{TEACUP WITHOUT HANDLE} **{word}**: *he shakes his head.* \"I cannot draw that.\"",
     "probe_saving": "\N{TEACUP WITHOUT HANDLE} *The Dormouse puts a finger to his lips.* \"That one is saved for the test.\"",

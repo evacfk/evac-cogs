@@ -963,7 +963,7 @@ async def test_a_wrong_toast_empties_the_cup_and_three_rest_the_cups(env):
 async def test_pour_and_toast_in_the_wrong_room_or_too_early_do_nothing_much(env):
     m = await through_stage2(env)
     p = plan_of(env, 11)
-    assert await look(env, m, p["pour_room"], "pour") == WELL["quiet"]  # still stage 3
+    assert await look(env, m, p["pour_room"], "pour") == WELL["stage3_nudge"]  # still stage 3: the Dormouse waits in DMs
     await pass_stage3(env, m)
     other = next(r for r in range(12) if r not in (p["pour_room"], p["toast_room"]))
     assert await look(env, m, other, "pour") == WELL["pour_wrong"]
@@ -977,7 +977,8 @@ async def test_looking_in_any_room_after_stage_two_costs_nothing(env):
     p = plan_of(env, 11)
     wrong = next(r for r in range(12) if r not in p["chain"])
     for _ in range(6):
-        assert await look(env, m, wrong) in WELL["wrong_look"]
+        assert await look(env, m, wrong) == WELL["stage3_nudge"]  # stage 3 is in DMs; no rest, no counter, nothing spent
+    assert (await state(env, m))["wrong_looks"] == 0 and not (await state(env, m))["rest_until"]
     assert str(p["numbers"][0]) in await look(env, m, p["chain"][0])  # the sisters still replay
 
 
@@ -2009,3 +2010,49 @@ async def test_status_reports_a_readable_but_empty_view_table(env):
     real_store(env)
     embed = await env.cog._status_embed(env.g)
     assert "**Button handlers:** 0 posted objects answered by this copy, 0 by an older copy; 0 older views stopped at load" in embed.description
+
+
+# ---------------------------------------------------------------- stage 3 is in DMs: nobody is left waiting at the tea tables (1.14.1)
+
+async def at_stage3(env, uid):
+    m = member(env, uid)
+    await wake(env, m)
+    for room in plan_of(env, uid)["chain"]:
+        await look(env, m, room)
+    return m
+
+
+async def test_recap_rebuilds_the_dormouses_message_even_when_an_older_build_saved_another(env):
+    m = await at_stage3(env, 31)
+    async with env.cog.config.member(m).puzzles() as states:
+        states[PID]["clue"] = "All three sisters have spoken. The tale goes on soon."  # saved by the first build
+    assert await say(env, m, "recap") == WELL["stage3_intro"]
+
+
+async def test_pressing_a_tea_table_at_stage_3_points_to_the_dms_and_sends_the_dormouse_once(env):
+    m = await at_stage3(env, 32)
+    chain = plan_of(env, 32)["chain"]
+    other = next(i for i in range(12) if i not in chain)
+    async with env.cog.config.member(m).puzzles() as states:
+        states[PID].pop("s3_sent", None)
+    m.dms.clear()
+    assert await look(env, m, other, "pour") == WELL["stage3_nudge"]
+    assert m.dms == [WELL["stage3_intro"]]
+    assert await look(env, m, other, "toast") == WELL["stage3_nudge"]
+    assert await look(env, m, other, "bow") == WELL["stage3_nudge"]
+    assert m.dms == [WELL["stage3_intro"]]  # once only
+    st = await state(env, m)
+    assert st["pours"] == 0 and st["step"] == 3  # nothing was spent or advanced
+
+
+async def test_a_sister_room_still_replays_her_at_stage_3_and_a_closed_dm_is_said_and_shown_in_who(env):
+    m = await at_stage3(env, 33)
+    chain = plan_of(env, 33)["chain"]
+    replay = await look(env, m, chain[0])
+    assert WELL["stage3_nudge"] not in replay and "Nothing" not in replay
+    async with env.cog.config.member(m).puzzles() as states:
+        states[PID].pop("s3_sent", None)
+    m.dm_closed = True
+    reply = await look(env, m, next(i for i in range(12) if i not in chain), "pour")
+    assert WELL["stage3_nudge"] in reply and "direct messages" in reply and len(reply) > len(WELL["stage3_nudge"])
+    assert "a DM to them bounced" in await who(env, m)

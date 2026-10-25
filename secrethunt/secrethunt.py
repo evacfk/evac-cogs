@@ -460,9 +460,27 @@ class SecretHunt(commands.Cog):
             puzzle, state = PUZZLES.get(pid), states.get(pid)
             if puzzle and puzzle.get("kind") == "trail" and state and state.get("stage") != engine.STAGE_SOLVED \
                     and self._can_play(member, puzzle):
-                await self._dm(member, state.get("clue") or puzzle["idle"])
+                await self._dm(member, await self._stage_clue(guild, pid, puzzle, state, member) or state.get("clue") or puzzle["idle"])
                 return True
         return False
+
+    async def _stage_clue(self, guild, pid: str, puzzle: dict, state: dict, member):
+        """The Dormouse's current message for stages 3 to 6, rebuilt from the member's plan rather than read from what was
+        saved when the stage opened, so a message saved by an older build can never go stale. None before stage 3 (the
+        sisters' lines carry the route and are kept as saved) or when it cannot be built."""
+        step = state.get("step")
+        if step not in (3, 4, 5, 6):
+            return None
+        try:
+            rooms = await self.config.guild(guild).trail()
+            plan = trail.plan(trail.seed(await self._salt(guild), pid, member.id), len(rooms))
+            return {3: lambda: puzzle["stage3_intro"],
+                    4: lambda: self._stage3_done_text(guild, puzzle, rooms, plan),
+                    5: lambda: self._stage4_done_text(guild, puzzle, rooms, plan),
+                    6: lambda: self._stage5_done_text(puzzle, plan)}[step]()
+        except Exception:
+            log.exception("secrethunt could not rebuild a recap")
+            return None
 
     async def handle_trail(self, interaction, key: str):
         """A button under a tea table was pressed. The reply is private, so a wrong table looks like any other."""
@@ -671,6 +689,13 @@ class SecretHunt(commands.Cog):
                             until=self._when(detail))
                     else:
                         text_out = puzzle["idle"]
+                elif state.get("step") == 3 and not (key == "look" and room in plan["chain"]):
+                    trace["result"] = "stage 3: told the Dormouse waits in DMs"  # a sister's room still replays her below
+                    text_out = puzzle["stage3_nudge"]
+                    if not state.get("s3_sent"):  # said once: whoever never got his message (or lost it) gets it now
+                        state["s3_sent"] = True
+                        state["clue"] = dm_after = puzzle["stage3_intro"]
+                        trace["result"] += ", message sent again"
                 elif key == "bow":
                     trace["result"] = "bow"
                     text_out = puzzle["quiet"]
@@ -2065,7 +2090,7 @@ class SecretHunt(commands.Cog):
                              + f"; sisters found {st.get('found', 0)}/3; wrong tables in a row {st.get('wrong_looks', 0)}; "
                              f"failed word tests {st.get('test_roll', 0)}; pours {st.get('pours', 0)}; "
                              f"courtesies paid {st.get('courtesy', 0)}/4; wrong answers {st.get('answer_wrongs', 0)}; "
-                             f"hints {st.get('hints', 0)}")
+                             f"hints {st.get('hints', 0)}" + ("; a DM to them bounced (closed DMs?)" if st.get("dm_pending") else ""))
                 rows = await self.config.member(member).presses()
                 if rows:
                     lines.append("recent tea table presses: " + "; ".join(
