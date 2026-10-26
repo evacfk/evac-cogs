@@ -25,6 +25,10 @@ class FakeRole:
 class FakeMember:
     def __init__(self, id, roles=(), bot=False):
         self.id, self.roles, self.bot, self.mention = id, list(roles), bot, f"<@{id}>"
+        self.moved = []
+
+    async def move_to(self, channel, reason=None):
+        self.moved.append((channel, reason))
 
     def __hash__(self):
         return hash(("member", self.id))
@@ -36,6 +40,7 @@ class FakeVoice:
         self.overwrites = dict(overwrites or {})
         self.mention = f"<#{id}>"
         self.sets = []
+        self.members = []
 
     def overwrites_for(self, target):
         existing = self.overwrites.get(target)
@@ -97,10 +102,19 @@ class FakeAutoRoomCog:
     async def get_autoroom_info(self, channel):
         return self.infos.get(channel.id)
 
+    async def get_bot_roles(self, guild):
+        return list(self.bot_roles)
+
+    def check_if_member_or_role_allowed(self, channel, member_or_role):
+        """AutoRoom's own rule: can they Connect on the source? Tests decide who can't via `blocked`."""
+        return member_or_role.id not in self.blocked
+
 
 def make_autoroom_class():
     cls = type("AutoRoom", (FakeAutoRoomCog,), {})
     cls.infos = {}
+    cls.blocked = set()
+    cls.bot_roles = []
     cls.config_template = {
         "perm_owner_manage_channels": True,
         "perms": {
@@ -118,6 +132,15 @@ def make_autoroom_class():
 class FakeBot:
     def __init__(self):
         self.cogs, self.staff = {}, set()
+        self.mod_roles, self.admin_roles, self.roles_fail = [], [], False
+
+    async def get_mod_roles(self, guild):
+        if self.roles_fail:
+            raise RuntimeError("no roles for you")
+        return list(self.mod_roles)
+
+    async def get_admin_roles(self, guild):
+        return list(self.admin_roles)
 
     def get_cog(self, name):
         return self.cogs.get(name)
@@ -134,12 +157,14 @@ class FakeConfig:
 
     def __init__(self):
         self.store = {}
+        self.reads = 0
 
     def guild(self, guild):
-        store = self.store
+        store, outer = self.store, self
 
         class _Value:
             async def __call__(self):
+                outer.reads += 1
                 return store.get("roomperms", {"enabled": True})
 
             async def set(self, value):
@@ -366,12 +391,24 @@ async def test_the_mod_log_names_who_did_it_when_the_audit_log_says(world):
     assert f"<@{OWNER}>" in world.modlog.sent[0].split("Changed by")[1]
 
 
-async def test_letting_a_muted_member_in_personally_is_undone(world):
+async def test_letting_a_member_the_source_blocks_in_personally_is_undone(world):
+    world.autoroom_cls.blocked = {GUEST}
     await edit_room(world, lambda ow: ow.__setitem__(
         world.guest, discord.PermissionOverwrite(connect=True, view_channel=True)))
-    personal = world.room.overwrites.get(world.guest)
-    assert personal is None or (personal.connect is None and personal.view_channel is None)
+    personal = world.room.overwrites[world.guest]
+    assert personal.connect is None and personal.view_channel is True    # only the way in was closed
     assert len(world.modlog.sent) == 1 and f"<@{GUEST}>" in world.modlog.sent[0]
+
+
+async def test_a_member_holding_a_denied_role_and_a_member_role_keeps_their_allow(world):
+    # Regression: guest holds Muted (denied on the source) AND a member role (allowed). Discord lets the allow
+    # win, AutoRoom says they may connect, so `.autoroom allow` and `.autoroom private` give them a personal
+    # allow. The guard must leave it alone, not undo AutoRoom's own work and flood the mod log.
+    assert world.muted in world.guest.roles and world.member_role in world.guest.roles
+    await edit_room(world, lambda ow: ow.__setitem__(
+        world.guest, discord.PermissionOverwrite(connect=True, view_channel=True)))
+    assert world.room.overwrites[world.guest].connect is True
+    assert world.room.sets == [] and world.modlog.sent == []
 
 
 async def test_letting_an_ordinary_friend_in_is_none_of_the_guards_business(world):
@@ -402,17 +439,17 @@ async def test_a_non_staff_actor_in_the_audit_log_is_still_guarded(world):
     assert world.muted in world.room.overwrites
 
 
-async def test_an_owner_who_is_themself_muted_keeps_their_own_overwrite(world):
+async def test_an_owner_the_source_blocks_keeps_their_own_overwrite(world):
     owner = world.owner
-    owner.roles.append(world.muted)
+    world.autoroom_cls.blocked = {OWNER}
     await edit_room(world, lambda ow: ow.__setitem__(
         owner, discord.PermissionOverwrite(connect=True, view_channel=True, manage_roles=True, send_messages=True)))
     assert world.room.overwrites[owner].connect is True
 
 
-async def test_a_staff_member_holding_a_protected_role_keeps_a_personal_allow(world):
+async def test_a_blocked_staff_member_keeps_a_personal_allow(world):
     world.bot.staff.add(MOD)
-    world.mod.roles.append(world.muted)
+    world.autoroom_cls.blocked = {MOD}
     await edit_room(world, lambda ow: ow.__setitem__(
         world.mod, discord.PermissionOverwrite(connect=True, view_channel=True)))
     assert world.room.overwrites[world.mod].connect is True and world.modlog.sent == []
@@ -460,12 +497,15 @@ async def test_the_guard_checks_again_so_a_second_edit_during_the_fix_is_caught(
 
 
 async def test_a_forbidden_fix_does_not_loop_and_does_not_crash(world):
+    attempts = []
+
     async def forbidden(target, overwrite=None, reason=None):
+        attempts.append(target)
         raise discord.HTTPException(types.SimpleNamespace(status=403, reason="Missing Permissions"), "no")
 
     world.room.set_permissions = forbidden
     await edit_room(world, lambda ow: ow.pop(world.muted))
-    assert world.modlog.sent == []
+    assert len(attempts) == 1                 # one try, no retry loop
 
 
 async def test_a_pending_check_swallows_further_events_for_the_same_room(world):
@@ -478,3 +518,152 @@ async def test_missing_mod_log_channel_does_not_stop_the_fix(world):
     del world.guild.channels[MODLOG_ID]
     await edit_room(world, lambda ow: ow.pop(world.muted))
     assert world.room.overwrites[world.muted].connect is False
+
+
+async def test_roles_autoroom_adds_on_purpose_are_not_fought(world):
+    # AutoRoom gives admin/mod/bot roles an allow in every room, even if the source happens to deny that role.
+    staff_role = FakeRole(30)
+    world.guild.roles[30] = staff_role
+    world.source.overwrites[staff_role] = discord.PermissionOverwrite(connect=False)
+    world.room.overwrites[staff_role] = discord.PermissionOverwrite(connect=True, view_channel=True)
+    world.bot.admin_roles = [staff_role]
+    await edit_room(world, lambda ow: ow.__setitem__(
+        world.friend, discord.PermissionOverwrite(connect=True)))
+    assert world.room.overwrites[staff_role].connect is True
+    assert world.room.sets == [] and world.modlog.sent == []
+
+
+async def test_bot_roles_and_mod_roles_are_exempt_too(world):
+    bot_role, mod_role = FakeRole(31), FakeRole(32)
+    for role in (bot_role, mod_role):
+        world.guild.roles[role.id] = role
+        world.source.overwrites[role] = discord.PermissionOverwrite(connect=False)
+        world.room.overwrites[role] = discord.PermissionOverwrite(connect=True)
+    world.autoroom_cls.bot_roles = [bot_role]
+    world.bot.mod_roles = [mod_role]
+    await edit_room(world, lambda ow: ow.__setitem__(world.friend, discord.PermissionOverwrite(connect=True)))
+    assert world.room.sets == []
+
+
+async def test_if_the_staff_roles_cannot_be_listed_the_guard_stands_down_rather_than_guess(world):
+    world.bot.roles_fail = True
+    await edit_room(world, lambda ow: ow.pop(world.muted))
+    assert world.muted not in world.room.overwrites and world.modlog.sent == []
+
+
+async def test_the_mod_log_is_rate_limited_per_room_but_every_fix_still_happens(world):
+    await edit_room(world, lambda ow: ow.pop(world.muted))
+    await edit_room(world, lambda ow: ow.pop(world.muted))
+    await edit_room(world, lambda ow: ow.pop(world.muted))
+    assert world.room.overwrites[world.muted].connect is False
+    assert len(world.room.sets) == 3          # fixed every time
+    assert len(world.modlog.sent) == 1        # reported once inside the cooldown
+
+
+async def test_the_mod_log_reports_again_after_the_cooldown(world, rpc, monkeypatch):
+    monkeypatch.setattr(rpc, "GUARD_LOG_COOLDOWN", 0)
+    await edit_room(world, lambda ow: ow.pop(world.muted))
+    await edit_room(world, lambda ow: ow.pop(world.muted))
+    assert len(world.modlog.sent) == 2
+
+
+async def test_the_on_off_switch_is_read_once_not_on_every_voice_event(world):
+    world.host._rp_patch()
+    for _ in range(5):
+        await owner_perms(world)
+    assert world.host.config.reads == 1
+    await world.host._rp_set_enabled(world.guild, False)
+    reads_after_toggle = world.host.config.reads
+    assert "manage_roles" not in (await owner_perms(world))["owner"]
+    assert world.host.config.reads == reads_after_toggle    # the switch answered from memory, and it is off
+
+
+async def test_an_edit_that_lands_while_a_check_is_running_is_still_caught(world):
+    # The owner's first edit needs no fix (it only adds an exempt staff member). While the guard is busy
+    # looking at that, the owner removes a protected deny. That second event is dropped as "already
+    # pending". With no fix made in the first run, nothing but the dirty flag can make the guard look again.
+    world.autoroom_cls.blocked = {MOD}
+    real_is_mod = world.bot.is_mod
+    fired = {"done": False}
+
+    async def is_mod_then_second_edit(member):
+        if not fired["done"]:
+            fired["done"] = True
+            before = FakeVoice(ROOM_ID, world.guild, copy.deepcopy(world.room.overwrites))
+            world.room.overwrites.pop(world.muted)                # the owner's second edit, mid-run
+            await world.host.on_guild_channel_update(before, world.room)
+        return await real_is_mod(member)
+
+    world.bot.staff.add(MOD)
+    world.bot.is_mod = is_mod_then_second_edit
+    await edit_room(world, lambda ow: ow.__setitem__(
+        world.mod, discord.PermissionOverwrite(connect=True, view_channel=True)))
+    assert fired["done"]
+    assert world.room.overwrites[world.muted].connect is False
+    assert world.room.overwrites[world.mod].connect is True        # the staff member was left alone
+    assert world.host._rp_pending == set() and world.host._rp_dirty == set()
+
+
+# ---------------------------------------------------------------- disconnecting people who got in
+
+async def test_someone_the_owner_let_in_against_the_rules_is_disconnected_with_the_fix(world):
+    world.autoroom_cls.blocked = {GUEST}
+    world.room.members = [world.owner, world.guest, world.friend]
+    await edit_room(world, lambda ow: ow.__setitem__(
+        world.guest, discord.PermissionOverwrite(connect=True, view_channel=True)))
+    assert world.guest.moved == [(None, "Room guard: not allowed in this room")]
+    assert world.friend.moved == [] and world.owner.moved == []
+    assert f"disconnected: <@{GUEST}>" in world.modlog.sent[0]
+
+
+async def test_a_member_whose_allow_beats_their_deny_is_never_disconnected(world):
+    # Guest holds Muted and a member role; the source lets them in. A fix elsewhere in the room must not touch them.
+    world.room.members = [world.guest]
+    await edit_room(world, lambda ow: ow.pop(world.muted))
+    assert world.room.overwrites[world.muted].connect is False      # the fix happened
+    assert world.guest.moved == []
+
+
+async def test_restoring_a_role_deny_removes_a_blocked_person_who_walked_into_the_gap(world):
+    loner = FakeMember(104, [world.muted])                          # holds only Muted: the source refuses them
+    world.guild.members[104] = loner
+    world.autoroom_cls.blocked = {104}
+    world.room.members = [world.owner, loner]
+    await edit_room(world, lambda ow: ow.pop(world.muted))
+    assert loner.moved and world.owner.moved == []
+
+
+async def test_staff_bots_the_owner_and_the_server_owner_are_never_disconnected(world):
+    bot_user = FakeMember(105, [world.muted], bot=True)
+    server_owner = FakeMember(999, [world.muted])
+    world.guild.members.update({105: bot_user, 999: server_owner})
+    world.owner.roles.append(world.muted)
+    world.mod.roles.append(world.muted)
+    world.bot.staff.add(MOD)
+    world.autoroom_cls.blocked = {OWNER, MOD, 105, 999}
+    world.room.members = [world.owner, world.mod, bot_user, server_owner]
+    await edit_room(world, lambda ow: ow.pop(world.muted))
+    assert all(m.moved == [] for m in world.room.members)
+
+
+async def test_a_failed_disconnect_does_not_stop_the_report(world):
+    world.autoroom_cls.blocked = {GUEST}
+
+    async def refuse(channel, reason=None):
+        raise discord.HTTPException(types.SimpleNamespace(status=403, reason="Missing Permissions"), "no")
+
+    world.guest.move_to = refuse
+    world.room.members = [world.guest]
+    await edit_room(world, lambda ow: ow.__setitem__(
+        world.guest, discord.PermissionOverwrite(connect=True)))
+    assert len(world.modlog.sent) == 1 and "disconnected" not in world.modlog.sent[0]
+
+
+async def test_if_discord_refuses_every_fix_the_mods_are_told(world):
+    async def forbidden(target, overwrite=None, reason=None):
+        raise discord.HTTPException(types.SimpleNamespace(status=403, reason="Missing Permissions"), "no")
+
+    world.room.set_permissions = forbidden
+    await edit_room(world, lambda ow: ow.pop(world.muted))
+    assert len(world.modlog.sent) == 1
+    assert "could not fix" in world.modlog.sent[0] and f"<#{ROOM_ID}>" in world.modlog.sent[0]

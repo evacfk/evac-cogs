@@ -103,65 +103,73 @@ def test_a_role_allowed_on_the_source_is_never_protected():
 # ---------------------------------------------------------------- the guard
 
 def test_an_untouched_room_needs_no_fixes():
-    assert rp.plan_guard(fresh_room(), source(), EVERYONE, {}) == {}
+    assert rp.plan_guard(fresh_room(), source(), EVERYONE) == {}
 
 
 def test_deleting_a_protected_roles_overwrite_puts_the_deny_back():
     room = fresh_room()
     del room[("role", MUTED)]
-    assert rp.plan_guard(room, source(), EVERYONE, {}) == {("role", MUTED): {"connect": False, "view_channel": False}}
+    assert rp.plan_guard(room, source(), EVERYONE) == {("role", MUTED): {"connect": False, "view_channel": False}}
 
 
 @pytest.mark.parametrize("weakened", [None, True])
 def test_neutralising_or_allowing_a_protected_role_is_put_back(weakened):
     room = fresh_room()
     room[("role", QUARANTINE)] = {"connect": weakened, "view_channel": None}
-    assert rp.plan_guard(room, source(), EVERYONE, {}) == {("role", QUARANTINE): {"connect": False}}
+    assert rp.plan_guard(room, source(), EVERYONE) == {("role", QUARANTINE): {"connect": False}}
 
 
 def test_only_the_weakened_flag_is_restored():
     room = fresh_room()
     room[("role", MUTED)] = {"connect": False, "view_channel": None}
-    assert rp.plan_guard(room, source(), EVERYONE, {}) == {("role", MUTED): {"view_channel": False}}
+    assert rp.plan_guard(room, source(), EVERYONE) == {("role", MUTED): {"view_channel": False}}
 
 
-def test_a_personal_allow_for_someone_holding_a_protected_role_is_reset_to_neutral():
+def test_a_personal_allow_for_someone_the_source_blocks_is_reset_to_neutral():
     room = fresh_room()
     room[("member", GUEST)] = {"connect": True, "view_channel": True}
-    fixes = rp.plan_guard(room, source(), EVERYONE, {GUEST: [MEMBER_ROLE, MUTED]})
-    assert fixes == {("member", GUEST): {"connect": None, "view_channel": None}}
+    fixes = rp.plan_guard(room, source(), EVERYONE, blocked_members=[GUEST])
+    assert fixes == {("member", GUEST): {"connect": None}}     # View stays; only the way in is closed
 
 
-def test_a_personal_allow_for_an_ordinary_member_is_left_alone():
+def test_a_personal_allow_for_someone_the_source_allows_is_left_alone():
+    # The regression this guards against: a member can hold a role the source denies AND a member role that
+    # allows, and Discord lets the allow win. AutoRoom lets the owner allow them, so the guard must not undo it.
     room = fresh_room()
     room[("member", GUEST)] = {"connect": True, "view_channel": True}
-    assert rp.plan_guard(room, source(), EVERYONE, {GUEST: [MEMBER_ROLE]}) == {}
+    assert rp.plan_guard(room, source(), EVERYONE, blocked_members=[]) == {}
 
 
-def test_a_personal_allow_is_only_reset_for_flags_that_role_is_denied_at_the_source():
+def test_only_connect_allows_are_reset_a_view_only_allow_is_not_a_way_in():
     room = fresh_room()
-    room[("member", GUEST)] = {"connect": True, "view_channel": True}
-    # Quarantine is denied Connect on the source but not View, so View stays.
-    assert rp.plan_guard(room, source(), EVERYONE, {GUEST: [QUARANTINE]}) == {("member", GUEST): {"connect": None}}
+    room[("member", GUEST)] = {"connect": None, "view_channel": True}
+    assert rp.plan_guard(room, source(), EVERYONE, blocked_members=[GUEST]) == {}
 
 
-def test_exempt_members_are_never_touched_even_with_a_protected_role():
+def test_exempt_members_are_never_touched_even_when_blocked():
     room = fresh_room()
     room[("member", STAFFER)] = {"connect": True, "view_channel": True}
-    assert rp.plan_guard(room, source(), EVERYONE, {STAFFER: [MUTED]}, exempt_members=[STAFFER]) == {}
+    assert rp.plan_guard(room, source(), EVERYONE, blocked_members=[STAFFER], exempt_members=[STAFFER]) == {}
+
+
+def test_exempt_roles_are_not_restored_because_autoroom_grants_them_on_purpose():
+    room = fresh_room()
+    room[("role", MUTED)] = {"connect": True, "view_channel": True}   # e.g. a staff role AutoRoom added an allow for
+    assert rp.plan_guard(room, source(), EVERYONE, exempt_roles=[MUTED]) == {}
+    assert rp.plan_guard(room, source(), EVERYONE) == {("role", MUTED): {"connect": False, "view_channel": False}}
 
 
 def test_a_personal_deny_for_a_protected_member_is_not_a_violation():
     room = fresh_room()
     room[("member", GUEST)] = {"connect": False, "view_channel": None}
-    assert rp.plan_guard(room, source(), EVERYONE, {GUEST: [MUTED]}) == {}
+    assert rp.plan_guard(room, source(), EVERYONE, blocked_members=[GUEST]) == {}
 
 
 def test_changing_everyone_or_the_member_roles_is_the_owners_right_and_not_guarded():
     room = fresh_room()
     room[("role", EVERYONE)] = {"connect": True, "view_channel": True}      # `.autoroom public`
     room[("role", MEMBER_ROLE)] = {"connect": False, "view_channel": False}  # `.autoroom private`
-    assert rp.plan_guard(room, source(), EVERYONE, {}) == {}
+    assert rp.plan_guard(room, source(), EVERYONE) == {}
 
 
 def test_the_plan_is_idempotent_once_applied():
@@ -169,19 +177,18 @@ def test_the_plan_is_idempotent_once_applied():
     del room[("role", MUTED)]
     room[("role", QUARANTINE)] = {"connect": True, "view_channel": True}
     room[("member", GUEST)] = {"connect": True, "view_channel": True}
-    roles = {GUEST: [MUTED]}
-    fixes = rp.plan_guard(room, source(), EVERYONE, roles)
+    fixes = rp.plan_guard(room, source(), EVERYONE, blocked_members=[GUEST])
     assert fixes
     for target, changes in fixes.items():
         room.setdefault(target, {}).update(changes)
-    assert rp.plan_guard(room, source(), EVERYONE, roles) == {}
+    assert rp.plan_guard(room, source(), EVERYONE, blocked_members=[GUEST]) == {}
 
 
 def test_plan_does_not_modify_its_inputs():
     room, src = fresh_room(), source()
     del room[("role", MUTED)]
     snapshot = (copy.deepcopy(room), copy.deepcopy(src))
-    rp.plan_guard(room, src, EVERYONE, {})
+    rp.plan_guard(room, src, EVERYONE)
     assert (room, src) == snapshot
 
 

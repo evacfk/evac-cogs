@@ -7,8 +7,8 @@ Two jobs, both about rooms made by PhasecoreX's AutoRoom cog:
    use the native Edit Channel > Permissions tab on their own room.
 2. `plan_guard` is the safety net that goes with it. AutoRoom's own `.autoroom allow` refuses anyone who
    couldn't Connect on the Room Creator source; the native Permissions tab has no such rule. The guard
-   compares a room to its source and says what must be put back: roles the source denies must stay
-   denied, and a member holding such a role must not hold a personal allow.
+   compares a room to its source and says what must be put back: roles the source explicitly denies must
+   stay denied, and nobody the source won't let Connect may hold a personal allow.
 
 An overwrite is a dict of flag -> True / False / None. A target is ("role", id) or ("member", id).
 """
@@ -65,37 +65,40 @@ def plan_guard(
     room: Mapping[Target, Overwrite],
     source: Mapping[Target, Overwrite],
     everyone_id: int,
-    member_roles: Mapping[int, Iterable[int]],
+    blocked_members: Iterable[int] = (),
+    exempt_roles: Iterable[int] = (),
     exempt_members: Iterable[int] = (),
 ) -> Dict[Target, Dict[str, Optional[bool]]]:
     """What to change in `room` so the source's denies still hold. Empty dict = nothing to do.
 
-    - A protected role must be denied every guarded flag the source denies it, in the room too.
-      (Missing, neutral and allow all count as weakened and are set back to False.)
-    - A member who holds a protected role must not have a personal allow for a flag that role is denied
-      at the source; such an allow is reset to neutral (None), not to a deny, so the owner can still
-      remove or re-add the person by command.
-    - `exempt_members` (bots, staff, the room's owner, the server owner) are never touched.
+    - A protected role (explicitly denied Connect on the source) must stay denied every guarded flag the
+      source denies it. Missing, neutral and allow all count as weakened and are set back to False.
+      This is what keeps those roles out of a room the owner has made public.
+    - `blocked_members` are people the source will not let Connect, as AutoRoom itself would decide
+      (the caller asks AutoRoom, so roles that allow and deny at once resolve exactly as Discord does).
+      A personal Connect allow for one of them is reset to neutral (None), not to a deny, so the owner
+      can still use the commands on that person.
+    - `exempt_roles` (staff and bot roles AutoRoom adds on purpose) and `exempt_members` (bots, staff, the
+      room's owner, the server owner) are never touched.
     """
     protected = protected_roles(source, everyone_id)
-    exempt: Set[int] = set(exempt_members)
+    skip_roles: Set[int] = set(exempt_roles)
+    skip_members: Set[int] = set(exempt_members)
+    blocked: Set[int] = set(blocked_members)
     fixes: Dict[Target, Dict[str, Optional[bool]]] = {}
 
     for role_id, flags in protected.items():
+        if role_id in skip_roles:
+            continue
         current = room.get(("role", role_id), {})
         for flag in flags:
             if current.get(flag) is not False:
                 fixes.setdefault(("role", role_id), {})[flag] = False
 
     for (kind, member_id), overwrite in room.items():
-        if kind != "member" or member_id in exempt:
-            continue
-        held = [role_id for role_id in member_roles.get(member_id, ()) if role_id in protected]
-        if not held:
-            continue
-        for flag in GUARDED_FLAGS:
-            if overwrite.get(flag) is True and any(flag in protected[role_id] for role_id in held):
-                fixes.setdefault(("member", member_id), {})[flag] = None
+        if kind == "member" and member_id in blocked and member_id not in skip_members:
+            if overwrite.get("connect") is True:
+                fixes[("member", member_id)] = {"connect": None}
 
     return fixes
 
