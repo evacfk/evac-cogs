@@ -141,6 +141,7 @@ PAGES = (
               expand=("event settings", "verdict settings", "bumpreward settings", "wonderpet settings", "card settings",
                       "pp set")),
         Entry(".wld publish #channel", "post or refresh the guide in a channel"),
+        Entry(".wld roomperms [on|off]", "voice room owners' Manage Permissions: status, or switch it"),
         Entry(".wld version", "version probe for this cog"),
     ), mod_only=True),
 )

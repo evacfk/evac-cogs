@@ -67,8 +67,12 @@ class FakeConfig:
 
 @pytest.fixture
 def mod(monkeypatch):
+    class _Cog:
+        # Red's Cog has a `listener()` decorator; the room-guard mixin uses it.
+        listener = staticmethod(lambda *a, **kw: (lambda f: f))
+
     commands_ns = types.SimpleNamespace(
-        Cog=object, hybrid_group=_deco, group=_deco, command=_deco, Context=object, guild_only=_passthrough,
+        Cog=_Cog, hybrid_group=_deco, group=_deco, command=_deco, Context=object, guild_only=_passthrough,
         cooldown=_passthrough, BucketType=types.SimpleNamespace(user=1), mod_or_permissions=_passthrough)
     core = types.ModuleType("redbot.core")
     core.commands, core.Config = commands_ns, FakeConfig

@@ -17,6 +17,7 @@ from .constants import (
     COG_VERSION, CONFIG_ID, FOOTER, PUBLISH_FOOTER, STATS_COOLDOWN, STUB_TTL, VIEW_TIMEOUT,
 )
 from .content import HOME_KEY, MAP_KEY, PAGES
+from .roomperms_cog import RoomPermsMixin
 
 log = logging.getLogger("red.evac-cogs.wonderland")
 
@@ -112,13 +113,14 @@ class OpenView(discord.ui.View):
                 pass
 
 
-class Wonderland(commands.Cog):
+class Wonderland(RoomPermsMixin, commands.Cog):
     """A compact guidebook to everything Wonderland's bots can do."""
 
     def __init__(self, bot):
         self.bot = bot
         self.config = Config.get_conf(self, identifier=CONFIG_ID, force_registration=True)
-        self.config.register_guild(publish={"channel_id": None, "messages": {}})
+        self.config.register_guild(publish={"channel_id": None, "messages": {}}, roomperms={"enabled": True})
+        self._rp_setup()
 
     async def red_delete_data_for_user(self, **kwargs):
         return  # nothing stored per user
@@ -266,6 +268,17 @@ class Wonderland(commands.Cog):
     async def wonderland_version(self, ctx: commands.Context):
         """Show the running build (deploy probe)."""
         await ctx.send(f"Wonderland guide v{COG_VERSION}")
+
+    @wonderland.command(name="roomperms")
+    @commands.mod_or_permissions(manage_guild=True)
+    async def wonderland_roomperms(self, ctx: commands.Context, state: Optional[Literal["on", "off"]] = None):
+        """Room owners' Manage Permissions on new voice rooms: show status, or turn it on or off."""
+        if state is not None:
+            await self._rp_set_enabled(ctx.guild, state == "on")
+        text = await self._rp_status(ctx.guild)
+        if state is not None:
+            text += "\nThis only affects rooms created (or claimed) from now on; rooms that already exist keep what they have."
+        await ctx.send(text, allowed_mentions=discord.AllowedMentions.none())
 
     @wonderland.command(name="publish")
     @commands.mod_or_permissions(manage_guild=True)
