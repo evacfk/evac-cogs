@@ -40,7 +40,7 @@ reports, previews, testing, member commands) stay typed.
 | `duel` | 1.1.0 | Best-of-3 wagered duels between members. | `.duelset` | `.duelset version` |
 | `minigamehub` | 1.1.0 | Config-driven minigame spawner: pet, mathdrop, hunt, lootdrop, reacttowin, boss. `.mgh` is an alias. | `.minigamehub` | `.mgh version` |
 | `puzzle` | 1.7.0 | Image-reveal puzzle game with an auto-rotating image pool. | `.puzzle` | `.puzzle version` |
-| `cardcollect` | 2.0.1 | Ambient anime-character card collecting: pick the card you want from a drop, the draw picks winners. Wishlist, series sets, card requests. Needs `Pillow`. | `.card settings` | `.card settings` (version in the panel title) |
+| `cardcollect` | 2.0.2 | Ambient anime-character card collecting: pick the card you want from a drop, the draw picks winners. Wishlist, series sets, card requests. Needs `Pillow`. | `.card settings` | `.card settings` (version in the panel title) |
 | `wonderpet` | 1.3.0 | One server pet raised together: daily care, coin treats, weekly top carers, evolution. Needs `Pillow`. | `.wonderpet settings` | `.wonderpet version` |
 
 ### Utility

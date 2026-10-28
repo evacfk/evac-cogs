@@ -758,7 +758,7 @@ def test_the_retired_commands_are_gone_and_the_new_aliases_exist(cog):
 def test_the_cog_is_version_2(cog):
     from cardcollect.constants import COG_VERSION
 
-    assert COG_VERSION == "2.0.1"
+    assert COG_VERSION == "2.0.2"
 
 
 @pytest.mark.asyncio
@@ -808,3 +808,36 @@ async def test_find_replace_art_swaps_only_the_picture(cog):
     assert "New art saved" in inter.followups[-1][0] and view._listening is False
     pool = await cog.config.guild(guild).pool()
     assert pool[str(ids["Nami"])]["name"] == "Nami"
+
+
+def _labels(view):
+    return [getattr(c, "label", None) for c in view.children]
+
+
+@pytest.mark.asyncio
+async def test_request_is_offered_on_the_list_and_on_a_card_page_when_requests_are_open(cog):
+    guild, admin, asker, review, other = await request_setup(cog, 390)
+    await _seed(cog, guild, admin, other)
+    listing = await find(cog, asker, guild, other, "cyberpunk")  # several matches
+    assert "Not here? Request it" in _labels(listing.view)
+    single = await find(cog, asker, guild, other, "nami")  # a card page: maybe the wrong Nami
+    assert "Wrong one? Request another" in _labels(single.view)
+    inter = AdminInteraction(asker, guild, message=single)
+    button = next(c for c in single.view.children if getattr(c, "label", "") == "Wrong one? Request another")
+    await button.callback(inter)
+    assert isinstance(inter.modal, views.RequestModal) and inter.modal.text.default == "nami"
+
+
+@pytest.mark.asyncio
+async def test_no_request_buttons_when_requests_are_closed_or_searching_only_your_cards(cog):
+    guild, admin, asker, review, other = await request_setup(cog, 391)
+    await _seed(cog, guild, admin, other)
+    msg = await find(cog, asker, guild, other, "cyberpunk")
+    await msg.view._on_scope(AdminInteraction(asker, guild, message=msg))  # "mine" scope
+    assert not any("equest" in (l or "") for l in _labels(msg.view))
+    await cog._apply_request_channel(guild, admin, None)
+    closed = await find(cog, asker, guild, other, "nami")
+    assert not any("equest" in (l or "") for l in _labels(closed.view))
+    nothing = await find(cog, asker, guild, other, "zzzz")
+    assert not any("equest" in (l or "") for l in _labels(nothing.view))
+    assert "isn't in the pool" in nothing.embeds[0].description

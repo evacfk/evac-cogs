@@ -590,6 +590,7 @@ class FindView(_InvokerView):
         self.admin = False
         self.from_list = False
         self._listening = False
+        self.requests_open = False
 
     # -- opening ---------------------------------------------------------------
 
@@ -616,6 +617,7 @@ class FindView(_InvokerView):
         """The embed (and art file) for the current state; items rebuilt to match."""
         guild = self.member.guild
         self.clear_items()
+        self.requests_open = bool(await self.cog.config.guild(guild).request_channel_id())
         if self.card is not None:
             embed, file, quantity, _owners, state = await self.cog.card_detail(guild, self.member, self.card)
             self._build_detail(quantity, state)
@@ -633,7 +635,11 @@ class FindView(_InvokerView):
         if not self.cards:
             embed.title = f"Nothing in {scope} matches “{shown}”"
             if self.scope == "pool":
-                embed.description = "Not in the pool yet? Press **Request this** and an admin will take a look."
+                embed.description = (
+                    "Not in the pool yet? Press **Request this** and an admin will take a look."
+                    if self.requests_open
+                    else "It isn't in the pool yet."
+                )
             else:
                 embed.description = "None of your cards match. Switch to the whole pool with the button."
             return embed
@@ -669,8 +675,9 @@ class FindView(_InvokerView):
         )
         self.scope_button.callback = self._on_scope
         self.add_item(self.scope_button)
-        if not self.cards and self.scope == "pool":
-            self.request_button = discord.ui.Button(label="Request this", style=discord.ButtonStyle.success, row=1)
+        if self.scope == "pool" and self.requests_open:
+            label = "Request this" if not self.cards else "Not here? Request it"
+            self.request_button = discord.ui.Button(label=label, style=discord.ButtonStyle.success, row=1)
             self.request_button.callback = self._on_request
             self.add_item(self.request_button)
 
@@ -696,6 +703,10 @@ class FindView(_InvokerView):
             )
             self.personal.callback = self._on_wish
             self.add_item(self.personal)
+        if self.requests_open:
+            self.request_button = discord.ui.Button(label="Wrong one? Request another", style=discord.ButtonStyle.secondary, row=1)
+            self.request_button.callback = self._on_request
+            self.add_item(self.request_button)
         if self.admin:
             self.rarity = discord.ui.Select(
                 placeholder="Change rarity…",
