@@ -439,6 +439,8 @@ class SeriesPreviewView(_InvokerView):
                 message = await self.cog.wait_for_upload(interaction.channel.id, interaction.user.id, ART_UPLOAD_WAIT_SECONDS)
                 if message is None or (message.content or "").strip().lower() in ("done", "stop", "cancel"):
                     break
+                if self.is_finished() or self._busy:
+                    break  # the import started or was cancelled while we waited; leave the result message alone
                 entry, problem = import_characters.resolve_entry(message.content, self.preview.built["entries"])
                 if entry is None:
                     await interaction.followup.send(f"{problem} Send the image again with its number.", ephemeral=True)

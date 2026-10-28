@@ -3273,3 +3273,28 @@ async def test_replace_card_art_rejects_a_missing_card_and_a_non_image(cog):
         await cog.replace_card_art(guild, 999, fake_art_bytes())
     with pytest.raises(ValueError):
         await cog.replace_card_art(guild, card_id, b"nope")
+
+
+@pytest.mark.asyncio
+async def test_an_upload_arriving_after_the_import_started_does_not_touch_the_result(cog):
+    guild = FakeGuild(108)
+    admin = _admin(1080, guild)
+    chan = FakeChannel(10800, guild)
+    ctx, msg = await _open_series_preview(cog, guild, admin, chan, _seventeen_characters())
+    view = msg.view
+    edits = []
+    original_edit = msg.edit
+
+    async def spy(**kwargs):
+        edits.append(kwargs)
+        return await original_edit(**kwargs)
+
+    msg.edit = spy
+
+    async def wait_for(event, check=None, timeout=None):
+        view._busy = True  # the admin pressed Import while we were waiting...
+        return FakeUpload(admin, chan, "3", fake_art_bytes((5, 5, 5)))  # ...and an upload landed anyway
+
+    cog.bot.wait_for = wait_for
+    await view.replace_art.callback(_inter(admin, guild, chan, msg))
+    assert view.preview.art == {} and edits == [] and view._listening is False
