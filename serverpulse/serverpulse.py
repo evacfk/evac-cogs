@@ -55,6 +55,8 @@ from .constants import (
     USER_RETENTION_DAYS,
     WEEKDAY_NAMES,
 )
+from . import dashboard_view
+from .dashboard_integration import DashboardIntegration, dashboard_page
 from .settings_panel import PanelError, open_panel
 from . import panel as panel_specs
 from .tracker import GuildTracker, should_count
@@ -92,7 +94,7 @@ class _Prep:
         return self.coverage_start is not None and self.now_ts >= self.coverage_start + 3600
 
 
-class ServerPulse(commands.Cog):
+class ServerPulse(DashboardIntegration, commands.Cog):
     """Server activity analytics: busy hours, quiet hours, daily/weekly/monthly reports."""
 
     def __init__(self, bot: Red):
@@ -631,6 +633,78 @@ class ServerPulse(commands.Cog):
             hours=engine.hour_table([s for s in hist if s.date >= (prep.today - timedelta(days=DEFAULT_WINDOW_DAYS - 1)).isoformat()]),
             history_days=BOARD_HISTORY_DAYS,
         )
+
+    # ------------------------------------------------------------------
+    # Dashboard page (read-only, counts only)
+    # ------------------------------------------------------------------
+    # Registration is handled by DashboardIntegration (dashboard_integration.py).
+    # The page only reads: no Config writes, no tracker writes. It shows the same
+    # numbers as `.pulse` (never message text, never member names) to the same
+    # audience as the commands (mods, admins, bot owner).
+
+    async def _on_bot_loop(self, coro):
+        """Run `coro` on the bot's own event loop and await its result.
+
+        The dashboard calls page handlers from its web thread's event loop, not
+        Red's. The tracker, the per-guild locks and Red Config belong to the bot's
+        loop, so everything the page reads goes through here. If we are already on
+        the bot's loop this just awaits inline.
+        """
+        loop = getattr(self.bot, "loop", None)
+        try:
+            running = asyncio.get_running_loop()
+        except RuntimeError:
+            running = None
+        if loop is None or loop is running:
+            return await coro
+        return await asyncio.wrap_future(asyncio.run_coroutine_threadsafe(coro, loop))
+
+    async def _dashboard_can_view(self, user, guild: discord.Guild) -> bool:
+        """Same audience as the `.pulse` commands (minus the mod-channel rule, which has no web equivalent)."""
+        if await self.bot.is_owner(user):
+            return True
+        member = guild.get_member(user.id)
+        if member is None:
+            return False
+        return await self._is_mod(member)
+
+    async def _dashboard_render(self, user, guild: discord.Guild, window_days: int) -> dict:
+        base = {"guild_name": guild.name, "denied": False, "disabled": False, "page": {}, "now": []}
+        if not await self._dashboard_can_view(user, guild):
+            return {**base, "denied": True}
+        if not self._guild_allowed(guild.id):
+            return {**base, "disabled": True}
+        # Not `_prepare`: that flushes pending counts to disk, and a page view must not write.
+        # (Disk lags the live tracker by at most FLUSH_INTERVAL_SECONDS; the 'right now' strip reads the tracker.)
+        st = await self._ensure_guild(guild)
+        now = time.time()
+        prep = _Prep(guild, now, models.local_dt(now).date(), st["coverage_start"], st)
+        start = prep.today - timedelta(days=max(window_days, dashboard_view.LOAD_DAYS) - 1)
+        days = await self._days(guild.id, start, prep.today)
+
+        def channel_name(cid: str):
+            try:
+                channel = guild.get_channel_or_thread(int(cid))
+            except (TypeError, ValueError):
+                return None
+            return getattr(channel, "name", None)
+
+        page = dashboard_view.build_page_data(
+            days=days, today=prep.today, now_ts=prep.now_ts, coverage_start=prep.coverage_start,
+            ignored=prep.st["ignored"], window_days=window_days, channel_name=channel_name,
+        )
+        now = dashboard_view.build_now(self._live_view(prep, days)) if prep.has_data else []
+        return {**base, "page": page, "now": now}
+
+    @dashboard_page(
+        name="overview",
+        description="Server activity: heatmap, busiest hours, daily totals, channels (read-only).",
+        methods=("GET",),
+    )
+    async def dashboard_pulse(self, user: discord.User, guild: discord.Guild, days=None, **kwargs):
+        window = dashboard_view.window_from_kwargs(days, **kwargs)
+        content = await self._on_bot_loop(self._dashboard_render(user, guild, window))
+        return {"status": 0, "web_content": {"source": dashboard_view.PAGE_TEMPLATE, **content}}
 
     # ------------------------------------------------------------------
     # Command group

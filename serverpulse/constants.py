@@ -3,8 +3,8 @@ from __future__ import annotations
 
 from zoneinfo import ZoneInfo
 
-COG_VERSION = "1.5.0"
-COG_BUILD = "2026-10-13"
+COG_VERSION = "1.6.0"
+COG_BUILD = "2026-10-27"
 
 TIMEZONE_NAME = "America/Los_Angeles"
 TIMEZONE = ZoneInfo(TIMEZONE_NAME)
