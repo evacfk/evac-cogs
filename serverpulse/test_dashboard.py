@@ -122,15 +122,41 @@ def test_quiet_and_busy_days_surface_as_anomalies():
     assert any("Busy day" in a and "Oct 8" in a for a in page["anomalies"])
 
 
-def test_user_data_never_reaches_the_page_data():
+def test_member_ids_never_reach_the_page_data_but_names_and_counts_do():
     docs, t0, _ = traffic(date(2026, 9, 1), 20, seed=5)
     secret = "918273645564738291"
     for doc in docs.values():
-        doc["u"] = {secret: 99}
+        doc["u"] = {secret: 99, "42": 5}
+    names = {42: "Alice <b>"}
     page = dv.build_page_data(days=docs, today=date(2026, 9, 20), now_ts=local_ts(2026, 9, 20, 12), coverage_start=t0,
-                              ignored=set(), window_days=14, channel_name=lambda c: None)
-    assert secret not in repr(page)
-    assert "top_chatters" not in page and "users" not in page
+                              ignored=set(), window_days=14, channel_name=lambda c: None, member_name=names.get)
+    assert secret not in repr(page) and "42" not in {c["name"] for c in page["chatters"]}
+    assert [c["name"] for c in page["chatters"]] == ["Former member", "Alice <b>"]   # unknown member: no id shown
+    assert page["chatters"][0]["rank"] == 1 and page["chatters"][0]["value"] == fmt_int_for(99 * 14)
+
+
+def fmt_int_for(n):
+    return dv.fmt_int(n)
+
+
+def test_top_chatter_names_are_escaped_in_the_template():
+    docs, t0, _ = traffic(date(2026, 9, 1), 20, seed=5)
+    for doc in docs.values():
+        doc["u"] = {"42": 5}
+    page = dv.build_page_data(days=docs, today=date(2026, 9, 20), now_ts=local_ts(2026, 9, 20, 12), coverage_start=t0,
+                              ignored=set(), window_days=14, channel_name=lambda c: None,
+                              member_name={42: "<script>alert(1)</script>"}.get)
+    for auto in (True, False):
+        out = _render(auto, guild_name="W", denied=False, pulse_disabled=False, pulse=page, pulse_now=[])
+        assert "<script>alert(1)</script>" not in out and "&lt;script&gt;" in out
+
+
+def test_heatmap_uses_at_least_28_days_even_for_a_7_day_window():
+    page7, _ = _data(window=7)
+    page28, _ = _data(window=28)
+    assert page7["heat_days"] == 28 and page7["heat_rows"] == page28["heat_rows"] and page7["hour_bars"] == page28["hour_bars"]
+    assert page7["cards"] != page28["cards"]          # the cards still follow the chosen window
+    assert all(c["text"] for row in page7["heat_rows"] for c in row["cells"])   # no weekday left empty
 
 
 # ------------------------------------------------------------------ the template

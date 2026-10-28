@@ -1,7 +1,8 @@
 """Template + pure helpers for the Pulse dashboard page. No discord/redbot imports.
 
-Read-only by design and COUNTS ONLY: no message content and no member names or ids
-ever reach the page data (the per-user top-chatters board stays in Discord). Every
+Read-only by design: no message content ever reaches the page data. Member-level data is
+limited to the top-chatters table (display name + message count, same as `.pulse top`, same
+mods-only audience); member ids never reach the page. Every
 value reaches the template as a plain variable and goes through `|e`; the only
 values placed inside a `style=` attribute are numbers and `rgb(r,g,b)` strings that
 this module builds itself.
@@ -17,6 +18,8 @@ from .constants import ANOMALY_BASELINE_WEEKS, DEFAULT_WINDOW_DAYS, WEEKDAY_SHOR
 WINDOW_CHOICES = (7, 14, 28, 56)
 DEFAULT_WINDOW = DEFAULT_WINDOW_DAYS if DEFAULT_WINDOW_DAYS in WINDOW_CHOICES else 28
 ANOMALY_DAYS = 14
+HEAT_MIN_DAYS = 28   # the heatmap / hour bars never use fewer days, or a short window leaves weekdays empty
+CHATTER_ROWS = 15
 # the page always needs this many days on disk: the anomaly baseline reaches back
 # ANOMALY_BASELINE_WEEKS before the first anomaly day
 LOAD_DAYS = ANOMALY_DAYS + 7 * ANOMALY_BASELINE_WEEKS
@@ -156,11 +159,12 @@ def build_page_data(
     ignored,
     window_days: int,
     channel_name,
+    member_name=None,
 ) -> dict:
     """Everything the template needs, as plain strings/numbers. `days` must cover LOAD_DAYS ending today.
 
     `ignored` is the set of ignored channel ids (ints); `channel_name(channel_id_str)` returns a
-    display name or None.
+    display name or None; `member_name(user_id_int)` returns a display name or None (left the server).
     """
     start = today - timedelta(days=window_days - 1)
     done = engine.build_slots(days, start, today, now_ts, coverage_start)                     # finished hours
@@ -206,8 +210,13 @@ def build_page_data(
         cards.append(("Quietest full day", short_date(low["date"]), f"{fmt_int(low['msgs'])} messages"))
     data["cards"] = [{"label": a, "value": b, "sub": c} for a, b, c in cards]
 
-    # --- weekday x hour heatmap (average messages per hour)
-    avgs, counts = engine.weekday_hour_matrix(done, "msgs")
+    # --- weekday x hour heatmap (average messages per hour). Always at least HEAT_MIN_DAYS long:
+    # on a 7-day window most weekdays would have one sample, or none (today's open hours do not count).
+    heat_days = max(window_days, HEAT_MIN_DAYS)
+    heat_start = today - timedelta(days=heat_days - 1)
+    heat_done = engine.build_slots(days, heat_start, today, now_ts, coverage_start)
+    data["heat_days"] = heat_days
+    avgs, counts = engine.weekday_hour_matrix(heat_done, "msgs")
     top_v = max((v for row in avgs for v in row if v is not None), default=0.0)
     heat_rows = []
     for w in range(7):
@@ -229,7 +238,7 @@ def build_page_data(
     data["heat_rows"] = heat_rows
 
     # --- hour-of-day bars
-    table = engine.hour_table(done)
+    table = engine.hour_table(heat_done)
     top_h = max((r.avg_msgs for r in table), default=0.0)
     data["hour_bars"] = [
         {"label": hour_label(r.hour), "value": fmt_value(r.avg_msgs), "pct": _pct(r.avg_msgs, top_h), "top": 0 < r.rank <= 3,
@@ -250,6 +259,14 @@ def build_page_data(
     data["channels"] = [
         {"name": channel_name(cid) or "deleted or unknown channel", "value": fmt_int(m), "share": f"{share * 100:.0f}%", "pct": _pct(m, top_c)}
         for cid, m, share in ranking
+    ]
+
+    # --- top chatters (display name + count; ids stay out of the page data)
+    chatters = engine.top_chatters(days, start, today, CHATTER_ROWS)
+    top_u = chatters[0][1] if chatters else 0
+    data["chatters"] = [
+        {"rank": i, "name": (member_name(uid) if member_name else None) or "Former member", "value": fmt_int(n), "pct": _pct(n, top_u)}
+        for i, (uid, n) in enumerate(chatters, start=1)
     ]
 
     # --- anomalies (last ANOMALY_DAYS days against the prior weeks)
@@ -274,6 +291,7 @@ PAGE_TEMPLATE = """\
 .pulse-page table.pulse-heat td{text-align:center;padding:.3rem 0;border-radius:3px;min-width:24px}
 .pulse-page .pulse-bar{display:flex;align-items:center;gap:.5rem;font-size:.8rem;margin:2px 0}
 .pulse-page .pulse-bar .l{width:5.5rem;flex:none;text-align:right;white-space:nowrap}
+.pulse-page .pulse-bar .l.wide{width:12rem}
 .pulse-page .pulse-bar .t{flex:1;background:rgba(128,128,128,.15);border-radius:3px;height:.9rem}
 .pulse-page .pulse-bar .f{height:100%;border-radius:3px;background:#5e72e4}
 .pulse-page .pulse-bar .f.top{background:#2dce89}
@@ -316,7 +334,7 @@ PAGE_TEMPLATE = """\
   {% endif %}
 
   <h5>When it is busy</h5>
-  <p class="text-muted">Average messages per hour by weekday and hour (America/Los_Angeles). Brighter is busier; hover a cell for details.</p>
+  <p class="text-muted">Average messages per hour by weekday and hour (America/Los_Angeles), over the last {{ pulse.heat_days|e }} days. Brighter is busier; hover a cell for details.</p>
   <div class="table-responsive">
     <table class="pulse-heat">
       <thead><tr><th></th>{% for h in pulse.heat_hours %}<th>{{ h|e }}</th>{% endfor %}</tr></thead>
@@ -329,7 +347,7 @@ PAGE_TEMPLATE = """\
   </div>
 
   <h5>Average by hour of day</h5>
-  <p class="text-muted">Green marks the three busiest hours.</p>
+  <p class="text-muted">Last {{ pulse.heat_days|e }} days. Green marks the three busiest hours.</p>
   {% for b in pulse.hour_bars %}
   <div class="pulse-bar" title="{{ b.title|e }}"><span class="l">{{ b.label|e }}</span><span class="t"><span class="f{% if b.top %} top{% endif %}" style="display:block;width:{{ b.pct|e }}%"></span></span><span class="n">{{ b.value|e }}</span></div>
   {% endfor %}
@@ -349,6 +367,16 @@ PAGE_TEMPLATE = """\
   {% endfor %}
   {% else %}
   <p class="text-muted">No channel data in this window.</p>
+  {% endif %}
+
+  <h5>Top chatters</h5>
+  {% if pulse.chatters %}
+  <p class="text-muted">Most messages in the last {{ pulse.window_days|e }} days (counts only, same as <code>.pulse top</code>).</p>
+  {% for b in pulse.chatters %}
+  <div class="pulse-bar"><span class="l wide">{{ b.rank|e }}. {{ b.name|e }}</span><span class="t"><span class="f" style="display:block;width:{{ b.pct|e }}%"></span></span><span class="n">{{ b.value|e }}</span></div>
+  {% endfor %}
+  {% else %}
+  <p class="text-muted">No per-member counts in this window.</p>
   {% endif %}
 
   <h5>Unusual days and hours</h5>

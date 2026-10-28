@@ -689,9 +689,14 @@ class ServerPulse(DashboardIntegration, commands.Cog):
                 return None
             return getattr(channel, "name", None)
 
+        def member_name(uid: int):
+            member = guild.get_member(uid)
+            return member.display_name if member else None
+
         page = dashboard_view.build_page_data(
             days=days, today=prep.today, now_ts=prep.now_ts, coverage_start=prep.coverage_start,
             ignored=prep.st["ignored"], window_days=window_days, channel_name=channel_name,
+            member_name=member_name,
         )
         now = dashboard_view.build_now(self._live_view(prep, days)) if prep.has_data else []
         return {**base, "pulse": page, "pulse_now": now}
