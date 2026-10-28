@@ -141,8 +141,8 @@ def _render(autoescape, **ctx):
 
 
 def _ctx(page, **kw):
-    base = {"guild_name": "Wonderland", "denied": False, "disabled": False, "page": page,
-            "now": [("Last message", "3s ago")]}
+    base = {"guild_name": "Wonderland", "denied": False, "pulse_disabled": False, "pulse": page,
+            "pulse_now": [("Last message", "3s ago")]}
     base.update(kw)
     return base
 
@@ -181,7 +181,7 @@ def test_template_states_denied_disabled_and_collecting():
     page, _ = _data()
     denied = _render(True, **_ctx({}, denied=True))
     assert "mod role" in denied and "Heatmap" not in denied and "When it is busy" not in denied
-    disabled = _render(True, **_ctx({}, disabled=True))
+    disabled = _render(True, **_ctx({}, pulse_disabled=True))
     assert "switched off" in disabled and "When it is busy" not in disabled
     empty, _ = _data(coverage_start=None)
     collecting = _render(True, **_ctx(empty, now=[]))
@@ -250,7 +250,7 @@ async def test_non_mod_is_denied_and_gets_no_data(tmp_path, clock):
     cog = await seeded(tmp_path)
     guild = make_dash_guild([make_member(70)])
     wc = _content(await cog.dashboard_pulse(SimpleNamespace(id=70), guild))
-    assert wc["denied"] is True and wc["page"] == {} and wc["now"] == []
+    assert wc["denied"] is True and wc["pulse"] == {} and wc["pulse_now"] == []
     stranger = _content(await cog.dashboard_pulse(SimpleNamespace(id=999), guild))  # not in the guild at all
     assert stranger["denied"] is True
 
@@ -260,9 +260,9 @@ async def test_mod_role_and_administrators_see_the_page(tmp_path, clock, kw):
     cog = await seeded(tmp_path)
     guild = make_dash_guild([make_member(71, **kw)])
     wc = _content(await cog.dashboard_pulse(SimpleNamespace(id=71), guild))
-    assert wc["denied"] is False and wc["page"]["has_data"] is True
-    assert {c["name"] for c in wc["page"]["channels"]} == {"general", "cuddle", "pillow-talk"}
-    assert dict(wc["now"])["Last message"]
+    assert wc["denied"] is False and wc["pulse"]["has_data"] is True
+    assert {c["name"] for c in wc["pulse"]["channels"]} == {"general", "cuddle", "pillow-talk"}
+    assert dict(wc["pulse_now"])["Last message"]
     html = _render(True, **{k: v for k, v in wc.items() if k != "source"})
     assert "When it is busy" in html
 
@@ -288,17 +288,17 @@ async def test_guild_switched_off_shows_the_disabled_state(tmp_path, clock):
     cog._allowed = {999}  # serverpulse is not allowed to run in this server
     guild = make_dash_guild([make_member(73, mod_role=True)])
     wc = _content(await cog.dashboard_pulse(SimpleNamespace(id=73), guild))
-    assert wc["disabled"] is True and wc["page"] == {}
+    assert wc["pulse_disabled"] is True and wc["pulse"] == {}
 
 
 async def test_days_parameter_changes_the_window_and_bad_values_fall_back(tmp_path, clock):
     cog = await seeded(tmp_path)
     guild = make_dash_guild([make_member(74, mod_role=True)])
     user = SimpleNamespace(id=74)
-    assert _content(await cog.dashboard_pulse(user, guild, days="7"))["page"]["window_days"] == 7
-    assert _content(await cog.dashboard_pulse(user, guild, extra_kwargs={"days": "14"}))["page"]["window_days"] == 14
-    assert _content(await cog.dashboard_pulse(user, guild, days="1; DROP"))["page"]["window_days"] == 28
-    assert _content(await cog.dashboard_pulse(user, guild))["page"]["window_days"] == 28
+    assert _content(await cog.dashboard_pulse(user, guild, days="7"))["pulse"]["window_days"] == 7
+    assert _content(await cog.dashboard_pulse(user, guild, extra_kwargs={"days": "14"}))["pulse"]["window_days"] == 14
+    assert _content(await cog.dashboard_pulse(user, guild, days="1; DROP"))["pulse"]["window_days"] == 28
+    assert _content(await cog.dashboard_pulse(user, guild))["pulse"]["window_days"] == 28
 
 
 async def test_a_page_view_writes_nothing(tmp_path, clock):
@@ -316,7 +316,7 @@ async def test_a_page_view_writes_nothing(tmp_path, clock):
 
     before_files, before_cfg, before_changes = files(), copy.deepcopy(cog.config._guilds), cog._trackers[GUILD_ID].changes
     wc = _content(await cog.dashboard_pulse(SimpleNamespace(id=75), guild))
-    assert wc["page"]["has_data"]
+    assert wc["pulse"]["has_data"]
     assert files() == before_files
     assert cog.config._guilds == before_cfg
     assert cog._trackers[GUILD_ID].changes == before_changes
@@ -352,7 +352,7 @@ async def test_everything_the_page_reads_runs_on_the_bot_loop(tmp_path, clock):
     with _BotLoopThread() as bot_loop:
         bot.loop = bot_loop
         wc = _content(await cog.dashboard_pulse(SimpleNamespace(id=76), guild))
-    assert wc["page"]["has_data"] is True
+    assert wc["pulse"]["has_data"] is True
     assert seen["loop"] is bot_loop and seen["loop"] is not asyncio.get_running_loop()
 
 
@@ -360,7 +360,7 @@ async def test_runs_inline_when_already_on_the_bot_loop(tmp_path, clock):
     cog = await seeded(tmp_path)
     cog.bot.loop = asyncio.get_running_loop()
     guild = make_dash_guild([make_member(77, mod_role=True)])
-    assert _content(await cog.dashboard_pulse(SimpleNamespace(id=77), guild))["page"]["has_data"] is True
+    assert _content(await cog.dashboard_pulse(SimpleNamespace(id=77), guild))["pulse"]["has_data"] is True
 
 
 def test_page_signature_is_only_user_guild_and_kwargs():
@@ -368,3 +368,14 @@ def test_page_signature_is_only_user_guild_and_kwargs():
     import inspect
     params = inspect.signature(sp.ServerPulse.dashboard_pulse).parameters
     assert list(params) == ["self", "user", "guild", "kwargs"]
+
+
+
+async def test_page_variables_do_not_collide_with_the_dashboards_own_names(tmp_path, clock):
+    # Live bug (1.6.1): a variable called `page` collided with the dashboard's own `page`
+    # argument to render_template_string -> "got multiple values for keyword argument 'page'".
+    cog = await seeded(tmp_path)
+    guild = make_dash_guild([make_member(71, mod_role=True)])
+    wc = _content(await cog.dashboard_pulse(SimpleNamespace(id=71), guild))
+    reserved = {"page", "user", "guild", "request", "form", "Form", "extra_kwargs", "optional_kwargs", "csrf_token", "app", "url_for"}
+    assert not (set(wc) & reserved)

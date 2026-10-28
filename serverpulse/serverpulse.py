@@ -669,11 +669,11 @@ class ServerPulse(DashboardIntegration, commands.Cog):
         return await self._is_mod(member)
 
     async def _dashboard_render(self, user, guild: discord.Guild, window_days: int) -> dict:
-        base = {"guild_name": guild.name, "denied": False, "disabled": False, "page": {}, "now": []}
+        base = {"guild_name": guild.name, "denied": False, "pulse_disabled": False, "pulse": {}, "pulse_now": []}
         if not await self._dashboard_can_view(user, guild):
             return {**base, "denied": True}
         if not self._guild_allowed(guild.id):
-            return {**base, "disabled": True}
+            return {**base, "pulse_disabled": True}
         # Not `_prepare`: that flushes pending counts to disk, and a page view must not write.
         # (Disk lags the live tracker by at most FLUSH_INTERVAL_SECONDS; the 'right now' strip reads the tracker.)
         st = await self._ensure_guild(guild)
@@ -694,7 +694,7 @@ class ServerPulse(DashboardIntegration, commands.Cog):
             ignored=prep.st["ignored"], window_days=window_days, channel_name=channel_name,
         )
         now = dashboard_view.build_now(self._live_view(prep, days)) if prep.has_data else []
-        return {**base, "page": page, "now": now}
+        return {**base, "pulse": page, "pulse_now": now}
 
     @dashboard_page(
         name="overview",

@@ -283,31 +283,31 @@ PAGE_TEMPLATE = """\
   <h3>Pulse</h3>
   <p class="text-muted">Server activity for {{ guild_name|e }}. Counts only: no message text and no member names are shown. Use <code>.pulse</code> in Discord for the member-level views.</p>
   {% if denied %}
-  <p>You need the mod role, Administrator, or to be the bot owner to view this page.</p>
-  {% elif disabled %}
+  <p>You need the mod role, Administrator, or to be the bot owner to view this pulse.</p>
+  {% elif pulse_disabled %}
   <p>Pulse is switched off for this server.</p>
-  {% elif not page.has_data %}
-  <p>Pulse is still collecting data{% if page.since %} (since {{ page.since|e }}){% endif %}. Check back after a few full hours, or run <code>.pulse backfill 30</code> in Discord to import history.</p>
+  {% elif not pulse.has_data %}
+  <p>Pulse is still collecting data{% if pulse.since %} (since {{ pulse.since|e }}){% endif %}. Check back after a few full hours, or run <code>.pulse backfill 30</code> in Discord to import history.</p>
   {% else %}
   <p>
     Window:
-    {% for w in page.windows %}
+    {% for w in pulse.windows %}
       {% if w.active %}<strong>{{ w.days|e }} days</strong>{% else %}<a href="?days={{ w.days|e }}">{{ w.days|e }} days</a>{% endif %}{% if not loop.last %} &middot; {% endif %}
     {% endfor %}
-    {% if page.since %}<span class="text-muted"> &mdash; data since {{ page.since|e }}</span>{% endif %}
+    {% if pulse.since %}<span class="text-muted"> &mdash; data since {{ pulse.since|e }}</span>{% endif %}
   </p>
 
   <div class="row g-2">
-    {% for c in page.cards %}
+    {% for c in pulse.cards %}
     <div class="col-6 col-md-4 col-xl-2"><div class="pulse-card"><div class="s">{{ c.label|e }}</div><div class="v">{{ c.value|e }}</div><div class="s">{{ c.sub|e }}</div></div></div>
     {% endfor %}
   </div>
 
-  {% if now %}
+  {% if pulse_now %}
   <h5>Right now</h5>
   <div class="table-responsive">
     <table class="table table-sm align-middle"><tbody>
-      {% for label, value in now %}<tr><th scope="row">{{ label|e }}</th><td>{{ value|e }}</td></tr>{% endfor %}
+      {% for label, value in pulse_now %}<tr><th scope="row">{{ label|e }}</th><td>{{ value|e }}</td></tr>{% endfor %}
     </tbody></table>
   </div>
   {% endif %}
@@ -316,9 +316,9 @@ PAGE_TEMPLATE = """\
   <p class="text-muted">Average messages per hour by weekday and hour (America/Los_Angeles). Brighter is busier; hover a cell for details.</p>
   <div class="table-responsive">
     <table class="pulse-heat">
-      <thead><tr><th></th>{% for h in page.heat_hours %}<th>{{ h|e }}</th>{% endfor %}</tr></thead>
+      <thead><tr><th></th>{% for h in pulse.heat_hours %}<th>{{ h|e }}</th>{% endfor %}</tr></thead>
       <tbody>
-      {% for row in page.heat_rows %}
+      {% for row in pulse.heat_rows %}
         <tr><th>{{ row.day|e }}</th>{% for c in row.cells %}<td title="{{ c.title|e }}" style="background:{{ c.bg|e }};color:{{ c.fg|e }}">{{ c.text|e }}</td>{% endfor %}</tr>
       {% endfor %}
       </tbody>
@@ -327,21 +327,21 @@ PAGE_TEMPLATE = """\
 
   <h5>Average by hour of day</h5>
   <p class="text-muted">Green marks the three busiest hours.</p>
-  {% for b in page.hour_bars %}
+  {% for b in pulse.hour_bars %}
   <div class="pulse-bar" title="{{ b.title|e }}"><span class="l">{{ b.label|e }}</span><span class="t"><span class="f{% if b.top %} top{% endif %}" style="display:block;width:{{ b.pct|e }}%"></span></span><span class="n">{{ b.value|e }}</span></div>
   {% endfor %}
 
   <h5>Messages per day</h5>
   <p class="text-muted">Newest first. Faded bars are days that are not finished (or not fully covered by data yet).</p>
   <div class="pulse-scroll">
-  {% for b in page.daily %}
+  {% for b in pulse.daily %}
   <div class="pulse-bar"><span class="l">{{ b.label|e }}</span><span class="t"><span class="f{% if b.partial %} partial{% endif %}" style="display:block;width:{{ b.pct|e }}%"></span></span><span class="n">{{ b.value|e }}</span></div>
   {% endfor %}
   </div>
 
   <h5>Busiest channels</h5>
-  {% if page.channels %}
-  {% for b in page.channels %}
+  {% if pulse.channels %}
+  {% for b in pulse.channels %}
   <div class="pulse-bar"><span class="l" style="width:10rem">{{ b.name|e }}</span><span class="t"><span class="f" style="display:block;width:{{ b.pct|e }}%"></span></span><span class="n">{{ b.value|e }} ({{ b.share|e }})</span></div>
   {% endfor %}
   {% else %}
@@ -349,9 +349,9 @@ PAGE_TEMPLATE = """\
   {% endif %}
 
   <h5>Unusual days and hours</h5>
-  <p class="text-muted">Last {{ page.anomaly_days|e }} days compared with the same weekday and hour over the prior weeks.</p>
-  {% if page.anomalies %}
-  <ul>{% for a in page.anomalies %}<li>{{ a|e }}</li>{% endfor %}</ul>
+  <p class="text-muted">Last {{ pulse.anomaly_days|e }} days compared with the same weekday and hour over the prior weeks.</p>
+  {% if pulse.anomalies %}
+  <ul>{% for a in pulse.anomalies %}<li>{{ a|e }}</li>{% endfor %}</ul>
   {% else %}
   <p>Nothing unusual.</p>
   {% endif %}
