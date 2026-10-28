@@ -224,16 +224,16 @@ def make_dash_guild(members=()):
     channels = {111: "general", 222: "cuddle", 333: "pillow-talk"}
     by_id = {m.id: m for m in members}
     g = _Guild(id=GUILD_ID, name="Wonderland", text_channels=[], voice_channels=[], stage_channels=[], forums=[],
-               get_member=lambda uid: by_id.get(uid),
+               members=list(members), get_member=lambda uid: by_id.get(uid),
                get_channel_or_thread=lambda cid: SimpleNamespace(name=channels[cid]) if cid in channels else None)
     for m in members:
         m.guild = g
     return g
 
 
-def make_member(uid, *, mod_role=False, admin=False):
+def make_member(uid, *, mod_role=False, admin=False, name=None):
     roles = {DEFAULT_MOD_ROLE_ID} if mod_role else set()
-    return SimpleNamespace(id=uid, get_role=lambda rid: object() if rid in roles else None,
+    return SimpleNamespace(id=uid, display_name=name or f"member{uid}", name=(name or f"member{uid}").lower(), get_role=lambda rid: object() if rid in roles else None,
                            guild_permissions=SimpleNamespace(administrator=admin))
 
 
@@ -405,3 +405,94 @@ async def test_page_variables_do_not_collide_with_the_dashboards_own_names(tmp_p
     wc = _content(await cog.dashboard_pulse(SimpleNamespace(id=71), guild))
     reserved = {"page", "user", "guild", "request", "form", "Form", "extra_kwargs", "optional_kwargs", "csrf_token", "app", "url_for"}
     assert not (set(wc) & reserved)
+
+
+# ------------------------------------------------------------------ member lookup
+
+PEOPLE = [(1, "Alice", "alice_x"), (2, "Alicia", "ali"), (3, "Bob", "bob99"), (918273645564738291, "Zed", "zed")]
+
+
+def test_query_from_kwargs():
+    assert dv.query_from_kwargs(q="  bob ") == "bob"
+    assert dv.query_from_kwargs(extra_kwargs={"q": "bob"}) == "bob"
+    assert dv.query_from_kwargs() == "" and dv.query_from_kwargs(extra_kwargs="x") == ""
+    assert len(dv.query_from_kwargs(q="x" * 500)) == dv.MAX_QUERY_CHARS
+
+
+def test_find_members_by_id_exact_then_substring():
+    assert dv.find_members(PEOPLE, "3") == [{"id": 3, "name": "Bob"}]
+    assert dv.find_members(PEOPLE, "999") == []
+    assert dv.find_members(PEOPLE, "ALICE") == [{"id": 1, "name": "Alice"}]            # exact beats substring
+    assert [m["id"] for m in dv.find_members(PEOPLE, "ali")] == [2]                    # exact username 'ali' only
+    assert [m["id"] for m in dv.find_members(PEOPLE, "lic")] == [1, 2]                 # substring, shorter name first
+    assert dv.find_members(PEOPLE, "") == [] and dv.find_members(PEOPLE, "nobody") == []
+    many = [(i, f"user{i}", f"u{i}") for i in range(50)]
+    assert len(dv.find_members(many, "user")) == dv.MAX_MATCHES
+
+
+def _lookup_docs():
+    docs = {}
+    for i, d in enumerate(dv.models.date_range(date(2026, 10, 1), date(2026, 10, 10))):
+        docs[d.isoformat()] = {"h": {}, "u": {"7": i + 1, "8": 3}, "ub": {"7": 1} if i == 0 else {}}
+    return docs
+
+
+def test_member_lookup_totals_rank_and_order():
+    docs = _lookup_docs()
+    out = dv.build_member_lookup(days=docs, today=date(2026, 10, 10), window_days=7, uid=7, name="Seven")
+    # last 7 days = Oct 4..10 -> messages 4..10 = 49; user 8 has 21 -> rank 1 of 2
+    assert out["total"] == "49" and out["rank"] == "#1 of 2 chatters" and out["active_days"] == "7 of 7"
+    assert out["long_total"] == "56"                       # all ten days: 1+..+10 plus the backfill 1
+    assert [r["label"] for r in out["per_day"]][0].endswith("10") and len(out["per_day"]) == 7
+    other = dv.build_member_lookup(days=docs, today=date(2026, 10, 10), window_days=7, uid=8, name="Eight")
+    assert other["rank"] == "#2 of 2 chatters"
+    ghost = dv.build_member_lookup(days=docs, today=date(2026, 10, 10), window_days=7, uid=99, name=None)
+    assert ghost["name"] == "Former member" and ghost["total"] == "0" and ghost["rank"] == "no messages in this window"
+
+
+@pytest.mark.parametrize("auto", [True, False])
+def test_lookup_template_states_and_escaping(auto):
+    docs, t0, _ = traffic(date(2026, 9, 1), 20, seed=5)
+    base = dict(days=docs, today=date(2026, 9, 20), now_ts=local_ts(2026, 9, 20, 12), coverage_start=t0,
+                ignored=set(), window_days=14, channel_name=lambda c: None)
+    evil = "<img src=x onerror=1>"
+    states = {
+        "none": {"q": evil, "state": "none", "matches": [], "member": None},
+        "choose": {"q": "a", "state": "choose", "matches": [{"id": 5, "name": evil}], "member": None},
+        "found": {"q": "a", "state": "found", "matches": [], "member": dv.build_member_lookup(days=docs, today=date(2026, 9, 20), window_days=14, uid=1, name=evil)},
+    }
+    for state, lk in states.items():
+        out = _render(auto, guild_name="W", denied=False, pulse_disabled=False, pulse=dv.build_page_data(lookup=lk, **base), pulse_now=[])
+        assert "<img" not in out and "&lt;img" in out, state
+    none_out = _render(auto, guild_name="W", denied=False, pulse_disabled=False, pulse=dv.build_page_data(lookup=None, **base), pulse_now=[])
+    assert "Member lookup" in none_out and 'name="q"' in none_out
+
+
+async def _seed_user_counts(tmp_path):
+    cog = await seeded(tmp_path)
+    for d in dv.models.date_range(date(2026, 10, 1), date(2026, 10, 10)):
+        doc = storage.load_day(tmp_path, GUILD_ID, d.isoformat()) or models.new_day_doc()
+        doc["u"] = {"71": 5, "72": 2}
+        storage.save_day(tmp_path, GUILD_ID, d.isoformat(), doc)
+    return cog
+
+
+async def test_page_member_lookup_by_name_choice_and_unknown(tmp_path, clock):
+    cog = await _seed_user_counts(tmp_path)
+    guild = make_dash_guild([make_member(70, mod_role=True), make_member(71, name="Alice"), make_member(72, name="Alicia")])
+    viewer = SimpleNamespace(id=70)
+    found = _content(await cog.dashboard_pulse(viewer, guild, q="alice"))["pulse"]["lookup"]
+    assert found["state"] == "found" and found["member"]["name"] == "Alice"
+    choose = _content(await cog.dashboard_pulse(viewer, guild, q="alic"))["pulse"]["lookup"]
+    assert choose["state"] == "choose" and {m["id"] for m in choose["matches"]} == {71, 72}
+    assert _content(await cog.dashboard_pulse(viewer, guild, q="nobody"))["pulse"]["lookup"]["state"] == "none"
+    by_id = _content(await cog.dashboard_pulse(viewer, guild, extra_kwargs={"q": "72"}))["pulse"]["lookup"]
+    assert by_id["state"] == "found" and by_id["member"]["name"] == "Alicia"
+    assert _content(await cog.dashboard_pulse(viewer, guild))["pulse"]["lookup"] is None
+
+
+async def test_non_mods_get_no_lookup_data(tmp_path, clock):
+    cog = await _seed_user_counts(tmp_path)
+    guild = make_dash_guild([make_member(70), make_member(71, name="Alice")])
+    wc = _content(await cog.dashboard_pulse(SimpleNamespace(id=70), guild, q="alice"))
+    assert wc["denied"] is True and wc["pulse"] == {}

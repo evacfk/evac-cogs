@@ -51,6 +51,67 @@ def window_from_kwargs(days=None, **kwargs) -> int:
     return parse_window(days)
 
 
+MAX_QUERY_CHARS = 64
+MAX_MATCHES = 10
+LOOKUP_DAYS = 90   # per-member counts are only kept this long (USER_RETENTION_DAYS)
+
+
+def query_from_kwargs(q=None, **kwargs) -> str:
+    """The member-lookup text from `?q=`: named argument or inside `extra_kwargs`; trimmed and length-capped."""
+    if q is None:
+        extra = kwargs.get("extra_kwargs")
+        if isinstance(extra, dict):
+            q = extra.get("q")
+    if isinstance(q, (list, tuple)):
+        q = q[0] if q else None
+    return str(q).strip()[:MAX_QUERY_CHARS] if q is not None else ""
+
+
+def find_members(members, query: str) -> list[dict]:
+    """`members`: iterable of (id, display_name, username). Digits -> that id; text -> exact name
+    matches if any, else substring matches. At most MAX_MATCHES, shortest names first."""
+    query = (query or "").strip()
+    if not query:
+        return []
+    rows = [(int(i), str(d or ""), str(u or "")) for i, d, u in members]
+    if query.isdigit():
+        return [{"id": i, "name": d or u} for i, d, u in rows if i == int(query)][:1]
+    needle = query.lower()
+    exact = [r for r in rows if needle in (r[1].lower(), r[2].lower())]
+    hits = exact or [r for r in rows if needle in r[1].lower() or needle in r[2].lower()]
+    hits.sort(key=lambda r: (len(r[1] or r[2]), (r[1] or r[2]).lower(), r[0]))
+    return [{"id": i, "name": d or u} for i, d, u in hits[:MAX_MATCHES]]
+
+
+def build_member_lookup(*, days: dict, today: date, window_days: int, uid: int, name: str) -> dict:
+    """One member's message counts per day over the window, their rank, and their 90-day total."""
+    start = today - timedelta(days=window_days - 1)
+    key = str(uid)
+    per_day = []
+    for d in models.date_range(start, today):
+        per_day.append((d, int(engine.user_counts(days.get(d.isoformat()) or {}).get(key, 0))))
+    total = sum(n for _, n in per_day)
+    totals: dict[str, int] = defaultdict(int)
+    for d in models.date_range(start, today):
+        for u, n in engine.user_counts(days.get(d.isoformat()) or {}).items():
+            totals[u] += n
+    rank = None
+    if total:
+        rank = 1 + sum(1 for u, n in totals.items() if (n, u) != (total, key) and (-n, u) < (-total, key))
+    long_start = today - timedelta(days=LOOKUP_DAYS - 1)
+    long_total = sum(int(engine.user_counts(days.get(d.isoformat()) or {}).get(key, 0)) for d in models.date_range(long_start, today))
+    top = max((n for _, n in per_day), default=0)
+    return {
+        "name": name or "Former member",
+        "window_days": window_days,
+        "total": fmt_int(total),
+        "active_days": f"{sum(1 for _, n in per_day if n)} of {len(per_day)}",
+        "rank": f"#{rank} of {fmt_int(len(totals))} chatters" if rank else "no messages in this window",
+        "long_total": fmt_int(long_total),
+        "per_day": [{"label": short_date(d), "value": fmt_int(n), "pct": _pct(n, top)} for d, n in reversed(per_day)],
+    }
+
+
 def hour_label(h: int) -> str:
     return f"{12 if h % 12 == 0 else h % 12}{'a' if h < 12 else 'p'}"
 
@@ -160,6 +221,7 @@ def build_page_data(
     window_days: int,
     channel_name,
     member_name=None,
+    lookup=None,
 ) -> dict:
     """Everything the template needs, as plain strings/numbers. `days` must cover LOAD_DAYS ending today.
 
@@ -275,6 +337,7 @@ def build_page_data(
     baseline = engine.build_slots(days, base_start, today, now_ts, coverage_start)
     data["anomalies"] = [_anomaly_text(a) for a in engine.find_anomalies(baseline, a_start, today)]
     data["anomaly_days"] = ANOMALY_DAYS
+    data["lookup"] = lookup
     return data
 
 
@@ -299,6 +362,9 @@ PAGE_TEMPLATE = """\
 .pulse-page .pulse-bar .n{width:4.5rem;flex:none;font-variant-numeric:tabular-nums}
 .pulse-page .pulse-scroll{max-height:26rem;overflow-y:auto}
 .pulse-page h5{margin-top:1.4rem}
+.pulse-page .pulse-form{display:flex;gap:.5rem;margin:.4rem 0 .8rem}
+.pulse-page .pulse-form input[type=text]{flex:1;max-width:22rem;padding:.35rem .6rem;border-radius:.375rem;border:1px solid rgba(128,128,128,.5);background:rgba(128,128,128,.12);color:inherit}
+.pulse-page .pulse-form button{padding:.35rem .9rem;border-radius:.375rem;border:1px solid rgba(128,128,128,.5);background:#5e72e4;color:#fff}
 </style>
 <div class="pulse-page">
   <h3>Pulse</h3>
@@ -377,6 +443,29 @@ PAGE_TEMPLATE = """\
   {% endfor %}
   {% else %}
   <p class="text-muted">No per-member counts in this window.</p>
+  {% endif %}
+
+  <h5>Member lookup</h5>
+  <form method="get" class="pulse-form">
+    <input type="hidden" name="days" value="{{ pulse.window_days|e }}">
+    <input type="text" name="q" value="{{ pulse.lookup.q|e if pulse.lookup else '' }}" maxlength="64" placeholder="name or member ID" aria-label="Member name or ID">
+    <button type="submit">Look up</button>
+  </form>
+  {% if pulse.lookup %}
+    {% if pulse.lookup.state == 'none' %}
+    <p class="text-muted">No member matches that name or ID.</p>
+    {% elif pulse.lookup.state == 'choose' %}
+    <p class="text-muted">Several members match. Pick one:</p>
+    <ul>{% for m in pulse.lookup.matches %}<li><a href="?days={{ pulse.window_days|e }}&amp;q={{ m.id|e }}">{{ m.name|e }}</a></li>{% endfor %}</ul>
+    {% else %}
+    <h6>{{ pulse.lookup.member.name|e }}</h6>
+    <p>{{ pulse.lookup.member.total|e }} messages in the last {{ pulse.lookup.member.window_days|e }} days &middot; active on {{ pulse.lookup.member.active_days|e }} days &middot; {{ pulse.lookup.member.rank|e }} &middot; {{ pulse.lookup.member.long_total|e }} in the last 90 days</p>
+    <div class="pulse-scroll">
+    {% for b in pulse.lookup.member.per_day %}
+    <div class="pulse-bar"><span class="l">{{ b.label|e }}</span><span class="t"><span class="f" style="display:block;width:{{ b.pct|e }}%"></span></span><span class="n">{{ b.value|e }}</span></div>
+    {% endfor %}
+    </div>
+    {% endif %}
   {% endif %}
 
   <h5>Unusual days and hours</h5>

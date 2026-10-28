@@ -639,7 +639,7 @@ class ServerPulse(DashboardIntegration, commands.Cog):
     # ------------------------------------------------------------------
     # Registration is handled by DashboardIntegration (dashboard_integration.py).
     # The page only reads: no Config writes, no tracker writes. It shows the same
-    # numbers as `.pulse` (never message text, never member names) to the same
+    # numbers as `.pulse` (never message text; member names only in top chatters / lookup) to the same
     # audience as the commands (mods, admins, bot owner).
 
     async def _on_bot_loop(self, coro):
@@ -668,7 +668,7 @@ class ServerPulse(DashboardIntegration, commands.Cog):
             return False
         return await self._is_mod(member)
 
-    async def _dashboard_render(self, user, guild: discord.Guild, window_days: int) -> dict:
+    async def _dashboard_render(self, user, guild: discord.Guild, window_days: int, lookup_q: str = "") -> dict:
         base = {"guild_name": guild.name, "denied": False, "pulse_disabled": False, "pulse": {}, "pulse_now": []}
         if not await self._dashboard_can_view(user, guild):
             return {**base, "denied": True}
@@ -679,7 +679,9 @@ class ServerPulse(DashboardIntegration, commands.Cog):
         st = await self._ensure_guild(guild)
         now = time.time()
         prep = _Prep(guild, now, models.local_dt(now).date(), st["coverage_start"], st)
-        start = prep.today - timedelta(days=max(window_days, dashboard_view.LOAD_DAYS) - 1)
+        # a member lookup also reads the per-member counts' whole retention (90 days); otherwise just what the page needs
+        need = max(window_days, dashboard_view.LOAD_DAYS, dashboard_view.LOOKUP_DAYS if lookup_q else 0)
+        start = prep.today - timedelta(days=need - 1)
         days = await self._days(guild.id, start, prep.today)
 
         def channel_name(cid: str):
@@ -693,10 +695,26 @@ class ServerPulse(DashboardIntegration, commands.Cog):
             member = guild.get_member(uid)
             return member.display_name if member else None
 
+        lookup = None
+        if lookup_q:
+            lookup = {"q": lookup_q, "state": "none", "matches": [], "member": None}
+            people = [(m.id, m.display_name, m.name) for m in guild.members]
+            matches = dashboard_view.find_members(people, lookup_q)
+            uid = name = None
+            if len(matches) == 1:
+                uid, name = matches[0]["id"], matches[0]["name"]
+            elif len(matches) > 1:
+                lookup.update(state="choose", matches=matches)
+            elif lookup_q.isdigit():   # not in the server any more, but their counts may still be on disk
+                uid, name = int(lookup_q), None
+            if uid is not None:
+                lookup.update(state="found", member=dashboard_view.build_member_lookup(
+                    days=days, today=prep.today, window_days=window_days, uid=uid, name=name))
+
         page = dashboard_view.build_page_data(
             days=days, today=prep.today, now_ts=prep.now_ts, coverage_start=prep.coverage_start,
             ignored=prep.st["ignored"], window_days=window_days, channel_name=channel_name,
-            member_name=member_name,
+            member_name=member_name, lookup=lookup,
         )
         now = dashboard_view.build_now(self._live_view(prep, days)) if prep.has_data else []
         return {**base, "pulse": page, "pulse_now": now}
@@ -711,7 +729,8 @@ class ServerPulse(DashboardIntegration, commands.Cog):
         # parameters, so the dashboard has nothing to misread. `?days=` arrives in kwargs.
         try:
             window = dashboard_view.window_from_kwargs(**kwargs)
-            content = await self._on_bot_loop(self._dashboard_render(user, guild, window))
+            lookup_q = dashboard_view.query_from_kwargs(**kwargs)
+            content = await self._on_bot_loop(self._dashboard_render(user, guild, window, lookup_q))
         except Exception:
             log.exception("Dashboard page failed")  # the dashboard itself only shows a bare 500
             raise
