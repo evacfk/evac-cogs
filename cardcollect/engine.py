@@ -1,5 +1,6 @@
 """Pure game logic for cardcollect: rarity rolls, tier bucketing, drop-chance
-rolls, drop building (with per-card CAPTCHA codes), and claim outcomes. No discord/redbot
+rolls, drop building, the pick-your-card draw (owner priority and pity), series
+sets, and claim outcomes. No discord/redbot
 imports -- fully unit-testable with plain pytest, same split as
 blackjacktable's engine.py.
 
@@ -12,11 +13,10 @@ import time
 import unicodedata
 import uuid
 from datetime import date, datetime, timedelta
-from typing import List, Optional, Sequence, Tuple
+from typing import Dict, List, Optional, Sequence, Tuple
 from zoneinfo import ZoneInfo
 
-from . import captcha
-from .constants import TIERS
+from .constants import PITY_CAP, PITY_STEP, SET_BONUS_BASE, SET_BONUS_PER_CARD, SET_MIN_CARDS, TIERS
 from .models import ActiveDrop, Card, SellToken
 
 
@@ -80,43 +80,150 @@ def build_drop(
     rng: Optional[random.Random] = None,
     is_test: bool = False,
 ) -> Optional[ActiveDrop]:
-    """Roll a full drop: `drop_size` cards, each an independent weighted-tier
-    roll, each assigned its own CAPTCHA claim code (see captcha.py). Returns None if the pool
-    can't fill a full drop (e.g. a tier the rolls landed on has zero cards
-    and no fallback tier has cards either -- caller should just skip this
-    tick rather than post a broken drop)."""
+    """Roll a full drop: up to `drop_size` different cards, each an independent
+    weighted-tier roll (a card is never offered twice in one drop). Returns
+    None if the pool can't fill even one card (caller should just skip this tick
+    rather than post a broken drop). A pool smaller than `drop_size` gives a
+    smaller drop."""
     rng = _rng(rng)
-    cards: List[Card] = []
-    for _ in range(drop_size):
-        tier = roll_tier(weights, rng)
-        card = pick_card_for_tier(pool, tier, rng)
+    chosen: List[Card] = []
+    taken = set()
+    for _ in range(min(drop_size, len(pool))):
+        card = None
+        for _attempt in range(20):  # a tier with few cards may keep repeating one we already have
+            tier = roll_tier(weights, rng)
+            candidate = pick_card_for_tier([c for c in pool if c.card_id not in taken], tier, rng)
+            if candidate is not None:
+                card = candidate
+                break
         if card is None:
-            # empty tier -- fall back to any non-empty tier rather than fail
-            # the whole drop over one unlucky roll into a tier you haven't
-            # imported yet
-            non_empty_tiers = {c.rarity for c in pool}
-            fallback_tiers = [t for t in TIERS if t in non_empty_tiers]
-            if not fallback_tiers:
-                return None
-            card = pick_card_for_tier(pool, rng.choice(fallback_tiers), rng)
-            if card is None:
-                return None
-        cards.append(card)
-
-    codes = captcha.generate_codes(len(cards), rng)
-
-    drop_cards = [
-        {"card_id": card.card_id, "code": code, "position": i}
-        for i, (card, code) in enumerate(zip(cards, codes))
-    ]
-
+            # empty tier (or unlucky repeats) -- fall back to any card not yet offered rather
+            # than fail the whole drop over one unlucky roll into a tier you haven't imported yet
+            remaining = [c for c in pool if c.card_id not in taken]
+            if not remaining:
+                break
+            card = rng.choice(remaining)
+        taken.add(card.card_id)
+        chosen.append(card)
+    if not chosen:
+        return None
     return ActiveDrop(
         message_id=None,
         guild_id=guild_id,
         channel_id=channel_id,
-        cards=drop_cards,
+        cards=[{"card_id": card.card_id, "position": i} for i, card in enumerate(chosen)],
         is_test=is_test,
     )
+
+
+def owner_tier(collection: Sequence[int], card_id: int, max_copies: int) -> int:
+    """How a member ranks for a card in a draw (lower wins): 0 = doesn't own it,
+    1 = owns it but has room for a spare, 2 = at the copy limit (a win would
+    only become a sell token). Everyone in the best tier present is drawn from;
+    lower tiers only win when nobody better picked the card."""
+    count = list(collection).count(card_id)
+    if count == 0:
+        return 0
+    return 1 if count < max_copies else 2
+
+
+def pity_multiplier(pity: int) -> float:
+    """Draw weight for a member who has lost `pity` equal draws in a row:
+    1 + PITY_STEP per loss, never more than PITY_CAP."""
+    return min(PITY_CAP, 1.0 + PITY_STEP * max(0, pity))
+
+
+def resolve_drop(
+    cards: Sequence[dict],
+    picks: Dict[int, int],
+    collections: Dict[int, Sequence[int]],
+    pities: Dict[int, int],
+    max_copies: int,
+    rng: Optional[random.Random] = None,
+) -> Tuple[List[dict], Dict[int, int]]:
+    """Run the draw for a drop. `picks` maps member id -> the position they
+    picked; `collections` and `pities` hold each picker's current state.
+
+    For each card: the pickers are ranked by owner_tier, and the winner is drawn
+    at random (weighted by pity_multiplier) from the best tier present -- so a
+    member who already owns the card only wins it if nobody who doesn't (or
+    has room for a spare) picked it too. A card nobody picked is wasted.
+
+    Returns (results, pity_after). results has one dict per card, in order:
+    position, card_id, pickers (how many picked it), winner (member id or None),
+    outcome ("new" | "duplicate" | "sell_token" | None), contested (True if the
+    winner beat at least one equal rival) and boosted (True if the winner's
+    pity bonus was active). pity_after has a new pity for every picker: 0 for
+    the winner, +1 for each rival they beat in the same tier (a lost lottery),
+    unchanged for anyone who lost on owner priority."""
+    rng = _rng(rng)
+    results: List[dict] = []
+    pity_after: Dict[int, int] = {uid: int(pities.get(uid, 0)) for uid in picks}
+    for entry in cards:
+        position, card_id = entry["position"], entry["card_id"]
+        pickers = sorted(uid for uid, pos in picks.items() if pos == position)
+        if not pickers:
+            results.append(
+                {"position": position, "card_id": card_id, "pickers": 0, "winner": None, "outcome": None,
+                 "contested": False, "boosted": False}
+            )
+            continue
+        tiers = {uid: owner_tier(collections.get(uid, ()), card_id, max_copies) for uid in pickers}
+        best = min(tiers.values())
+        contenders = [uid for uid in pickers if tiers[uid] == best]
+        weights = [pity_multiplier(pity_after.get(uid, 0)) for uid in contenders]
+        roll = rng.uniform(0, sum(weights))
+        upto = 0.0
+        winner = contenders[-1]  # float-rounding fallback
+        for uid, weight in zip(contenders, weights):
+            upto += weight
+            if roll <= upto:
+                winner = uid
+                break
+        boosted = pity_multiplier(pity_after.get(winner, 0)) > 1.0
+        for uid in contenders:
+            pity_after[uid] = 0 if uid == winner else pity_after.get(uid, 0) + 1
+        results.append(
+            {
+                "position": position,
+                "card_id": card_id,
+                "pickers": len(pickers),
+                "winner": winner,
+                "outcome": claim_outcome(collections.get(winner, ()), card_id, max_copies),
+                "contested": len(contenders) > 1,
+                "boosted": boosted,
+            }
+        )
+    return results, pity_after
+
+
+def build_sets(cards: Sequence[Card]) -> Dict[str, List[Card]]:
+    """Series sets: every active (not retired) card grouped by its exact series
+    text, keeping only series with at least SET_MIN_CARDS cards."""
+    grouped: Dict[str, List[Card]] = {}
+    for card in cards:
+        if card.retired or not card.series:
+            continue
+        grouped.setdefault(card.series, []).append(card)
+    return {series: members for series, members in grouped.items() if len(members) >= SET_MIN_CARDS}
+
+
+def set_progress(sets: Dict[str, List[Card]], owned_ids) -> List[Tuple[str, int, int]]:
+    """(series, owned, total) for every set the member has at least one card of,
+    most complete first, then biggest, then A-Z."""
+    owned = set(owned_ids)
+    rows = []
+    for series, members in sets.items():
+        have = sum(1 for c in members if c.card_id in owned)
+        if have:
+            rows.append((series, have, len(members)))
+    rows.sort(key=lambda r: (-(r[1] / r[2]), -r[2], _fold(r[0])))
+    return rows
+
+
+def set_bonus(size: int) -> int:
+    """Wondercoin paid the first time a member completes a set of `size` cards."""
+    return SET_BONUS_BASE + SET_BONUS_PER_CARD * size
 
 
 def make_sell_token(card_id: int, rarity: str) -> SellToken:
@@ -157,30 +264,6 @@ def today_str(tz: str, now: Optional[datetime] = None) -> str:
     quota logic is testable without depending on the real wall clock."""
     moment = now if now is not None else datetime.now(ZoneInfo(tz))
     return moment.date().isoformat()
-
-
-def has_quota_remaining(daily_claims: int, daily_claims_date: str, quota: int, today: str) -> bool:
-    """Daily claim quota check (locked decision: resets at local midnight,
-    not a rolling window). `quota <= 0` disables the check entirely (an
-    admin-configured "unlimited" sentinel). The reset itself is lazy: a
-    `daily_claims_date` that isn't today just means the stored count is
-    stale and the member has their full quota again -- nothing has to run
-    at midnight to make that true."""
-    if quota <= 0:
-        return True
-    if daily_claims_date != today:
-        return True
-    return daily_claims < quota
-
-
-def record_claim(daily_claims: int, daily_claims_date: str, today: str) -> Tuple[int, str]:
-    """Returns the (daily_claims, daily_claims_date) pair to persist after a
-    real claim. Same lazy-reset logic as has_quota_remaining: a stale date
-    starts the count over at 1 instead of incrementing a stale number."""
-    if daily_claims_date != today:
-        return 1, today
-    return daily_claims + 1, today
-
 
 
 def _fold(text: str) -> str:

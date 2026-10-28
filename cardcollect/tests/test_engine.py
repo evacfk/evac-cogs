@@ -3,7 +3,6 @@ import random
 import pytest
 
 from cardcollect import engine
-from cardcollect import captcha
 from cardcollect.constants import DEFAULT_DROP_WEIGHTS, DEFAULT_SELL_PRICES, DEFAULT_TIER_CUTOFFS
 from cardcollect.models import Card
 
@@ -58,20 +57,6 @@ def test_should_drop_bounds():
     assert engine.should_drop(1.0, rng) is True
 
 
-def test_build_drop_gives_every_card_its_own_valid_code():
-    pool = make_pool()
-    rng = random.Random(11)
-    drop = engine.build_drop(pool, DEFAULT_DROP_WEIGHTS, 3, guild_id=1, channel_id=2, rng=rng)
-    assert drop is not None
-    assert len(drop.cards) == 3
-    codes = [c["code"] for c in drop.cards]
-    assert all(captcha.looks_like_code(code) for code in codes)
-    assert len(set(codes)) == 3
-    assert [c["position"] for c in drop.cards] == [0, 1, 2]
-    for i, a in enumerate(codes):
-        for b in codes[i + 1 :]:
-            assert captcha.edit_distance(a, b) >= 2
-    assert drop.is_test is False
 
 
 def test_build_drop_is_test_flag_threaded_through():
@@ -132,29 +117,12 @@ def test_today_str_uses_injected_now_not_wall_clock():
     assert engine.today_str("America/Los_Angeles", now=moment) == "2026-09-22"
 
 
-def test_has_quota_remaining_unlimited_when_quota_is_zero_or_negative():
-    assert engine.has_quota_remaining(999, "2026-09-22", quota=0, today="2026-09-22") is True
-    assert engine.has_quota_remaining(999, "2026-09-22", quota=-1, today="2026-09-22") is True
 
 
-def test_has_quota_remaining_resets_lazily_on_a_new_day():
-    # stale/yesterday's date -> full quota available, no scheduler needed
-    assert engine.has_quota_remaining(10, "2026-09-21", quota=10, today="2026-09-22") is True
-    # never claimed (blank date, the DEFAULT_MEMBER sentinel) -> full quota
-    assert engine.has_quota_remaining(0, "", quota=10, today="2026-09-22") is True
 
 
-def test_has_quota_remaining_enforces_the_cap_within_the_same_day():
-    assert engine.has_quota_remaining(9, "2026-09-22", quota=10, today="2026-09-22") is True
-    assert engine.has_quota_remaining(10, "2026-09-22", quota=10, today="2026-09-22") is False
-    assert engine.has_quota_remaining(11, "2026-09-22", quota=10, today="2026-09-22") is False
 
 
-def test_record_claim_increments_within_a_day_and_resets_on_a_new_day():
-    assert engine.record_claim(0, "", today="2026-09-22") == (1, "2026-09-22")
-    assert engine.record_claim(4, "2026-09-22", today="2026-09-22") == (5, "2026-09-22")
-    # stale date -> starts over at 1, doesn't keep incrementing yesterday's count
-    assert engine.record_claim(9, "2026-09-21", today="2026-09-22") == (1, "2026-09-22")
 
 
 def test_search_cards_matches_partial_words_in_any_order_ignoring_case_and_accents():
@@ -249,3 +217,97 @@ def test_a_series_title_match_still_ranks_below_a_name_match():
         Card(2, "Frieren", "Sousou no Frieren", "rare", "2.png", series_alt="Frieren: Beyond Journey's End"),
     ]
     assert [c.name for c in engine.search_cards(pool, "frieren")] == ["Frieren", "Zed"]
+
+
+
+# --- 2.0.0: the pick-your-card draw ------------------------------------------
+
+
+def test_build_drop_gives_distinct_cards_in_numbered_positions():
+    drop = engine.build_drop(make_pool(), DEFAULT_DROP_WEIGHTS, 3, guild_id=1, channel_id=2, rng=random.Random(11))
+    assert len(drop.cards) == 3
+    assert [c["position"] for c in drop.cards] == [0, 1, 2]
+    assert len({c["card_id"] for c in drop.cards}) == 3
+    assert all("code" not in c for c in drop.cards)
+    assert drop.is_test is False and drop.picks == {}
+
+
+def test_owner_tier_ranks_non_owners_then_spares_then_the_limit():
+    assert engine.owner_tier([], 7, 2) == 0
+    assert engine.owner_tier([7], 7, 2) == 1
+    assert engine.owner_tier([7, 7], 7, 2) == 2
+    assert engine.owner_tier([8, 8, 8], 7, 2) == 0
+
+
+def test_pity_multiplier_grows_by_a_quarter_and_caps_at_double():
+    assert engine.pity_multiplier(0) == 1.0
+    assert engine.pity_multiplier(2) == 1.5
+    assert engine.pity_multiplier(4) == 2.0
+    assert engine.pity_multiplier(40) == 2.0
+    assert engine.pity_multiplier(-3) == 1.0
+
+
+CARDS = [{"card_id": 10, "position": 0}, {"card_id": 11, "position": 1}, {"card_id": 12, "position": 2}]
+
+
+def test_resolve_drop_a_card_nobody_picked_is_wasted():
+    results, _ = engine.resolve_drop(CARDS, {1: 0}, {1: []}, {}, 2, random.Random(1))
+    by_pos = {r["position"]: r for r in results}
+    assert by_pos[0]["winner"] == 1 and by_pos[0]["outcome"] == "new"
+    assert by_pos[1]["winner"] is None and by_pos[1]["pickers"] == 0 and by_pos[1]["outcome"] is None
+
+
+def test_resolve_drop_a_non_owner_always_beats_owners():
+    for seed in range(30):
+        results, _ = engine.resolve_drop(
+            CARDS[:1], {1: 0, 2: 0, 3: 0}, {1: [10], 2: [], 3: [10, 10]}, {}, 2, random.Random(seed)
+        )
+        assert results[0]["winner"] == 2 and results[0]["outcome"] == "new"
+
+
+def test_resolve_drop_owners_with_room_beat_those_at_the_limit_and_get_a_spare():
+    for seed in range(30):
+        results, _ = engine.resolve_drop(CARDS[:1], {1: 0, 3: 0}, {1: [10], 3: [10, 10]}, {}, 2, random.Random(seed))
+        assert results[0]["winner"] == 1 and results[0]["outcome"] == "duplicate"
+
+
+def test_resolve_drop_someone_at_the_limit_wins_only_when_alone_and_gets_a_sell_token():
+    results, _ = engine.resolve_drop(CARDS[:1], {3: 0}, {3: [10, 10]}, {}, 2, random.Random(1))
+    assert results[0]["winner"] == 3 and results[0]["outcome"] == "sell_token"
+
+
+def test_resolve_drop_pity_only_grows_for_equal_rivals_and_resets_on_a_win():
+    # 1 (non-owner) beats 2 (owner): 2 lost on priority, not a lottery -> no pity
+    results, pity = engine.resolve_drop(CARDS[:1], {1: 0, 2: 0}, {1: [], 2: [10]}, {1: 0, 2: 0}, 2, random.Random(1))
+    assert pity[2] == 0 and pity[1] == 0 and results[0]["contested"] is False
+    # two equal pickers: one wins (pity 0), the loser gains 1
+    results, pity = engine.resolve_drop(CARDS[:1], {1: 0, 2: 0}, {1: [], 2: []}, {1: 3, 2: 0}, 2, random.Random(5))
+    winner = results[0]["winner"]
+    loser = 2 if winner == 1 else 1
+    assert results[0]["contested"] is True
+    assert pity[winner] == 0
+    assert pity[loser] == ({1: 3, 2: 0}[loser] + 1)
+
+
+def test_resolve_drop_pity_makes_a_long_loser_win_more_often():
+    wins = 0
+    for seed in range(2000):
+        results, _ = engine.resolve_drop(CARDS[:1], {1: 0, 2: 0}, {1: [], 2: []}, {1: 4, 2: 0}, 2, random.Random(seed))
+        wins += results[0]["winner"] == 1
+    assert 0.60 < wins / 2000 < 0.73  # 2.0 : 1.0 weight is about two thirds
+
+
+def test_resolve_drop_is_deterministic_for_a_seeded_rng():
+    args = (CARDS, {1: 0, 2: 0, 3: 1}, {1: [], 2: [], 3: []}, {}, 2)
+    assert engine.resolve_drop(*args, random.Random(9)) == engine.resolve_drop(*args, random.Random(9))
+
+
+def test_build_sets_groups_active_cards_by_exact_series_and_needs_three():
+    cards = [Card(i, f"C{i}", "Frieren", "common", f"{i}.png") for i in (1, 2, 3)]
+    cards += [Card(4, "X", "Two Cards", "rare", "4.png"), Card(5, "Y", "Two Cards", "rare", "5.png")]
+    cards += [Card(6, "Gone", "Frieren", "common", "6.png", retired=True)]
+    sets = engine.build_sets(cards)
+    assert list(sets) == ["Frieren"] and len(sets["Frieren"]) == 3  # retired and too-small groups left out
+    assert engine.set_progress(sets, [1, 2, 9]) == [("Frieren", 2, 3)]
+    assert engine.set_progress(sets, [9]) == []
+    assert engine.set_bonus(3) == 5000 + 3 * 500

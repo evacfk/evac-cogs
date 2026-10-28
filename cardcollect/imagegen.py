@@ -1,6 +1,6 @@
-"""Pillow-based image compositing for cardcollect: draws each card's CAPTCHA
-claim code onto its art, builds the multi-card drop composite, and builds the
-collection gallery (favorite-first, larger tile).
+"""Pillow-based image compositing for cardcollect: builds the numbered
+multi-card drop composite, the collection gallery (favorite-first, larger
+tile), single-card renders, and the importseries contact sheet.
 
 Fonts are the bundled DejaVu Sans / DejaVu Sans Bold (assets/fonts/) rather
 than relying on fonts being installed on the actual bot host -- the same
@@ -14,7 +14,6 @@ in this project).
 """
 
 import io
-import random
 from pathlib import Path
 from typing import Optional, Sequence, Tuple
 
@@ -46,11 +45,6 @@ PLATE_BG = (0, 0, 0, 175)
 TEXT_WHITE = (240, 240, 240)
 BORDER_WIDTH = 8
 CORNER_RADIUS = 18
-CODE_FONT_SIZE = 46
-CODE_CELL_WIDTH = 44  # fixed per-character cell: DejaVu Sans isn't monospace, so cells do that job
-CODE_PILL_PAD_X = 18
-CODE_PILL_HEIGHT = CODE_FONT_SIZE + 26  # headroom for per-character vertical jitter
-CODE_MAX_ROTATION = 10  # degrees, either direction
 NAME_PLATE_HEIGHT = 64
 DROP_PADDING = 24
 TEST_BANNER_HEIGHT = 40
@@ -68,59 +62,15 @@ def _font(size: int, bold: bool = False) -> ImageFont.FreeTypeFont:
     return _font_cache[key]
 
 
-def _draw_code_badge(canvas: Image.Image, code: str, rng: Optional[random.Random] = None) -> None:
-    """Burn `code` into the bottom of `canvas` (just above the name plate) as
-    a dark pill of individually jittered/rotated characters.
-
-    Each character sits in its own fixed-width cell with a small random
-    rotation and vertical offset, plus a few faint noise strokes behind the
-    text. That is deliberately *light* distortion -- readable at a glance on a
-    phone -- not a serious anti-OCR measure: it stops casual copy/paste-free
-    automation from being trivial, not a determined vision model. `rng` is
-    injectable so tests can render deterministically."""
-    rng = rng if rng is not None else random
-    font = _font(CODE_FONT_SIZE, bold=True)
-    n = len(code)
-    pill_w = CODE_CELL_WIDTH * n + CODE_PILL_PAD_X * 2
-    pill_h = CODE_PILL_HEIGHT
-
-    pill = Image.new("RGBA", (pill_w, pill_h), (0, 0, 0, 0))
-    pd = ImageDraw.Draw(pill)
-    pd.rounded_rectangle([(0, 0), (pill_w - 1, pill_h - 1)], radius=16, fill=(0, 0, 0, 215), outline=(255, 255, 255, 70), width=2)
-
-    noise = Image.new("RGBA", (pill_w, pill_h), (0, 0, 0, 0))
-    nd = ImageDraw.Draw(noise)
-    for _ in range(3):
-        nd.line(
-            [(rng.randint(0, pill_w), rng.randint(0, pill_h)), (rng.randint(0, pill_w), rng.randint(0, pill_h))],
-            fill=(255, 255, 255, 40),
-            width=1,
-        )
-    for _ in range(24):
-        x, y = rng.randint(4, pill_w - 5), rng.randint(4, pill_h - 5)
-        nd.point((x, y), fill=(255, 255, 255, 70))
-    pill.alpha_composite(noise)
-
-    text_layer = Image.new("RGBA", (pill_w, pill_h), (0, 0, 0, 0))
-    layer_w = CODE_CELL_WIDTH + 16
-    for i, ch in enumerate(code):
-        glyph = Image.new("RGBA", (layer_w, pill_h), (0, 0, 0, 0))
-        gd = ImageDraw.Draw(glyph)
-        bbox = gd.textbbox((0, 0), ch, font=font)
-        gw, gh = bbox[2] - bbox[0], bbox[3] - bbox[1]
-        gd.text(((layer_w - gw) / 2 - bbox[0], (pill_h - gh) / 2 - bbox[1] - 3), ch, font=font, fill=TEXT_WHITE)
-        glyph = glyph.rotate(rng.uniform(-CODE_MAX_ROTATION, CODE_MAX_ROTATION), resample=Image.BICUBIC)
-        # dx keeps x >= 0 (CODE_PILL_PAD_X - 8 - 2 = 8) and dy >= 0, since
-        # alpha_composite rejects a negative destination
-        x = CODE_PILL_PAD_X - 8 + i * CODE_CELL_WIDTH + rng.randint(-2, 2)
-        y = rng.randint(0, 6)
-        text_layer.alpha_composite(glyph, (x, y))
-    pill.alpha_composite(text_layer)
-
-    w, h = canvas.size
-    bx = max(4, (w - pill_w) // 2)
-    by = h - NAME_PLATE_HEIGHT - pill_h - 14
-    canvas.alpha_composite(pill, (bx, by))
+def _draw_number_badge(canvas: Image.Image, number: int) -> None:
+    """Draw the drop's card number (the number on that card's button) in a dark
+    circle at the top-left corner of `canvas`."""
+    size = 56
+    badge = Image.new("RGBA", (size, size), (0, 0, 0, 0))
+    bd = ImageDraw.Draw(badge)
+    bd.ellipse([(0, 0), (size - 1, size - 1)], fill=(0, 0, 0, 215), outline=TEXT_WHITE, width=3)
+    bd.text((size // 2, size // 2), str(number), font=_font(34, bold=True), fill=TEXT_WHITE, anchor="mm")
+    canvas.alpha_composite(badge, (14, 14))
 
 
 def _load_card_art(image_bytes: bytes, size: Tuple[int, int]) -> Image.Image:
@@ -151,14 +101,14 @@ def _rounded_mask(size: Tuple[int, int], radius: int) -> Image.Image:
 def render_card(
     card: Card,
     image_bytes: bytes,
-    code: Optional[str] = None,
+    number: Optional[int] = None,
     size: Tuple[int, int] = CARD_IMAGE_SIZE,
     quantity: int = 1,
     show_id: bool = False,
 ) -> Image.Image:
     """Build one card tile: art, rarity-colored border, name plate, and
-    (if given) the CAPTCHA claim `code` burned in above the name plate. `code`
-    is omitted for gallery tiles, which don't need a claim badge.
+    (if given) the drop's card `number` in a circle at the top-left, matching the
+    number on that card's button. `number` is omitted for gallery tiles.
 
     `quantity` > 1 draws a small "×N" badge in the top-left corner -- used by
     the gallery to show a member holds a tradeable spare copy (see
@@ -172,7 +122,7 @@ def render_card(
     by the name-plate width, e.g. "Isuzu Sento..." for "Isuzu Sento(mi)ya",
     and the gallery previously showed neither the full name nor the ID, so
     there was nothing usable to type). Drop tiles never pass this -- the
-    claim code is the only thing that should identify a card there."""
+    drop number is the only thing that should identify a card there."""
     w, h = size
     color = RARITY_COLORS.get(card.rarity, RARITY_COLORS["common"])
 
@@ -203,8 +153,8 @@ def render_card(
     plate_draw.text((14, 32), card.rarity.upper(), font=rarity_font, fill=color)
     canvas.alpha_composite(plate, (0, h - NAME_PLATE_HEIGHT))
 
-    if code:
-        _draw_code_badge(canvas, code)
+    if number:
+        _draw_number_badge(canvas, number)
 
     if quantity > 1:
         qty_font = _font(16, bold=True)
@@ -238,13 +188,13 @@ def render_card(
 
 
 def render_drop(
-    entries: Sequence[Tuple[Card, bytes, str]],
+    entries: Sequence[Tuple[Card, bytes]],
     is_test: bool = False,
 ) -> io.BytesIO:
-    """Build the composite image posted for a drop: each (card, image_bytes,
-    code) side by side. A test drop gets a visible red banner so it's never
-    mistaken for a real one."""
-    tiles = [render_card(card, image_bytes, code=code) for card, image_bytes, code in entries]
+    """Build the composite image posted for a drop: the cards side by side,
+    numbered 1, 2, 3... to match their buttons. A test drop gets a visible red
+    banner so it's never mistaken for a real one."""
+    tiles = [render_card(card, image_bytes, number=i + 1) for i, (card, image_bytes) in enumerate(entries)]
     if not tiles:
         raise ValueError("render_drop needs at least one card")
 
@@ -259,7 +209,7 @@ def render_drop(
     if is_test:
         draw.rectangle([(0, 0), (total_w, banner_h)], fill=TEST_BANNER_COLOR)
         banner_font = _font(22, bold=True)
-        text = "TEST DROP — claims here award nothing"
+        text = "TEST DROP — picks here award nothing"
         bbox = draw.textbbox((0, 0), text, font=banner_font)
         text_w = bbox[2] - bbox[0]
         draw.text(((total_w - text_w) / 2, (banner_h - (bbox[3] - bbox[1])) / 2 - bbox[1]), text, font=banner_font, fill=(255, 255, 255))
@@ -411,7 +361,7 @@ def render_showcase(
 
 def render_single(card: Card, image_bytes: bytes, quantity: int = 1) -> io.BytesIO:
     """One card at full size with its "#<id>" badge, for `.card show`.
-    Never carries a claim code -- that only exists on drop tiles."""
+    Never carries a drop number -- that only exists on drop tiles."""
     tile = render_card(card, image_bytes, quantity=quantity, show_id=True)
     buf = io.BytesIO()
     tile.convert("RGBA").save(buf, format="PNG")

@@ -16,15 +16,15 @@ def fake_art(color=(120, 40, 40), size=(400, 560)):
 
 def test_render_card_returns_correct_size_and_mode():
     card = Card(1, "Alice", "Some Anime", "legendary", "1.png")
-    tile = imagegen.render_card(card, fake_art(), code="K3+9T")
+    tile = imagegen.render_card(card, fake_art(), number=1)
     assert tile.size == (400, 560)
     assert tile.mode == "RGBA"
 
 
 def test_render_drop_produces_valid_png_with_all_cards():
     cards = [
-        (Card(1, "A", "S", "common", "1.png"), fake_art((200, 50, 50)), "K3+9T"),
-        (Card(2, "B", "S", "rare", "2.png"), fake_art((50, 50, 200)), "M7#4E"),
+        (Card(1, "A", "S", "common", "1.png"), fake_art((200, 50, 50))),
+        (Card(2, "B", "S", "rare", "2.png"), fake_art((50, 50, 200))),
     ]
     buf = imagegen.render_drop(cards, is_test=False)
     img = Image.open(buf)
@@ -32,7 +32,7 @@ def test_render_drop_produces_valid_png_with_all_cards():
 
 
 def test_render_drop_test_mode_is_taller_for_the_banner():
-    cards = [(Card(1, "A", "S", "common", "1.png"), fake_art(), "K3+9T")]
+    cards = [(Card(1, "A", "S", "common", "1.png"), fake_art())]
     normal = Image.open(imagegen.render_drop(cards, is_test=False))
     test_marked = Image.open(imagegen.render_drop(cards, is_test=True))
     assert test_marked.height > normal.height
@@ -205,55 +205,20 @@ def test_render_gallery_tiles_show_the_card_id(monkeypatch):
     assert all(calls), "render_gallery must request show_id=True on every tile it builds"
 
 
-def _code_region(tile):
-    """The band above the name plate where the code pill is drawn."""
-    w, h = tile.size
-    top = h - imagegen.NAME_PLATE_HEIGHT - imagegen.CODE_PILL_HEIGHT - 14
-    return tile.crop((0, top, w, top + imagegen.CODE_PILL_HEIGHT)).tobytes()
-
-
-def test_render_card_with_a_code_draws_the_pill_above_the_name_plate():
+def test_render_card_with_a_number_draws_a_badge_only_in_the_top_left():
     card = Card(1, "A", "S", "common", "1.png")
     art = fake_art((10, 10, 10))
     plain = imagegen.render_card(card, art)
-    coded = imagegen.render_card(card, art, code="K3+9T")
-    assert _code_region(plain) != _code_region(coded)
-    # ...and only there: the top of the card is untouched
-    assert plain.crop((0, 0, 400, 200)).tobytes() == coded.crop((0, 0, 400, 200)).tobytes()
+    numbered = imagegen.render_card(card, art, number=2)
+    assert plain.crop((0, 0, 80, 80)).tobytes() != numbered.crop((0, 0, 80, 80)).tobytes()
+    assert plain.crop((0, 200, 400, 560)).tobytes() == numbered.crop((0, 200, 400, 560)).tobytes()
 
 
-def test_render_card_code_defaults_to_off():
+def test_render_card_number_defaults_to_off_and_differs_by_number():
     card = Card(1, "A", "S", "common", "1.png")
     art = fake_art((10, 10, 10))
-    assert imagegen.render_card(card, art).tobytes() == imagegen.render_card(card, art, code=None).tobytes()
-
-
-def test_different_codes_render_differently():
-    card = Card(1, "A", "S", "common", "1.png")
-    art = fake_art((10, 10, 10))
-    a = imagegen.render_card(card, art, code="K3+9T")
-    b = imagegen.render_card(card, art, code="M7#4E")
-    assert _code_region(a) != _code_region(b)
-
-
-def test_draw_code_badge_is_deterministic_for_a_seeded_rng_and_varies_across_seeds():
-    import random
-
-    base = Image.new("RGBA", (400, 560), (30, 30, 34, 255))
-
-    def render(seed):
-        canvas = base.copy()
-        imagegen._draw_code_badge(canvas, "K3+9T", random.Random(seed))
-        return canvas.tobytes()
-
-    assert render(1) == render(1)
-    assert render(1) != render(2), "per-character jitter/noise should differ between renders"
-
-
-def test_code_pill_fits_inside_a_drop_tile():
-    w, _ = imagegen.CARD_IMAGE_SIZE
-    pill_w = imagegen.CODE_CELL_WIDTH * 5 + imagegen.CODE_PILL_PAD_X * 2
-    assert pill_w <= w - 8
+    assert imagegen.render_card(card, art).tobytes() == imagegen.render_card(card, art, number=None).tobytes()
+    assert imagegen.render_card(card, art, number=1).tobytes() != imagegen.render_card(card, art, number=2).tobytes()
 
 
 # --- 1.7.1: contact sheet and upload validation ------------------------------

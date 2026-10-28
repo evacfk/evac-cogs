@@ -1,12 +1,14 @@
-"""The `.card settings` control panel: the drop channel, drop rules, the daily claim quota and the daily pull odds.
+"""The `.card settings` control panel: the drop channel, drop rules, the request channel, the daily pull odds, and
+the test tools.
 
-Specs only; every change goes through the cog's `_apply_*` methods. Managing the pool (`addcard`, `importpool`,
-`removecard`...) and testing (`testmode`, `testdrop`) stay commands.
+Specs only; every change goes through the cog's `_apply_*` methods. Managing the pool (`addcard`, `importseries`,
+`importpool`, `removecard`...) stays commands, because they take an image or run for a while.
 """
 from .settings_panel import Field, Spec
 
-INTRO = ("Pick a setting. Changes save as soon as you choose. Pool tools (`.card addcard`, `importseries`, `importpool`, `removecard`) "
-         "and testing (`.card testmode`, `testdrop`) stay as commands. Members who aren't admins see a read-only summary.")
+INTRO = ("Pick a setting. Changes save as soon as you choose. Pool tools (`.card addcard`, `importseries`, `importpool`, "
+         "`removecard`) stay as commands; open any card with `.card find` to change its rarity, swap its art or retire it. "
+         "Members who aren't admins see a read-only summary.")
 
 
 def _apply(name):
@@ -19,6 +21,10 @@ async def _channel_get(cog, guild):
     return await cog.config.guild(guild).channel_id()
 
 
+async def _request_channel_get(cog, guild):
+    return await cog.config.guild(guild).request_channel_id()
+
+
 def _channel_fmt(value, guild):
     if not value:
         return "not set"
@@ -29,19 +35,13 @@ def _channel_fmt(value, guild):
 async def _rules_get(cog, guild):
     conf = cog.config.guild(guild)
     chance = await conf.drop_chance() * 100
-    return {"chance": f"{chance:g}", "cooldown": await conf.drop_cooldown_seconds(), "expiry": await conf.drop_expiry_seconds(),
-            "wrong": await conf.max_wrong_guesses(), "penalty": await conf.wrong_guess_penalty_seconds()}
+    return {"chance": f"{chance:g}", "cooldown": await conf.drop_cooldown_seconds(), "window": await conf.draw_window_seconds()}
 
 
 def _rules_fmt(v, guild):
     if not v:
         return "?"
-    return (f"{v['chance']}% per message · cooldown {v['cooldown']}s · expire {v['expiry']}s · "
-            f"{v['wrong'] or 'unlimited'} wrong guesses · lockout {v['penalty']}s")
-
-
-async def _quota_get(cog, guild):
-    return {"quota": await cog.config.guild(guild).claim_quota()}
+    return f"{v['chance']}% per message · cooldown {v['cooldown']}s · draw stays open {v['window']}s"
 
 
 async def _odds_get(cog, guild):
@@ -59,24 +59,31 @@ def _odds_field(tier):
     return Field(tier, f"{tier.title()} weight", value=lambda v, t=tier: f"{v.get(t, 0):g}", max_length=8)
 
 
+async def _test_mode_get(cog, guild):
+    return await cog.config.guild(guild).test_mode()
+
+
 def build_specs():
     return [
         Spec("channel", "Drop channel", "Drops", "channel", get=_channel_get, apply=_apply("_apply_channel"),
-             fmt=_channel_fmt, channel_types=("text",), help="Where cards drop. Needed before `.card testdrop`."),
+             fmt=_channel_fmt, channel_types=("text",), help="Where cards drop."),
         Spec("rules", "Drop rules", "Drops", "modal", get=_rules_get, apply=_apply("_apply_drop_rules"), fmt=_rules_fmt,
              button="Edit…",
              fields=(Field("chance", "Chance per qualifying message, % (0-100)", value=lambda v: v["chance"], max_length=8),
                      Field("cooldown", "Seconds between drops (0 = none)", value=lambda v: str(v["cooldown"]), max_length=7),
-                     Field("expiry", "Seconds a drop stays claimable (30+)", value=lambda v: str(v["expiry"]), max_length=7),
-                     Field("wrong", "Wrong guesses per drop (0 = unlimited)", value=lambda v: str(v["wrong"]), max_length=4),
-                     Field("penalty", "Lockout after using them up, seconds", value=lambda v: str(v["penalty"]), max_length=7)),
+                     Field("window", "Seconds the draw stays open (30-600)", value=lambda v: str(v["window"]), max_length=4)),
              help="Takes effect on the next drop."),
-        Spec("quota", "Daily claim quota", "Claims & pulls", "modal", get=_quota_get, apply=_apply("_apply_claim_quota"),
-             fmt=lambda v, g: (f"{v['quota']} a day" if v["quota"] else "unlimited") if v else "?", button="Edit…",
-             fields=(Field("quota", "Claims per member per day (0 = unlimited)", value=lambda v: str(v["quota"]), max_length=4),),
-             help="Resets at midnight Pacific."),
-        Spec("odds", "Daily pull odds", "Claims & pulls", "modal", get=_odds_get, apply=_apply("_apply_daily_odds"),
+        Spec("odds", "Daily pull odds", "Drops", "modal", get=_odds_get, apply=_apply("_apply_daily_odds"),
              fmt=_odds_fmt, button="Edit…",
              fields=tuple(_odds_field(t) for t in ("common", "rare", "epic", "legendary")),
              help="Relative weights for `.card daily`; they don't need to add up to 100."),
+        Spec("requests", "Request channel", "Requests", "channel", get=_request_channel_get,
+             apply=_apply("_apply_request_channel"), fmt=lambda v, g: _channel_fmt(v, g) if v else "off", channel_types=("text",),
+             clearable=True,
+             help="Where members' \"Request this\" cards arrive for you to approve. Use a private, admin-only channel. "
+                  "Clear it to turn requests off."),
+        Spec("testmode", "Test mode", "Testing", "toggle", get=_test_mode_get, apply=_apply("_apply_test_mode"),
+             help="While on, ambient drops run the full draw but award nothing."),
+        Spec("testdrop", "Post a test drop", "Testing", "action", apply=_apply("_apply_test_drop"), button="Post it",
+             help="Posts one test drop in the drop channel now. Press a card, wait for the draw, and check the results."),
     ]

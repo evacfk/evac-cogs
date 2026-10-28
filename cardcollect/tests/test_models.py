@@ -27,8 +27,10 @@ def test_member_state_owns_and_roundtrip():
         collection=[1, 2, 3],
         showcase_card_ids=[2],
         sell_tokens=[token],
-        daily_claims=3,
-        daily_claims_date="2026-09-22",
+        pity=2,
+        wishlist=[5, 6],
+        wish_pings_off=True,
+        sets_claimed=["Frieren"],
     )
     assert state.owns(2) is True
     assert state.owns(99) is False
@@ -37,8 +39,7 @@ def test_member_state_owns_and_roundtrip():
     assert restored.collection == [1, 2, 3]
     assert restored.showcase_card_ids == [2]
     assert restored.sell_tokens[0] == token
-    assert restored.daily_claims == 3
-    assert restored.daily_claims_date == "2026-09-22"
+    assert (restored.pity, restored.wishlist, restored.wish_pings_off, restored.sets_claimed) == (2, [5, 6], True, ["Frieren"])
 
 
 def test_member_state_defaults():
@@ -46,8 +47,13 @@ def test_member_state_defaults():
     assert state.collection == []
     assert state.showcase_card_ids == []
     assert state.sell_tokens == []
-    assert state.daily_claims == 0
-    assert state.daily_claims_date == ""
+    assert (state.pity, state.wishlist, state.wish_pings_off, state.sets_claimed) == (0, [], False, [])
+
+
+def test_member_state_ignores_and_drops_the_old_claim_quota_fields():
+    restored = MemberState.from_dict({"collection": [1], "daily_claims": 4, "daily_claims_date": "2026-09-22"})
+    assert restored.collection == [1]
+    assert "daily_claims" not in restored.to_dict()
 
 
 def test_member_state_from_dict_migrates_legacy_single_favorite():
@@ -70,45 +76,23 @@ def _drop(**kwargs):
         message_id=None,
         guild_id=1,
         channel_id=2,
-        cards=[
-            {"card_id": 10, "code": "K3+9T", "position": 0},
-            {"card_id": 11, "code": "M7#4E", "position": 1},
-        ],
+        cards=[{"card_id": 10, "position": 0}, {"card_id": 11, "position": 1}],
         **kwargs,
     )
 
 
-def test_active_drop_code_lookup():
+def test_active_drop_card_at_a_position():
     drop = _drop()
-    assert drop.entry_for_code("K3+9T")["card_id"] == 10
-    assert drop.entry_for_code("M7#4E")["card_id"] == 11
-    assert drop.entry_for_code("ZZZZZ") is None
-    assert drop.entry_for_code("k3+9t") is None  # callers normalize; the drop stores canonical form
-    assert drop.is_test is False
+    assert drop.card_at(1)["card_id"] == 11
+    assert drop.card_at(7) is None
+    assert drop.picks == {} and drop.resolved is False and drop.is_test is False
 
 
-def test_active_drop_expiry():
-    assert _drop().is_expired(10**12) is False  # no deadline -> never expires
-    drop = _drop(expires_at=100.0)
-    assert drop.is_expired(99.9) is False
-    assert drop.is_expired(100.0) is True
-
-
-def test_active_drop_lockout_after_the_wrong_guess_cap():
-    drop = _drop(max_wrong_guesses=2)
-    assert drop.is_locked_out(5) is False
-    drop.wrong_guesses[5] = 1
-    assert drop.is_locked_out(5) is False
-    drop.wrong_guesses[5] = 2
-    assert drop.is_locked_out(5) is True
-    assert drop.is_locked_out(6) is False  # per member
-
-
-def test_active_drop_zero_cap_means_never_locked_out():
-    drop = _drop(max_wrong_guesses=0)
-    drop.wrong_guesses[5] = 999
-    assert drop.is_locked_out(5) is False
-
+def test_active_drop_closes_at_its_deadline():
+    assert _drop().is_closed(10**12) is False  # no deadline set
+    drop = _drop(closes_at=100.0)
+    assert drop.is_closed(99.9) is False
+    assert drop.is_closed(100.0) is True
 
 
 def test_member_state_keeps_daily_pull_fields():

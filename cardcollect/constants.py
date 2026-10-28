@@ -42,41 +42,46 @@ DEFAULT_DROP_SIZE = 3
 DEFAULT_DROP_CHANCE = 0.02  # 2% per qualifying message, retune via .card diagnostics
 DEFAULT_DROP_COOLDOWN_SECONDS = 900  # 15 minutes
 
-DEFAULT_CLAIM_COOLDOWN_SECONDS = 300  # 5 minutes
+# Cards drop in the drop channel with one button per card. Everyone who presses
+# a card's button before the draw closes goes into a random draw for it (see
+# engine.resolve_drop); one card per member per drop, and a member can change
+# their pick until the draw closes.
+DEFAULT_DRAW_WINDOW_SECONDS = 90
+MIN_DRAW_WINDOW_SECONDS = 30
+MAX_DRAW_WINDOW_SECONDS = 600
+MAX_DROP_SIZE = 5  # one button per card, and Discord allows five buttons in a row
+PICK_BUTTON_PREFIX = "cardcollect:pick:"  # + the card's position in the drop (0-4)
 
-# Claiming is done by pressing the drop's Claim button and typing the CAPTCHA
-# code shown on a card into the pop-up (see captcha.py / views.py /
-# cardcollect.submit_code). Each member gets a small, fixed number of *wrong
-# but code-shaped* guesses per drop; using them all locks them out of that
-# drop and, on a real (non-test) drop, out of *winning* any drop for
-# DEFAULT_WRONG_GUESS_PENALTY_SECONDS -- a real cost to spamming guesses.
-# Submissions that aren't even code-shaped (a typo) get a hint and cost
-# nothing. 0 = unlimited guesses, no lockout.
-DEFAULT_MAX_WRONG_GUESSES = 2
-DEFAULT_WRONG_GUESS_PENALTY_SECONDS = 120  # 2 minutes
+# Pity: each consecutive lost draw against an equal rival adds PITY_STEP to the
+# member's draw weight, up to PITY_CAP times a normal entry; winning resets it.
+PITY_STEP = 0.25
+PITY_CAP = 2.0
 
-# An unclaimed drop stops accepting codes after this long (and its state is
-# dropped from memory) -- without it, a drop nobody finished would stay
-# claimable, and keep growing in-memory state, forever.
-DEFAULT_DROP_EXPIRY_SECONDS = 600  # 10 minutes
+# Wishlist: how many cards a member can wish for, how many members one drop's
+# ping line names per card (the rest become "+N more"), and the ping line's reply.
+WISHLIST_MAX = 20
+WISH_PING_MAX = 10
 
-DEFAULT_CLAIM_QUOTA = 10  # max real claims per member per day; 0 = unlimited
+# Series sets: a series needs at least this many (active) cards to count as a
+# set; completing one pays SET_BONUS_BASE + SET_BONUS_PER_CARD per card, once.
+SET_MIN_CARDS = 3
+SET_BONUS_BASE = 5000
+SET_BONUS_PER_CARD = 500
+
+# Requests for characters that aren't in the pool yet: how many a member can have
+# waiting at once, and the longest request text.
+REQUEST_MAX_PENDING = 3
+REQUEST_MAX_LENGTH = 100
+REQUEST_APPROVE_ID = "cardcollect:request:approve"
+REQUEST_DECLINE_ID = "cardcollect:request:decline"
+
 MAX_SHOWCASE_SLOTS = 3  # how many cards a member can pin in their gallery header
 
-# 1 "original" copy + 1 tradeable spare; a 3rd+ claim of the same character
+# 1 "original" copy + 1 tradeable spare; a 3rd+ win of the same character
 # auto-converts to a sell token instead of piling up more duplicates, so
 # members can still trade a spare with `.card give` without being able to
 # hoard an unlimited stack of the same character.
 MAX_COPIES_KEPT = 2
-
-# CAPTCHA code alphabet -- see captcha.py for the reasoning behind every
-# exclusion. Confusable glyphs left out on purpose: 0 O Q D / 1 I L / 5 S /
-# 2 Z / 8 B / U V / G 6.
-CODE_LENGTH = 5
-CODE_LETTERS = "ACEFHJKMNPRTWXY"
-CODE_DIGITS = "3479"
-CODE_SYMBOLS = "@#$%&?+"
-MIN_CODE_DISTANCE = 2  # min edits between any two codes within one drop
 
 # `.card importseries`: how many of a series' characters (by AniList favourites)
 # the default button imports, the hard ceiling for "import all", and how many
@@ -105,4 +110,4 @@ GALLERY_PAGE_SIZE = GALLERY_COLUMNS * GALLERY_ROWS_PER_PAGE
 GALLERY_VIEW_TIMEOUT_SECONDS = 180  # a stale pager after this just stops responding
 
 # bumped on every deploy so `.card version` can confirm the new build is live
-COG_VERSION = "1.7.2"
+COG_VERSION = "2.0.0"

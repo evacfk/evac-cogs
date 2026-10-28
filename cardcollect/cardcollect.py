@@ -1,17 +1,19 @@
-"""Main cog: message listener (chance-per-message drop trigger), the claim
-flow, and all `.card` commands.
+"""Main cog: message listener (chance-per-message drop trigger), the pick-your-card
+draw, and all `.card` commands.
 
-Game logic lives in engine.py / captcha.py (pure, unit-tested standalone);
-this file is the Discord-facing wiring around it -- Config I/O, the message
-listener, image compositing calls into imagegen.py, and command handlers. The
-button/pop-up UI itself lives in views.py.
+Game logic lives in engine.py (pure, unit-tested standalone); this file is the
+Discord-facing wiring around it -- Config I/O, the message listener, image
+compositing calls into imagegen.py, and command handlers. The button/pop-up UI
+itself lives in views.py.
 
-Claiming: every card in a drop has its own short CAPTCHA code burned into the
-art, and the drop message carries a Claim button. Pressing it opens a pop-up
-where the member types a code; the first correct submission claims that card
--- see submit_code. Nothing is typed into chat, so it never mixes with the
-channel's conversation. (This replaced an emoji-reaction mechanic whose
-reactions sometimes never registered and occasionally got rate-limited.)
+The draw: a drop is one image of numbered cards with one button per card. Anyone
+who presses a card's button before the draw closes (90s by default) is entered
+for that card; they may change their pick until then, and may be in for only one
+card per drop. When the window closes the bot draws a random winner per card --
+members who don't own the card win before members who do, and a member who keeps
+losing equal draws gets a small pity boost (engine.resolve_drop) -- then edits the
+drop message in place with the results. Nothing is typed into chat. (This replaced
+a CAPTCHA claim, which replaced an emoji-reaction mechanic.)
 """
 
 import asyncio
@@ -19,6 +21,7 @@ import functools
 import io
 import json
 import logging
+import random
 import time
 from collections import Counter
 from datetime import datetime
@@ -31,71 +34,52 @@ import discord
 from redbot.core import Config, bank, commands
 from redbot.core.data_manager import cog_data_path
 
-from . import captcha, embeds, engine, imagegen, import_characters, storage, views
+from . import embeds, engine, imagegen, import_characters, storage, views
 from . import panel as panel_specs
 from .settings_panel import PanelError, open_panel
 from .constants import (
     ACTIVITY_TIMEZONE,
+    ART_MAX_UPLOAD_BYTES,
     COG_VERSION,
-    DEFAULT_CLAIM_COOLDOWN_SECONDS,
     DAILY_STREAK_BONUS_EVERY,
-    DEFAULT_CLAIM_QUOTA,
     DEFAULT_DAILY_WEIGHTS,
+    DEFAULT_DRAW_WINDOW_SECONDS,
     DEFAULT_DROP_CHANCE,
     DEFAULT_DROP_COOLDOWN_SECONDS,
-    DEFAULT_DROP_EXPIRY_SECONDS,
     DEFAULT_DROP_SIZE,
     DEFAULT_DROP_WEIGHTS,
-    DEFAULT_MAX_WRONG_GUESSES,
     DEFAULT_SELL_PRICES,
     DEFAULT_TIER_CUTOFFS,
-    DEFAULT_WRONG_GUESS_PENALTY_SECONDS,
     GALLERY_PAGE_SIZE,
     IMPORT_GENDERS,
     MAX_COPIES_KEPT,
+    MAX_DRAW_WINDOW_SECONDS,
+    MAX_DROP_SIZE,
     MAX_SHOWCASE_SLOTS,
+    MIN_DRAW_WINDOW_SECONDS,
+    REQUEST_MAX_LENGTH,
+    REQUEST_MAX_PENDING,
     SERIES_IMPORT_DEFAULT,
     SERIES_IMPORT_MAX,
     SHEET_COLUMNS,
     TIERS,
-    ART_MAX_UPLOAD_BYTES,
+    WISH_PING_MAX,
+    WISHLIST_MAX,
 )
 from .models import ActiveDrop, Card, MemberState, SeriesPreview
 
 log = logging.getLogger("red.evac-cogs.cardcollect")
 
-MSG_OVER = "This drop is over — it was fully claimed or has expired."
-MSG_ALREADY = "You've already claimed a card from this drop — one per person."
-MSG_LOCKED = "You're locked out of this drop (too many wrong codes)."
-MSG_TAKEN = "Too slow — that card has already been claimed. Try another card's code."
-MSG_MALFORMED = (
-    "That doesn't look like a code — they're 5 characters: letters, numbers and one symbol "
-    "(like `K3+9T`). Check the card and try again; this didn't cost you a guess."
-)
-MSG_ERROR = "Something went wrong saving that claim — the card is still open, so try again."
+MSG_OVER = "This drop is over — its draw has already closed."
+MSG_ERROR = "Something went wrong with that -- try again."
 
 
 def _secs(seconds: float) -> int:
     return max(1, int(seconds + 0.999))
 
 
-def _cooldown_text(left: float) -> str:
-    return f"⏳ You're on claim cooldown for another {_secs(left)}s."
-
-
-def _penalty_text(left: float) -> str:
-    return f"\U0001f6ab You're locked out from guessing for another {_secs(left)}s."
-
-
-def _lockout_text(penalty_seconds: float, is_test: bool) -> str:
-    if is_test:
-        return "❌ You're out of chances and locked out of this drop. (Test mode, so no real penalty this time.)"
-    if penalty_seconds > 0:
-        return (
-            f"❌ You're out of chances and locked out from guessing for {int(penalty_seconds)}s. "
-            "Now watch everyone else collect the cards in front of you, cuck! \U0001f921"
-        )
-    return "❌ You're out of chances and locked out of this drop."
+def _new_stats() -> dict:
+    return {"since": 0, "drops": 0, "cards_offered": 0, "picks": 0, "cards_unpicked": 0, "contested": 0, "daily_pulls": {}}
 
 
 DEFAULT_GUILD = {
@@ -108,24 +92,26 @@ DEFAULT_GUILD = {
     "drop_weights": dict(DEFAULT_DROP_WEIGHTS),
     "daily_weights": dict(DEFAULT_DAILY_WEIGHTS),
     "tier_cutoffs": dict(DEFAULT_TIER_CUTOFFS),
-    "claim_cooldown_seconds": DEFAULT_CLAIM_COOLDOWN_SECONDS,
-    "max_wrong_guesses": DEFAULT_MAX_WRONG_GUESSES,
-    "wrong_guess_penalty_seconds": DEFAULT_WRONG_GUESS_PENALTY_SECONDS,
-    "drop_expiry_seconds": DEFAULT_DROP_EXPIRY_SECONDS,
-    "claim_quota": DEFAULT_CLAIM_QUOTA,
+    "draw_window_seconds": DEFAULT_DRAW_WINDOW_SECONDS,
     "sell_prices": dict(DEFAULT_SELL_PRICES),
     "test_mode": False,
     "activity_tracking": {"hourly_buckets": {}, "sampling_since": 0},
+    "stats": _new_stats(),
+    "request_channel_id": None,
+    "requests": {},  # request id (str) -> {"user_id", "text", "status", "message_id", "card_id"}
+    "next_request_id": 1,
 }
 
 DEFAULT_MEMBER = {
     "collection": [],
     "showcase_card_ids": [],
     "sell_tokens": [],
-    "daily_claims": 0,
-    "daily_claims_date": "",
     "daily_pull_date": "",
     "daily_streak": 0,
+    "pity": 0,
+    "wishlist": [],
+    "wish_pings_off": False,
+    "sets_claimed": [],
 }
 
 
@@ -140,26 +126,17 @@ class CardCollect(commands.Cog):
 
         self.data_path: Path = cog_data_path(self)
 
-        # in-memory only -- losing these on restart just expires whatever
-        # was mid-flight, never touches persisted collections/tokens
+        # in-memory only -- losing these on restart just means a drop that was
+        # mid-draw never resolves (its buttons then answer "this drop is over"),
+        # never touches persisted collections/tokens
         self.active_drops: Dict[int, ActiveDrop] = {}  # message_id -> ActiveDrop
         self.last_drop_time: Dict[int, float] = {}  # guild_id -> monotonic time
-        self.claim_cooldown_until: Dict[int, float] = {}  # user_id -> monotonic time
-        # set when a member burns all their wrong guesses on a drop -- see
-        # _record_wrong_guess. Excludes a user from *winning* any drop while
-        # active, checked alongside claim_cooldown_until in _claim.
-        self.wrong_guess_penalty_until: Dict[int, float] = {}  # user_id -> monotonic time
         self._drop_locks: Dict[int, asyncio.Lock] = {}  # guild_id -> lock (drop cooldown)
-        # One lock per guild around the whole claim transaction (eligibility
-        # checks -> Config write -> marking the card claimed). Near-
-        # simultaneous correct codes are common (that's the whole game), and
-        # the eligibility checks and the write span real awaits, so without
-        # this two submissions for the same card -- or two from the same
-        # member for different cards -- could both pass their checks before
-        # either was recorded. asyncio.Lock is FIFO, so the submission the
-        # listener saw first is also the one that wins.
+        # One lock per guild around every write that gives or takes cards
+        # (resolving a draw, a daily pull, a gift, a sale), so two of them can
+        # never read the same member state and overwrite each other.
         self._claim_locks: Dict[int, asyncio.Lock] = {}  # guild_id -> lock
-        self._persistent_view: Optional[views.ClaimView] = None
+        self._persistent_views: List[discord.ui.View] = []
         # AniList's public API rate-limits aggressively; without this, two
         # `.card importpool` runs fired close together each start their own
         # up-to-200-page loop and multiply the request rate against the same
@@ -167,6 +144,7 @@ class CardCollect(commands.Cog):
         # lock is process-wide (not per-guild) since it's AniList's own
         # global limit being protected, not anything guild-scoped.
         self._importpool_lock = asyncio.Lock()
+        self._rng: Optional[random.Random] = None  # tests inject a seeded one for the draw
 
         self._session: Optional[aiohttp.ClientSession] = None
 
@@ -179,12 +157,12 @@ class CardCollect(commands.Cog):
         self._activity_task: Optional[asyncio.Task] = None
 
     async def cog_load(self):
-        # One shared, persistent Claim button handler: a click on a drop that
-        # predates a restart still lands here, and submit_code/
-        # claim_button_refusal answer "this drop is over" instead of Discord
-        # showing "This interaction failed".
-        self._persistent_view = views.ClaimView(self)
-        self.bot.add_view(self._persistent_view)
+        # Shared, persistent views: a press of a button on a drop (or a request)
+        # that predates a restart still lands here, and is answered ("this drop
+        # is over") instead of Discord showing "This interaction failed".
+        self._persistent_views = [views.DrawView(self, None), views.RequestReviewView(self)]
+        for view in self._persistent_views:
+            self.bot.add_view(view)
 
         # a hung AniList request or a slow image host would otherwise leave
         # .card importpool waiting forever -- give every request on this
@@ -195,12 +173,15 @@ class CardCollect(commands.Cog):
     async def cog_unload(self):
         if self._activity_task is not None:
             self._activity_task.cancel()
+        for drop in list(self.active_drops.values()):
+            if drop.task is not None:
+                drop.task.cancel()
         try:
             await self._flush_activity()
         except Exception:
             log.exception("cardcollect: final activity flush failed")
-        if self._persistent_view is not None:
-            self._persistent_view.stop()
+        for view in self._persistent_views:
+            view.stop()
         if self._session is not None:
             await self._session.close()
 
@@ -282,16 +263,11 @@ class CardCollect(commands.Cog):
         return lock
 
     def _forget_drop(self, message_id: int):
-        """Drop a fully resolved (or expired) drop's in-memory state --
-        without this, self.active_drops would grow by one entry per drop
-        ever posted, forever."""
-        self.active_drops.pop(message_id, None)
-
-    def _prune_expired_drops(self):
-        now = time.monotonic()
-        for message_id, drop in list(self.active_drops.items()):
-            if drop.is_expired(now):
-                self._forget_drop(message_id)
+        """Drop a resolved drop's in-memory state -- without this,
+        self.active_drops would grow by one entry per drop ever posted, forever."""
+        drop = self.active_drops.pop(message_id, None)
+        if drop is not None and drop.view is not None:
+            drop.view.stop()
 
     # ------------------------------------------------------------------
     # drop trigger
@@ -394,266 +370,417 @@ class CardCollect(commands.Cog):
         conf = self.config.guild(guild)
         pool_cards = await self._rollable_pool_cards(guild)
         if not pool_cards:
-            return "The card pool is empty. Add characters first with `.card addcard` or `.card importpool`."
+            return "The card pool is empty. Add characters first with `.card addcard` or `.card importseries`."
 
         weights = await conf.drop_weights()
-        drop_size = await conf.drop_size()
-        max_wrong_guesses = await conf.max_wrong_guesses()
-        wrong_guess_penalty = await conf.wrong_guess_penalty_seconds()
-        expiry = await conf.drop_expiry_seconds()
+        drop_size = max(1, min(MAX_DROP_SIZE, await conf.drop_size()))
+        window = await conf.draw_window_seconds()
 
-        self._prune_expired_drops()
-
-        drop = engine.build_drop(
-            pool_cards,
-            weights,
-            drop_size,
-            guild.id,
-            channel.id,
-            is_test=is_test,
-        )
+        drop = engine.build_drop(pool_cards, weights, drop_size, guild.id, channel.id, is_test=is_test)
         if drop is None:
             return "Couldn't roll a drop from the current pool (no cards available in any rarity tier)."
 
-        entries = []
-        kept_cards = []
+        entries = []  # (Card, art bytes), in button order
         for card_entry in drop.cards:
             card = await self._card_by_id(guild, card_entry["card_id"])
             image_bytes = self._read_card_image(guild, card_entry["card_id"])
             if card is None or image_bytes is None:
                 continue
-            entries.append((card, image_bytes, card_entry["code"]))
-            kept_cards.append(card_entry)
+            entries.append((card, image_bytes))
         if not entries:
             return (
                 "Rolled cards but couldn't find their art on disk -- the pool may be "
                 "out of sync with the image files. Check `.card settings` and the data folder."
             )
-        # a card whose art couldn't be rendered has no visible code, so it can
-        # never be claimed -- leaving it in drop.cards would keep the drop
-        # from ever counting as fully claimed
-        drop.cards = kept_cards
+        # a card whose art is missing can't be shown, so it isn't offered; the
+        # remaining cards are renumbered 1..n to match the image and the buttons
+        drop.cards = [{"card_id": card.card_id, "position": i} for i, (card, _) in enumerate(entries)]
 
         # Pillow work off the event loop: a 3-card composite is tens of ms of
         # CPU, which is long enough to delay gateway heartbeats if done inline
         composite = await asyncio.get_running_loop().run_in_executor(
             None, functools.partial(imagegen.render_drop, entries, is_test=is_test)
         )
+        closes_epoch = int(time.time()) + window
         if is_test:
-            content = "\U0001f9ea **Test drop** — claims here won't award anything. Press **Claim a card** and enter a code to try it."
+            lead = "\U0001f9ea **Test drop** — picks here won't award anything."
         else:
-            content = "\U0001f524 **Press Claim a card and enter the code shown on a card!** First correct code wins — one card per person."
-        sent = await channel.send(
-            content=content, file=discord.File(composite, filename="drop.png"), view=views.ClaimView(self)
+            lead = "\U0001f3b4 **A drop!**"
+        content = (
+            f"{lead} Press the card you want. The draw closes <t:{closes_epoch}:R> — "
+            "one card per person, and you can change your pick until then."
         )
+        view = views.DrawView(self, [card for card, _ in entries], window)
+        sent = await channel.send(content=content, file=discord.File(composite, filename="drop.png"), view=view)
 
         # registered synchronously right after the send returns, before any
-        # further await, so a press of the button the instant the drop appears
+        # further await, so a press of a button the instant the drop appears
         # can never arrive before the drop is known
         drop.message_id = sent.id
-        drop.max_wrong_guesses = max_wrong_guesses
-        drop.wrong_guess_penalty_seconds = wrong_guess_penalty
-        drop.expires_at = time.monotonic() + expiry if expiry > 0 else None
+        drop.message = sent
+        drop.guild = guild
+        drop.view = view
+        drop.closes_epoch = closes_epoch
+        drop.closes_at = time.monotonic() + window
         self.active_drops[sent.id] = drop
+        drop.task = asyncio.ensure_future(self._close_drop_later(drop, window))
+
+        if not is_test:
+            await self._bump_stats(guild, drops=1, cards_offered=len(entries))
+            asyncio.ensure_future(self._post_wish_pings(drop, [card for card, _ in entries]))
         return None
 
     # ------------------------------------------------------------------
-    # claim flow (Claim button -> code pop-up -> submit_code)
+    # the draw: pick -> close -> resolve
     # ------------------------------------------------------------------
 
-    def claim_button_refusal(self, member: discord.abc.User, message_id: int) -> Optional[str]:
-        """Why this member can't open the code pop-up for this drop right now
-        (a private message for them), or None if they can. Purely a courtesy
-        so they aren't asked to type a code that can't work -- every one of
-        these is re-checked, authoritatively, inside submit_code/_claim."""
-        self._prune_expired_drops()
+    def register_pick(self, member: discord.abc.User, message_id: int, position: int):
+        """Record (or change) a member's pick. Synchronous on purpose: it runs
+        before the button press is even acknowledged, so a press made before the
+        draw closes always counts, however slow the acknowledgement is.
+        Returns (drop, previous_position); drop is None if the draw is over."""
         drop = self.active_drops.get(message_id)
+        if drop is None or drop.is_closed(time.monotonic()) or drop.card_at(position) is None:
+            return None, None
+        previous = drop.picks.get(member.id)
+        drop.picks[member.id] = position
+        return drop, previous
+
+    async def pick_reply(self, member: discord.abc.User, drop: ActiveDrop, position: int, previous: Optional[int]) -> str:
+        """The private reply to a pick: what they're in for, and any caveat."""
+        card = await self._card_by_id(drop.guild, drop.card_at(position)["card_id"])
+        name = f"**{card.name}**" if card is not None else "that card"
+        if previous == position:
+            head = f"You're already in for {name}."
+        elif previous is None:
+            head = f"✅ You're in the draw for {name}."
+        else:
+            old = await self._card_by_id(drop.guild, drop.card_at(previous)["card_id"]) if drop.card_at(previous) else None
+            head = f"✅ Switched your pick{f' from **{old.name}**' if old is not None else ''} to {name}."
+        lines = [head]
+        state = await self._member_state_by_id(drop.guild, member.id)
+        tier = engine.owner_tier(state.collection, drop.card_at(position)["card_id"], MAX_COPIES_KEPT)
+        if tier == 1:
+            lines.append("You already own it, so you only win a spare if nobody who doesn't own it picks it too.")
+        elif tier == 2:
+            lines.append(
+                "You're already at your copy limit for it, so you only win it (as a sell token) if nobody else wants it."
+            )
+        boost = engine.pity_multiplier(state.pity)
+        if tier == 0 and boost > 1.0:
+            lines.append(f"\U0001f340 Pity bonus: your entry counts x{boost:g} after your recent losses.")
+        lines.append(f"The draw closes <t:{drop.closes_epoch}:R>. You can change your pick until then.")
+        if drop.is_test:
+            lines.append("(Test drop — nothing is awarded.)")
+        return "\n".join(lines)
+
+    async def handle_pick(self, member: discord.abc.User, message_id: int, position: int) -> str:
+        """register_pick + pick_reply in one call (what a button press does,
+        minus the acknowledgement)."""
+        drop, previous = self.register_pick(member, message_id, position)
         if drop is None:
             return MSG_OVER
-        if member.id in drop.claimed_by:
-            return MSG_ALREADY
-        if drop.is_locked_out(member.id):
-            return MSG_LOCKED
-        if not drop.is_test:
-            now = time.monotonic()
-            cooldown_left = self.claim_cooldown_until.get(member.id, 0.0) - now
-            if cooldown_left > 0:
-                return _cooldown_text(cooldown_left)
-            penalty_left = self.wrong_guess_penalty_until.get(member.id, 0.0) - now
-            if penalty_left > 0:
-                return _penalty_text(penalty_left)
-        return None
+        return await self.pick_reply(member, drop, position, previous)
 
-    def _record_wrong_guess(self, member: discord.abc.User, drop: ActiveDrop) -> str:
-        """Charge a wrong (but code-shaped) guess and build the private
-        reply. Fully synchronous. Reaching the cap locks the member out of
-        this drop and, on a real drop, from winning any drop for a while."""
-        if drop.max_wrong_guesses <= 0:
-            return "❌ Wrong code."
-        count = drop.wrong_guesses.get(member.id, 0) + 1
-        drop.wrong_guesses[member.id] = count
-        left = drop.max_wrong_guesses - count
-        if left > 0:
-            return f"❌ Wrong code. {left} guess{'es' if left != 1 else ''} left on this drop."
+    async def _close_drop_later(self, drop: ActiveDrop, delay: float):
+        try:
+            await asyncio.sleep(delay)
+            await self._resolve_drop(drop)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            log.exception("cardcollect: resolving a draw failed")
+            self._forget_drop(drop.message_id)
 
-        penalty = 0.0
-        if not drop.is_test:
-            # test drops still enforce the guess cap (so `.card testdrop`
-            # previews the real interaction accurately) but never set the
-            # penalty itself -- same test-mode exemption the claim cooldown
-            # and daily quota get in _claim, so testing can't lock an admin
-            # out of winning real drops
-            penalty = drop.wrong_guess_penalty_seconds
-            if penalty > 0:
-                self.wrong_guess_penalty_until[member.id] = time.monotonic() + penalty
-        return _lockout_text(penalty, drop.is_test)
+    async def _member_state_by_id(self, guild: discord.Guild, user_id: int) -> MemberState:
+        return MemberState.from_dict(await self.config.member_from_ids(guild.id, user_id).all())
 
-    async def submit_code(
-        self, member: discord.abc.User, channel: discord.abc.Messageable, drop_message_id: int, raw_code: str
-    ) -> str:
-        """Handle one code submitted from the pop-up. Returns the private
-        (ephemeral) reply for the member; a successful claim also posts the
-        public result embed.
+    async def _save_member_state_by_id(self, guild: discord.Guild, user_id: int, state: MemberState):
+        await self.config.member_from_ids(guild.id, user_id).set(state.to_dict())
 
-        Everything before _claim is synchronous on purpose -- see
-        CodeModal.handle_submit: who wins a near-tie is decided by who
-        reaches the claim lock first, so nothing may await ahead of it."""
-        self._prune_expired_drops()
-        drop = self.active_drops.get(drop_message_id)
-        if drop is None:
-            return MSG_OVER
-        if member.id in drop.claimed_by:
-            return MSG_ALREADY
-        if drop.is_locked_out(member.id):
-            return MSG_LOCKED
+    def _grant_card(self, state: MemberState, card: Card, sell_prices: dict) -> Tuple[str, Optional[int]]:
+        """Give a member a card they won or pulled: a new copy, a tradeable
+        spare, or (at the copy limit) a sell token. Takes it off their
+        wishlist once they own it. Returns (outcome, sell price or None)."""
+        outcome = engine.claim_outcome(state.collection, card.card_id, MAX_COPIES_KEPT)
+        price = None
+        if outcome == "sell_token":
+            state.sell_tokens.append(engine.make_sell_token(card.card_id, card.rarity))
+            price = engine.sell_price(card.rarity, sell_prices)
+        else:
+            state.collection.append(card.card_id)
+            if card.card_id in state.wishlist:
+                state.wishlist.remove(card.card_id)
+        return outcome, price
 
-        code = captcha.normalize(raw_code)
-        entry = drop.entry_for_code(code)
-        if entry is None:
-            if not captcha.looks_like_code(code):
-                # almost certainly a typo, not a guess -- hint, don't charge
-                return MSG_MALFORMED
-            return self._record_wrong_guess(member, drop)
-        if entry["position"] in drop.claimed_positions:
-            return MSG_TAKEN  # right code, but someone was faster -- not the member's fault
-        return await self._claim(member, channel, drop, entry)
+    async def _complete_set(
+        self, guild: discord.Guild, member: Optional[discord.abc.User], state: MemberState, card: Card, outcome: str
+    ) -> Optional[Tuple[str, int]]:
+        """If getting `card` just finished a series set for the first time, pay
+        the bonus and return (series, bonus). Only a NEW card can finish a set,
+        so a member who finished one before sets existed is never paid
+        retroactively for a duplicate."""
+        if outcome != "new" or not card.series or card.series in state.sets_claimed:
+            return None
+        sets = engine.build_sets(await self._pool_cards(guild))
+        members = sets.get(card.series)
+        if not members or not all(c.card_id in state.collection for c in members):
+            return None
+        bonus = engine.set_bonus(len(members))
+        if member is not None:
+            try:
+                await bank.deposit_credits(member, bonus)
+            except Exception:
+                log.exception("cardcollect: couldn't pay a set bonus to %s", getattr(member, "id", "?"))
+                return None
+        state.sets_claimed.append(card.series)
+        return card.series, bonus
+
+    async def _bump_stats(self, guild: discord.Guild, daily_pull_date: Optional[str] = None, **counts):
+        """Add to the diagnostics counters (`.card diagnostics`). Pass
+        `daily_pull_date` to also count one `.card daily` pull on that day."""
+        async with self.config.guild(guild).stats() as stats:
+            if not stats.get("since"):
+                stats["since"] = time.time()
+            for key, value in counts.items():
+                stats[key] = stats.get(key, 0) + value
+            if daily_pull_date:
+                daily = stats.setdefault("daily_pulls", {})
+                daily[daily_pull_date] = daily.get(daily_pull_date, 0) + 1
+                for old in sorted(daily)[:-30]:  # keep the last 30 days
+                    daily.pop(old, None)
+
+    async def _resolve_drop(self, drop: ActiveDrop):
+        """Close a drop's draw: pick the winners, award the cards, and edit the
+        drop message in place with the results. Safe to call twice; only the
+        first call does anything."""
+        if drop.resolved:
+            return None
+        drop.resolved = True  # synchronous: from here on no pick counts
+        self._forget_drop(drop.message_id)
+        guild = drop.guild
+        conf = self.config.guild(guild)
+        picks = {uid: pos for uid, pos in drop.picks.items() if guild.get_member(uid) is not None}
+
+        async with self._get_claim_lock(guild.id):
+            sell_prices = await conf.sell_prices()
+            states = {uid: await self._member_state_by_id(guild, uid) for uid in picks}
+            results, pity_after = engine.resolve_drop(
+                drop.cards,
+                picks,
+                {uid: s.collection for uid, s in states.items()},
+                {uid: s.pity for uid, s in states.items()},
+                MAX_COPIES_KEPT,
+                rng=self._rng,
+            )
+            cards = {c["card_id"]: await self._card_by_id(guild, c["card_id"]) for c in drop.cards}
+            set_lines: List[str] = []
+            failed = set()
+            if not drop.is_test:
+                for result in results:
+                    winner, card = result["winner"], cards.get(result["card_id"])
+                    if winner is None:
+                        continue
+                    if card is None:  # removed from the pool mid-draw
+                        result["winner"], result["outcome"] = None, "error"
+                        failed.add(winner)
+                        continue
+                    state = states[winner]
+                    try:
+                        outcome, price = self._grant_card(state, card, sell_prices)
+                        state.pity = pity_after[winner]
+                        done = await self._complete_set(guild, guild.get_member(winner), state, card, outcome)
+                        await self._save_member_state_by_id(guild, winner, state)
+                        result["outcome"], result["price"] = outcome, price
+                        if done is not None:
+                            set_lines.append(
+                                f"\U0001f3c6 <@{winner}> completed the **{done[0]}** set: +{done[1]:,} wondercoin!"
+                            )
+                    except Exception:
+                        log.exception("cardcollect: couldn't save a draw win for %s", winner)
+                        result["winner"], result["outcome"] = None, "error"
+                        failed.add(winner)
+                for uid, new_pity in pity_after.items():
+                    state = states[uid]
+                    if uid not in failed and state.pity != new_pity and not any(r["winner"] == uid for r in results):
+                        state.pity = new_pity
+                        try:
+                            await self._save_member_state_by_id(guild, uid, state)
+                        except Exception:
+                            log.exception("cardcollect: couldn't save pity for %s", uid)
+                unpicked = sum(1 for r in results if r["pickers"] == 0)
+                await self._bump_stats(
+                    guild, picks=len(picks), cards_unpicked=unpicked, contested=sum(1 for r in results if r["contested"])
+                )
+
+        embed = embeds.draw_results_embed(results, cards, len(picks), set_lines, drop.is_test)
+        await self._edit_drop_message(drop, embed)
+        return results
+
+    async def _edit_drop_message(self, drop: ActiveDrop, embed: discord.Embed):
+        """Edit the drop message in place into its results; if it was deleted,
+        post the results as a new message instead."""
+        content = "\U0001f9ea **Test draw closed**" if drop.is_test else "\U0001f3b4 **Draw closed**"
+        try:
+            await drop.message.edit(
+                content=content, embed=embed, view=None, allowed_mentions=discord.AllowedMentions.none()
+            )
+        except discord.HTTPException:
+            log.warning("cardcollect: couldn't edit the drop message; posting the results instead", exc_info=True)
+            channel = drop.message.channel
+            await self._post_to_channel(
+                channel, content=content, embed=embed, allowed_mentions=discord.AllowedMentions.none()
+            )
 
     async def _post_to_channel(self, channel: discord.abc.Messageable, **kwargs):
         """Best-effort public post: a failed announcement must never undo or
-        crash a claim that has already been saved."""
+        crash something that has already been saved."""
         try:
             await channel.send(**kwargs)
         except discord.HTTPException:
             log.exception("cardcollect: failed to post to the drop channel")
 
-    async def _claim(
-        self, member: discord.abc.User, channel: discord.abc.Messageable, drop: ActiveDrop, entry: dict
-    ) -> str:
-        guild = channel.guild
-        position = entry["position"]
-
-        async with self._get_claim_lock(guild.id):
-            # Re-check everything now that we hold the lock: a claim queued
-            # ahead of this one may have taken the card, used up this
-            # member's one card, or the drop may have expired meanwhile.
-            if self.active_drops.get(drop.message_id) is not drop or drop.is_expired(time.monotonic()):
-                return MSG_OVER
-            if member.id in drop.claimed_by:
-                return MSG_ALREADY
-            if drop.is_locked_out(member.id):
-                return MSG_LOCKED
-            if position in drop.claimed_positions:
-                return MSG_TAKEN
-
-            now = time.monotonic()
-            if not drop.is_test:
-                cooldown_left = self.claim_cooldown_until.get(member.id, 0.0) - now
-                if cooldown_left > 0:
-                    return _cooldown_text(cooldown_left)
-                penalty_left = self.wrong_guess_penalty_until.get(member.id, 0.0) - now
-                if penalty_left > 0:
-                    return _penalty_text(penalty_left)
-
-            conf = self.config.guild(guild)
-            today = engine.today_str(ACTIVITY_TIMEZONE)
-            claim_quota = 0 if drop.is_test else await conf.claim_quota()
-            state = await self._member_state(member)
-            if claim_quota > 0 and not engine.has_quota_remaining(
-                state.daily_claims, state.daily_claims_date, claim_quota, today
-            ):
-                return f"You've used all {claim_quota} of today's claims. It resets at midnight Pacific."
-
-            card = await self._card_by_id(guild, entry["card_id"])
-            if card is None:
-                return MSG_ERROR
-
-            sell_prices = await conf.sell_prices()
-            # up to MAX_COPIES_KEPT copies (1 original + 1 tradeable spare)
-            # stay as real collection entries; anything beyond that converts
-            # straight to a sell token instead of piling up more duplicates
-            outcome = engine.claim_outcome(state.collection, card.card_id, MAX_COPIES_KEPT)
-            price = engine.sell_price(card.rarity, sell_prices) if outcome == "sell_token" else None
-
-            claim_cooldown = 0
-            if not drop.is_test:
-                if outcome == "sell_token":
-                    state.sell_tokens.append(engine.make_sell_token(card.card_id, card.rarity))
-                else:
-                    state.collection.append(card.card_id)
-                if claim_quota > 0:
-                    # every real claim counts against the quota, sell-token
-                    # conversions included, same as the genre convention this
-                    # mirrors (Mudae/Karuta) -- it's rate-limiting claim
-                    # *attempts* against the pool, not just new pickups
-                    state.daily_claims, state.daily_claims_date = engine.record_claim(
-                        state.daily_claims, state.daily_claims_date, today
-                    )
-                claim_cooldown = await conf.claim_cooldown_seconds()
-                try:
-                    await self._save_member_state(member, state)
-                except Exception:
-                    # Nothing has been marked yet, so the card is still open
-                    # for this member to retry or anyone else to take -- a
-                    # failed write must never silently eat a card.
-                    log.exception("cardcollect: failed to save claim for member %s", member.id)
-                    return MSG_ERROR
-
-            # committed -- mark it, in-memory, with no await since the checks
-            # above other than the write itself (and the lock still held)
-            drop.claimed_positions.add(position)
-            drop.claimed_by.add(member.id)
-            if not drop.is_test:
-                self.claim_cooldown_until[member.id] = time.monotonic() + claim_cooldown
-            all_claimed = len(drop.claimed_positions) >= len(drop.cards)
-            if all_claimed:
-                self._forget_drop(drop.message_id)
-
-            embed = embeds.claim_result_embed(card, member, outcome, price=price, is_test=drop.is_test)
-            # Started inside the lock so announcements go out in claim order,
-            # but awaited outside it: posting must not hold up the next claim.
-            announcement = asyncio.ensure_future(self._post_to_channel(channel, embed=embed))
-            drop.announcements.append(announcement)
-
-        await announcement
-        if all_claimed:
-            # Wait for every claim's embed -- not just this one's -- so this
-            # can never land ahead of an earlier claim's announcement that
-            # was still in flight. Exactly one claim sees all_claimed (the
-            # lock serializes them), so it's posted exactly once.
-            await asyncio.gather(*drop.announcements)
-            await self._post_to_channel(
-                channel,
-                content=(
-                    "\U0001f9ea Test drop finished — all of its cards were claimed."
-                    if drop.is_test
-                    else "\U0001f389 All cards from this drop have been claimed!"
-                ),
+    async def _post_wish_pings(self, drop: ActiveDrop, cards: List[Card]):
+        """Reply under a drop pinging the members who wished for one of its
+        cards: never members who already own it or have pings off, at most
+        WISH_PING_MAX named per card (the rest as "+N more")."""
+        try:
+            guild = drop.guild
+            everyone = await self.config.all_members(guild)
+            lines = []
+            for card in cards:
+                wishers = sorted(
+                    uid
+                    for uid, data in everyone.items()
+                    if card.card_id in data.get("wishlist", [])
+                    and card.card_id not in data.get("collection", [])
+                    and not data.get("wish_pings_off")
+                    and guild.get_member(uid) is not None
+                )
+                if not wishers:
+                    continue
+                shown = " ".join(f"<@{uid}>" for uid in wishers[:WISH_PING_MAX])
+                more = f" +{len(wishers) - WISH_PING_MAX} more" if len(wishers) > WISH_PING_MAX else ""
+                name = discord.utils.escape_markdown(card.name)[:80]
+                lines.append(f"**{name}** is in this drop: {shown}{more}, it's on your wishlist!")
+            if not lines:
+                return
+            text = "\n".join(lines) + f"\nThe draw closes <t:{drop.closes_epoch}:R>."
+            await drop.message.reply(
+                text[:2000], mention_author=False, allowed_mentions=discord.AllowedMentions(users=True, roles=False, everyone=False)
             )
+        except Exception:
+            log.exception("cardcollect: wishlist pings failed")
 
-        reply = f"✅ You claimed **{card.name}**!"
-        if drop.is_test:
-            reply += " (Test drop — nothing was awarded.)"
-        return reply
+    # ------------------------------------------------------------------
+    # card requests: members ask for a character that isn't in the pool
+    # ------------------------------------------------------------------
+
+    async def submit_request(self, guild: discord.Guild, member: discord.Member, text: str) -> str:
+        """Post a member's request for a character to the private review channel.
+        Returns the reply for the member."""
+        text = " ".join(str(text).split())[:REQUEST_MAX_LENGTH]
+        if len(text) < 2:
+            return "Tell me which character (and series) you'd like."
+        conf = self.config.guild(guild)
+        channel_id = await conf.request_channel_id()
+        channel = guild.get_channel(channel_id) if channel_id else None
+        if channel is None:
+            return "Card requests aren't open on this server yet."
+        folded = engine.fold_text(text)
+        async with conf.all() as data:
+            pending = [r for r in data["requests"].values() if r["status"] == "pending"]
+            if sum(1 for r in pending if r["user_id"] == member.id) >= REQUEST_MAX_PENDING:
+                return f"You already have {REQUEST_MAX_PENDING} requests waiting. Let an admin get to those first."
+            if any(engine.fold_text(r["text"]) == folded for r in pending):
+                return "That one is already waiting for review. It will be looked at."
+            request_id = data["next_request_id"]
+            data["next_request_id"] += 1
+            data["requests"][str(request_id)] = {
+                "user_id": member.id, "text": text, "status": "pending", "message_id": None, "card_id": None,
+            }
+        embed = embeds.request_embed(request_id, member, text)
+        try:
+            sent = await channel.send(embed=embed, view=views.RequestReviewView(self), allowed_mentions=discord.AllowedMentions.none())
+        except discord.HTTPException:
+            log.exception("cardcollect: couldn't post a card request")
+            async with conf.requests() as requests:
+                requests.pop(str(request_id), None)
+            return "I couldn't post that request. Ask an admin to check the request channel."
+        async with conf.requests() as requests:
+            if str(request_id) in requests:
+                requests[str(request_id)]["message_id"] = sent.id
+        return "Request sent! If an admin approves it, the card goes on your wishlist once it's added."
+
+    async def review_request(self, interaction: discord.Interaction, approve: bool):
+        """An admin pressed Approve or Decline on a request message."""
+        guild = interaction.guild
+        if not await self._is_pool_admin(interaction.user):
+            await interaction.response.send_message("Only admins can review requests.", ephemeral=True)
+            return
+        conf = self.config.guild(guild)
+        found = None
+        async with conf.requests() as requests:
+            for request_id, request in requests.items():
+                if request.get("message_id") == interaction.message.id:
+                    if request["status"] != "pending":
+                        found = (request_id, dict(request), False)
+                    else:
+                        request["status"] = "approved" if approve else "declined"
+                        found = (request_id, dict(request), True)
+                    break
+        if found is None:
+            await interaction.response.send_message("I can't find that request any more.", ephemeral=True)
+            return
+        request_id, request, changed = found
+        if not changed:
+            await interaction.response.send_message(f"That request was already {request['status']}.", ephemeral=True)
+            return
+        requester = guild.get_member(request["user_id"])
+        embed = embeds.request_embed(int(request_id), requester or request["user_id"], request["text"], status=request["status"], by=interaction.user)
+        await interaction.response.edit_message(embed=embed, view=None)
+        if requester is not None:
+            note = (
+                f"Your card request **{request['text']}** was approved! When it's added to the pool it goes on your wishlist."
+                if approve else f"Your card request **{request['text']}** wasn't approved this time."
+            )
+            try:
+                await requester.send(note)
+            except discord.HTTPException:
+                pass  # DMs closed: nothing else to do
+
+    async def _fulfil_requests(self, guild: discord.Guild, added: List[Tuple[int, str]]):
+        """New characters just entered the pool: any approved request whose text
+        names one of them puts it on the requester's wishlist."""
+        if not added:
+            return
+        conf = self.config.guild(guild)
+        matched: List[Tuple[int, int, str, str]] = []  # (user_id, card_id, card name, request id)
+        async with conf.requests() as requests:
+            for request_id, request in requests.items():
+                if request["status"] != "approved":
+                    continue
+                folded = engine.fold_text(request["text"])
+                for card_id, name in added:
+                    name_folded = engine.fold_text(name)
+                    if len(name_folded) >= 3 and name_folded in folded:
+                        request["status"], request["card_id"] = "fulfilled", card_id
+                        matched.append((request["user_id"], card_id, name, request_id))
+                        break
+        for user_id, card_id, name, _request_id in matched:
+            member = guild.get_member(user_id)
+            if member is None:
+                continue
+            async with self._get_claim_lock(guild.id):
+                state = await self._member_state(member)
+                if not state.owns(card_id) and card_id not in state.wishlist and len(state.wishlist) < WISHLIST_MAX:
+                    state.wishlist.append(card_id)
+                    await self._save_member_state(member, state)
+            try:
+                await member.send(f"**{name}** is now in the card pool, and it's on your wishlist!")
+            except discord.HTTPException:
+                pass
+
 
     # ------------------------------------------------------------------
     # commands
@@ -662,56 +789,87 @@ class CardCollect(commands.Cog):
     @commands.group(name="card", aliases=["cards"], invoke_without_command=True)
     @commands.guild_only()
     async def card(self, ctx: commands.Context, member: Optional[discord.Member] = None):
-        """View your card collection (legendary first, then epic, rare, common, A-Z within each), or another member's with `.card @member`."""
+        """Your card collection, or another member's with `.card @member`. Tabs: Collection, Sets and (yours only) Wishlist."""
         target = member or ctx.author
-        state = await self._member_state(target)
-        if not state.collection:
-            if target.id == ctx.author.id:
-                await ctx.send("You haven't claimed any cards yet.")
-            else:
-                await ctx.send(f"{target.display_name} hasn't claimed any cards yet.")
-            return
+        view = views.CollectionView(self, ctx.author.id, target, own=target.id == ctx.author.id)
+        payload = await view.render("collection")
+        view.message = await ctx.send(view=view, **view.for_send(payload))
 
-        # one gallery tile per unique card_id -- a member holding a
-        # tradeable spare (constants.MAX_COPIES_KEPT) gets a quantity badge
-        # on that tile instead of a second, identical-looking tile
-        quantities = Counter(state.collection)
-        unique_ids = list(dict.fromkeys(state.collection))
+    # -- what the collection tabs show ----------------------------------
 
+    async def collection_entries(self, guild: discord.Guild, state: MemberState) -> List[Tuple[Card, bytes]]:
+        """One (Card, art) per unique card a member owns, rarest first then A-Z.
+        Cards whose art has gone missing are skipped."""
         entries = []
-        for card_id in unique_ids:
-            card = await self._card_by_id(ctx.guild, card_id)
-            image_bytes = self._read_card_image(ctx.guild, card_id)
-            if card is None or image_bytes is None:
-                continue
-            entries.append((card, image_bytes))
-        if not entries:
-            await ctx.send("Those cards exist but their art is missing -- ask an admin to check the pool.")
-            return
-        # rarest first, then A-Z within each rarity; sorted before paging so
-        # page 1 always holds the legendaries
+        for card_id in dict.fromkeys(state.collection):
+            card = await self._card_by_id(guild, card_id)
+            image_bytes = self._read_card_image(guild, card_id)
+            if card is not None and image_bytes is not None:
+                entries.append((card, image_bytes))
         entries.sort(key=lambda e: engine.gallery_sort_key(e[0]))
+        return entries
 
-        pages = [entries[i : i + GALLERY_PAGE_SIZE] for i in range(0, len(entries), GALLERY_PAGE_SIZE)]
+    async def sets_embed(self, guild: discord.Guild, state: MemberState, whose: str) -> discord.Embed:
+        sets = engine.build_sets(await self._pool_cards(guild))
+        return embeds.sets_embed(engine.set_progress(sets, state.collection), set(state.sets_claimed), whose, len(sets))
 
-        if len(pages) == 1:
-            # common case: whole collection fits on one page -- no point
-            # showing paging buttons that would both be permanently disabled
-            gallery = await asyncio.to_thread(
-                imagegen.render_gallery,
-                pages[0],
-                showcase_card_ids=state.showcase_card_ids,
-                quantities=quantities,
-            )
-            content = None if target.id == ctx.author.id else f"{target.display_name}'s collection:"
-            await ctx.send(content=content, file=discord.File(gallery, filename="collection.png"))
-            return
+    async def wishlist_cards(self, guild: discord.Guild, state: MemberState) -> List[Card]:
+        cards = [await self._card_by_id(guild, cid) for cid in state.wishlist]
+        return [c for c in cards if c is not None]
 
-        whose = "Your" if target.id == ctx.author.id else f"{target.display_name}'s"
-        view = views.GalleryView(ctx.author.id, pages, entries, state.showcase_card_ids, quantities, whose)
-        gallery, content = await view.render_current_async()
-        msg = await ctx.send(content=content, file=discord.File(gallery, filename="collection.png"), view=view)
-        view.message = msg
+    async def wishlist_embed(self, guild: discord.Guild, state: MemberState) -> discord.Embed:
+        return embeds.wishlist_embed(await self.wishlist_cards(guild, state), state.wish_pings_off)
+
+    async def toggle_wish(self, guild: discord.Guild, member: discord.Member, card_id: int) -> str:
+        """Add a card to (or take it off) a member's wishlist. Returns the reply."""
+        card = await self._card_by_id(guild, card_id)
+        if card is None:
+            return "That card is no longer in the pool."
+        async with self._get_claim_lock(guild.id):
+            state = await self._member_state(member)
+            if card_id in state.wishlist:
+                state.wishlist.remove(card_id)
+                message = f"Took **{card.name}** off your wishlist."
+            elif state.owns(card_id):
+                return f"You already own **{card.name}**."
+            elif len(state.wishlist) >= WISHLIST_MAX:
+                return f"Your wishlist is full ({WISHLIST_MAX}). Remove one in the Wishlist tab of `.card` first."
+            else:
+                state.wishlist.append(card_id)
+                message = f"Added **{card.name}** to your wishlist. You'll be pinged when it drops."
+            await self._save_member_state(member, state)
+        return message
+
+    async def set_wish_pings(self, member: discord.Member, off: bool) -> None:
+        async with self._get_claim_lock(member.guild.id):
+            state = await self._member_state(member)
+            state.wish_pings_off = off
+            await self._save_member_state(member, state)
+
+    async def remove_wishes(self, member: discord.Member, card_ids) -> None:
+        async with self._get_claim_lock(member.guild.id):
+            state = await self._member_state(member)
+            state.wishlist = [c for c in state.wishlist if c not in set(card_ids)]
+            await self._save_member_state(member, state)
+
+    async def toggle_showcase(self, guild: discord.Guild, member: discord.Member, card_id: int) -> str:
+        card = await self._card_by_id(guild, card_id)
+        if card is None:
+            return "That card is no longer in the pool."
+        async with self._get_claim_lock(guild.id):
+            state = await self._member_state(member)
+            if card_id in state.showcase_card_ids:
+                state.showcase_card_ids.remove(card_id)
+                message = f"Removed **{card.name}** from your showcase."
+            elif not state.owns(card_id):
+                return "You don't own that card."
+            elif len(state.showcase_card_ids) >= MAX_SHOWCASE_SLOTS:
+                return f"Your showcase is full ({MAX_SHOWCASE_SLOTS} slots). Remove one first."
+            else:
+                state.showcase_card_ids.append(card_id)
+                message = f"Added **{card.name}** to your showcase ({len(state.showcase_card_ids)}/{MAX_SHOWCASE_SLOTS})."
+            await self._save_member_state(member, state)
+        return message
 
     @card.group(name="showcase", invoke_without_command=True)
     @commands.guild_only()
@@ -773,21 +931,10 @@ class CardCollect(commands.Cog):
             await ctx.send("No card matches that.")
             return
         state = await self._member_state(ctx.author)
-        if not state.owns(card.card_id):
-            await ctx.send("You don't own that card.")
-            return
         if card.card_id in state.showcase_card_ids:
             await ctx.send(f"**{card.name}** is already in your showcase.")
             return
-        if len(state.showcase_card_ids) >= MAX_SHOWCASE_SLOTS:
-            await ctx.send(
-                f"Your showcase is full ({MAX_SHOWCASE_SLOTS} slots) -- remove one first with "
-                f"`.card showcase remove <card>`."
-            )
-            return
-        state.showcase_card_ids.append(card.card_id)
-        await self._save_member_state(ctx.author, state)
-        await ctx.send(f"Added **{card.name}** to your showcase ({len(state.showcase_card_ids)}/{MAX_SHOWCASE_SLOTS}).")
+        await ctx.send(await self.toggle_showcase(ctx.guild, ctx.author, card.card_id))
 
     @card_showcase.command(name="remove")
     @commands.guild_only()
@@ -801,51 +948,9 @@ class CardCollect(commands.Cog):
         if card.card_id not in state.showcase_card_ids:
             await ctx.send(f"**{card.name}** isn't in your showcase.")
             return
-        state.showcase_card_ids.remove(card.card_id)
-        await self._save_member_state(ctx.author, state)
-        await ctx.send(f"Removed **{card.name}** from your showcase.")
+        await ctx.send(await self.toggle_showcase(ctx.guild, ctx.author, card.card_id))
 
-    @card.command(name="info")
-    @commands.guild_only()
-    async def card_info(self, ctx: commands.Context, *, card_arg: str):
-        """Look up a character: art, rarity, favourites, and who currently owns it."""
-        card = await self._resolve_card_arg(ctx.guild, card_arg)
-        if card is None:
-            await ctx.send("No card matches that name or ID.")
-            return
-
-        all_members = await self.config.all_members(ctx.guild)
-        owner_ids = [mid for mid, data in all_members.items() if card.card_id in data.get("collection", [])]
-        owner_mentions = []
-        for member_id in owner_ids[:10]:
-            member = ctx.guild.get_member(member_id)
-            owner_mentions.append(member.mention if member is not None else f"<@{member_id}>")
-
-        embed = embeds.card_info_embed(card, len(owner_ids), owner_mentions)
-        image_bytes = self._read_card_image(ctx.guild, card.card_id)
-        # admins get a "Change rarity" dropdown under the card; everyone else a plain embed
-        admin_view = None
-        if await self._is_pool_admin(ctx.author):
-            admin_view = views.CardAdminView(
-                self, ctx.author.id, card, len(owner_ids), owner_mentions, image_bytes is not None
-            )
-        kwargs = {"view": admin_view} if admin_view is not None else {}
-        if image_bytes is not None:
-            file = discord.File(io.BytesIO(image_bytes), filename="card_info.png")
-            embed.set_image(url="attachment://card_info.png")
-            sent = await ctx.send(embed=embed, file=file, **kwargs)
-        else:
-            sent = await ctx.send(embed=embed, **kwargs)
-        if admin_view is not None:
-            admin_view.message = sent
-
-    async def _owned_cards(self, member: discord.Member) -> Tuple[MemberState, List[Card]]:
-        """(state, one Card per unique pool card the member owns). Cards that
-        have since vanished from the pool are skipped."""
-        state = await self._member_state(member)
-        owned_ids = set(state.collection)
-        pool_cards = await self._pool_cards(member.guild)
-        return state, [c for c in pool_cards if c.card_id in owned_ids]
+    # -- find: search the pool, open a card -------------------------------
 
     @staticmethod
     def _card_line(card: Card) -> str:
@@ -855,82 +960,6 @@ class CardCollect(commands.Cog):
             text = text[:99] + "…"
         return f"`{card.card_id}` {card.rarity} — {text}"
 
-    @card.command(name="show")
-    @commands.guild_only()
-    async def card_show(self, ctx: commands.Context, *, card_arg: str):
-        """Show one of YOUR cards at full size, by ID or by any part of the
-        name or series. If several of your cards match, they're listed with
-        their IDs so you can pick one. Only cards you own."""
-        state, owned = await self._owned_cards(ctx.author)
-        arg = card_arg.strip().lstrip("#")
-
-        card = None
-        if arg.isdigit():
-            card = next((c for c in owned if c.card_id == int(arg)), None)
-        if card is None:
-            matches = engine.search_cards(owned, arg)
-            if len(matches) == 1:
-                card = matches[0]
-            elif not matches:
-                await ctx.send("You don't own a card matching that. (`.card` shows your collection.)")
-                return
-            else:
-                shown = matches[:15]
-                lines = "\n".join(self._card_line(c) for c in shown)
-                more = f"\n…and {len(matches) - len(shown)} more." if len(matches) > len(shown) else ""
-                await ctx.send(
-                    f"{len(matches)} of your cards match — use the ID with `.card show <id>`, "
-                    f"or `.card find {arg}` to see them all:\n{lines}{more}"
-                )
-                return
-
-        image_bytes = self._read_card_image(ctx.guild, card.card_id)
-        if image_bytes is None:
-            await ctx.send(f"**{card.name}** is yours, but its art is missing — ask an admin to check the pool.")
-            return
-        quantity = state.collection.count(card.card_id)
-        rendered = await asyncio.to_thread(imagegen.render_single, card, image_bytes, quantity)
-        series = f" — {card.series}" if card.series else ""
-        spare = f" (you hold {quantity})" if quantity > 1 else ""
-        await ctx.send(
-            content=f"**{card.name}**{series} · {card.rarity} · `#{card.card_id}`{spare}",
-            file=discord.File(rendered, filename="card.png"),
-        )
-
-    @card.command(name="find", aliases=["search"])
-    @commands.guild_only()
-    async def card_find(self, ctx: commands.Context, *, query: str):
-        """Search YOUR cards by character name or anime/series (partial
-        matches work: `.card find lucy`, `.card find edgerunners`). Only
-        cards you own."""
-        state, owned = await self._owned_cards(ctx.author)
-        matches = engine.search_cards(owned, query)
-        if not matches:
-            await ctx.send(
-                f"None of your cards match **{query.strip()}**. "
-                f"(`.card pool {query.strip()}` searches every card in the pool.)"
-            )
-            return
-
-        shown = matches[:GALLERY_PAGE_SIZE]
-        entries = []
-        for card in shown:
-            image_bytes = self._read_card_image(ctx.guild, card.card_id)
-            if image_bytes is not None:
-                entries.append((card, image_bytes))
-
-        caption = f"Your cards matching **{query.strip()}** ({len(matches)}):\n" + "\n".join(
-            self._card_line(c) for c in shown
-        )
-        if len(matches) > len(shown):
-            caption += f"\n…and {len(matches) - len(shown)} more — narrow the search to see them."
-        if not entries:
-            await ctx.send(caption)
-            return
-        quantities = Counter(state.collection)
-        gallery = await asyncio.to_thread(imagegen.render_gallery, entries, quantities=quantities)
-        await ctx.send(content=caption[:1990], file=discord.File(gallery, filename="matches.png"))
-
     async def _is_pool_admin(self, member: discord.Member) -> bool:
         perms = getattr(member, "guild_permissions", None)
         if perms is not None and (perms.manage_guild or perms.administrator):
@@ -938,87 +967,60 @@ class CardCollect(commands.Cog):
         is_admin = getattr(self.bot, "is_admin", None)
         return bool(is_admin is not None and await is_admin(member))
 
-    @card.command(name="pool")
+    async def search_pool(self, guild: discord.Guild, member: discord.Member, query: str, scope: str) -> List[Card]:
+        """Cards a member can see matching `query`: the whole pool (retired
+        cards only if they own one, or they're an admin) or, with scope "mine",
+        just their own. A number is a card ID; an exact name wins over longer
+        names that merely contain it."""
+        state = await self._member_state(member)
+        owned = set(state.collection)
+        pool = await self._pool_cards(guild)
+        if scope == "mine":
+            pool = [c for c in pool if c.card_id in owned]
+        elif not await self._is_pool_admin(member):
+            pool = [c for c in pool if not c.retired or c.card_id in owned]
+        pool = [c for c in pool if storage.card_image_exists(self.data_path, guild.id, c.card_id)]
+        text = query.strip().lstrip("#").strip()
+        if text.isdigit():
+            by_id = [c for c in pool if c.card_id == int(text)]
+            if by_id:
+                return by_id
+        matches = engine.search_cards(pool, text)
+        exact = [c for c in matches if engine.fold_text(c.name) == engine.fold_text(text)]
+        return exact if len(exact) == 1 else matches
+
+    async def card_detail(self, guild: discord.Guild, member: discord.Member, card: Card):
+        """Everything `.card find` shows for one card: (embed, art file, quantity
+        the member owns, owner count, owner mentions)."""
+        everyone = await self.config.all_members(guild)
+        owner_ids = [mid for mid, data in everyone.items() if card.card_id in data.get("collection", [])]
+        mentions = []
+        for member_id in owner_ids[:10]:
+            owner = guild.get_member(member_id)
+            mentions.append(owner.mention if owner is not None else f"<@{member_id}>")
+        state = await self._member_state(member)
+        quantity = state.collection.count(card.card_id)
+        embed = embeds.card_info_embed(card, len(owner_ids), mentions)
+        image_bytes = self._read_card_image(guild, card.card_id)
+        file = None
+        if image_bytes is not None:
+            rendered = await asyncio.to_thread(imagegen.render_single, card, image_bytes, max(1, quantity))
+            file = discord.File(rendered, filename="card_info.png")
+            embed.set_image(url="attachment://card_info.png")
+        if quantity:
+            embed.add_field(name="You", value=f"You own **{quantity}**" + (" (a tradeable spare)" if quantity > 1 else ""), inline=True)
+        elif card.card_id in state.wishlist:
+            embed.add_field(name="You", value="★ On your wishlist", inline=True)
+        return embed, file, quantity, len(owner_ids), state
+
+    @card.command(name="find", aliases=["search", "info", "show", "pool", "poolsearch"])
     @commands.guild_only()
-    async def card_pool(self, ctx: commands.Context, *, query: str):
-        """Search EVERY card in the pool by character name or anime/series
-        (partial matches work: `.card pool lucy`, `.card pool edgerunners`).
-        Shows all matches with their art, and marks the ones you own. Retired
-        cards are hidden unless you own one."""
-        state = await self._member_state(ctx.author)
-        owned_ids = set(state.collection)
-        pool_cards = await self._pool_cards(ctx.guild)
-        if not await self._is_pool_admin(ctx.author):
-            pool_cards = [c for c in pool_cards if not c.retired or c.card_id in owned_ids]
-        matches = [
-            c
-            for c in engine.search_cards(pool_cards, query)
-            if storage.card_image_exists(self.data_path, ctx.guild.id, c.card_id)
-        ]
-        shown_query = discord.utils.escape_mentions(discord.utils.escape_markdown(query.strip()))[:60]
-        if not matches:
-            await ctx.send(f"No card in the pool matches **{shown_query}**.")
-            return
+    async def card_find(self, ctx: commands.Context, *, query: str):
+        """Search the card pool by character name, series or ID. Open any result to see its art, rarity and owners, wishlist it, showcase it or (not in the pool?) request it. Switch between the whole pool and just your cards with the button."""
+        view = views.FindView(self, ctx.author, query.strip())
+        await view.start(ctx)
 
-        pages = [matches[i : i + GALLERY_PAGE_SIZE] for i in range(0, len(matches), GALLERY_PAGE_SIZE)]
-        owned_count = sum(1 for c in matches if c.card_id in owned_ids)
-        quantities = Counter(state.collection)
-
-        def caption_for(page_index: int, page_cards: List[Card]) -> str:
-            head = f"Pool cards matching **{shown_query}**: {len(matches)} found, you own {owned_count} (✅ = owned)"
-            if len(pages) > 1:
-                head += f" · page {page_index + 1}/{len(pages)}"
-            lines = "\n".join(
-                f"{'✅' if c.card_id in owned_ids else '⬜'} {self._card_line(c)}{' [retired]' if c.retired else ''}"
-                for c in page_cards
-            )
-            return f"{head}\n{lines}"[:1990]
-
-        def read_image(card_id: int) -> Optional[bytes]:
-            return self._read_card_image(ctx.guild, card_id)
-
-        view = views.PoolSearchView(ctx.author.id, pages, quantities, read_image, caption_for)
-        gallery, caption = await view.render_current_async()
-        if len(pages) == 1:
-            await ctx.send(content=caption, file=discord.File(gallery, filename="pool.png"))
-            return
-        msg = await ctx.send(content=caption, file=discord.File(gallery, filename="pool.png"), view=view)
-        view.message = msg
-
-    @card.command(name="poolsearch", aliases=["searchpool"])
-    @commands.guild_only()
-    @commands.admin_or_permissions(manage_guild=True)
-    async def card_poolsearch(self, ctx: commands.Context, *, query: str):
-        """Admin: search the whole pool by character name or series before
-        adding someone (`.card poolsearch lucy` lists every Lucy; add a word
-        like `edgerunners` to narrow). Partial, any-order, case-insensitive;
-        retired characters are included and marked."""
-        pool_cards = await self._pool_cards(ctx.guild)
-        matches = engine.search_cards(pool_cards, query)
-        if not matches:
-            await ctx.send(
-                f"No character in the pool matches **{query.strip()}** "
-                f"({len(pool_cards)} searched) — safe to add."
-            )
-            return
-
-        def line(c: Card) -> str:
-            series = f" ({c.series})" if c.series else ""
-            flag = " [retired]" if c.retired else ""
-            return f"{c.card_id}\t{c.rarity}\t{c.name}{series}\tfavs={c.favourites}{flag}"
-
-        header = f"**{len(matches)}** match{'es' if len(matches) != 1 else ''} for **{query.strip()}**"
-        body = "\n".join(line(c).replace("`", "'") for c in matches)
-        if len(matches) <= 15 and len(header) + len(body) < 1800:
-            await ctx.send(f"{header}:\n```\n{body}\n```")
-            return
-        buf = io.BytesIO("\n".join(line(c) for c in matches).encode("utf-8"))
-        await ctx.send(content=f"{header}. Full list attached.", file=discord.File(buf, filename="pool_search.txt"))
-
-    @card.command(name="version")
-    async def card_version(self, ctx: commands.Context):
-        """Show the running cardcollect version (deploy probe)."""
-        await ctx.send(f"cardcollect v{COG_VERSION}")
+    # -- daily ------------------------------------------------------------
 
     @card.command(name="daily", aliases=["pull"])
     @commands.guild_only()
@@ -1029,13 +1031,15 @@ class CardCollect(commands.Cog):
         if isinstance(result, str):
             await ctx.send(result)
             return
-        card, outcome, price, streak, bonus = result
+        card, outcome, price, streak, bonus, set_done = result
         lines = [f"\U0001f3b4 {ctx.author.mention} pulled **{card.name}**"
                  + (f" ({card.series})" if card.series else "") + f" · **{card.rarity}** · `#{card.card_id}`"]
         if outcome == "duplicate":
             lines.append("Spare copy: you can trade it with `.card give`.")
         elif outcome == "sell_token":
             lines.append(f"Already at your copy limit, so it became a sell token (`.card sell` for {price:,}).")
+        if set_done is not None:
+            lines.append(f"\U0001f3c6 Set complete: **{set_done[0]}**! +{set_done[1]:,} wondercoin.")
         streak_line = f"\U0001f525 Streak: **{streak}** day{'s' if streak != 1 else ''}"
         if bonus:
             streak_line += " — bonus day, rarity bumped up!"
@@ -1054,8 +1058,8 @@ class CardCollect(commands.Cog):
 
     async def daily_pull(self, guild: discord.Guild, member: discord.Member):
         """Do one `.card daily` pull. Returns an error string, or
-        (card, outcome, sell_price_or_None, streak, was_bonus_day)."""
-        async with self._get_claim_lock(guild.id):  # same lock as claims: one write to a member at a time
+        (card, outcome, sell_price_or_None, streak, was_bonus_day, set_done_or_None)."""
+        async with self._get_claim_lock(guild.id):  # same lock as the draw: one write to a member at a time
             today = engine.today_str(ACTIVITY_TIMEZONE)
             state = await self._member_state(member)
             can_pull, streak = engine.daily_streak(state.daily_pull_date, state.daily_streak, today)
@@ -1067,29 +1071,14 @@ class CardCollect(commands.Cog):
             card = engine.roll_daily(await self._rollable_pool_cards(guild), await conf.daily_weights(), bonus)
             if card is None:
                 return "The card pool is empty right now, so there's nothing to pull."
-            outcome = engine.claim_outcome(state.collection, card.card_id, MAX_COPIES_KEPT)
-            price = None
-            if outcome == "sell_token":
-                state.sell_tokens.append(engine.make_sell_token(card.card_id, card.rarity))
-                price = engine.sell_price(card.rarity, await conf.sell_prices())
-            else:
-                state.collection.append(card.card_id)
+            outcome, price = self._grant_card(state, card, await conf.sell_prices())
+            set_done = await self._complete_set(guild, member, state, card, outcome)
             state.daily_pull_date, state.daily_streak = today, streak
             await self._save_member_state(member, state)
-        return card, outcome, price, streak, bonus
+        await self._bump_stats(guild, daily_pull_date=today)
+        return card, outcome, price, streak, bonus, set_done
 
-    @card.command(name="quota")
-    @commands.guild_only()
-    async def card_quota(self, ctx: commands.Context):
-        """Check your remaining daily claim quota."""
-        quota = await self.config.guild(ctx.guild).claim_quota()
-        if quota <= 0:
-            await ctx.send("No daily claim limit is set on this server.")
-            return
-        state = await self._member_state(ctx.author)
-        today = engine.today_str(ACTIVITY_TIMEZONE)
-        used = state.daily_claims if state.daily_claims_date == today else 0
-        await ctx.send(f"You've claimed {used}/{quota} cards today. Resets at midnight Pacific.")
+    # -- give / sell ------------------------------------------------------
 
     @card.command(name="give")
     @commands.guild_only()
@@ -1100,70 +1089,66 @@ class CardCollect(commands.Cog):
         if member.id == ctx.author.id:
             await ctx.send("You already own that one.")
             return
+        if member.bot:
+            await ctx.send("Bots don't collect cards.")
+            return
         card = await self._resolve_card_arg(ctx.guild, card_arg)
         if card is None:
             await ctx.send("No card matches that.")
             return
 
-        giver_state = await self._member_state(ctx.author)
-        if not giver_state.owns(card.card_id):
-            await ctx.send("You don't own that card.")
-            return
+        async with self._get_claim_lock(ctx.guild.id):
+            giver_state = await self._member_state(ctx.author)
+            if not giver_state.owns(card.card_id):
+                await ctx.send("You don't own that card.")
+                return
+            receiver_state = await self._member_state(member)
 
-        receiver_state = await self._member_state(member)
+            giver_state.collection.remove(card.card_id)  # removes exactly one copy
+            # only drop the showcase entry if that was the giver's last copy --
+            # giving away a tradeable spare shouldn't un-showcase the one they kept
+            if not giver_state.owns(card.card_id) and card.card_id in giver_state.showcase_card_ids:
+                giver_state.showcase_card_ids.remove(card.card_id)
+            await self._save_member_state(ctx.author, giver_state)
 
-        giver_state.collection.remove(card.card_id)  # removes exactly one copy
-        # only drop the showcase entry if that was the giver's last copy --
-        # giving away a tradeable spare shouldn't un-showcase the one they kept
-        if not giver_state.owns(card.card_id) and card.card_id in giver_state.showcase_card_ids:
-            giver_state.showcase_card_ids.remove(card.card_id)
-        await self._save_member_state(ctx.author, giver_state)
-
-        # same MAX_COPIES_KEPT cap a claim respects: a gift that would push
-        # the receiver past it converts straight to a sell token instead of
-        # silently discarding it or piling up a 3rd+ copy
-        outcome = engine.claim_outcome(receiver_state.collection, card.card_id, MAX_COPIES_KEPT)
-        if outcome == "sell_token":
-            token = engine.make_sell_token(card.card_id, card.rarity)
-            receiver_state.sell_tokens.append(token)
+            # same MAX_COPIES_KEPT cap a draw win respects: a gift that would push
+            # the receiver past it converts straight to a sell token instead of
+            # silently discarding it or piling up a 3rd+ copy
+            outcome, _price = self._grant_card(receiver_state, card, await self.config.guild(ctx.guild).sell_prices())
+            set_done = await self._complete_set(ctx.guild, member, receiver_state, card, outcome)
             await self._save_member_state(member, receiver_state)
+
+        if outcome == "sell_token":
             await ctx.send(
                 f"{member.mention} is already at their duplicate limit for **{card.name}** — "
                 f"it was converted to a sell token for them instead."
             )
         else:
-            receiver_state.collection.append(card.card_id)
-            await self._save_member_state(member, receiver_state)
             await ctx.send(embed=embeds.give_result_embed(card, ctx.author, member))
+        if set_done is not None:
+            await ctx.send(f"\U0001f3c6 {member.mention} completed the **{set_done[0]}** set: +{set_done[1]:,} wondercoin!")
 
-    @card.command(name="sell")
+    @card.command(name="sell", aliases=["tokens"])
     @commands.guild_only()
-    async def card_sell(self, ctx: commands.Context, token_id: str):
-        """Sell a duplicate token for wondercoin."""
-        state = await self._member_state(ctx.author)
-        token = next((t for t in state.sell_tokens if t.token_id == token_id), None)
-        if token is None:
-            await ctx.send("No sell token with that ID. Check `.card tokens`.")
-            return
-        sell_prices = await self.config.guild(ctx.guild).sell_prices()
-        price = engine.sell_price(token.rarity, sell_prices)
+    async def card_sell(self, ctx: commands.Context):
+        """Your sell tokens (duplicates past the copy limit): sell them all at once, or one at a time."""
+        view = views.SellView(self, ctx.author)
+        await view.start(ctx)
 
-        state.sell_tokens.remove(token)
-        await self._save_member_state(ctx.author, state)
-        await bank.deposit_credits(ctx.author, price)
-
-        await ctx.send(embed=embeds.sell_result_embed(token, price, ctx.author))
-
-    @card.command(name="tokens")
-    @commands.guild_only()
-    async def card_tokens(self, ctx: commands.Context):
-        """List your pending sell tokens."""
-        state = await self._member_state(ctx.author)
-        if not state.sell_tokens:
-            await ctx.send("No sell tokens on hand.")
-            return
-        lines = [f"`{t.token_id}` — {t.rarity} (from card #{t.card_id})" for t in state.sell_tokens]
-        await ctx.send("\n".join(lines))
+    async def sell_tokens(self, guild: discord.Guild, member: discord.Member, token_ids=None) -> Tuple[int, int]:
+        """Sell the given sell tokens (all of them if `token_ids` is None) for
+        wondercoin. Returns (how many sold, total payout)."""
+        async with self._get_claim_lock(guild.id):
+            state = await self._member_state(member)
+            chosen = [t for t in state.sell_tokens if token_ids is None or t.token_id in set(token_ids)]
+            if not chosen:
+                return 0, 0
+            prices = await self.config.guild(guild).sell_prices()
+            total = sum(engine.sell_price(t.rarity, prices) for t in chosen)
+            state.sell_tokens = [t for t in state.sell_tokens if t not in chosen]
+            await self._save_member_state(member, state)
+        await bank.deposit_credits(member, total)
+        return len(chosen), total
 
     @card.command(name="leaderboard")
     @commands.guild_only()
@@ -1187,7 +1172,7 @@ class CardCollect(commands.Cog):
         """Settings panel for admins; everyone else sees the current configuration."""
         perms = getattr(ctx.author, "guild_permissions", None)
         if perms is not None and (perms.administrator or perms.manage_guild):
-            await open_panel(ctx, self, panel_specs.build_specs(), title="Card Collect", intro=panel_specs.INTRO)
+            await open_panel(ctx, self, panel_specs.build_specs(), title=f"Card Collect v{COG_VERSION}", intro=panel_specs.INTRO)
             return
         guild_config = await self.config.guild(ctx.guild).all()
         await ctx.send(embed=embeds.settings_embed(guild_config, ctx.guild.name))
@@ -1220,22 +1205,38 @@ class CardCollect(commands.Cog):
         if not 0 < percent <= 100:
             raise PanelError("Drop chance must be greater than 0 and at most 100 (percent).")
         cooldown = self._whole(values, "cooldown", "Cooldown", 0, " Use 0 for none.")
-        expiry = self._whole(values, "expiry", "Drop expiry", 30, " Drops need to stay claimable for a while.")
-        wrong = self._whole(values, "wrong", "Wrong guesses", 0, " Use 0 for unlimited.")
-        penalty = self._whole(values, "penalty", "Lockout penalty", 0, " Use 0 for none.")
+        window = self._whole(values, "window", "Draw window", MIN_DRAW_WINDOW_SECONDS, " People need time to pick.")
+        if window > MAX_DRAW_WINDOW_SECONDS:
+            raise PanelError(f"Draw window can be at most {MAX_DRAW_WINDOW_SECONDS} seconds.")
         conf = self.config.guild(guild)
         await conf.drop_chance.set(percent / 100)
         await conf.drop_cooldown_seconds.set(cooldown)
-        await conf.drop_expiry_seconds.set(expiry)
-        await conf.max_wrong_guesses.set(wrong)
-        await conf.wrong_guess_penalty_seconds.set(penalty)
+        await conf.draw_window_seconds.set(window)
         return (f"A qualifying message drops a card {percent:g}% of the time, at most once every {cooldown}s; "
-                f"drops expire after {expiry}s. Takes effect on the next drop.")
+                f"each drop's draw stays open {window}s. Takes effect on the next drop.")
 
-    async def _apply_claim_quota(self, guild, member, values) -> str:
-        quota = self._whole(values, "quota", "Quota", 0, " Use 0 for unlimited.")
-        await self.config.guild(guild).claim_quota.set(quota)
-        return f"Daily claim quota: {quota if quota > 0 else 'unlimited'} (resets at midnight Pacific)."
+    async def _apply_request_channel(self, guild, member, channel) -> str:
+        conf = self.config.guild(guild)
+        if channel is None:
+            await conf.request_channel_id.set(None)
+            return "Card requests are off."
+        await conf.request_channel_id.set(channel.id)
+        return f"Card requests will arrive in {channel.mention}. Keep it private: only admins should see it."
+
+    async def _apply_test_mode(self, guild, member, value) -> str:
+        await self.config.guild(guild).test_mode.set(bool(value))
+        return "Test mode ON: ambient drops run but award nothing." if value else "Test mode off: drops are live again."
+
+    async def _apply_test_drop(self, guild, member, value) -> str:
+        """Panel action: post one test drop in the drop channel right now."""
+        channel_id = await self.config.guild(guild).channel_id()
+        channel = guild.get_channel(channel_id) if channel_id else None
+        if channel is None:
+            raise PanelError("Pick a drop channel first.")
+        reason = await self._post_drop(channel, guild, is_test=True)
+        if reason is not None:
+            raise PanelError(reason)
+        return f"Test drop posted in {channel.mention}. It awards nothing."
 
     async def _apply_daily_odds(self, guild, member, values) -> str:
         weights = {}
@@ -1287,26 +1288,7 @@ class CardCollect(commands.Cog):
 
         card = await self._card_by_id(ctx.guild, card_id)
         await ctx.send(embed=embeds.card_added_embed(card))
-
-    @card.command(name="setimage")
-    @commands.guild_only()
-    @commands.admin_or_permissions(manage_guild=True)
-    async def card_setimage(self, ctx: commands.Context, card_id: int):
-        """Swap out a pool character's art without touching anything else
-        about the card (name, series, rarity, ID, and everyone's owned
-        copies all stay exactly as they were). Attach the replacement image
-        to this message. Use `.card viewpool` to look up a card's ID."""
-        card = await self._card_by_id(ctx.guild, card_id)
-        if card is None:
-            await ctx.send(f"No card with ID {card_id}. Check `.card viewpool` for the right ID.")
-            return
-        if not ctx.message.attachments:
-            await ctx.send("Attach the replacement image to this message.")
-            return
-
-        image_bytes = await ctx.message.attachments[0].read()
-        storage.save_card_image(self.data_path, ctx.guild.id, card_id, image_bytes)
-        await ctx.send(embed=embeds.card_image_updated_embed(card))
+        await self._fulfil_requests(ctx.guild, [(card.card_id, card.name)])
 
     @card.command(name="removecard")
     @commands.guild_only()
@@ -1488,6 +1470,7 @@ class CardCollect(commands.Cog):
                 ).to_dict()
                 if anilist_id is not None:
                     present.add(anilist_id)
+                entry["card_id"] = card_id
                 added.append(entry)
             for link in links or []:
                 data = guild_data["pool"].get(str(link["card_id"]))
@@ -1495,6 +1478,7 @@ class CardCollect(commands.Cog):
                     data["anilist_id"] = link["anilist_id"]
                     if not data.get("series_alt") and link.get("series_alt"):
                         data["series_alt"] = link["series_alt"]
+        await self._fulfil_requests(guild, [(e["card_id"], e["name"]) for e in added])
         return added
 
     async def apply_card_rarity(self, guild: discord.Guild, card_id: int, tier: str) -> Card:
@@ -1508,6 +1492,20 @@ class CardCollect(commands.Cog):
             if entry is None:
                 raise KeyError(card_id)
             entry["rarity"] = tier
+        return await self._card_by_id(guild, card_id)
+
+    async def set_card_retired(self, guild: discord.Guild, card_id: int, retired: bool) -> Card:
+        """Retire a card from future drops, or put it back (the button on a
+        card's `.card find` page). Owners keep their copies either way. Raises
+        KeyError if the card isn't in the pool."""
+        async with self.config.guild(guild).pool() as pool:
+            entry = pool.get(str(card_id))
+            if entry is None:
+                raise KeyError(card_id)
+            if retired:
+                entry["retired"] = True
+            else:
+                entry.pop("retired", None)
         return await self._card_by_id(guild, card_id)
 
     @card.command(name="importpool")
@@ -1770,9 +1768,13 @@ class CardCollect(commands.Cog):
             suggested_chance = round(min(0.15, max(0.005, target_drops_per_peak_hour / max(peak_hour_count, 1))), 4)
             suggested_cooldown = max(180, int(3600 / max(target_drops_per_peak_hour, 1) / 2))
 
-        embed = embeds.diagnostics_embed(buckets, suggested_chance, suggested_cooldown, sampling_since, ctx.guild.name)
+        stats = await self.config.guild(ctx.guild).stats()
+        embed = embeds.diagnostics_embed(
+            buckets, suggested_chance, suggested_cooldown, sampling_since, ctx.guild.name, stats=stats
+        )
 
         payload = {
+            "draw_stats": stats,
             "hourly_buckets": buckets,
             "sampling_since": sampling_since,
             "suggested_drop_chance": suggested_chance,
@@ -1781,37 +1783,3 @@ class CardCollect(commands.Cog):
         }
         file_obj = io.BytesIO(json.dumps(payload, indent=2).encode("utf-8"))
         await ctx.send(embed=embed, file=discord.File(file_obj, filename="cardcollect_diagnostics.json"))
-
-    @card.command(name="testmode")
-    @commands.guild_only()
-    @commands.admin_or_permissions(manage_guild=True)
-    async def card_testmode(self, ctx: commands.Context, enabled: bool):
-        """Toggle test mode: all drops (ambient and forced) run the full
-        claim flow but award nothing."""
-        await self.config.guild(ctx.guild).test_mode.set(enabled)
-        if enabled:
-            await ctx.send("Test mode ON — every drop from now on is a test drop. Nothing will be awarded.")
-        else:
-            await ctx.send("Test mode off — drops are live again.")
-
-    @card.command(name="testdrop")
-    @commands.guild_only()
-    @commands.admin_or_permissions(manage_guild=True)
-    async def card_testdrop(self, ctx: commands.Context):
-        """Force an immediate test drop, bypassing chance/cooldown. Always a
-        test drop regardless of the testmode setting, so it's safe to spam
-        while tuning without needing to flip testmode on first."""
-        channel_id = await self.config.guild(ctx.guild).channel_id()
-        if channel_id is None:
-            await ctx.send("Set a drop channel first in `.card settings`.")
-            return
-        channel = ctx.guild.get_channel(channel_id)
-        if channel is None:
-            await ctx.send("Configured drop channel no longer exists.")
-            return
-        reason = await self._post_drop(channel, ctx.guild, is_test=True)
-        if reason is not None:
-            await ctx.send(reason)
-            return
-        if channel.id != ctx.channel.id:
-            await ctx.send(f"Test drop posted in {channel.mention}.")

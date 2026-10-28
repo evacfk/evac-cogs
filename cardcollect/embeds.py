@@ -10,7 +10,7 @@ from typing import Dict, List, Optional, Sequence, Tuple
 import discord
 
 from . import import_characters
-from .constants import ACTIVITY_TIMEZONE, TIERS
+from .constants import ACTIVITY_TIMEZONE, SET_MIN_CARDS, TIERS, WISHLIST_MAX
 from .imagegen import RARITY_COLORS
 from .models import Card, SellToken, SeriesPreview
 
@@ -38,53 +38,6 @@ def _rarity_color(rarity: str) -> discord.Color:
     return discord.Color.from_rgb(r, g, b)
 
 
-def claim_result_embed(
-    card: Card,
-    claimant: discord.abc.User,
-    outcome: str,  # "new" | "duplicate" | "sell_token" -- see engine.claim_outcome
-    price: Optional[int] = None,
-    is_test: bool = False,
-) -> discord.Embed:
-    if is_test:
-        title = "Test claim (nothing awarded)"
-        color = TEST_COLOR  # always red, regardless of rarity -- the whole point is that
-        # it reads as "not a real claim" at a glance, not blended in with real ones
-    elif outcome == "sell_token":
-        title = "Duplicate — converted to a sell token"
-        color = _rarity_color(card.rarity)
-    elif outcome == "duplicate":
-        title = "Duplicate claimed — spare copy!"
-        color = _rarity_color(card.rarity)
-    else:
-        title = "New card claimed!"
-        color = _rarity_color(card.rarity)
-
-    embed = discord.Embed(title=title, color=color)
-    embed.add_field(name="Card", value=f"**{card.name}** ({card.series})", inline=True)
-    embed.add_field(name="Rarity", value=_rarity_line(card.rarity), inline=True)
-    embed.add_field(name="Claimed by", value=claimant.mention, inline=True)
-    if outcome == "sell_token" and not is_test and price is not None:
-        embed.add_field(
-            name="Sell token",
-            value=f"Already at your duplicate limit for this card — sell with `.card sell` for {price} wondercoin.",
-            inline=False,
-        )
-    elif outcome == "duplicate" and not is_test:
-        embed.add_field(
-            name="Spare copy",
-            value="You now hold two of this card. Give the spare to someone with `.card give`, or it'll "
-            "convert to a sell token if you claim a third.",
-            inline=False,
-        )
-    if is_test:
-        embed.add_field(
-            name="Test mode",
-            value="This was a test drop. No card, token, or currency changed hands.",
-            inline=False,
-        )
-    return embed
-
-
 def sell_result_embed(token: SellToken, price: int, member: discord.abc.User) -> discord.Embed:
     embed = discord.Embed(title="Card sold", color=EMBED_COLOR)
     embed.add_field(name="Rarity", value=_rarity_line(token.rarity), inline=True)
@@ -104,7 +57,7 @@ def give_result_embed(card: Card, giver: discord.abc.User, receiver: discord.abc
 def leaderboard_embed(entries: Sequence[Tuple[discord.abc.User, int]], guild_name: str) -> discord.Embed:
     embed = discord.Embed(title=f"Card Collection Leaderboard — {guild_name}", color=EMBED_COLOR)
     if not entries:
-        embed.description = "Nobody has claimed a card yet."
+        embed.description = "Nobody has collected a card yet."
         return embed
     lines = []
     medals = ["\U0001f947", "\U0001f948", "\U0001f949"]
@@ -121,14 +74,7 @@ def settings_embed(guild_config: dict, guild_name: str) -> discord.Embed:
     embed.add_field(name="Drop channel", value=f"<#{channel_id}>" if channel_id else "Not set", inline=True)
     embed.add_field(name="Drop chance", value=f"{guild_config.get('drop_chance', 0) * 100:.2f}% / message", inline=True)
     embed.add_field(name="Drop cooldown", value=f"{guild_config.get('drop_cooldown_seconds', 0)}s", inline=True)
-    embed.add_field(name="Claim cooldown", value=f"{guild_config.get('claim_cooldown_seconds', 0)}s", inline=True)
-    max_wrong = guild_config.get("max_wrong_guesses", 0)
-    embed.add_field(name="Wrong guesses / drop", value=str(max_wrong) if max_wrong > 0 else "Unlimited", inline=True)
-    penalty = guild_config.get("wrong_guess_penalty_seconds", 0)
-    embed.add_field(name="Lockout penalty", value=f"{penalty}s" if penalty > 0 else "Disabled", inline=True)
-    quota = guild_config.get("claim_quota", 0)
-    embed.add_field(name="Daily claim quota", value=str(quota) if quota > 0 else "Unlimited", inline=True)
-    embed.add_field(name="Drop expiry", value=f"{guild_config.get('drop_expiry_seconds', 0)}s", inline=True)
+    embed.add_field(name="Draw window", value=f"{guild_config.get('draw_window_seconds', 0)}s", inline=True)
 
     weights = guild_config.get("drop_weights", {})
     weight_lines = [f"{_rarity_line(t)}: {weights.get(t, 0)}" for t in TIERS]
@@ -152,6 +98,7 @@ def diagnostics_embed(
     suggested_drop_cooldown_seconds: int,
     sampling_since: float,
     guild_name: str,
+    stats: Optional[dict] = None,
 ) -> discord.Embed:
     embed = discord.Embed(title=f"cardcollect diagnostics — {guild_name}", color=EMBED_COLOR)
     since = datetime.datetime.fromtimestamp(sampling_since, tz=datetime.timezone.utc)
@@ -174,6 +121,30 @@ def diagnostics_embed(
         if len(chunk) > 1024:
             chunk = chunk[:1000] + "\n… (see attached JSON for full data)"
         embed.add_field(name="Messages by hour", value=chunk, inline=False)
+
+    if stats and stats.get("drops"):
+        drops, offered = stats["drops"], max(1, stats.get("cards_offered", 0))
+        since = datetime.datetime.fromtimestamp(stats.get("since") or sampling_since, tz=datetime.timezone.utc)
+        picks = stats.get("picks", 0)
+        unpicked = stats.get("cards_unpicked", 0)
+        daily = stats.get("daily_pulls", {})
+        embed.add_field(
+            name=f"Draws since {since.strftime('%Y-%m-%d')}",
+            value=(
+                f"Drops posted: **{drops}** ({stats.get('cards_offered', 0)} cards)\n"
+                f"Picks: **{picks}** (about {picks / drops:.1f} per drop)\n"
+                f"Cards nobody picked: **{unpicked}** ({unpicked / offered * 100:.0f}%)\n"
+                f"Draws with a real contest: **{stats.get('contested', 0)}**"
+            ),
+            inline=False,
+        )
+    if stats and stats.get("daily_pulls"):
+        days = sorted(stats["daily_pulls"])[-7:]
+        embed.add_field(
+            name="Daily pulls (last 7 days with pulls)",
+            value="\n".join(f"`{d}` {stats['daily_pulls'][d]}" for d in days),
+            inline=False,
+        )
 
     embed.add_field(name="Suggested drop_chance", value=f"{suggested_drop_chance * 100:.3f}%", inline=True)
     embed.add_field(name="Suggested drop_cooldown_seconds", value=str(suggested_drop_cooldown_seconds), inline=True)
@@ -393,6 +364,99 @@ def series_result_embed(
     if notes:
         embed.add_field(name="Notes", value="\n".join(f"• {n}" for n in notes), inline=False)
     embed.set_footer(text="Wrong tier? Run .card info <card> and use the Change rarity dropdown.")
+    return embed
+
+
+_OUTCOME_TAG = {"new": "NEW", "duplicate": "spare copy", "sell_token": "sell token"}
+
+
+def draw_results_embed(
+    results: Sequence[dict],
+    cards: Dict[int, Optional[Card]],
+    picker_count: int,
+    set_lines: Sequence[str] = (),
+    is_test: bool = False,
+) -> discord.Embed:
+    """The drop message after its draw: one line per card with the winner, how
+    many picked it, and what it was to them. Pick counts are shown only now
+    that the draw is over."""
+    embed = discord.Embed(
+        title="Test draw (nothing awarded)" if is_test else "Draw results",
+        color=TEST_COLOR if is_test else EMBED_COLOR,
+    )
+    lines = []
+    for result in results:
+        card = cards.get(result["card_id"])
+        name = f"**{discord.utils.escape_markdown(card.name)}**" if card is not None else "a removed card"
+        emoji = RARITY_EMOJI.get(card.rarity, "") if card is not None else ""
+        head = f"{emoji} {name}".strip()
+        if result["outcome"] == "error":
+            lines.append(f"{head} — couldn't be awarded, please tell an admin")
+        elif result["winner"] is None:
+            lines.append(f"{head} — nobody picked it, wasted")
+        else:
+            tag = _OUTCOME_TAG.get(result["outcome"], "")
+            if is_test:
+                tag = f"would be {tag}" if tag else ""
+            extra = f" · {tag}" if tag else ""
+            lines.append(f"{head} — <@{result['winner']}> ({result['pickers']} picked){extra}")
+    embed.description = "\n".join(lines)
+    if set_lines:
+        embed.add_field(name="Sets", value="\n".join(set_lines), inline=False)
+    embed.set_footer(text=f"{picker_count} member{'s' if picker_count != 1 else ''} picked")
+    return embed
+
+
+def sets_embed(rows: Sequence[Tuple[str, int, int]], claimed: set, whose: str, total_sets: int) -> discord.Embed:
+    """The Sets tab: series the member has started, with progress."""
+    embed = discord.Embed(title=f"{whose} sets", color=EMBED_COLOR)
+    if not rows:
+        embed.description = (
+            f"No sets started yet. A set is every character from one series (at least {SET_MIN_CARDS}); "
+            "finish one for a wondercoin bonus."
+        )
+        return embed
+    complete = sum(1 for _, have, total in rows if have == total)
+    lines = []
+    for series, have, total in rows[:15]:
+        done = have == total
+        bar = "█" * round(8 * have / total) + "░" * (8 - round(8 * have / total))
+        mark = "✅" if done else "▫️"
+        paid = " 🏆" if done and series in claimed else ""
+        lines.append(f"{mark} **{discord.utils.escape_markdown(series)[:60]}** `{bar}` {have}/{total}{paid}")
+    if len(rows) > 15:
+        lines.append(f"…and {len(rows) - 15} more started")
+    embed.description = "\n".join(lines)
+    embed.set_footer(text=f"{complete} complete of {total_sets} sets · finishing one pays a wondercoin bonus once")
+    return embed
+
+
+def wishlist_embed(cards: Sequence[Card], pings_off: bool) -> discord.Embed:
+    embed = discord.Embed(title="Your wishlist", color=EMBED_COLOR)
+    if cards:
+        embed.description = "\n".join(
+            f"{RARITY_EMOJI.get(c.rarity, '')} **{discord.utils.escape_markdown(c.name)}**"
+            + (f" — {discord.utils.escape_markdown(c.series)[:50]}" if c.series else "")
+            for c in cards
+        )
+    else:
+        embed.description = "Nothing on your wishlist. Open a card with `.card find` and press ★ Wishlist."
+    embed.set_footer(
+        text=f"{len(cards)}/{WISHLIST_MAX} · "
+        + ("Pings are OFF: you won't be pinged when these drop." if pings_off else "You're pinged when one of these drops. A card leaves the list when you own it.")
+    )
+    return embed
+
+
+def request_embed(request_id: int, requester, text: str, status: str = "pending", by=None) -> discord.Embed:
+    who = requester.mention if hasattr(requester, "mention") else f"<@{requester}>"
+    color = {"pending": EMBED_COLOR, "approved": discord.Color.green(), "declined": TEST_COLOR}.get(status, EMBED_COLOR)
+    embed = discord.Embed(title=f"Card request #{request_id}", color=color)
+    embed.add_field(name="Character", value=discord.utils.escape_markdown(text), inline=False)
+    embed.add_field(name="Requested by", value=who, inline=True)
+    embed.add_field(name="Status", value=status.title() + (f" by {by.mention}" if by is not None else ""), inline=True)
+    if status == "pending":
+        embed.set_footer(text="Approve it to put the card on their wishlist once you've added it to the pool.")
     return embed
 
 

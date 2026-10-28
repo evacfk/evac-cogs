@@ -70,7 +70,7 @@ async def test_panel_renders_edits_and_saves_through_the_widgets(cog):
     guild = FakeGuild(500)
     admin = staff(FakeMember(5000, guild))
     p = await open_it(cog, guild, admin)
-    assert set(p.tabs) == {"Drops", "Claims & pulls"}
+    assert set(p.tabs) == {"Drops", "Requests", "Testing"}
     for tab in p.tabs:
         await p._on_tab(Click(admin, [tab]))
         for spec in p.tab_specs():
@@ -81,17 +81,17 @@ async def test_panel_renders_edits_and_saves_through_the_widgets(cog):
     click = Click(admin)
     await p._on_edit_modal(click)
     modal = click.response.modal
-    assert set(modal.boxes) == {"chance", "cooldown", "expiry", "wrong", "penalty"}  # Discord's limit is five
+    assert set(modal.boxes) == {"chance", "cooldown", "window"}  # Discord's limit is five
     assert modal.boxes["chance"].default == "1" or float(modal.boxes["chance"].default) > 0
-    modal.boxes["chance"]._value, modal.boxes["expiry"]._value = "3", "20"
+    modal.boxes["chance"]._value, modal.boxes["window"]._value = "3", "5"
     bad = Click(admin)
     await modal.on_submit(bad)
     assert "⚠" in note(bad)
-    modal.boxes["expiry"]._value = "300"
+    modal.boxes["window"]._value = "300"
     good = Click(admin)
     await modal.on_submit(good)
-    assert "✅" in note(good) and await cog.config.guild(guild).drop_expiry_seconds() == 300
-    await p._on_tab(Click(admin, ["Claims & pulls"]))
+    assert "✅" in note(good) and await cog.config.guild(guild).draw_window_seconds() == 300
+    await p._on_tab(Click(admin, ["Drops"]))
     await p._on_setting(Click(admin, ["odds"]))
     click = Click(admin)
     await p._on_edit_modal(click)

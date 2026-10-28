@@ -170,6 +170,7 @@ class _FakeCommand:
     def __init__(self, func, **kwargs):
         self.callback = func
         self.name = kwargs.get("name", func.__name__)
+        self.aliases = list(kwargs.get("aliases", []))
         self.__name__ = func.__name__
 
     def __get__(self, obj, objtype=None):

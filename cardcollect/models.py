@@ -92,13 +92,15 @@ class SellToken:
 class MemberState:
     """One member's cardcollect state within a guild."""
 
-    collection: list = field(default_factory=list)  # list[int] of owned card_ids, no duplicates
+    collection: list = field(default_factory=list)  # list[int] of owned card_ids; a tradeable spare is a second entry
     showcase_card_ids: list = field(default_factory=list)  # list[int], up to MAX_SHOWCASE_SLOTS, ordered
     sell_tokens: list = field(default_factory=list)  # list[SellToken]
-    daily_claims: int = 0  # real claims made on daily_claims_date; see engine.has_quota_remaining
-    daily_claims_date: str = ""  # ISO date (ACTIVITY_TIMEZONE) daily_claims was last reset for
     daily_pull_date: str = ""  # ISO date of the last `.card daily`
     daily_streak: int = 0  # consecutive days of `.card daily`
+    pity: int = 0  # consecutive lost draws against an equal rival; see engine.pity_multiplier
+    wishlist: list = field(default_factory=list)  # list[int] of wished-for card_ids
+    wish_pings_off: bool = False  # True = never ping this member about wishlist cards
+    sets_claimed: list = field(default_factory=list)  # list[str] of series whose completion bonus was paid
 
     def owns(self, card_id: int) -> bool:
         return card_id in self.collection
@@ -108,10 +110,12 @@ class MemberState:
             "collection": list(self.collection),
             "showcase_card_ids": list(self.showcase_card_ids),
             "sell_tokens": [t.to_dict() for t in self.sell_tokens],
-            "daily_claims": self.daily_claims,
-            "daily_claims_date": self.daily_claims_date,
             "daily_pull_date": self.daily_pull_date,
             "daily_streak": self.daily_streak,
+            "pity": self.pity,
+            "wishlist": list(self.wishlist),
+            "wish_pings_off": self.wish_pings_off,
+            "sets_claimed": list(self.sets_claimed),
         }
 
     @staticmethod
@@ -126,52 +130,43 @@ class MemberState:
             collection=list(data.get("collection", [])),
             showcase_card_ids=list(showcase),
             sell_tokens=[SellToken.from_dict(t) for t in data.get("sell_tokens", [])],
-            daily_claims=data.get("daily_claims", 0),
-            daily_claims_date=data.get("daily_claims_date", ""),
             daily_pull_date=data.get("daily_pull_date", ""),
             daily_streak=int(data.get("daily_streak", 0)),
+            pity=int(data.get("pity", 0)),
+            wishlist=list(data.get("wishlist", [])),
+            wish_pings_off=bool(data.get("wish_pings_off", False)),
+            sets_claimed=list(data.get("sets_claimed", [])),
         )
 
 
 @dataclass
 class ActiveDrop:
-    """An in-flight, unresolved drop. Lives in memory only -- losing this on
-    a restart just means one drop silently expires, not a real loss."""
+    """An in-flight drop: cards on offer and who has picked what. Lives in
+    memory only -- losing it on a restart just means one drop is never
+    resolved (its buttons answer "this drop is over"), not a real loss."""
 
     message_id: Optional[int]  # set once the drop message is actually sent
     guild_id: int
     channel_id: int
-    cards: list  # list[dict]: {"card_id": int, "code": str, "position": int}
-    claimed_positions: set = field(default_factory=set)  # positions already resolved
-    claimed_by: set = field(default_factory=set)  # user ids who already won a card from this drop
-    is_test: bool = False  # test-mode drop: claims resolve fully but nothing is awarded
-    # user id -> number of wrong (but code-shaped) guesses made on this drop
-    wrong_guesses: dict = field(default_factory=dict)
-    # Snapshotted from guild config when the drop is posted, so the claim
-    # hot path (on_message) needs no Config awaits before it reaches the
-    # claim lock -- an await there would let near-simultaneous submissions
-    # reorder themselves before the lock could serialize them fairly.
-    max_wrong_guesses: int = 0  # 0 = unlimited
-    wrong_guess_penalty_seconds: float = 0.0
-    expires_at: Optional[float] = None  # time.monotonic() deadline; None = never
-    # In-flight "card claimed" announcement tasks, in claim order. _claim
-    # appends one per win and, on the final claim, gathers them all so the
-    # "all cards claimed" post can't land ahead of an earlier claim's embed.
-    announcements: list = field(default_factory=list)
+    cards: list  # list[dict]: {"card_id": int, "position": int}
+    is_test: bool = False  # test drop: the draw runs fully but nothing is awarded
+    picks: dict = field(default_factory=dict)  # user id -> position of the card they picked
+    closes_at: Optional[float] = None  # time.monotonic() deadline for picks
+    closes_epoch: int = 0  # the same moment as a unix time, for Discord's <t:...:R>
+    resolved: bool = False  # set (synchronously) the moment the draw starts; no pick counts after it
+    message: object = None  # the drop's Message, edited in place with the results
+    guild: object = None  # the discord.Guild it was posted in
+    view: object = None  # the per-drop button view (stopped once the draw is resolved)
+    task: object = None  # the asyncio task that closes the draw
 
-    def entry_for_code(self, code: str) -> Optional[dict]:
-        """The card entry whose code is `code` (already normalized), or None."""
+    def card_at(self, position: int) -> Optional[dict]:
         for c in self.cards:
-            if c["code"] == code:
+            if c["position"] == position:
                 return c
         return None
 
-    def is_expired(self, now: float) -> bool:
-        return self.expires_at is not None and now >= self.expires_at
-
-    def is_locked_out(self, user_id: int) -> bool:
-        """True once `user_id` has used up their wrong guesses on this drop."""
-        return self.max_wrong_guesses > 0 and self.wrong_guesses.get(user_id, 0) >= self.max_wrong_guesses
+    def is_closed(self, now: float) -> bool:
+        return self.resolved or (self.closes_at is not None and now >= self.closes_at)
 
 
 @dataclass
