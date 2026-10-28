@@ -361,3 +361,10 @@ async def test_runs_inline_when_already_on_the_bot_loop(tmp_path, clock):
     cog.bot.loop = asyncio.get_running_loop()
     guild = make_dash_guild([make_member(77, mod_role=True)])
     assert _content(await cog.dashboard_pulse(SimpleNamespace(id=77), guild))["page"]["has_data"] is True
+
+
+def test_page_signature_is_only_user_guild_and_kwargs():
+    # The dashboard reads the handler's signature; Lurker's page (known to work live) has exactly this shape.
+    import inspect
+    params = inspect.signature(sp.ServerPulse.dashboard_pulse).parameters
+    assert list(params) == ["self", "user", "guild", "kwargs"]

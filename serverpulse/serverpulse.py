@@ -701,9 +701,15 @@ class ServerPulse(DashboardIntegration, commands.Cog):
         description="Server activity: heatmap, busiest hours, daily totals, channels (read-only).",
         methods=("GET",),
     )
-    async def dashboard_pulse(self, user: discord.User, guild: discord.Guild, days=None, **kwargs):
-        window = dashboard_view.window_from_kwargs(days, **kwargs)
-        content = await self._on_bot_loop(self._dashboard_render(user, guild, window))
+    async def dashboard_pulse(self, user: discord.User, guild: discord.Guild, **kwargs):
+        # Same signature as Lurker's page (which the dashboard accepts): no extra named
+        # parameters, so the dashboard has nothing to misread. `?days=` arrives in kwargs.
+        try:
+            window = dashboard_view.window_from_kwargs(**kwargs)
+            content = await self._on_bot_loop(self._dashboard_render(user, guild, window))
+        except Exception:
+            log.exception("Dashboard page failed")  # the dashboard itself only shows a bare 500
+            raise
         return {"status": 0, "web_content": {"source": dashboard_view.PAGE_TEMPLATE, **content}}
 
     # ------------------------------------------------------------------
