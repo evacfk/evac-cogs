@@ -2115,9 +2115,9 @@ async def test_failed_flush_keeps_counts_for_retry(cog):
     assert sum(tracking["hourly_buckets"].values()) == 4
 
 
-def test_version_is_1_7_1():
+def test_version_is_1_7_2():
     from cardcollect.constants import COG_VERSION
-    assert COG_VERSION == "1.7.1"
+    assert COG_VERSION == "1.7.2"
 
 
 # --- search / show commands ---------------------------------------------------
@@ -3298,3 +3298,100 @@ async def test_an_upload_arriving_after_the_import_started_does_not_touch_the_re
     cog.bot.wait_for = wait_for
     await view.replace_art.callback(_inter(admin, guild, chan, msg))
     assert view.preview.art == {} and edits == [] and view._listening is False
+
+
+# --- 1.7.2: the Adjust box decides what gets imported ------------------------------
+
+
+async def _open_adjust(cog, guild, admin, chan, msg):
+    inter = _inter(admin, guild, chan, msg)
+    await msg.view.adjust.callback(inter)
+    return inter.modal
+
+
+@pytest.mark.asyncio
+async def test_deleting_lines_in_the_adjust_box_leaves_those_characters_out(cog):
+    guild = FakeGuild(110)
+    admin = _admin(1100, guild)
+    chan = FakeChannel(11000, guild)
+    ctx, msg = await _open_series_preview(cog, guild, admin, chan, _seventeen_characters())
+    modal = await _open_adjust(cog, guild, admin, chan, msg)
+    lines = modal.changes.default.splitlines()
+    assert len(lines) == 15
+    modal.changes._value = "\n".join(lines[:3])  # keep only the first three lines
+    submit = _inter(admin, guild, chan, msg)
+    await modal.on_submit(submit)
+
+    assert msg.view.preview.skips == set(range(3, 15))
+    fields = {f.name: f.value for f in submit.edits[-1]["embed"].fields}
+    assert "**3** new" in fields["Top 15"]
+    assert "~~Char03~~ skipped" in fields["New characters"]
+    assert not submit.followups  # nothing to complain about
+
+    await msg.view.import_top.callback(_inter(admin, guild, chan, msg))
+    assert sorted(e["name"] for e in (await cog.config.guild(guild).pool()).values()) == ["Char00", "Char01", "Char02"]
+
+
+@pytest.mark.asyncio
+async def test_a_line_typed_back_into_the_box_brings_a_skipped_character_back(cog):
+    guild = FakeGuild(111)
+    admin = _admin(1110, guild)
+    chan = FakeChannel(11100, guild)
+    ctx, msg = await _open_series_preview(cog, guild, admin, chan, _seventeen_characters())
+    modal = await _open_adjust(cog, guild, admin, chan, msg)
+    modal.changes._value = "\n".join(modal.changes.default.splitlines()[:3])
+    await modal.on_submit(_inter(admin, guild, chan, msg))
+
+    modal2 = await _open_adjust(cog, guild, admin, chan, msg)
+    assert len(modal2.changes.default.splitlines()) == 3  # the box now lists only what will be imported
+    modal2.changes._value = modal2.changes.default + "\nChar05: epic"
+    await modal2.on_submit(_inter(admin, guild, chan, msg))
+    assert 5 not in msg.view.preview.skips and 3 in msg.view.preview.skips
+    assert msg.view.preview.overrides.get(5) == "epic" or msg.view.preview.built["entries"][5]["rarity"] == "epic"
+
+
+@pytest.mark.asyncio
+async def test_a_blank_adjust_box_changes_nothing(cog):
+    guild = FakeGuild(112)
+    admin = _admin(1120, guild)
+    chan = FakeChannel(11200, guild)
+    ctx, msg = await _open_series_preview(cog, guild, admin, chan, _seventeen_characters())
+    modal = await _open_adjust(cog, guild, admin, chan, msg)
+    modal.changes._value = "   \n  "
+    await modal.on_submit(_inter(admin, guild, chan, msg))
+    assert msg.view.preview.skips == set() and msg.view.preview.overrides == {}
+    assert msg.view.import_top.disabled is False
+
+
+@pytest.mark.asyncio
+async def test_an_unreadable_line_blocks_removals_but_still_applies_the_good_lines(cog):
+    guild = FakeGuild(113)
+    admin = _admin(1130, guild)
+    chan = FakeChannel(11300, guild)
+    ctx, msg = await _open_series_preview(cog, guild, admin, chan, _seventeen_characters())
+    modal = await _open_adjust(cog, guild, admin, chan, msg)
+    lines = modal.changes.default.splitlines()
+    lines[0] = "Char00: common"  # a real edit
+    lines[1] = "Chr01: legendary"  # a typo: it can't be matched, so Char01 must NOT silently vanish
+    modal.changes._value = "\n".join(lines[:4])
+    submit = _inter(admin, guild, chan, msg)
+    await modal.on_submit(submit)
+
+    assert msg.view.preview.skips == set()  # nothing was left out
+    assert msg.view.preview.overrides == {0: "common"}  # the good line still applied
+    said = submit.followups[-1][0]
+    assert 'No new character matches "Chr01"' in said and "NOT treated as skips" in said
+
+
+@pytest.mark.asyncio
+async def test_skip_ranges_work_and_bad_ranges_are_reported(cog):
+    guild = FakeGuild(114)
+    admin = _admin(1140, guild)
+    chan = FakeChannel(11400, guild)
+    ctx, msg = await _open_series_preview(cog, guild, admin, chan, _seventeen_characters())
+    modal = await _open_adjust(cog, guild, admin, chan, msg)
+    modal.changes._value = "skip 4-6, 10\nskip 40-90"
+    submit = _inter(admin, guild, chan, msg)
+    await modal.on_submit(submit)
+    assert msg.view.preview.skips == {3, 4, 5, 9}  # 4, 5, 6 and 10 are ranks 3, 4, 5 and 9
+    assert "longer than the list" in submit.followups[-1][0]

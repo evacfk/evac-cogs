@@ -292,7 +292,7 @@ class SeriesPickView(_InvokerView):
 
 class AdjustModal(discord.ui.Modal):
     changes = discord.ui.TextInput(
-        label="Rarity lines, or skip 3, 7",
+        label="Delete a line to leave it out",
         style=discord.TextStyle.paragraph,
         required=False,
         max_length=4000,
@@ -305,27 +305,37 @@ class AdjustModal(discord.ui.Modal):
             preview_view.preview.built, preview_view.limit, preview_view.preview.overrides, preview_view.preview.skips
         )
         self.changes.default = "\n".join(f"{e['name']}: {e['rarity']}" for e in selected["entries"])[:4000]
-        self.changes.placeholder = "Name: epic   |   skip 3, 7   |   unskip 3"
+        self.changes.placeholder = "Name: epic   |   skip 3, 7-9   |   unskip 3"
 
     async def on_submit(self, interaction: discord.Interaction):
         view = self.preview_view
         preview = view.preview
         entries = preview.built["entries"]  # every new character checked, not just the top slice
         base = {e["rank"]: e["rarity"] for e in entries}
-        parsed = import_characters.parse_adjustments(str(self.changes.value), entries)
-        for rank, tier in parsed["overrides"].items():
-            if tier == base[rank]:
-                preview.overrides.pop(rank, None)  # back to what its favourites say
-            else:
-                preview.overrides[rank] = tier
-        preview.skips |= parsed["skip"]
-        preview.skips -= parsed["unskip"]
+        text = str(self.changes.value or "")
+        parsed = import_characters.parse_adjustments(text, entries)
+        notes = list(parsed["problems"])
+        if text.strip():
+            for rank, tier in parsed["overrides"].items():
+                if tier == base[rank]:
+                    preview.overrides.pop(rank, None)  # back to what its favourites say
+                else:
+                    preview.overrides[rank] = tier
+            mentioned = set(parsed["overrides"])  # characters that still have a line: they are imported
+            preview.skips -= mentioned
+            # a character shown in the box whose line was deleted is left out -- but only when
+            # the box still has character lines (not skip-only edits) and every line was readable
+            if mentioned and not parsed["problems"]:
+                shown = {e["rank"] for e in entries if e["rank"] < view.limit}
+                preview.skips |= shown - mentioned
+            elif mentioned:
+                notes.append("Because of that, deleted lines were NOT treated as skips. Fix it and open Adjust again.")
+            preview.skips |= parsed["skip"]
+            preview.skips -= parsed["unskip"]
         view.refresh_buttons()
         await interaction.response.edit_message(view=view, **view.payload())
-        if parsed["problems"]:
-            await interaction.followup.send(
-                "Couldn't apply:\n" + "\n".join(f"• {x}" for x in parsed["problems"][:10]), ephemeral=True
-            )
+        if notes:
+            await interaction.followup.send("Couldn't apply:\n" + "\n".join(f"• {x}" for x in notes[:10]), ephemeral=True)
 
     async def on_error(self, interaction: discord.Interaction, error: Exception):
         log.error("cardcollect: adjust modal error", exc_info=error)

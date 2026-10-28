@@ -640,6 +640,7 @@ def resolve_entry(text: str, entries: List[dict]) -> Tuple[Optional[dict], Optio
     return matches[0], None
 
 
+_NUMBER_RANGE = re.compile(r"^\s*#?(\d+)\s*-\s*#?(\d+)\s*$")
 _SKIP_LINE = re.compile(r"^\s*(un)?skip\b[\s:,-]*(.*)$", re.IGNORECASE)
 
 
@@ -660,11 +661,17 @@ def parse_adjustments(text: str, entries: List[dict]) -> Dict[str, object]:
             for part in match.group(2).split(","):
                 if not part.strip():
                     continue
-                entry, problem = resolve_entry(part, entries)
-                if entry is None:
-                    problems.append(problem)
-                else:
-                    target.add(entry["rank"])
+                span = _NUMBER_RANGE.match(part)
+                numbers = range(int(span.group(1)), int(span.group(2)) + 1) if span else [part]
+                if span and int(span.group(2)) - int(span.group(1)) > len(entries):
+                    problems.append(f"Range {part.strip()} is longer than the list.")
+                    continue
+                for item in numbers:
+                    entry, problem = resolve_entry(str(item), entries)
+                    if entry is None:
+                        problems.append(problem)
+                    else:
+                        target.add(entry["rank"])
         else:
             rarity_lines.append(raw)
     overrides, rarity_problems = parse_rarity_overrides("\n".join(rarity_lines), entries)

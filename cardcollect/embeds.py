@@ -366,7 +366,7 @@ def series_preview_embed(preview: SeriesPreview, limit: int) -> discord.Embed:
         embed.add_field(name="Your edits", value=", ".join(edits), inline=True)
     embed.set_footer(
         text="Nothing is imported until you press an Import button. Red border = poor art, green = your upload. "
-        "Replace art swaps a picture; Adjust changes rarity or skips characters."
+        "Replace art swaps a picture; in Adjust, delete a character's line to leave it out."
     )
     return embed
 

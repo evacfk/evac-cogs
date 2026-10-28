@@ -688,3 +688,11 @@ def test_art_flags_catch_placeholders_small_wide_and_broken_images():
     assert import_characters.art_flags(entry, b"junk") == "not an image"
     assert import_characters.art_flags(entry, None) == "download failed"
     assert import_characters.art_flags({"image_url": "https://s4.anilist.co/x/default.jpg"}, png(230, 345)) == "AniList placeholder"
+
+
+def test_parse_adjustments_understands_number_ranges():
+    entries = _entries("A", "B", "C", "D", "E")
+    parsed = import_characters.parse_adjustments("skip 2-4\nunskip 3-3, 5", entries)
+    assert parsed["skip"] == {2, 4, 6}  # numbers 2,3,4 -> ranks 2,4,6
+    assert parsed["unskip"] == {4, 8}
+    assert import_characters.parse_adjustments("skip 4-9", entries)["problems"]
