@@ -23,6 +23,7 @@ from .constants import (
     GALLERY_VIEW_TIMEOUT_SECONDS,
     MAX_DROP_SIZE,
     PICK_BUTTON_PREFIX,
+    REQUEST_ADD_ID,
     REQUEST_APPROVE_ID,
     REQUEST_DECLINE_ID,
     REQUEST_MAX_LENGTH,
@@ -565,6 +566,229 @@ class RequestReviewView(discord.ui.View):
     @discord.ui.button(label="Decline", style=discord.ButtonStyle.danger, custom_id=REQUEST_DECLINE_ID)
     async def decline(self, interaction: discord.Interaction, button: discord.ui.Button):
         await self.cog.review_request(interaction, False)
+
+
+class RequestFollowView(discord.ui.View):
+    """The one button left on an approved request: Find & add card. Persistent,
+    so an admin can come back to an approved request later (or after the first
+    attempt timed out) and carry on."""
+
+    def __init__(self, cog):
+        super().__init__(timeout=None)
+        self.cog = cog
+
+    @discord.ui.button(label="Find & add card", style=discord.ButtonStyle.primary, custom_id=REQUEST_ADD_ID)
+    async def add(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not await self.cog._is_pool_admin(interaction.user):
+            await interaction.response.send_message("Only admins can add cards.", ephemeral=True)
+            return
+        request_id = await self.cog.request_id_for_message(interaction.guild, interaction.message.id)
+        if request_id is None:
+            await interaction.response.send_message("I can't find that request any more.", ephemeral=True)
+            return
+        await interaction.response.defer(ephemeral=True)
+        await self.cog.start_request_add(interaction, request_id)
+
+
+class SearchAgainModal(discord.ui.Modal):
+    text = discord.ui.TextInput(label="Search for", placeholder="e.g. Kratos", max_length=100, required=True)
+
+    def __init__(self, view, prefill: str):
+        super().__init__(title="Search again", timeout=300)
+        self.view = view
+        self.text.default = prefill[:100]
+
+    async def on_submit(self, interaction: discord.Interaction):
+        await interaction.response.defer()
+        await self.view.research(interaction, str(self.text.value))
+
+    async def on_error(self, interaction: discord.Interaction, error: Exception):
+        log.error("cardcollect: search-again modal error", exc_info=error)
+
+
+class CandidateView(_InvokerView):
+    """After Approve: the closest matches for a requested character (AniList
+    for anime and manga, IGDB for video games), with the picture for the chosen
+    one. The admin picks the match, the rarity (suggested from AniList
+    popularity), keeps the source's picture or uploads their own, and adds it.
+    Nothing reaches the pool until Add to pool is pressed."""
+
+    reject_text = "Only the admin who approved this can use it."
+
+    def __init__(self, cog, admin_id: int, request_id: str, text: str, candidates, notes):
+        super().__init__(admin_id, 900)
+        self.cog = cog
+        self.request_id = request_id
+        self.text = text
+        self.notes = list(notes)
+        self.candidates = list(candidates)[:10]
+        self.index = 0
+        self.rarity = "common"
+        self.art = None  # bytes the admin uploaded for the chosen match
+        self._busy = False
+        self._listening = False
+        self._reset_choice()
+        self._rebuild()
+
+    @property
+    def chosen(self):
+        return self.candidates[self.index] if self.candidates else None
+
+    def _reset_choice(self):
+        self.art = None
+        if self.chosen is not None:
+            self.rarity = self.chosen.get("rarity", "common")
+
+    # -- display -----------------------------------------------------------
+
+    def build_embed(self) -> discord.Embed:
+        embed = discord.Embed(title=f"Add “{_clip(self.text, 80)}”", color=embeds.EMBED_COLOR)
+        if not self.candidates:
+            embed.description = (
+                "No matches found. Try **Search again** with a different spelling, or add it by hand "
+                "with `.card addcard <rarity> <name> | <series>` and attach the picture."
+            )
+        else:
+            lines = []
+            for i, c in enumerate(self.candidates):
+                src = "AniList" if c["source"] == "anilist" else "IGDB"
+                extra = f" · ♥ {c['favourites']:,}" if c.get("favourites") else ""
+                pic = "" if c.get("image_url") else " · no picture"
+                mark = "▶" if i == self.index else "▫️"
+                lines.append(
+                    f"{mark} **{discord.utils.escape_markdown(_clip(c['name'], 50))}** — "
+                    f"{discord.utils.escape_markdown(_clip(c.get('series') or 'no series', 50))} ({src}{extra}{pic})"
+                )
+            embed.description = "\n".join(lines)
+            chosen = self.chosen
+            if self.art is not None:
+                embed.add_field(name="Picture", value="Your uploaded picture will be used.", inline=False)
+            elif chosen.get("image_url"):
+                embed.set_image(url=chosen["image_url"])
+            else:
+                embed.add_field(name="Picture", value="This match has no picture. Press **Use my own art**.", inline=False)
+            embed.set_footer(text=f"Rarity: {self.rarity}. Nothing is added until you press Add to pool.")
+        if self.notes:
+            embed.add_field(name="Heads up", value="\n".join(self.notes)[:1000], inline=False)
+        return embed
+
+    def _rebuild(self):
+        self.clear_items()
+        if self.candidates:
+            self.pick = discord.ui.Select(
+                placeholder="Which match?",
+                options=[
+                    discord.SelectOption(
+                        label=_clip(c["name"], 100),
+                        value=str(i),
+                        description=_clip(f"{c.get('series') or 'no series'} · {'AniList' if c['source'] == 'anilist' else 'IGDB'}", 100),
+                        default=(i == self.index),
+                    )
+                    for i, c in enumerate(self.candidates)
+                ],
+            )
+            self.pick.callback = self._on_pick
+            self.add_item(self.pick)
+            self.rarity_select = discord.ui.Select(
+                placeholder="Rarity",
+                options=[
+                    discord.SelectOption(label=t.title(), value=t, emoji=embeds.RARITY_EMOJI[t], default=(t == self.rarity))
+                    for t in TIERS
+                ],
+                row=1,
+            )
+            self.rarity_select.callback = self._on_rarity
+            self.add_item(self.rarity_select)
+            self.add_button = discord.ui.Button(label="Add to pool", style=discord.ButtonStyle.success, row=2)
+            self.add_button.callback = self._on_add
+            self.add_item(self.add_button)
+            self.own_art = discord.ui.Button(label="Use my own art", style=discord.ButtonStyle.secondary, row=2)
+            self.own_art.callback = self._on_own_art
+            self.add_item(self.own_art)
+        self.again = discord.ui.Button(label="Search again", style=discord.ButtonStyle.secondary, row=2)
+        self.again.callback = self._on_again
+        self.add_item(self.again)
+        self.cancel = discord.ui.Button(label="Close", style=discord.ButtonStyle.secondary, row=2)
+        self.cancel.callback = self._on_close
+        self.add_item(self.cancel)
+
+    async def _redraw(self, interaction: discord.Interaction):
+        self._rebuild()
+        if interaction.response.is_done():
+            await interaction.edit_original_response(embed=self.build_embed(), view=self)
+        else:
+            await interaction.response.edit_message(embed=self.build_embed(), view=self)
+
+    # -- callbacks -----------------------------------------------------------
+
+    async def _on_pick(self, interaction: discord.Interaction):
+        self.index = int(self.pick.values[0])
+        self._reset_choice()
+        await self._redraw(interaction)
+
+    async def _on_rarity(self, interaction: discord.Interaction):
+        self.rarity = self.rarity_select.values[0]
+        await self._redraw(interaction)
+
+    async def _on_again(self, interaction: discord.Interaction):
+        await interaction.response.send_modal(SearchAgainModal(self, self.text))
+
+    async def research(self, interaction: discord.Interaction, text: str):
+        candidates, notes = await self.cog.search_candidates(interaction.guild, text)
+        self.text, self.notes, self.candidates, self.index = text, list(notes), list(candidates)[:10], 0
+        self._reset_choice()
+        await self._redraw(interaction)
+
+    async def _on_close(self, interaction: discord.Interaction):
+        await interaction.response.edit_message(
+            embed=discord.Embed(description="Closed. Press **Find & add card** on the request to come back.", color=embeds.EMBED_COLOR),
+            view=None,
+        )
+        self.stop()
+
+    async def _on_own_art(self, interaction: discord.Interaction):
+        if self._listening:
+            await interaction.response.send_message("Already waiting for an image from you.", ephemeral=True)
+            return
+        self._listening = True
+        await interaction.response.send_message(
+            f"Send the picture for **{self.chosen['name']}** in this channel as an image upload (I'll wait {ART_UPLOAD_WAIT_SECONDS}s).",
+            ephemeral=True,
+        )
+        try:
+            message = await self.cog.wait_for_upload(interaction.channel.id, interaction.user.id, ART_UPLOAD_WAIT_SECONDS)
+            if message is None:
+                await interaction.followup.send("No image arrived, so nothing changed.", ephemeral=True)
+                return
+            data, problem = await self.cog.read_uploaded_art(message)
+            if data is None:
+                await interaction.followup.send(f"{problem} Nothing changed.", ephemeral=True)
+                return
+            self.art = data
+            self._rebuild()
+            if self.message is not None:
+                await self.message.edit(embed=self.build_embed(), view=self)
+            await interaction.followup.send("Got it. Your picture will be used. Press **Add to pool** when ready.", ephemeral=True)
+        finally:
+            self._listening = False
+
+    async def _on_add(self, interaction: discord.Interaction):
+        if self._busy:
+            await interaction.response.send_message("One moment, still adding.", ephemeral=True)
+            return
+        self._busy = True
+        try:
+            await interaction.response.defer()
+            card, note = await self.cog.add_requested_card(interaction.guild, self.request_id, self.chosen, self.rarity, self.art)
+            if card is None:
+                await interaction.followup.send(note, ephemeral=True)
+                return
+            done = discord.Embed(title="Added", description=note, color=embeds.EMBED_COLOR)
+            done.add_field(name="Requester", value="Wishlisted, and DM'd that it's ready.", inline=False)
+            await interaction.edit_original_response(embed=done, view=None)
+            self.stop()
+        finally:
+            self._busy = False
 
 
 class FindView(_InvokerView):

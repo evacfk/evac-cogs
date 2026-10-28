@@ -482,7 +482,7 @@ async def test_only_admins_can_review_and_a_request_is_reviewed_once(cog):
     assert "Only admins" in nope.sent[0][0]
     yes = AdminInteraction(admin, guild, message=post)
     await cog.review_request(yes, True)
-    assert yes.edits and yes.edits[0]["view"] is None
+    assert yes.edits and isinstance(yes.edits[0]["view"], views.RequestFollowView)  # Find & add card stays
     again = AdminInteraction(admin, guild, message=post)
     await cog.review_request(again, False)
     assert "already approved" in again.sent[0][0]
@@ -758,7 +758,7 @@ def test_the_retired_commands_are_gone_and_the_new_aliases_exist(cog):
 def test_the_cog_is_version_2(cog):
     from cardcollect.constants import COG_VERSION
 
-    assert COG_VERSION == "2.0.2"
+    assert COG_VERSION == "2.1.0"
 
 
 @pytest.mark.asyncio
@@ -841,3 +841,209 @@ async def test_no_request_buttons_when_requests_are_closed_or_searching_only_you
     nothing = await find(cog, asker, guild, other, "zzzz")
     assert not any("equest" in (l or "") for l in _labels(nothing.view))
     assert "isn't in the pool" in nothing.embeds[0].description
+
+
+# --- Approve -> find the character -> add it ------------------------------------------------
+
+
+def cand(name, series, source="igdb", sid=1, image="http://img/a.png", rarity="common", anilist_id=None, fav=0):
+    return {"source": source, "source_id": sid, "anilist_id": anilist_id, "name": name, "series": series, "series_alt": "",
+            "favourites": fav, "rarity": rarity, "image_url": image}
+
+
+async def approved_request(cog, gid, text, candidates, notes=()):
+    guild, admin, asker, review, other = await request_setup(cog, gid)
+
+    async def fake_search(g, t):
+        return list(candidates), list(notes)
+
+    cog.search_candidates = fake_search
+
+    async def fake_download(entries):
+        return [(e, fake_art_bytes((1, 2, 3))) for e in entries], []
+
+    cog._download_images = fake_download
+    await cog.submit_request(guild, asker, text)
+    post = review.sent[-1]
+    inter = AdminInteraction(admin, guild, message=post)
+    await cog.review_request(inter, True)
+    return guild, admin, asker, review, other, post, inter
+
+
+def candidate_view(inter):
+    for _content, kwargs in inter.followups:
+        if isinstance(kwargs.get("view"), views.CandidateView):
+            return kwargs["view"]
+    raise AssertionError("no candidate view was sent")
+
+
+@pytest.mark.asyncio
+async def test_approving_a_request_shows_the_closest_matches_to_the_admin_privately(cog):
+    c = [cand("Kratos", "God of War"), cand("Kratos Aurion", "Tales of Symphonia", "anilist", 2, anilist_id=77, fav=900, rarity="rare")]
+    guild, admin, asker, review, other, post, inter = await approved_request(cog, 400, "Kratos | God of War", c, ["note"])
+    content, kwargs = inter.followups[-1]
+    assert kwargs.get("ephemeral") is True
+    view = candidate_view(inter)
+    text = str(kwargs["embed"].to_dict())
+    assert "Kratos" in text and "God of War" in text and "IGDB" in text and "AniList" in text and "note" in text
+    assert view.rarity == "common" and len(view.pick.options) == 2
+
+
+@pytest.mark.asyncio
+async def test_choosing_a_match_and_a_rarity_then_add_puts_it_in_the_pool_and_wishlists_the_requester(cog):
+    c = [cand("Kratos Aurion", "Tales of Symphonia", "anilist", 2, anilist_id=77, rarity="rare"), cand("Kratos", "God of War")]
+    guild, admin, asker, review, other, post, inter = await approved_request(cog, 401, "Kratos | God of War", c)
+    view = candidate_view(inter)
+    view.pick._values = ["1"]
+    await view._on_pick(AdminInteraction(admin, guild))
+    assert view.chosen["name"] == "Kratos" and view.rarity == "common"
+    view.rarity_select._values = ["epic"]
+    await view._on_rarity(AdminInteraction(admin, guild))
+    add = AdminInteraction(admin, guild, message=post)
+    await view._on_add(add)
+    pool = await cog.config.guild(guild).pool()
+    (entry,) = [d for d in pool.values() if d["name"] == "Kratos"]
+    assert entry["rarity"] == "epic" and entry["series"] == "God of War" and entry["anilist_id"] is None
+    cid = int(next(k for k, d in pool.items() if d["name"] == "Kratos"))
+    assert (await state_of(cog, guild, asker)).wishlist == [cid]
+    assert any("wishlist" in (d or "") for d in asker.dms)
+    request = (await cog.config.guild(guild).requests())["1"]
+    assert request["status"] == "fulfilled" and request["card_id"] == cid
+    assert add.original_edits and add.original_edits[-1]["view"] is None
+    assert view.is_finished()
+
+
+@pytest.mark.asyncio
+async def test_the_chosen_name_need_not_appear_in_the_request_text_to_wishlist_it(cog):
+    c = [cand("Arthas Menethil", "Warcraft III")]
+    guild, admin, asker, review, other, post, inter = await approved_request(cog, 402, "the lich king guy", c)
+    view = candidate_view(inter)
+    await view._on_add(AdminInteraction(admin, guild, message=post))
+    pool = await cog.config.guild(guild).pool()
+    cid = int(next(k for k, d in pool.items() if d["name"] == "Arthas Menethil"))
+    assert (await state_of(cog, guild, asker)).wishlist == [cid]
+
+
+@pytest.mark.asyncio
+async def test_adding_a_character_already_in_the_pool_is_refused(cog):
+    c = [cand("Nami", "One Piece")]
+    guild, admin, asker, review, other, post, inter = await approved_request(cog, 403, "Nami", c)
+    await add_cards(cog, guild, admin, other, ["Nami"], series="One Piece")
+    view = candidate_view(inter)
+    add = AdminInteraction(admin, guild, message=post)
+    await view._on_add(add)
+    assert "already in the pool" in add.followups[-1][0]
+    assert not view.is_finished()
+
+
+@pytest.mark.asyncio
+async def test_a_match_without_a_picture_needs_the_admins_own_art(cog):
+    from cardcollect import storage
+    from test_cardcollect_smoke import FakeUpload, _inter, _queue_uploads
+
+    c = [cand("Mystery", "Some Game", image=None)]
+    guild, admin, asker, review, other, post, inter = await approved_request(cog, 404, "Mystery", c)
+    view = candidate_view(inter)
+    add = AdminInteraction(admin, guild, message=post)
+    await view._on_add(add)
+    assert "no picture" in add.followups[-1][0]
+    mine = fake_art_bytes((9, 9, 9))
+    view.message = FakeMessage(1, other)
+    _queue_uploads(cog, FakeUpload(admin, other, "", mine))
+    up = _inter(admin, guild, other, post)
+    await view._on_own_art(up)
+    assert view.art == mine and "Your uploaded picture" in str(view.message.embeds[0].to_dict())
+    await view._on_add(AdminInteraction(admin, guild, message=post))
+    pool = await cog.config.guild(guild).pool()
+    cid = int(next(k for k, d in pool.items() if d["name"] == "Mystery"))
+    assert storage.read_card_image(cog.data_path, guild.id, cid) == mine
+
+
+@pytest.mark.asyncio
+async def test_a_bad_upload_changes_nothing(cog):
+    from test_cardcollect_smoke import FakeUpload, _inter, _queue_uploads
+
+    c = [cand("Mystery", "Some Game")]
+    guild, admin, asker, review, other, post, inter = await approved_request(cog, 405, "Mystery", c)
+    view = candidate_view(inter)
+    _queue_uploads(cog, FakeUpload(admin, other, "", b"junk"))
+    up = _inter(admin, guild, other, post)
+    await view._on_own_art(up)
+    assert view.art is None and "isn't an image" in up.followups[-1][0]
+
+
+@pytest.mark.asyncio
+async def test_only_the_approving_admin_can_use_the_match_picker(cog):
+    guild, admin, asker, review, other, post, inter = await approved_request(cog, 406, "Nami", [cand("Nami", "One Piece")])
+    view = candidate_view(inter)
+    assert await view.interaction_check(AdminInteraction(asker, guild)) is False
+    assert await view.interaction_check(AdminInteraction(admin, guild)) is True
+
+
+@pytest.mark.asyncio
+async def test_no_matches_explains_the_fallbacks_and_search_again_can_find_one(cog):
+    guild, admin, asker, review, other, post, inter = await approved_request(cog, 407, "Zzz", [], ["Game search is off."])
+    view = candidate_view(inter)
+    text = str(view.build_embed().to_dict())
+    assert "No matches" in text and "addcard" in text and "Game search is off" in text
+    assert not hasattr(view, "pick") or view.candidates == []
+
+    async def better(g, t):
+        return [cand("Zed", "League of Legends")], []
+
+    cog.search_candidates = better
+    again = AdminInteraction(admin, guild, message=post)
+    again.deferred = True
+    await view.research(again, "Zed")
+    assert view.chosen["name"] == "Zed" and again.original_edits
+    assert view.pick.options[0].label == "Zed"
+
+
+@pytest.mark.asyncio
+async def test_the_find_and_add_button_works_later_and_is_admin_only(cog):
+    c = [cand("Nami", "One Piece")]
+    guild, admin, asker, review, other, post, inter = await approved_request(cog, 408, "Nami", c)
+    follow = post.view if isinstance(post.view, views.RequestFollowView) else views.RequestFollowView(cog)
+    button = follow.children[0]
+    nope = AdminInteraction(asker, guild, message=post)
+    await button.callback(nope)
+    assert "Only admins" in nope.sent[0][0]
+    ok = AdminInteraction(admin, guild, message=post)
+    await button.callback(ok)
+    assert ok.deferred and candidate_view(ok)
+
+
+@pytest.mark.asyncio
+async def test_start_add_refuses_a_request_that_is_not_approved(cog):
+    guild, admin, asker, review, other = await request_setup(cog, 409)
+    await cog.submit_request(guild, asker, "Nami")  # still pending
+    inter = AdminInteraction(admin, guild, message=review.sent[-1])
+    await cog.start_request_add(inter, "1")
+    assert "isn't waiting" in inter.followups[-1][0]
+
+
+@pytest.mark.asyncio
+async def test_igdb_keys_come_from_reds_shared_api_tokens(cog):
+    assert await cog.igdb_keys() is None  # the fake bot has none
+
+    async def tokens(name):
+        assert name == "igdb"
+        return {"client_id": "abc", "client_secret": "def"}
+
+    cog.bot.get_shared_api_tokens = tokens
+    assert await cog.igdb_keys() == ("abc", "def")
+
+    async def half(name):
+        return {"client_id": "abc"}
+
+    cog.bot.get_shared_api_tokens = half
+    assert await cog.igdb_keys() is None
+
+
+@pytest.mark.asyncio
+async def test_a_declined_request_leaves_no_find_and_add_button(cog):
+    guild, admin, asker, review, other = await request_setup(cog, 410)
+    await cog.submit_request(guild, asker, "Nami")
+    inter = AdminInteraction(admin, guild, message=review.sent[-1])
+    await cog.review_request(inter, False)
+    assert inter.edits[0]["view"] is None and not inter.followups

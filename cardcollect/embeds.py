@@ -448,7 +448,7 @@ def wishlist_embed(cards: Sequence[Card], pings_off: bool) -> discord.Embed:
 
 def request_embed(request_id: int, requester, text: str, status: str = "pending", by=None) -> discord.Embed:
     who = requester.mention if hasattr(requester, "mention") else f"<@{requester}>"
-    color = {"pending": EMBED_COLOR, "approved": discord.Color.green(), "declined": TEST_COLOR}.get(status, EMBED_COLOR)
+    color = {"pending": EMBED_COLOR, "approved": discord.Color.green(), "fulfilled": discord.Color.green(), "declined": TEST_COLOR}.get(status, EMBED_COLOR)
     embed = discord.Embed(title=f"Card request #{request_id}", color=color)
     embed.add_field(name="Character", value=discord.utils.escape_markdown(text), inline=False)
     embed.add_field(name="Requested by", value=who, inline=True)

@@ -74,6 +74,7 @@ REQUEST_MAX_PENDING = 3
 REQUEST_MAX_LENGTH = 100
 REQUEST_APPROVE_ID = "cardcollect:request:approve"
 REQUEST_DECLINE_ID = "cardcollect:request:decline"
+REQUEST_ADD_ID = "cardcollect:request:add"
 
 MAX_SHOWCASE_SLOTS = 3  # how many cards a member can pin in their gallery header
 
@@ -110,4 +111,4 @@ GALLERY_PAGE_SIZE = GALLERY_COLUMNS * GALLERY_ROWS_PER_PAGE
 GALLERY_VIEW_TIMEOUT_SECONDS = 180  # a stale pager after this just stops responding
 
 # bumped on every deploy so `.card version` can confirm the new build is live
-COG_VERSION = "2.0.2"
+COG_VERSION = "2.1.0"

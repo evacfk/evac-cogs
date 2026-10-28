@@ -34,7 +34,7 @@ import discord
 from redbot.core import Config, bank, commands
 from redbot.core.data_manager import cog_data_path
 
-from . import embeds, engine, imagegen, import_characters, storage, views
+from . import embeds, engine, imagegen, import_characters, sources, storage, views
 from . import panel as panel_specs
 from .settings_panel import PanelError, open_panel
 from .constants import (
@@ -147,6 +147,7 @@ class CardCollect(commands.Cog):
         self._rng: Optional[random.Random] = None  # tests inject a seeded one for the draw
 
         self._session: Optional[aiohttp.ClientSession] = None
+        self._igdb = sources.IGDBClient()
 
         # Activity counts are buffered here and merged into Config every
         # ACTIVITY_FLUSH_SECONDS. Writing per message rewrote this cog's whole
@@ -160,7 +161,7 @@ class CardCollect(commands.Cog):
         # Shared, persistent views: a press of a button on a drop (or a request)
         # that predates a restart still lands here, and is answered ("this drop
         # is over") instead of Discord showing "This interaction failed".
-        self._persistent_views = [views.DrawView(self, None), views.RequestReviewView(self)]
+        self._persistent_views = [views.DrawView(self, None), views.RequestReviewView(self), views.RequestFollowView(self)]
         for view in self._persistent_views:
             self.bot.add_view(view)
 
@@ -738,7 +739,7 @@ class CardCollect(commands.Cog):
             return
         requester = guild.get_member(request["user_id"])
         embed = embeds.request_embed(int(request_id), requester or request["user_id"], request["text"], status=request["status"], by=interaction.user)
-        await interaction.response.edit_message(embed=embed, view=None)
+        await interaction.response.edit_message(embed=embed, view=views.RequestFollowView(self) if approve else None)
         if requester is not None:
             note = (
                 f"Your card request **{request['text']}** was approved! When it's added to the pool it goes on your wishlist."
@@ -748,6 +749,122 @@ class CardCollect(commands.Cog):
                 await requester.send(note)
             except discord.HTTPException:
                 pass  # DMs closed: nothing else to do
+        if approve:
+            await self.start_request_add(interaction, request_id)
+
+    # -- adding the requested character: search, pick, add -------------------
+
+    async def request_id_for_message(self, guild: discord.Guild, message_id: int) -> Optional[str]:
+        requests = await self.config.guild(guild).requests()
+        return next((rid for rid, r in requests.items() if r.get("message_id") == message_id), None)
+
+    async def igdb_keys(self) -> Optional[Tuple[str, str]]:
+        """The Twitch app keys for IGDB from Red's shared API tokens, or None."""
+        getter = getattr(self.bot, "get_shared_api_tokens", None)
+        if getter is None:
+            return None
+        tokens = await getter("igdb")
+        client_id, secret = (tokens or {}).get("client_id"), (tokens or {}).get("client_secret")
+        return (client_id, secret) if client_id and secret else None
+
+    async def search_candidates(self, guild: discord.Guild, text: str):
+        """Closest AniList and IGDB matches for a request's text, plus notes
+        about anything that couldn't be searched."""
+        cutoffs = await self.config.guild(guild).tier_cutoffs()
+        return await sources.find_candidates(self._session, text, cutoffs, self._igdb, await self.igdb_keys())
+
+    async def start_request_add(self, interaction: discord.Interaction, request_id):
+        """Search for an approved request's character and show the admin the
+        closest matches to choose from (privately). Used right after Approve and
+        by the "Find & add card" button left on the approved request."""
+        guild = interaction.guild
+        requests = await self.config.guild(guild).requests()
+        request = requests.get(str(request_id))
+        if request is None or request["status"] not in ("approved",):
+            await interaction.followup.send("That request isn't waiting to be added.", ephemeral=True)
+            return
+        candidates, notes = await self.search_candidates(guild, request["text"])
+        view = views.CandidateView(self, interaction.user.id, str(request_id), request["text"], candidates, notes)
+        view.message = await interaction.followup.send(embed=view.build_embed(), view=view, ephemeral=True)
+
+    async def add_requested_card(
+        self, guild: discord.Guild, request_id: str, candidate: dict, rarity: str, art: Optional[bytes] = None
+    ) -> Tuple[Optional[Card], str]:
+        """Add the chosen candidate to the pool with the chosen rarity (and the
+        admin's own art if given, else the source's picture), then wishlist it
+        for the requester. Returns (card or None, what to tell the admin)."""
+        if rarity not in TIERS:
+            return None, "Pick a rarity first."
+        pool = await self._pool_cards(guild)
+        key = (engine.fold_text(candidate["name"]), engine.fold_text(candidate.get("series", "")))
+        for card in pool:
+            if (engine.fold_text(card.name), engine.fold_text(card.series)) == key or (
+                candidate.get("anilist_id") is not None and card.anilist_id == candidate["anilist_id"]
+            ):
+                return None, f"**{card.name}** is already in the pool as `#{card.card_id}`."
+        if art is None:
+            if not candidate.get("image_url"):
+                return None, "That match has no picture. Press **Use my own art** and upload one."
+            downloaded, failed = await self._download_images([candidate])
+            if failed:
+                return None, "I couldn't download that picture. Try **Use my own art**."
+            art = downloaded[0][1]
+        if not imagegen.valid_art(art):
+            return None, "That picture isn't an image I can read. Try **Use my own art**."
+        entry = {
+            "anilist_id": candidate.get("anilist_id"),
+            "name": candidate["name"],
+            "series": candidate.get("series", ""),
+            "series_alt": candidate.get("series_alt", ""),
+            "favourites": candidate.get("favourites", 0),
+            "rarity": rarity,
+        }
+        added = await self._write_pool_entries(guild, [(entry, art)])
+        if not added:
+            return None, "That character is already in the pool."
+        card = await self._card_by_id(guild, added[0]["card_id"])
+        await self._finish_request(guild, request_id, card)
+        return card, f"Added **{card.name}** ({card.series or 'no series'}) as **{rarity}**, `#{card.card_id}`."
+
+    async def _finish_request(self, guild: discord.Guild, request_id: str, card: Card):
+        """Mark a request fulfilled by `card`, wishlist it for the requester and
+        update the review-channel message."""
+        conf = self.config.guild(guild)
+        info, already = None, False
+        async with conf.requests() as requests:
+            request = requests.get(str(request_id))
+            if request is not None:
+                already = request["status"] == "fulfilled"  # the pool write may have matched it by name already
+                request["status"], request["card_id"] = "fulfilled", card.card_id
+                info = dict(request)
+        if info is None:
+            return
+        if not already:
+            await self._wishlist_for(guild, info["user_id"], card.card_id, card.name)
+        channel_id = await conf.request_channel_id()
+        channel = guild.get_channel(channel_id) if channel_id else None
+        if channel is not None and info.get("message_id"):
+            try:
+                message = await channel.fetch_message(info["message_id"])
+                requester = guild.get_member(info["user_id"]) or info["user_id"]
+                await message.edit(embed=embeds.request_embed(int(request_id), requester, info["text"], status="fulfilled"), view=None)
+            except (discord.HTTPException, AttributeError):
+                pass  # the message is gone or unreachable: the request is still recorded as fulfilled
+
+    async def _wishlist_for(self, guild: discord.Guild, user_id: int, card_id: int, name: str):
+        """Put a card on a member's wishlist (if there's room and they don't own it) and DM them."""
+        member = guild.get_member(user_id)
+        if member is None:
+            return
+        async with self._get_claim_lock(guild.id):
+            state = await self._member_state(member)
+            if not state.owns(card_id) and card_id not in state.wishlist and len(state.wishlist) < WISHLIST_MAX:
+                state.wishlist.append(card_id)
+                await self._save_member_state(member, state)
+        try:
+            await member.send(f"**{name}** is now in the card pool, and it's on your wishlist!")
+        except discord.HTTPException:
+            pass
 
     async def _fulfil_requests(self, guild: discord.Guild, added: List[Tuple[int, str]]):
         """New characters just entered the pool: any approved request whose text
@@ -768,19 +885,7 @@ class CardCollect(commands.Cog):
                         matched.append((request["user_id"], card_id, name, request_id))
                         break
         for user_id, card_id, name, _request_id in matched:
-            member = guild.get_member(user_id)
-            if member is None:
-                continue
-            async with self._get_claim_lock(guild.id):
-                state = await self._member_state(member)
-                if not state.owns(card_id) and card_id not in state.wishlist and len(state.wishlist) < WISHLIST_MAX:
-                    state.wishlist.append(card_id)
-                    await self._save_member_state(member, state)
-            try:
-                await member.send(f"**{name}** is now in the card pool, and it's on your wishlist!")
-            except discord.HTTPException:
-                pass
-
+            await self._wishlist_for(guild, user_id, card_id, name)
 
     # ------------------------------------------------------------------
     # commands
