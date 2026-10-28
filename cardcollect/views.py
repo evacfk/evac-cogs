@@ -30,6 +30,7 @@ from .constants import (
     SERIES_IMPORT_DEFAULT,
     SERIES_VIEW_TIMEOUT_SECONDS,
     TIERS,
+    UPLOAD_CANCELLED,
 )
 
 log = logging.getLogger("red.evac-cogs.cardcollect")
@@ -568,6 +569,20 @@ class RequestReviewView(discord.ui.View):
         await self.cog.review_request(interaction, False)
 
 
+class _CancelUploadView(discord.ui.View):
+    """A private "Cancel upload" button shown with an image prompt."""
+
+    def __init__(self):
+        super().__init__(timeout=ART_UPLOAD_WAIT_SECONDS + 30)
+        self.cancelled = asyncio.Event()
+
+    @discord.ui.button(label="Cancel upload", style=discord.ButtonStyle.secondary)
+    async def cancel(self, interaction: discord.Interaction, button: discord.ui.Button):
+        self.cancelled.set()
+        await interaction.response.edit_message(content="Cancelled. Nothing changed.", view=None)
+        self.stop()
+
+
 class RequestFollowView(discord.ui.View):
     """The one button left on an approved request: Find & add card. Persistent,
     so an admin can come back to an approved request later (or after the first
@@ -751,12 +766,20 @@ class CandidateView(_InvokerView):
             await interaction.response.send_message("Already waiting for an image from you.", ephemeral=True)
             return
         self._listening = True
+        prompt = _CancelUploadView()
         await interaction.response.send_message(
-            f"Send the picture for **{self.chosen['name']}** in this channel as an image upload (I'll wait {ART_UPLOAD_WAIT_SECONDS}s).",
+            f"Send the picture for **{self.chosen['name']}** in this channel as an image upload (I'll wait {ART_UPLOAD_WAIT_SECONDS}s). "
+            "Other chat is ignored. Press the button or type `cancel` to back out.",
+            view=prompt,
             ephemeral=True,
         )
         try:
-            message = await self.cog.wait_for_upload(interaction.channel.id, interaction.user.id, ART_UPLOAD_WAIT_SECONDS)
+            message = await self.cog.wait_for_upload(
+                interaction.channel.id, interaction.user.id, ART_UPLOAD_WAIT_SECONDS, images_only=True, cancel=prompt.cancelled
+            )
+            if message == UPLOAD_CANCELLED:
+                await interaction.followup.send("Cancelled. Nothing changed.", ephemeral=True)
+                return
             if message is None:
                 await interaction.followup.send("No image arrived, so nothing changed.", ephemeral=True)
                 return
@@ -1040,13 +1063,21 @@ class FindView(_InvokerView):
             await interaction.response.send_message("Already waiting for an image from you.", ephemeral=True)
             return
         self._listening = True
+        prompt = _CancelUploadView()
         await interaction.response.send_message(
             f"Send the new picture for **{self.card.name}** in this channel as an image upload "
-            f"(I'll wait {ART_UPLOAD_WAIT_SECONDS}s). Only the picture changes; owners keep their copies.",
+            f"(I'll wait {ART_UPLOAD_WAIT_SECONDS}s). Only the picture changes; owners keep their copies. "
+            "Other chat is ignored. Press the button or type `cancel` to back out.",
+            view=prompt,
             ephemeral=True,
         )
         try:
-            message = await self.cog.wait_for_upload(interaction.channel.id, interaction.user.id, ART_UPLOAD_WAIT_SECONDS)
+            message = await self.cog.wait_for_upload(
+                interaction.channel.id, interaction.user.id, ART_UPLOAD_WAIT_SECONDS, images_only=True, cancel=prompt.cancelled
+            )
+            if message == UPLOAD_CANCELLED:
+                await interaction.followup.send("Cancelled. The art was left as it was.", ephemeral=True)
+                return
             if message is None:
                 await interaction.followup.send("No image arrived, so the art was left as it was.", ephemeral=True)
                 return

@@ -58,6 +58,8 @@ from .constants import (
     MAX_SHOWCASE_SLOTS,
     MIN_DRAW_WINDOW_SECONDS,
     REQUEST_MAX_LENGTH,
+    UPLOAD_CANCEL_WORDS,
+    UPLOAD_CANCELLED,
     REQUEST_MAX_PENDING,
     SERIES_IMPORT_DEFAULT,
     SERIES_IMPORT_MAX,
@@ -1753,16 +1755,42 @@ class CardCollect(commands.Cog):
             )
         return discord.File(imagegen.render_contact_sheet(tiles, SHEET_COLUMNS), filename="contact_sheet.png")
 
-    async def wait_for_upload(self, channel_id: int, user_id: int, timeout: float):
-        """The next message from `user_id` in the channel, or None if they say
-        nothing for `timeout` seconds."""
+    async def wait_for_upload(self, channel_id: int, user_id: int, timeout: float, images_only: bool = False, cancel=None):
+        """The next message from `user_id` in the channel, None if they say
+        nothing for `timeout` seconds, or UPLOAD_CANCELLED.
+
+        With `images_only`, chat that carries no image is ignored (the wait goes
+        on) so ordinary conversation never ends it; typing "cancel" (or pressing
+        the button that sets the `cancel` event) is the way out."""
         def check(message):
             return message.author.id == user_id and message.channel.id == channel_id
 
-        try:
-            return await self.bot.wait_for("message", check=check, timeout=timeout)
-        except asyncio.TimeoutError:
-            return None
+        deadline = time.monotonic() + timeout
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return None
+            waiter = asyncio.ensure_future(self.bot.wait_for("message", check=check, timeout=remaining))
+            watchers = [waiter]
+            cancel_task = asyncio.ensure_future(cancel.wait()) if cancel is not None else None
+            if cancel_task is not None:
+                watchers.append(cancel_task)
+            try:
+                await asyncio.wait(watchers, return_when=asyncio.FIRST_COMPLETED)
+            finally:
+                if cancel_task is not None and not cancel_task.done():
+                    cancel_task.cancel()
+            if cancel_task is not None and cancel_task.done() and not cancel_task.cancelled():
+                waiter.cancel()
+                return UPLOAD_CANCELLED
+            try:
+                message = waiter.result()
+            except asyncio.TimeoutError:
+                return None
+            if not images_only or message.attachments:
+                return message
+            if (message.content or "").strip().lower() in UPLOAD_CANCEL_WORDS:
+                return UPLOAD_CANCELLED
 
     @staticmethod
     async def read_uploaded_art(message) -> Tuple[Optional[bytes], Optional[str]]:

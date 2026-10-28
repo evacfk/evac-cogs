@@ -758,7 +758,7 @@ def test_the_retired_commands_are_gone_and_the_new_aliases_exist(cog):
 def test_the_cog_is_version_2(cog):
     from cardcollect.constants import COG_VERSION
 
-    assert COG_VERSION == "2.1.1"
+    assert COG_VERSION == "2.1.2"
 
 
 @pytest.mark.asyncio
@@ -1047,3 +1047,94 @@ async def test_a_declined_request_leaves_no_find_and_add_button(cog):
     inter = AdminInteraction(admin, guild, message=review.sent[-1])
     await cog.review_request(inter, False)
     assert inter.edits[0]["view"] is None and not inter.followups
+
+
+# --- backing out of an image upload ---------------------------------------------------------
+
+
+class Chat:
+    def __init__(self, author, channel, content="", with_image=False, data=None):
+        from test_cardcollect_smoke import FakeAttachment
+
+        self.author, self.channel, self.content = author, channel, content
+        self.attachments = [FakeAttachment(data or fake_art_bytes())] if with_image else []
+
+    async def delete(self):
+        pass
+
+
+def feed(cog, *messages):
+    queue = list(messages)
+
+    async def wait_for(event, check=None, timeout=None):
+        while queue:
+            message = queue.pop(0)
+            if check is None or check(message):
+                return message
+        await asyncio.sleep(timeout or 0)
+        raise asyncio.TimeoutError
+
+    cog.bot.wait_for = wait_for
+
+
+@pytest.mark.asyncio
+async def test_chat_without_an_image_is_ignored_while_waiting_for_art(cog):
+    guild, admin, asker, review, other = await request_setup(cog, 420)
+    other_user = FakeMember(4209, guild)
+    feed(cog, Chat(admin, other, "hello everyone"), Chat(other_user, other, "", True), Chat(admin, other, "", True))
+    got = await cog.wait_for_upload(other.id, admin.id, 5, images_only=True)
+    assert got.attachments, "skipped the text chat and the other member's image"
+
+
+@pytest.mark.asyncio
+async def test_typing_cancel_backs_out_of_an_art_upload(cog):
+    from cardcollect.constants import UPLOAD_CANCELLED
+
+    guild, admin, asker, review, other = await request_setup(cog, 421)
+    for word in ("cancel", "Never mind", " STOP "):
+        feed(cog, Chat(admin, other, "chatting"), Chat(admin, other, word))
+        assert await cog.wait_for_upload(other.id, admin.id, 5, images_only=True) == UPLOAD_CANCELLED
+
+
+@pytest.mark.asyncio
+async def test_the_cancel_button_backs_out_and_a_silent_wait_still_times_out(cog):
+    from cardcollect.constants import UPLOAD_CANCELLED
+
+    guild, admin, asker, review, other = await request_setup(cog, 422)
+    cog.bot.wait_for = lambda *a, **k: asyncio.sleep(30)  # nobody says anything
+    prompt = views._CancelUploadView()
+    task = asyncio.ensure_future(cog.wait_for_upload(other.id, admin.id, 5, images_only=True, cancel=prompt.cancelled))
+    await asyncio.sleep(0.01)
+    inter = AdminInteraction(admin, guild)
+    await prompt.cancel.callback(inter)
+    assert await asyncio.wait_for(task, 2) == UPLOAD_CANCELLED
+    assert "Cancelled" in inter.edits[0]["content"]
+
+    async def quiet(event, check=None, timeout=None):
+        await asyncio.sleep(timeout)
+        raise asyncio.TimeoutError
+
+    cog.bot.wait_for = quiet
+    assert await cog.wait_for_upload(other.id, admin.id, 0.05, images_only=True) is None
+
+
+@pytest.mark.asyncio
+async def test_find_and_candidate_art_prompts_offer_a_way_out(cog):
+    from test_cardcollect_smoke import _inter
+
+    guild, admin, asker, review, other = await request_setup(cog, 423)
+    ids = await _seed(cog, guild, admin, other)
+    msg = await find(cog, admin, guild, other, "nami")
+    feed(cog, Chat(admin, other, "actually no"), Chat(admin, other, "cancel"))
+    inter = _inter(admin, guild, other, msg)
+    await msg.view.replace_art.callback(inter)
+    assert "cancel" in inter.sent[0][0].lower() and isinstance(inter.sent[0][1]["view"], views._CancelUploadView)
+    assert "Cancelled" in inter.followups[-1][0] and msg.view._listening is False
+
+    c = [cand("Mystery", "Some Game", image=None)]
+    guild2, admin2, asker2, review2, other2, post, inter2 = await approved_request(cog, 424, "Mystery", c)
+    view = candidate_view(inter2)
+    feed(cog, Chat(admin2, other2, "hmm"), Chat(admin2, other2, "cancel"))
+    up = _inter(admin2, guild2, other2, post)
+    await view._on_own_art(up)
+    assert view.art is None and "Cancelled" in up.followups[-1][0] and view._listening is False
