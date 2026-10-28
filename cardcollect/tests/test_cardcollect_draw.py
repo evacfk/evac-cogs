@@ -758,7 +758,7 @@ def test_the_retired_commands_are_gone_and_the_new_aliases_exist(cog):
 def test_the_cog_is_version_2(cog):
     from cardcollect.constants import COG_VERSION
 
-    assert COG_VERSION == "2.1.0"
+    assert COG_VERSION == "2.1.1"
 
 
 @pytest.mark.asyncio

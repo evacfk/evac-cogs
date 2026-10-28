@@ -111,4 +111,4 @@ GALLERY_PAGE_SIZE = GALLERY_COLUMNS * GALLERY_ROWS_PER_PAGE
 GALLERY_VIEW_TIMEOUT_SECONDS = 180  # a stale pager after this just stops responding
 
 # bumped on every deploy so `.card version` can confirm the new build is live
-COG_VERSION = "2.1.0"
+COG_VERSION = "2.1.1"

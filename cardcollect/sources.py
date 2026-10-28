@@ -13,11 +13,14 @@ tokens); without it the game search is skipped and the review says so.
 """
 
 import asyncio
+import logging
 import re
 import time
 from typing import Any, Dict, List, Optional, Tuple
 
 from . import engine, import_characters
+
+log = logging.getLogger("red.evac-cogs.cardcollect")
 
 CANDIDATES_PER_SOURCE = 5
 ANILIST_SEARCH_QUERY = """
@@ -170,12 +173,15 @@ async def find_candidates(
     try:
         results.extend(await search_anilist(session, text, tier_cutoffs, sleep_fn))
     except Exception:
+        log.warning("cardcollect: AniList character search failed", exc_info=True)
         notes.append("AniList couldn't be reached.")
     if igdb_keys is None:
         notes.append(f"Game search is off. To turn it on run {IGDB_SETUP_HINT}.")
     else:
         try:
             results.extend(await igdb.search(session, igdb_keys[0], igdb_keys[1], text))
-        except Exception:
-            notes.append("IGDB couldn't be searched (check the Twitch app keys).")
+        except Exception as e:
+            log.warning("cardcollect: IGDB search failed", exc_info=True)
+            status = getattr(e, "status", None)
+            notes.append(f"IGDB couldn't be searched{f' (HTTP {status})' if status else ''}. Check the Twitch app keys.")
     return rank(results, text), notes
