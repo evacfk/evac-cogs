@@ -35,6 +35,7 @@ from .constants import (
 
 log = logging.getLogger("red.evac-cogs.cardcollect")
 
+FIND_PAGE_SIZE = 20  # results per page in `.card find` (a dropdown holds 25 at most)
 DRAW_OVER_TEXT = "This drop is over — its draw has already closed."
 
 
@@ -838,6 +839,7 @@ class FindView(_InvokerView):
         self.from_list = False
         self._listening = False
         self.requests_open = False
+        self.page = 0
 
     # -- opening ---------------------------------------------------------------
 
@@ -891,17 +893,25 @@ class FindView(_InvokerView):
                 embed.description = "None of your cards match. Switch to the whole pool with the button."
             return embed
         embed.title = f"{len(self.cards)} match{'es' if len(self.cards) != 1 else ''} for “{shown}” in {scope}"
+        pages = self._page_count()
+        self.page = min(self.page, pages - 1)
         lines = []
-        for c in self.cards[:25]:
+        for c in self._page_cards():
             mark = "✅" if c.card_id in owned else ("★" if c.card_id in state.wishlist else "⬜")
             tail = " · retired" if c.retired else ""
             lines.append(f"{mark} {embeds.RARITY_EMOJI.get(c.rarity, '')} **{_clip(discord.utils.escape_markdown(c.name), 60)}**"
                          f" — {_clip(discord.utils.escape_markdown(c.series or '—'), 50)} `#{c.card_id}`{tail}")
-        if len(self.cards) > 25:
-            lines.append(f"…and {len(self.cards) - 25} more. Narrow the search to see them.")
         embed.description = "\n".join(lines)
-        embed.set_footer(text="✅ owned · ★ wishlisted · open one with the dropdown")
+        page_note = f"Page {self.page + 1}/{pages} · " if pages > 1 else ""
+        embed.set_footer(text=f"{page_note}✅ owned · ★ wishlisted · open one with the dropdown")
         return embed
+
+    def _page_count(self) -> int:
+        return max(1, -(-len(self.cards) // FIND_PAGE_SIZE))
+
+    def _page_cards(self):
+        start = self.page * FIND_PAGE_SIZE
+        return self.cards[start : start + FIND_PAGE_SIZE]
 
     def _build_list(self):
         if self.cards:
@@ -912,11 +922,20 @@ class FindView(_InvokerView):
                         label=_clip(c.name, 100), value=str(c.card_id), description=_clip(c.series, 100) or None,
                         emoji=embeds.RARITY_EMOJI.get(c.rarity),
                     )
-                    for c in self.cards[:25]
+                    for c in self._page_cards()
                 ],
             )
             self.opener.callback = self._on_open
             self.add_item(self.opener)
+            if self._page_count() > 1:
+                self.prev_page = discord.ui.Button(label="◀ Prev", style=discord.ButtonStyle.secondary, row=1, disabled=self.page == 0)
+                self.prev_page.callback = self._on_prev_page
+                self.add_item(self.prev_page)
+                self.next_page = discord.ui.Button(
+                    label="Next ▶", style=discord.ButtonStyle.secondary, row=1, disabled=self.page >= self._page_count() - 1
+                )
+                self.next_page.callback = self._on_next_page
+                self.add_item(self.next_page)
         self.scope_button = discord.ui.Button(
             label="Search the whole pool" if self.scope == "mine" else "Only my cards", style=discord.ButtonStyle.secondary, row=1
         )
@@ -1001,6 +1020,16 @@ class FindView(_InvokerView):
         await interaction.response.defer()
         await self._refresh(interaction)
 
+    async def _on_prev_page(self, interaction: discord.Interaction):
+        self.page = max(0, self.page - 1)
+        await interaction.response.defer()
+        await self._refresh(interaction)
+
+    async def _on_next_page(self, interaction: discord.Interaction):
+        self.page = min(self._page_count() - 1, self.page + 1)
+        await interaction.response.defer()
+        await self._refresh(interaction)
+
     async def _on_back(self, interaction: discord.Interaction):
         self.card = None
         await interaction.response.defer()
@@ -1010,6 +1039,7 @@ class FindView(_InvokerView):
         self.scope = "mine" if self.scope == "pool" else "pool"
         self.cards = await self.cog.search_pool(self.member.guild, self.member, self.query, self.scope)
         self.card = None
+        self.page = 0
         await interaction.response.defer()
         await self._refresh(interaction)
 
