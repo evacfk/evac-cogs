@@ -190,6 +190,9 @@ def _fold(text: str) -> str:
     return "".join(ch for ch in decomposed if not unicodedata.combining(ch)).casefold().strip()
 
 
+fold_text = _fold  # public name for other modules (import_characters)
+
+
 def search_cards(cards: Sequence[Card], query: str) -> List[Card]:
     """Cards whose name or series contains every word of `query`, in any
     order and anywhere in the text ('lucy' finds 'Lucy Kushinada' and
@@ -204,7 +207,8 @@ def search_cards(cards: Sequence[Card], query: str) -> List[Card]:
     for card in cards:
         name = _fold(card.name)
         series = _fold(card.series)
-        haystack = f"{name} {series}"
+        series_alt = _fold(getattr(card, "series_alt", ""))
+        haystack = f"{name} {series} {series_alt}"
         if all(t in haystack for t in tokens):
             in_name = all(t in name for t in tokens)
             ranked.append((0 if in_name else 1, name, card.card_id, card))

@@ -116,3 +116,12 @@ def test_member_state_keeps_daily_pull_fields():
     s = MemberState.from_dict({"daily_pull_date": "2026-10-04", "daily_streak": 6})
     assert MemberState.from_dict(s.to_dict()).daily_streak == 6
     assert MemberState.from_dict({}).daily_pull_date == ""
+
+
+def test_card_series_alt_round_trips_and_defaults_to_empty_for_old_data():
+    card = Card(card_id=1, name="Fern", series="Sousou no Frieren", rarity="rare", image_path="1.png", series_alt="Frieren")
+    assert Card.from_dict(1, card.to_dict()).series_alt == "Frieren"
+
+    old = {"name": "Old", "series": "S", "rarity": "common", "image_path": "x.png"}  # saved before series_alt existed
+    assert Card.from_dict(2, old).series_alt == ""
+    assert Card.from_dict(3, {**old, "series_alt": None}).series_alt == ""

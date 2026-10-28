@@ -5,7 +5,7 @@ Specs only; every change goes through the cog's `_apply_*` methods. Managing the
 """
 from .settings_panel import Field, Spec
 
-INTRO = ("Pick a setting. Changes save as soon as you choose. Pool tools (`.card addcard`, `importpool`, `removecard`) "
+INTRO = ("Pick a setting. Changes save as soon as you choose. Pool tools (`.card addcard`, `importseries`, `importpool`, `removecard`) "
          "and testing (`.card testmode`, `testdrop`) stay as commands. Members who aren't admins see a read-only summary.")
 
 

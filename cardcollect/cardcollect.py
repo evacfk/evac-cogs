@@ -51,11 +51,13 @@ from .constants import (
     DEFAULT_TIER_CUTOFFS,
     DEFAULT_WRONG_GUESS_PENALTY_SECONDS,
     GALLERY_PAGE_SIZE,
+    IMPORT_GENDERS,
     MAX_COPIES_KEPT,
     MAX_SHOWCASE_SLOTS,
+    SERIES_IMPORT_MAX,
     TIERS,
 )
-from .models import ActiveDrop, Card, MemberState
+from .models import ActiveDrop, Card, MemberState, SeriesPreview
 
 log = logging.getLogger("red.evac-cogs.cardcollect")
 
@@ -818,12 +820,21 @@ class CardCollect(commands.Cog):
 
         embed = embeds.card_info_embed(card, len(owner_ids), owner_mentions)
         image_bytes = self._read_card_image(ctx.guild, card.card_id)
+        # admins get a "Change rarity" dropdown under the card; everyone else a plain embed
+        admin_view = None
+        if await self._is_pool_admin(ctx.author):
+            admin_view = views.CardAdminView(
+                self, ctx.author.id, card, len(owner_ids), owner_mentions, image_bytes is not None
+            )
+        kwargs = {"view": admin_view} if admin_view is not None else {}
         if image_bytes is not None:
             file = discord.File(io.BytesIO(image_bytes), filename="card_info.png")
             embed.set_image(url="attachment://card_info.png")
-            await ctx.send(embed=embed, file=file)
+            sent = await ctx.send(embed=embed, file=file, **kwargs)
         else:
-            await ctx.send(embed=embed)
+            sent = await ctx.send(embed=embed, **kwargs)
+        if admin_view is not None:
+            admin_view.message = sent
 
     async def _owned_cards(self, member: discord.Member) -> Tuple[MemberState, List[Card]]:
         """(state, one Card per unique pool card the member owns). Cards that
@@ -1401,106 +1412,251 @@ class CardCollect(commands.Cog):
         buf = io.BytesIO(text.encode("utf-8"))
         await ctx.send(content=summary, file=discord.File(buf, filename="cardcollect_pool.txt"))
 
+    # -- pool import ---------------------------------------------------------
+
+    async def _pool_card_dicts(self, guild: discord.Guild) -> List[dict]:
+        """Every pool card INCLUDING retired ones, as plain dicts for the import
+        dedupe. Retired cards must count: a character you pruned must not come
+        back on the next import."""
+        return [
+            {
+                "card_id": c.card_id,
+                "anilist_id": c.anilist_id,
+                "name": c.name,
+                "series": c.series,
+                "series_alt": c.series_alt,
+            }
+            for c in await self._pool_cards(guild)
+        ]
+
+    @staticmethod
+    def _anilist_error_text(error: Exception) -> str:
+        if isinstance(error, aiohttp.ClientResponseError) and error.status == 429:
+            return (
+                "AniList kept rate-limiting this even after retrying with backoff -- "
+                "try again in a few minutes, and avoid running imports at the same time."
+            )
+        return f"AniList request failed: {error}"
+
+    async def _download_images(self, entries: List[dict]) -> Tuple[List[Tuple[dict, bytes]], List[str]]:
+        """Download each entry's art. Returns (downloaded, names_that_failed).
+        Done before any Config write, never inside one -- see card_importpool."""
+        downloaded: List[Tuple[dict, bytes]] = []
+        failed: List[str] = []
+        for entry in entries:
+            try:
+                async with self._session.get(entry["image_url"]) as resp:
+                    resp.raise_for_status()
+                    image_bytes = await resp.read()
+            except (aiohttp.ClientError, asyncio.TimeoutError):
+                failed.append(entry["name"])
+                continue
+            downloaded.append((entry, image_bytes))
+        return downloaded, failed
+
+    async def _write_pool_entries(
+        self, guild: discord.Guild, downloaded: List[Tuple[dict, bytes]], links: Optional[List[dict]] = None
+    ) -> List[dict]:
+        """Add the downloaded characters to the pool in one quick Config write,
+        and give hand-added cards that matched an AniList character their
+        AniList id. Re-checks AniList ids against the pool at write time, so
+        two imports (or a stale preview) can never add the same character twice.
+        Returns the entries actually added."""
+        added: List[dict] = []
+        async with self.config.guild(guild).all() as guild_data:
+            present = {d.get("anilist_id") for d in guild_data["pool"].values() if d.get("anilist_id") is not None}
+            for entry, image_bytes in downloaded:
+                anilist_id = entry.get("anilist_id")
+                if anilist_id is not None and anilist_id in present:
+                    continue
+                card_id = guild_data["next_id"]
+                guild_data["next_id"] += 1
+                storage.save_card_image(self.data_path, guild.id, card_id, image_bytes)
+                guild_data["pool"][str(card_id)] = Card(
+                    card_id=card_id,
+                    name=entry["name"],
+                    series=entry["series"],
+                    rarity=entry["rarity"],
+                    image_path=str(storage.card_image_path(self.data_path, guild.id, card_id)),
+                    favourites=entry["favourites"],
+                    added_by=None,
+                    anilist_id=anilist_id,
+                    series_alt=entry.get("series_alt", ""),
+                ).to_dict()
+                if anilist_id is not None:
+                    present.add(anilist_id)
+                added.append(entry)
+            for link in links or []:
+                data = guild_data["pool"].get(str(link["card_id"]))
+                if data is not None and data.get("anilist_id") is None and link.get("anilist_id") is not None:
+                    data["anilist_id"] = link["anilist_id"]
+                    if not data.get("series_alt") and link.get("series_alt"):
+                        data["series_alt"] = link["series_alt"]
+        return added
+
+    async def apply_card_rarity(self, guild: discord.Guild, card_id: int, tier: str) -> Card:
+        """Change one pool card's rarity (the dropdown on `.card info`). Raises
+        KeyError if the card isn't in the pool and ValueError for a bad tier."""
+        tier = tier.strip().lower()
+        if tier not in TIERS:
+            raise ValueError(f"Rarity must be one of: {', '.join(TIERS)}.")
+        async with self.config.guild(guild).pool() as pool:
+            entry = pool.get(str(card_id))
+            if entry is None:
+                raise KeyError(card_id)
+            entry["rarity"] = tier
+        return await self._card_by_id(guild, card_id)
+
     @card.command(name="importpool")
     @commands.guild_only()
     @commands.admin_or_permissions(manage_guild=True)
-    async def card_importpool(self, ctx: commands.Context, count: int = 30):
-        """Bulk-import `count` female AniList characters, spread across rarity
-        tiers to match drop_weights (not just the top `count` by favourites --
-        see import_characters.tier_quotas for why that matters)."""
+    async def card_importpool(self, ctx: commands.Context, count: int = 30, gender: str = "any"):
+        """Bulk-import `count` AniList characters, spread across rarity tiers to
+        match drop_weights (not just the top `count` by favourites -- see
+        import_characters.tier_quotas for why that matters). `gender` is any
+        (the default), female or male. To add one whole series instead, use
+        `.card importseries <name>`."""
+        gender = gender.strip().lower()
+        if gender not in IMPORT_GENDERS:
+            await ctx.send(f"Gender must be one of: {', '.join(IMPORT_GENDERS)}.")
+            return
         if count < 1 or count > 200:
             await ctx.send("Pick a count between 1 and 200.")
             return
 
-        # AniList rate-limits aggressively -- a second importpool started
-        # while one is already running would multiply the request rate
-        # against the same limit and trip 429s that neither run alone would
-        # hit (see the comment on self._importpool_lock). Queue rather than
-        # run concurrently, and say so, so a second run doesn't just look
-        # like it's doing nothing.
+        # AniList rate-limits aggressively -- a second import started while one
+        # is already running would multiply the request rate against the same
+        # limit and trip 429s that neither run alone would hit (see the comment
+        # on self._importpool_lock). Queue rather than run concurrently, and
+        # say so, so a second run doesn't just look like it's doing nothing.
         if self._importpool_lock.locked():
-            await ctx.send("Another `.card importpool` is already running -- this one will start once it finishes.")
+            await ctx.send("Another AniList import is already running -- this one will start once it finishes.")
 
         async with self._importpool_lock:
-            await ctx.send(f"Fetching {count} female characters from AniList, spread across rarity tiers…")
+            label = "" if gender == "any" else f"{gender} "
+            await ctx.send(f"Fetching {count} {label}characters from AniList, spread across rarity tiers…")
             tier_cutoffs = await self.config.guild(ctx.guild).tier_cutoffs()
             drop_weights = await self.config.guild(ctx.guild).drop_weights()
-            # skip characters already in the pool (by AniList id) so
-            # re-running importpool doesn't add the same character twice
-            # under a new local card_id -- hand-added .card addcard entries
-            # have no anilist_id and are naturally never matched here
-            existing_anilist_ids = {
-                c.anilist_id for c in await self._pool_cards(ctx.guild) if c.anilist_id is not None
-            }
+            existing_cards = await self._pool_card_dicts(ctx.guild)
+            # skip characters already in the pool (by AniList id, retired ones
+            # included) so re-running the import doesn't add the same character
+            # twice under a new local card_id
+            existing_anilist_ids = {c["anilist_id"] for c in existing_cards if c["anilist_id"] is not None}
 
             try:
-                raw_entries = await import_characters.fetch_top_female_characters(
+                raw_entries = await import_characters.fetch_top_characters(
                     self._session,
                     tier_cutoffs,
                     engine.bucket_tier,
                     count,
                     weights=drop_weights,
                     exclude_ids=existing_anilist_ids,
+                    gender=gender,
                 )
-            except aiohttp.ClientResponseError as e:
-                if e.status == 429:
-                    await ctx.send(
-                        "AniList kept rate-limiting this import even after retrying with backoff -- "
-                        "try again in a few minutes, and avoid running `.card importpool` more than "
-                        "once at a time."
-                    )
-                else:
-                    await ctx.send(f"AniList request failed: {e}")
-                return
             except (aiohttp.ClientError, asyncio.TimeoutError) as e:
-                await ctx.send(f"AniList request failed: {e}")
+                await ctx.send(self._anilist_error_text(e))
                 return
 
             if not raw_entries:
                 await ctx.send("No characters came back -- AniList may be unreachable, or the filter matched nothing.")
                 return
 
+            # a fetched character that is really a hand-added card already in the
+            # pool (same name and series) isn't imported again; that card just
+            # learns its AniList id so the next import recognises it
+            raw_entries, links = import_characters.split_hand_added(raw_entries, existing_cards)
+
             # Download every image *before* touching Config, not inside the
-            # "async with ... .all()" write below. That block used to wrap
-            # the whole network loop (up to 200 image downloads, potentially
-            # tens of seconds), holding a mutable handle on the guild's
-            # entire config open the whole time -- any other command writing
-            # the same guild's config during that window (e.g. a concurrent
-            # .card addcard) would have its change silently overwritten when
-            # this one finally closes and writes back. Fetching first and
-            # writing once, quickly, afterward closes that window.
-            downloaded = []
-            for entry in raw_entries:
-                try:
-                    async with self._session.get(entry["image_url"]) as resp:
-                        resp.raise_for_status()
-                        image_bytes = await resp.read()
-                except (aiohttp.ClientError, asyncio.TimeoutError):
-                    continue
-                downloaded.append((entry, image_bytes))
+            # "async with ... .all()" write: that block used to wrap the whole
+            # network loop (up to 200 downloads), holding a mutable handle on
+            # the guild's entire config open the whole time -- any other command
+            # writing the same guild's config in that window (e.g. a concurrent
+            # .card addcard) would have its change silently overwritten.
+            downloaded, failed = await self._download_images(raw_entries)
+            added = await self._write_pool_entries(ctx.guild, downloaded, links)
 
-            added = 0
-            async with self.config.guild(ctx.guild).all() as guild_data:
-                for entry, image_bytes in downloaded:
-                    card_id = guild_data["next_id"]
-                    guild_data["next_id"] += 1
-                    storage.save_card_image(self.data_path, ctx.guild.id, card_id, image_bytes)
-                    guild_data["pool"][str(card_id)] = Card(
-                        card_id=card_id,
-                        name=entry["name"],
-                        series=entry["series"],
-                        rarity=entry["rarity"],
-                        image_path=str(storage.card_image_path(self.data_path, ctx.guild.id, card_id)),
-                        favourites=entry["favourites"],
-                        added_by=None,
-                        anilist_id=entry.get("anilist_id"),
-                    ).to_dict()
-                    added += 1
-
-            await ctx.send(
-                f"Imported {added} characters (characters already in the pool were skipped automatically). "
+            message = (
+                f"Imported {len(added)} characters (characters already in the pool were skipped automatically). "
                 f"Prune unwanted ones with `.card removecard <id>`."
             )
+            if links:
+                message += f"\n{len(links)} hand-added card{'s' if len(links) != 1 else ''} matched and were linked instead of duplicated."
+            if failed:
+                shown = ", ".join(failed[:5]) + (f", +{len(failed) - 5} more" if len(failed) > 5 else "")
+                message += f"\n{len(failed)} image download(s) failed and were not added ({shown}); run the import again to retry them."
+            await ctx.send(message)
+
+    async def build_series_preview(self, guild: discord.Guild, media: dict):
+        """Fetch one AniList series' characters and work out what importing
+        them would do. Returns a SeriesPreview, or a message string if it can't."""
+        try:
+            async with self._importpool_lock:
+                info = await import_characters.fetch_series_characters(self._session, media["id"], SERIES_IMPORT_MAX)
+        except (aiohttp.ClientError, asyncio.TimeoutError) as e:
+            return self._anilist_error_text(e)
+        except (KeyError, TypeError):
+            return "AniList's answer wasn't in the shape I expected, so nothing was imported."
+        if not info["characters"]:
+            return f"AniList has no characters listed for **{media['title']}**."
+        tier_cutoffs = await self.config.guild(guild).tier_cutoffs()
+        built = import_characters.build_series_entries(
+            info["characters"],
+            info["title"] or media["title"],
+            info["title_english"],
+            tier_cutoffs,
+            engine.bucket_tier,
+            await self._pool_card_dicts(guild),
+        )
+        active = Counter(c.rarity for c in await self._rollable_pool_cards(guild))
+        return SeriesPreview(
+            media=media, info=info, built=built, pool_tiers={t: active.get(t, 0) for t in TIERS}
+        )
+
+    async def commit_series(self, guild: discord.Guild, preview: SeriesPreview, limit: int) -> discord.Embed:
+        """Do the import the admin confirmed: the top `limit` characters, with
+        their rarity edits. Returns the result embed."""
+        selected = import_characters.select_top(preview.built, limit, preview.overrides)
+        async with self._importpool_lock:
+            downloaded, failed = await self._download_images(selected["entries"])
+            added = await self._write_pool_entries(guild, downloaded, selected["links"])
+        already = sum(1 for x in selected["skipped"] if x["reason"] == "already in the pool")
+        return embeds.series_result_embed(preview.info["title"], added, failed, len(selected["links"]), already)
+
+    @card.command(name="importseries")
+    @commands.guild_only()
+    @commands.admin_or_permissions(manage_guild=True)
+    async def card_importseries(self, ctx: commands.Context, *, series: str):
+        """Import characters of one series from AniList (all genders). Search,
+        pick the right match, review a preview, then confirm -- nothing is
+        added until you press an Import button. Example: `.card importseries Frieren`"""
+        query = series.strip()
+        if not query:
+            await ctx.send("Give a series name, like `.card importseries Frieren`.")
+            return
+        try:
+            async with self._importpool_lock:
+                results = await import_characters.search_media(self._session, query)
+        except (aiohttp.ClientError, asyncio.TimeoutError) as e:
+            await ctx.send(self._anilist_error_text(e))
+            return
+        except (KeyError, TypeError):
+            await ctx.send("AniList's answer wasn't in the shape I expected, so nothing was imported.")
+            return
+        if not results:
+            await ctx.send(f"AniList has no series matching **{discord.utils.escape_markdown(query)[:60]}**.")
+            return
+
+        if len(results) == 1:  # nothing to choose between -- straight to the preview
+            preview = await self.build_series_preview(ctx.guild, results[0])
+            if isinstance(preview, str):
+                await ctx.send(preview)
+                return
+            view = views.SeriesPreviewView(self, ctx.author.id, preview)
+            view.message = await ctx.send(embed=embeds.series_preview_embed(preview, view.limit), view=view)
+            return
+
+        view = views.SeriesPickView(self, ctx.author.id, results)
+        view.message = await ctx.send(embed=embeds.series_search_embed(query, results), view=view)
 
     @card.command(name="diagnostics")
     @commands.guild_only()

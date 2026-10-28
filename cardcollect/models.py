@@ -24,6 +24,7 @@ class Card:
     added_by: Optional[int] = None  # None for AniList-imported cards, else the admin's id
     retired: bool = False  # removed from future rolls, but existing owners keep it
     anilist_id: Optional[int] = None  # None for hand-added cards; used to dedupe re-imports
+    series_alt: str = ""  # the series' English title (series holds AniList's romaji one), so search finds either
 
     def __post_init__(self):
         if self.rarity not in TIERS:
@@ -39,6 +40,7 @@ class Card:
             "added_by": self.added_by,
             "retired": self.retired,
             "anilist_id": self.anilist_id,
+            "series_alt": self.series_alt,
         }
 
     @staticmethod
@@ -53,6 +55,7 @@ class Card:
             added_by=data.get("added_by"),
             retired=data.get("retired", False),
             anilist_id=data.get("anilist_id"),
+            series_alt=data.get("series_alt", "") or "",
         )
 
 
@@ -169,3 +172,17 @@ class ActiveDrop:
     def is_locked_out(self, user_id: int) -> bool:
         """True once `user_id` has used up their wrong guesses on this drop."""
         return self.max_wrong_guesses > 0 and self.wrong_guesses.get(user_id, 0) >= self.max_wrong_guesses
+
+
+@dataclass
+class SeriesPreview:
+    """State of one in-progress `.card importseries`: what AniList returned
+    and how each character would be handled. Lives in memory only, for as long
+    as the admin's preview message is open -- nothing is written to the pool
+    until they press an Import button."""
+
+    media: dict  # the picked search result (id, title, title_english, format, year)
+    info: dict  # fetch_series_characters() result: title, title_english, total, characters
+    built: dict  # build_series_entries() result: entries / links / skipped, each with a `rank`
+    pool_tiers: dict  # active (non-retired) pool cards per rarity right now
+    overrides: dict = field(default_factory=dict)  # rank -> rarity chosen by the admin

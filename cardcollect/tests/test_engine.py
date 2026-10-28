@@ -231,3 +231,21 @@ def test_gallery_sort_key_orders_rarity_then_name_ignoring_case_and_accents():
     ]
     ordered = [c.card_id for c in sorted(cards, key=engine.gallery_sort_key)]
     assert ordered == [3, 2, 5, 6, 7, 8, 4, 1]
+
+
+def test_search_finds_a_card_by_its_english_series_title():
+    pool = [
+        Card(1, "Fern", "Sousou no Frieren", "rare", "1.png", series_alt="Frieren: Beyond Journey's End"),
+        Card(2, "Lucy", "Cyberpunk: Edgerunners", "rare", "2.png"),
+    ]
+    assert [c.name for c in engine.search_cards(pool, "beyond journey")] == ["Fern"]
+    assert [c.name for c in engine.search_cards(pool, "frieren")] == ["Fern"]  # the romaji title still works
+    assert [c.name for c in engine.search_cards(pool, "edgerunners")] == ["Lucy"]
+
+
+def test_a_series_title_match_still_ranks_below_a_name_match():
+    pool = [
+        Card(1, "Zed", "Frieren", "common", "1.png"),
+        Card(2, "Frieren", "Sousou no Frieren", "rare", "2.png", series_alt="Frieren: Beyond Journey's End"),
+    ]
+    assert [c.name for c in engine.search_cards(pool, "frieren")] == ["Frieren", "Zed"]

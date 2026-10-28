@@ -78,6 +78,17 @@ CODE_DIGITS = "3479"
 CODE_SYMBOLS = "@#$%&?+"
 MIN_CODE_DISTANCE = 2  # min edits between any two codes within one drop
 
+# `.card importseries`: how many of a series' characters (by AniList favourites)
+# the default button imports, the hard ceiling for "import all", and how many
+# AniList search matches the pick-list shows.
+SERIES_IMPORT_DEFAULT = 15
+SERIES_IMPORT_MAX = 100
+SERIES_SEARCH_RESULTS = 5
+SERIES_VIEW_TIMEOUT_SECONDS = 600
+
+# `.card importpool <count> [gender]`
+IMPORT_GENDERS = ("any", "female", "male")
+
 # hour-of-day activity tracking, mirrors minigamehub's diagnostics shape
 ACTIVITY_TIMEZONE = "America/Los_Angeles"
 
@@ -90,4 +101,4 @@ GALLERY_PAGE_SIZE = GALLERY_COLUMNS * GALLERY_ROWS_PER_PAGE
 GALLERY_VIEW_TIMEOUT_SECONDS = 180  # a stale pager after this just stops responding
 
 # bumped on every deploy so `.card version` can confirm the new build is live
-COG_VERSION = "1.6.0"
+COG_VERSION = "1.7.0"

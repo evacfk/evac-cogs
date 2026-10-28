@@ -14,8 +14,8 @@ import logging
 
 import discord
 
-from . import imagegen
-from .constants import GALLERY_VIEW_TIMEOUT_SECONDS
+from . import embeds, import_characters, imagegen
+from .constants import GALLERY_VIEW_TIMEOUT_SECONDS, SERIES_IMPORT_DEFAULT, SERIES_VIEW_TIMEOUT_SECONDS, TIERS
 
 log = logging.getLogger("red.evac-cogs.cardcollect")
 
@@ -219,3 +219,226 @@ class PoolSearchView(GalleryView):
                 entries.append((card, image_bytes))
         gallery = imagegen.render_gallery(entries, quantities=self.quantities)
         return gallery, self.caption_for(page, cards)
+
+
+# ---------------------------------------------------------------------------
+# admin views: `.card importseries` and the rarity dropdown on `.card info`
+# ---------------------------------------------------------------------------
+
+
+def _clip(text: str, length: int) -> str:
+    text = str(text)
+    return text if len(text) <= length else text[: length - 1] + "…"
+
+
+class _InvokerView(discord.ui.View):
+    """A view only the person who opened it may use."""
+
+    reject_text = "Only the admin who ran this can use it."
+
+    def __init__(self, invoker_id: int, timeout: float):
+        super().__init__(timeout=timeout)
+        self.invoker_id = invoker_id
+        self.message = None  # set by whoever sends the message carrying this view
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.invoker_id:
+            await interaction.response.send_message(self.reject_text, ephemeral=True)
+            return False
+        return True
+
+    async def on_timeout(self):
+        for item in self.children:
+            item.disabled = True
+        if self.message is not None:
+            try:
+                await self.message.edit(view=self)
+            except discord.HTTPException:
+                log.warning("cardcollect: couldn't disable a timed-out admin view", exc_info=True)
+
+
+class SeriesPickView(_InvokerView):
+    """Step 1 of `.card importseries`: choose which AniList match is meant."""
+
+    def __init__(self, cog, invoker_id: int, results):
+        super().__init__(invoker_id, SERIES_VIEW_TIMEOUT_SECONDS)
+        self.cog = cog
+        self.results = {str(m["id"]): m for m in results}
+        options = []
+        for m in results:
+            detail = " · ".join(
+                x for x in (str(m.get("format") or "").replace("_", " ").title(), str(m.get("year") or "")) if x
+            )
+            options.append(
+                discord.SelectOption(label=_clip(m["title"], 100), value=str(m["id"]), description=_clip(detail, 100) or None)
+            )
+        self.select = discord.ui.Select(placeholder="Pick a series…", options=options)
+        self.select.callback = self._picked
+        self.add_item(self.select)
+
+    async def _picked(self, interaction: discord.Interaction):
+        media = self.results[self.select.values[0]]
+        await interaction.response.defer()  # fetching its characters can take a few seconds
+        preview = await self.cog.build_series_preview(interaction.guild, media)
+        if isinstance(preview, str):  # a friendly failure message
+            await interaction.edit_original_response(content=preview, embed=None, view=None)
+            self.stop()
+            return
+        view = SeriesPreviewView(self.cog, self.invoker_id, preview)
+        view.message = await interaction.edit_original_response(
+            content=None, embed=embeds.series_preview_embed(preview, view.limit), view=view
+        )
+        self.stop()
+
+
+class RarityModal(discord.ui.Modal):
+    changes = discord.ui.TextInput(
+        label="One per line, like  Frieren: legendary",
+        style=discord.TextStyle.paragraph,
+        required=False,
+        max_length=4000,
+    )
+
+    def __init__(self, preview_view: "SeriesPreviewView"):
+        super().__init__(title="Adjust rarities", timeout=600)
+        self.preview_view = preview_view
+        selected = import_characters.select_top(
+            preview_view.preview.built, preview_view.limit, preview_view.preview.overrides
+        )
+        self.changes.default = "\n".join(f"{e['name']}: {e['rarity']}" for e in selected["entries"])[:4000]
+
+    async def on_submit(self, interaction: discord.Interaction):
+        view = self.preview_view
+        entries = view.preview.built["entries"]  # every new character checked, not just the top slice
+        base = {e["rank"]: e["rarity"] for e in entries}
+        overrides, problems = import_characters.parse_rarity_overrides(str(self.changes.value), entries)
+        for rank, tier in overrides.items():
+            if tier == base[rank]:
+                view.preview.overrides.pop(rank, None)  # back to what its favourites say
+            else:
+                view.preview.overrides[rank] = tier
+        await interaction.response.edit_message(embed=embeds.series_preview_embed(view.preview, view.limit), view=view)
+        if problems:
+            await interaction.followup.send(
+                "Couldn't apply:\n" + "\n".join(f"• {x}" for x in problems[:10]), ephemeral=True
+            )
+
+    async def on_error(self, interaction: discord.Interaction, error: Exception):
+        log.error("cardcollect: rarity modal error", exc_info=error)
+
+
+class SeriesPreviewView(_InvokerView):
+    """Step 2 of `.card importseries`: the dry-run preview. Nothing is written
+    until one of the Import buttons is pressed."""
+
+    def __init__(self, cog, invoker_id: int, preview):
+        super().__init__(invoker_id, SERIES_VIEW_TIMEOUT_SECONDS)
+        self.cog = cog
+        self.preview = preview
+        self.total = len(preview.info["characters"])
+        self.limit = min(SERIES_IMPORT_DEFAULT, self.total) or SERIES_IMPORT_DEFAULT
+        self._busy = False
+
+        self.import_top = discord.ui.Button(label=f"Import top {self.limit}", style=discord.ButtonStyle.success)
+        self.import_top.callback = self._import_top
+        self.add_item(self.import_top)
+        self.import_all = None
+        if self.total > self.limit:
+            self.import_all = discord.ui.Button(label=f"Import all {self.total}", style=discord.ButtonStyle.primary)
+            self.import_all.callback = self._import_all
+            self.add_item(self.import_all)
+        self.adjust = discord.ui.Button(label="Adjust rarities", style=discord.ButtonStyle.secondary)
+        self.adjust.callback = self._adjust
+        self.add_item(self.adjust)
+        self.cancel = discord.ui.Button(label="Cancel", style=discord.ButtonStyle.danger)
+        self.cancel.callback = self._cancel
+        self.add_item(self.cancel)
+
+        top = import_characters.select_top(preview.built, self.limit)
+        if not top["entries"] and not top["links"]:
+            self.import_top.disabled = True  # nothing to do at this size
+        if not preview.built["entries"]:
+            self.adjust.disabled = True
+            if self.import_all is not None:
+                everything = import_characters.select_top(preview.built, self.total)
+                self.import_all.disabled = not everything["entries"] and not everything["links"]
+
+    async def _run_import(self, interaction: discord.Interaction, limit: int):
+        if self._busy:
+            await interaction.response.send_message("Already importing, give it a moment.", ephemeral=True)
+            return
+        self._busy = True
+        for item in self.children:
+            item.disabled = True
+        await interaction.response.edit_message(content="Importing, downloading the art…", view=self)
+        try:
+            embed = await self.cog.commit_series(interaction.guild, self.preview, limit)
+        except Exception:
+            log.exception("cardcollect: series import crashed")
+            await interaction.edit_original_response(
+                content="Something went wrong during the import. Some characters may have been added; "
+                "check `.card viewpool` before running it again.",
+                embed=None,
+                view=None,
+            )
+            self.stop()
+            return
+        await interaction.edit_original_response(content=None, embed=embed, view=None)
+        self.stop()
+
+    async def _import_top(self, interaction: discord.Interaction):
+        await self._run_import(interaction, self.limit)
+
+    async def _import_all(self, interaction: discord.Interaction):
+        await self._run_import(interaction, self.total)
+
+    async def _adjust(self, interaction: discord.Interaction):
+        await interaction.response.send_modal(RarityModal(self))
+
+    async def _cancel(self, interaction: discord.Interaction):
+        await interaction.response.edit_message(content="Import cancelled. Nothing was added.", embed=None, view=None)
+        self.stop()
+
+
+class CardAdminView(_InvokerView):
+    """The admin-only "Change rarity" dropdown under `.card info <card>`."""
+
+    def __init__(self, cog, invoker_id: int, card, owner_count: int, owner_mentions, has_image: bool):
+        super().__init__(invoker_id, 300)
+        self.cog = cog
+        self.card = card
+        self.owner_count = owner_count
+        self.owner_mentions = owner_mentions
+        self.has_image = has_image
+        self.select = discord.ui.Select(
+            placeholder="Change rarity…",
+            options=[
+                discord.SelectOption(label=t.title(), value=t, emoji=embeds.RARITY_EMOJI[t], default=(t == card.rarity))
+                for t in TIERS
+            ],
+        )
+        self.select.callback = self._changed
+        self.add_item(self.select)
+
+    async def _changed(self, interaction: discord.Interaction):
+        tier = self.select.values[0]
+        if tier == self.card.rarity:
+            await interaction.response.send_message(f"**{self.card.name}** is already {tier}.", ephemeral=True)
+            return
+        try:
+            card = await self.cog.apply_card_rarity(interaction.guild, self.card.card_id, tier)
+        except KeyError:
+            await interaction.response.send_message("That card is no longer in the pool.", ephemeral=True)
+            return
+        self.card = card
+        for option in self.select.options:
+            option.default = option.value == tier
+        embed = embeds.card_info_embed(card, self.owner_count, self.owner_mentions)
+        if self.has_image:
+            embed.set_image(url="attachment://card_info.png")
+        await interaction.response.edit_message(embed=embed, view=self)
+        await interaction.followup.send(
+            f"**{card.name}** is now **{tier}**. This changes how it drops from now on and how it looks in "
+            "everyone's collection; sell tokens already issued keep the value they were made with.",
+            ephemeral=True,
+        )

@@ -9,9 +9,10 @@ from typing import Dict, List, Optional, Sequence, Tuple
 
 import discord
 
+from . import import_characters
 from .constants import ACTIVITY_TIMEZONE, TIERS
 from .imagegen import RARITY_COLORS
-from .models import Card, SellToken
+from .models import Card, SellToken, SeriesPreview
 
 RARITY_EMOJI = {
     "common": "⚪",
@@ -231,7 +232,10 @@ def cards_removed_embed(retired: Sequence[Tuple[int, str]], not_found: Sequence[
 
 def card_info_embed(card: Card, owner_count: int, owner_mentions: Sequence[str]) -> discord.Embed:
     embed = discord.Embed(title=card.name, color=EMBED_COLOR)
-    embed.add_field(name="Series", value=card.series or "—", inline=True)
+    series = card.series or "—"
+    if card.series_alt:
+        series += f"\n{card.series_alt}"
+    embed.add_field(name="Series", value=series, inline=True)
     embed.add_field(name="Rarity", value=_rarity_line(card.rarity), inline=True)
     embed.add_field(name="Card ID", value=str(card.card_id), inline=True)
     embed.add_field(name="AniList favourites", value=str(card.favourites), inline=True)
@@ -257,6 +261,113 @@ def pool_reset_embed(count: int) -> discord.Embed:
         f"(`.card importpool`) or re-add (`.card addcard`). Members who already own a "
         f"retired card keep their copy."
     )
+    return embed
+
+
+def _media_line(media: dict) -> str:
+    bits = [b for b in (str(media.get("format") or "").replace("_", " ").title(), str(media.get("year") or "")) if b]
+    english = f" / {media['title_english']}" if media.get("title_english") else ""
+    return f"**{media['title']}**{english}" + (f" · {' · '.join(bits)}" if bits else "")
+
+
+def series_search_embed(query: str, results: Sequence[dict]) -> discord.Embed:
+    embed = discord.Embed(title="Import series: which one?", color=EMBED_COLOR)
+    shown = discord.utils.escape_mentions(discord.utils.escape_markdown(query.strip()))[:60]
+    embed.description = f"AniList matches for **{shown}**. Pick one below to preview it; nothing is imported yet.\n\n" + "\n".join(
+        f"{i}. {_media_line(m)}" for i, m in enumerate(results, 1)
+    )
+    return embed
+
+
+def _tier_counts(entries: Sequence[dict]) -> Dict[str, int]:
+    counts = {t: 0 for t in TIERS}
+    for e in entries:
+        counts[e["rarity"]] = counts.get(e["rarity"], 0) + 1
+    return counts
+
+
+def series_preview_embed(preview: SeriesPreview, limit: int) -> discord.Embed:
+    """The dry-run: exactly what importing the top `limit` characters would do."""
+    sel = import_characters.select_top(preview.built, limit, preview.overrides)
+    everything = import_characters.select_top(preview.built, 10**9, preview.overrides)
+    info = preview.info
+    embed = discord.Embed(title=f"Import series: {info['title']}", color=EMBED_COLOR)
+    head = []
+    if info.get("title_english"):
+        head.append(info["title_english"])
+    head.append(
+        f"AniList lists **{info['total']}** characters; the top **{len(info['characters'])}** by favourites were checked."
+    )
+    embed.description = "\n".join(head)
+
+    in_pool = sum(1 for x in sel["skipped"] if x["reason"] == "already in the pool")
+    no_art = len(sel["skipped"]) - in_pool
+    bits = [f"**{len(sel['entries'])}** new"]
+    if in_pool:
+        bits.append(f"{in_pool} already in the pool")
+    if sel["links"]:
+        bits.append(f"{len(sel['links'])} hand-added card{'s' if len(sel['links']) != 1 else ''} will be linked, not duplicated")
+    if no_art:
+        bits.append(f"{no_art} left out (no image on AniList)")
+    embed.add_field(name=f"Top {min(limit, len(info['characters']))}", value=" · ".join(bits), inline=False)
+
+    if sel["entries"]:
+        lines = [f"{RARITY_EMOJI.get(e['rarity'], '')} {e['name']} — {e['favourites']:,} ♥" for e in sel["entries"]]
+        text = ""
+        for i, line in enumerate(lines):
+            if len(text) + len(line) + 40 > 1000:
+                text += f"\n…and {len(lines) - i} more"
+                break
+            text += ("\n" if text else "") + line
+        embed.add_field(name="New characters", value=text, inline=False)
+
+        after = _tier_counts(sel["entries"])
+        rows = [
+            f"{_rarity_line(t)}: {preview.pool_tiers.get(t, 0)} → {preview.pool_tiers.get(t, 0) + after[t]} (+{after[t]})"
+            for t in TIERS
+            if after[t]
+        ]
+        embed.add_field(
+            name="Pool after importing",
+            value="\n".join(rows) + "\nA tier with more cards makes each of them drop less often.",
+            inline=False,
+        )
+    else:
+        embed.add_field(name="New characters", value="Nothing new at this size.", inline=False)
+
+    if len(everything["entries"]) > len(sel["entries"]):
+        counts = _tier_counts(everything["entries"])
+        mix = ", ".join(f"{counts[t]} {t}" for t in reversed(TIERS) if counts[t])
+        embed.add_field(name="Import everything checked", value=f"{len(everything['entries'])} new: {mix}", inline=False)
+
+    if preview.overrides:
+        embed.add_field(name="Rarity edits pending", value=f"{len(preview.overrides)} character(s)", inline=True)
+    embed.set_footer(text="Nothing is imported until you press an Import button. Adjust rarities changes a tier first.")
+    return embed
+
+
+def series_result_embed(
+    title: str,
+    added: Sequence[dict],
+    failed: Sequence[str],
+    linked: int,
+    already_in_pool: int,
+) -> discord.Embed:
+    embed = discord.Embed(title=f"Imported: {title}", color=EMBED_COLOR)
+    counts = _tier_counts(added)
+    mix = ", ".join(f"{counts[t]} {t}" for t in reversed(TIERS) if counts[t])
+    embed.description = f"Added **{len(added)}** character{'s' if len(added) != 1 else ''}" + (f" ({mix})" if mix else "") + "."
+    notes = []
+    if linked:
+        notes.append(f"{linked} hand-added card{'s' if linked != 1 else ''} matched and linked to AniList (no duplicates made)")
+    if already_in_pool:
+        notes.append(f"{already_in_pool} already in the pool, skipped")
+    if failed:
+        shown = ", ".join(failed[:8]) + (f", +{len(failed) - 8} more" if len(failed) > 8 else "")
+        notes.append(f"{len(failed)} image download(s) failed, not added: {shown}. Run the import again to retry them")
+    if notes:
+        embed.add_field(name="Notes", value="\n".join(f"• {n}" for n in notes), inline=False)
+    embed.set_footer(text="Wrong tier? Run .card info <card> and use the Change rarity dropdown.")
     return embed
 
 

@@ -445,7 +445,7 @@ async def test_importpool_queues_behind_a_running_import_and_warns(cog, monkeypa
     async def fake_fetch(*args, **kwargs):
         return []
 
-    monkeypatch.setattr(cc_module.import_characters, "fetch_top_female_characters", fake_fetch)
+    monkeypatch.setattr(cc_module.import_characters, "fetch_top_characters", fake_fetch)
 
     # simulate a first import already in flight
     await cog._importpool_lock.acquire()
@@ -2113,9 +2113,9 @@ async def test_failed_flush_keeps_counts_for_retry(cog):
     assert sum(tracking["hourly_buckets"].values()) == 4
 
 
-def test_version_is_1_6_0():
+def test_version_is_1_7_0():
     from cardcollect.constants import COG_VERSION
-    assert COG_VERSION == "1.6.0"
+    assert COG_VERSION == "1.7.0"
 
 
 # --- search / show commands ---------------------------------------------------
@@ -2529,3 +2529,533 @@ def test_pool_is_open_to_all_members():
         decorators.append(src[j].strip())
         j -= 1
     assert not any("admin_or_permissions" in d for d in decorators)
+
+
+# ===========================================================================
+# 1.7.0: importpool gender + failed-art reporting + hand-added linking,
+# `.card importseries` (search -> pick -> preview -> confirm), and the admin
+# "Change rarity" dropdown on `.card info`
+# ===========================================================================
+
+from types import SimpleNamespace  # noqa: E402
+
+import aiohttp  # noqa: E402
+
+from cardcollect import views as cc_views  # noqa: E402
+
+
+def _admin(id_, guild):
+    member = FakeMember(id_, guild)
+    member.guild_permissions = SimpleNamespace(manage_guild=True, administrator=False)
+    return member
+
+
+class _AniListResp:
+    def __init__(self, payload=None, image=None, error=None):
+        self._payload, self._image, self._error = payload, image, error
+
+    async def __aenter__(self):
+        if self._error is not None:
+            raise self._error
+        return self
+
+    async def __aexit__(self, *exc):
+        return False
+
+    def raise_for_status(self):
+        pass
+
+    async def json(self):
+        return self._payload
+
+    async def read(self):
+        return self._image
+
+
+class FakeAniList:
+    """post() replays JSON payloads in order (the last repeats); get() serves
+    card art, failing for chosen URLs the way a flaky image host would."""
+
+    def __init__(self, posts=(), fail_urls=(), post_error=None):
+        self._posts = list(posts)
+        self.post_calls = 0
+        self.fail_urls = set(fail_urls)
+        self.post_error = post_error
+
+    def post(self, url, json=None):
+        if self.post_error is not None:
+            return _AniListResp(error=self.post_error)
+        payload = self._posts[min(self.post_calls, len(self._posts) - 1)]
+        self.post_calls += 1
+        return _AniListResp(payload)
+
+    def get(self, url):
+        if url in self.fail_urls:
+            return _AniListResp(error=aiohttp.ClientError("image host down"))
+        return _AniListResp(image=fake_art_bytes())
+
+
+def _bulk_char(id_, name, favourites=100, gender="Female", series="Some Show", english=None):
+    return {
+        "id": id_,
+        "name": {"full": name, "native": name},
+        "image": {"large": f"https://art.invalid/{id_}.png"},
+        "favourites": favourites,
+        "gender": gender,
+        "media": {"nodes": [{"title": {"romaji": series, "english": english}}]},
+    }
+
+
+def _bulk_page(*chars):
+    return {"data": {"Page": {"pageInfo": {"hasNextPage": False}, "characters": list(chars)}}}
+
+
+def _series_char(id_, name, favourites, gender="Female"):
+    return {
+        "id": id_,
+        "name": {"full": name, "native": name},
+        "image": {"large": f"https://art.invalid/{id_}.png"},
+        "favourites": favourites,
+        "gender": gender,
+    }
+
+
+def _media(id_, romaji, english=None):
+    return {
+        "id": id_, "type": "ANIME", "format": "TV", "seasonYear": 2023,
+        "startDate": {"year": 2023}, "title": {"romaji": romaji, "english": english},
+    }
+
+
+def _search_payload(*media):
+    return {"data": {"Page": {"media": list(media)}}}
+
+
+def _series_payload(nodes, total=None, romaji="Sousou no Frieren", english="Frieren: Beyond Journey's End"):
+    return {
+        "data": {
+            "Media": {
+                "id": 1,
+                "title": {"romaji": romaji, "english": english},
+                "characters": {"pageInfo": {"total": total or len(nodes), "hasNextPage": False}, "nodes": nodes},
+            }
+        }
+    }
+
+
+def _seventeen_characters():
+    # favourites fall with the rank, so rank order == favourites order, as AniList returns them
+    return [_series_char(100 + i, f"Char{i:02d}", 30000 - i * 1500) for i in range(17)]
+
+
+class AdminInteraction:
+    """Just enough of discord.Interaction for the admin views."""
+
+    def __init__(self, user, guild, message=None):
+        self.user = user
+        self.guild = guild
+        self.message = message or FakeMessage(900, None)
+        self.edits, self.sent, self.followups, self.original_edits = [], [], [], []
+        self.modal = None
+        self.deferred = False
+        outer = self
+
+        class _Response:
+            async def defer(self, **kwargs):
+                outer.deferred = True
+
+            async def edit_message(self, **kwargs):
+                outer.edits.append(kwargs)
+
+            async def send_message(self, content=None, **kwargs):
+                outer.sent.append((content, kwargs))
+
+            async def send_modal(self, modal):
+                outer.modal = modal
+
+        class _Followup:
+            async def send(self, content=None, **kwargs):
+                outer.followups.append((content, kwargs))
+
+        self.response = _Response()
+        self.followup = _Followup()
+
+    async def edit_original_response(self, **kwargs):
+        self.original_edits.append(kwargs)
+        return self.message
+
+
+# --- importpool -------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_importpool_defaults_to_every_gender_and_can_be_narrowed(cog):
+    guild = FakeGuild(70)
+    admin = _admin(700, guild)
+    ctx = FakeCtx(admin, guild, FakeChannel(7000, guild))
+    cog._session = FakeAniList([_bulk_page(_bulk_char(1, "Alice"), _bulk_char(2, "Bob", gender="Male"))])
+
+    await cog.card.commands["importpool"].callback(cog, ctx, count=10)
+    names = sorted(e["name"] for e in (await cog.config.guild(guild).pool()).values())
+    assert names == ["Alice", "Bob"]
+
+    guild2 = FakeGuild(71)
+    ctx2 = FakeCtx(_admin(710, guild2), guild2, FakeChannel(7100, guild2))
+    cog._session = FakeAniList([_bulk_page(_bulk_char(1, "Alice"), _bulk_char(2, "Bob", gender="Male"))])
+    await cog.card.commands["importpool"].callback(cog, ctx2, count=10, gender="male")
+    assert [e["name"] for e in (await cog.config.guild(guild2).pool()).values()] == ["Bob"]
+
+
+@pytest.mark.asyncio
+async def test_importpool_rejects_an_unknown_gender_before_calling_anilist(cog):
+    guild = FakeGuild(72)
+    ctx = FakeCtx(_admin(720, guild), guild, FakeChannel(7200, guild))
+    cog._session = FakeAniList(post_error=AssertionError("AniList must not be called"))
+    await cog.card.commands["importpool"].callback(cog, ctx, count=10, gender="robots")
+    assert "Gender must be one of" in ctx.sent[-1].content
+
+
+@pytest.mark.asyncio
+async def test_importpool_reports_characters_whose_art_failed_to_download(cog):
+    guild = FakeGuild(73)
+    ctx = FakeCtx(_admin(730, guild), guild, FakeChannel(7300, guild))
+    cog._session = FakeAniList(
+        [_bulk_page(_bulk_char(1, "Alice"), _bulk_char(2, "Broken"))], fail_urls={"https://art.invalid/2.png"}
+    )
+    await cog.card.commands["importpool"].callback(cog, ctx, count=10)
+    assert [e["name"] for e in (await cog.config.guild(guild).pool()).values()] == ["Alice"]
+    assert "1 image download(s) failed" in ctx.sent[-1].content
+    assert "Broken" in ctx.sent[-1].content
+
+
+@pytest.mark.asyncio
+async def test_importpool_does_not_bring_back_a_character_that_was_retired(cog):
+    """Pruning a character with `.card removecard` retires it; the next import must not re-add it."""
+    guild = FakeGuild(74)
+    ctx = FakeCtx(_admin(740, guild), guild, FakeChannel(7400, guild))
+    async with cog.config.guild(guild).all() as data:
+        data["pool"]["1"] = Card(
+            card_id=1, name="Pruned", series="S", rarity="common", image_path="1.png", anilist_id=42, retired=True
+        ).to_dict()
+        data["next_id"] = 2
+    cog._session = FakeAniList([_bulk_page(_bulk_char(42, "Pruned"), _bulk_char(43, "Fresh"))])
+
+    await cog.card.commands["importpool"].callback(cog, ctx, count=10)
+    pool = await cog.config.guild(guild).pool()
+    assert sorted(e["anilist_id"] for e in pool.values()) == [42, 43]
+    assert pool["1"]["retired"] is True  # still retired, not duplicated or revived
+
+
+@pytest.mark.asyncio
+async def test_importpool_links_a_hand_added_card_instead_of_duplicating_it(cog):
+    guild = FakeGuild(75)
+    ctx = FakeCtx(_admin(750, guild), guild, FakeChannel(7500, guild))
+    async with cog.config.guild(guild).all() as data:
+        data["pool"]["1"] = Card(
+            card_id=1, name="Alice", series="Some Show", rarity="rare", image_path="1.png", added_by=5
+        ).to_dict()
+        data["next_id"] = 2
+    cog._session = FakeAniList([_bulk_page(_bulk_char(7, "Alice"), _bulk_char(8, "Bob"))])
+
+    await cog.card.commands["importpool"].callback(cog, ctx, count=10)
+    pool = await cog.config.guild(guild).pool()
+    assert sorted(e["name"] for e in pool.values()) == ["Alice", "Bob"]  # Alice not duplicated
+    assert pool["1"]["anilist_id"] == 7  # the hand-added card learned its AniList id
+    assert "linked" in ctx.sent[-1].content
+
+    cog._session = FakeAniList([_bulk_page(_bulk_char(7, "Alice"), _bulk_char(8, "Bob"))])
+    await cog.card.commands["importpool"].callback(cog, ctx, count=10)
+    assert len(await cog.config.guild(guild).pool()) == 2  # and a re-run adds nothing
+
+
+# --- importseries -----------------------------------------------------------
+
+
+async def _open_series_preview(cog, guild, admin, channel, characters, query="frieren"):
+    cog._session = FakeAniList(
+        [_search_payload(_media(1, "Sousou no Frieren", "Frieren: Beyond Journey's End")), _series_payload(characters)]
+    )
+    ctx = FakeCtx(admin, guild, channel)
+    await cog.card.commands["importseries"].callback(cog, ctx, series=query)
+    return ctx, ctx.sent[-1]
+
+
+@pytest.mark.asyncio
+async def test_importseries_previews_without_importing_anything(cog):
+    guild = FakeGuild(80)
+    admin = _admin(800, guild)
+    ctx, msg = await _open_series_preview(cog, guild, admin, FakeChannel(8000, guild), _seventeen_characters())
+
+    assert isinstance(msg.view, cc_views.SeriesPreviewView)
+    embed = msg.embeds[0]
+    assert embed.title == "Import series: Sousou no Frieren"
+    fields = {f.name: f.value for f in embed.fields}
+    assert "**15** new" in fields["Top 15"]
+    assert "Import everything checked" in fields  # 17 characters were checked, only 15 are in the default slice
+    assert await cog.config.guild(guild).pool() == {}  # a preview must never write to the pool
+
+
+@pytest.mark.asyncio
+async def test_importseries_import_top_adds_the_top_characters_with_rarity_and_titles(cog):
+    guild = FakeGuild(81)
+    admin = _admin(810, guild)
+    ctx, msg = await _open_series_preview(cog, guild, admin, FakeChannel(8100, guild), _seventeen_characters())
+    inter = AdminInteraction(admin, guild, msg)
+
+    await msg.view.import_top.callback(inter)
+
+    pool = await cog.config.guild(guild).pool()
+    assert len(pool) == 15
+    by_name = {e["name"]: e for e in pool.values()}
+    assert "Char15" not in by_name and "Char16" not in by_name  # ranks 15 and 16 were outside the top 15
+    assert by_name["Char00"]["rarity"] == "legendary"  # 30,000 favourites
+    assert by_name["Char14"]["rarity"] == "epic"  # 9,000 favourites
+    assert all(e["series"] == "Sousou no Frieren" for e in pool.values())
+    assert all(e["series_alt"] == "Frieren: Beyond Journey's End" for e in pool.values())
+    assert all(e["anilist_id"] is not None and e["added_by"] is None for e in pool.values())
+    assert inter.original_edits[-1]["embed"].title == "Imported: Sousou no Frieren"
+    assert (await cog._session.get("x").__aenter__()) is not None  # (session still usable afterwards)
+
+
+@pytest.mark.asyncio
+async def test_importseries_import_all_and_a_rerun_never_duplicates(cog):
+    guild = FakeGuild(82)
+    admin = _admin(820, guild)
+    chars = _seventeen_characters()
+    ctx, msg = await _open_series_preview(cog, guild, admin, FakeChannel(8200, guild), chars)
+    await msg.view.import_all.callback(AdminInteraction(admin, guild, msg))
+    assert len(await cog.config.guild(guild).pool()) == 17
+
+    # run it again: everything is already there, so the preview has nothing to import
+    ctx2, msg2 = await _open_series_preview(cog, guild, admin, FakeChannel(8201, guild), chars)
+    assert msg2.view.import_top.disabled is True
+    assert "already" in {f.name: f.value for f in msg2.embeds[0].fields}["Top 15"]
+    assert len(await cog.config.guild(guild).pool()) == 17
+
+
+@pytest.mark.asyncio
+async def test_importseries_a_stale_preview_cannot_add_a_character_twice(cog):
+    """Two admins open the same preview, or one presses Import twice across messages."""
+    guild = FakeGuild(83)
+    admin = _admin(830, guild)
+    ctx, msg = await _open_series_preview(cog, guild, admin, FakeChannel(8300, guild), _seventeen_characters())
+    preview = msg.view.preview
+    await cog.commit_series(guild, preview, 15)
+    await cog.commit_series(guild, preview, 15)  # same stale preview again
+    assert len(await cog.config.guild(guild).pool()) == 15
+
+
+@pytest.mark.asyncio
+async def test_importseries_never_resurrects_a_retired_series_character(cog):
+    guild = FakeGuild(84)
+    admin = _admin(840, guild)
+    async with cog.config.guild(guild).all() as data:
+        data["pool"]["1"] = Card(
+            card_id=1, name="Char00", series="Sousou no Frieren", rarity="legendary",
+            image_path="1.png", anilist_id=100, retired=True,
+        ).to_dict()
+        data["next_id"] = 2
+    ctx, msg = await _open_series_preview(cog, guild, admin, FakeChannel(8400, guild), _seventeen_characters())
+    await msg.view.import_top.callback(AdminInteraction(admin, guild, msg))
+    pool = await cog.config.guild(guild).pool()
+    assert sorted(e["name"] for e in pool.values()).count("Char00") == 1
+    assert pool["1"]["retired"] is True
+
+
+@pytest.mark.asyncio
+async def test_importseries_links_a_hand_added_card_of_the_same_character(cog):
+    guild = FakeGuild(85)
+    admin = _admin(850, guild)
+    async with cog.config.guild(guild).all() as data:
+        data["pool"]["1"] = Card(
+            card_id=1, name="Char01", series="Sousou no Frieren", rarity="epic", image_path="1.png", added_by=9
+        ).to_dict()
+        data["next_id"] = 2
+    ctx, msg = await _open_series_preview(cog, guild, admin, FakeChannel(8500, guild), _seventeen_characters())
+    assert "will be linked" in {f.name: f.value for f in msg.embeds[0].fields}["Top 15"]
+
+    await msg.view.import_top.callback(AdminInteraction(admin, guild, msg))
+    pool = await cog.config.guild(guild).pool()
+    assert sorted(e["name"] for e in pool.values()).count("Char01") == 1  # not duplicated
+    assert pool["1"]["anilist_id"] == 101
+    assert pool["1"]["rarity"] == "epic"  # the hand-added card keeps the rarity you gave it
+
+
+@pytest.mark.asyncio
+async def test_importseries_with_several_matches_asks_which_one(cog):
+    guild = FakeGuild(86)
+    admin = _admin(860, guild)
+    cog._session = FakeAniList(
+        [
+            _search_payload(_media(1, "Sousou no Frieren", "Frieren"), _media(2, "Sousou no Frieren (Manga)")),
+            _series_payload(_seventeen_characters()),
+        ]
+    )
+    ctx = FakeCtx(admin, guild, FakeChannel(8600, guild))
+    await cog.card.commands["importseries"].callback(cog, ctx, series="frieren")
+    pick = ctx.sent[-1]
+    assert isinstance(pick.view, cc_views.SeriesPickView)
+    assert pick.embeds[0].title == "Import series: which one?"
+    assert await cog.config.guild(guild).pool() == {}
+
+    inter = AdminInteraction(admin, guild, pick)
+    pick.view.select._values = ["1"]
+    await pick.view._picked(inter)
+    assert inter.deferred
+    shown = inter.original_edits[-1]
+    assert shown["embed"].title == "Import series: Sousou no Frieren"
+    assert isinstance(shown["view"], cc_views.SeriesPreviewView)
+
+
+@pytest.mark.asyncio
+async def test_importseries_reports_no_match_and_anilist_failures_without_crashing(cog):
+    guild = FakeGuild(87)
+    admin = _admin(870, guild)
+    ctx = FakeCtx(admin, guild, FakeChannel(8700, guild))
+
+    cog._session = FakeAniList([_search_payload()])
+    await cog.card.commands["importseries"].callback(cog, ctx, series="zzzz")
+    assert "no series matching" in ctx.sent[-1].content.lower()
+
+    request_info = SimpleNamespace(real_url="https://graphql.anilist.co")
+    cog._session = FakeAniList(post_error=aiohttp.ClientResponseError(request_info, (), status=500, message="boom"))
+    await cog.card.commands["importseries"].callback(cog, ctx, series="frieren")
+    assert "AniList request failed" in ctx.sent[-1].content
+
+    cog._session = FakeAniList([{"data": None}])
+    await cog.card.commands["importseries"].callback(cog, ctx, series="frieren")
+    assert "wasn't in the shape" in ctx.sent[-1].content
+    assert await cog.config.guild(guild).pool() == {}
+
+
+@pytest.mark.asyncio
+async def test_importseries_views_refuse_anyone_but_the_admin_who_ran_it(cog):
+    guild = FakeGuild(88)
+    admin = _admin(880, guild)
+    ctx, msg = await _open_series_preview(cog, guild, admin, FakeChannel(8800, guild), _seventeen_characters())
+    stranger_inter = AdminInteraction(FakeMember(881, guild), guild, msg)
+    assert await msg.view.interaction_check(stranger_inter) is False
+    assert "Only the admin" in stranger_inter.sent[-1][0]
+    assert await msg.view.interaction_check(AdminInteraction(admin, guild, msg)) is True
+
+
+@pytest.mark.asyncio
+async def test_importseries_cancel_adds_nothing(cog):
+    guild = FakeGuild(89)
+    admin = _admin(890, guild)
+    ctx, msg = await _open_series_preview(cog, guild, admin, FakeChannel(8900, guild), _seventeen_characters())
+    inter = AdminInteraction(admin, guild, msg)
+    await msg.view.cancel.callback(inter)
+    assert "cancelled" in inter.edits[-1]["content"].lower()
+    assert await cog.config.guild(guild).pool() == {}
+
+
+@pytest.mark.asyncio
+async def test_importseries_rarity_edits_change_what_gets_imported(cog):
+    guild = FakeGuild(90)
+    admin = _admin(900, guild)
+    ctx, msg = await _open_series_preview(cog, guild, admin, FakeChannel(9000, guild), _seventeen_characters())
+    view = msg.view
+
+    inter = AdminInteraction(admin, guild, msg)
+    await view.adjust.callback(inter)
+    modal = inter.modal
+    assert "Char00: legendary" in modal.changes.default  # prefilled with the current tiers, ready to edit
+
+    modal.changes._value = "Char08: legendary\nNobody: rare"
+    submit = AdminInteraction(admin, guild, msg)
+    await modal.on_submit(submit)
+    assert view.preview.overrides == {8: "legendary"}
+    assert "Rarity edits pending" in {f.name for f in submit.edits[-1]["embed"].fields}
+    assert "No new character matches" in submit.followups[-1][0]  # the bad line is reported, not guessed at
+
+    await view.import_top.callback(AdminInteraction(admin, guild, msg))
+    pool = await cog.config.guild(guild).pool()
+    assert {e["name"]: e["rarity"] for e in pool.values()}["Char08"] == "legendary"
+
+    # putting a tier back to what its favourites say drops the override again
+    ctx2, msg2 = await _open_series_preview(cog, guild, admin, FakeChannel(9001, guild), _seventeen_characters())
+    modal2 = (await _press(msg2.view.adjust, admin, guild, msg2)).modal
+    modal2.changes._value = "Char16: legendary"
+    await modal2.on_submit(AdminInteraction(admin, guild, msg2))
+    assert msg2.view.preview.overrides == {16: "legendary"}
+    modal2.changes._value = "Char16: rare"
+    await modal2.on_submit(AdminInteraction(admin, guild, msg2))
+    assert msg2.view.preview.overrides == {}
+
+
+async def _press(button, user, guild, message):
+    inter = AdminInteraction(user, guild, message)
+    await button.callback(inter)
+    return inter
+
+
+# --- `.card info` admin rarity dropdown ----------------------------------------
+
+
+async def _seed_one_card(cog, guild, rarity="common"):
+    async with cog.config.guild(guild).all() as data:
+        card_id = data["next_id"]
+        data["next_id"] += 1
+        storage.save_card_image(cog.data_path, guild.id, card_id, fake_art_bytes())
+        data["pool"][str(card_id)] = Card(
+            card_id=card_id, name="Rem", series="Re:Zero", rarity=rarity,
+            image_path=str(storage.card_image_path(cog.data_path, guild.id, card_id)),
+        ).to_dict()
+    return card_id
+
+
+@pytest.mark.asyncio
+async def test_card_info_gives_admins_a_change_rarity_dropdown_and_nobody_else(cog):
+    guild = FakeGuild(91)
+    channel = FakeChannel(9100, guild)
+    card_id = await _seed_one_card(cog, guild, "common")
+
+    member_ctx = FakeCtx(FakeMember(910, guild), guild, channel)
+    await cog.card.commands["info"].callback(cog, member_ctx, card_arg=str(card_id))
+    assert member_ctx.sent[-1].view is None
+
+    admin = _admin(911, guild)
+    admin_ctx = FakeCtx(admin, guild, channel)
+    await cog.card.commands["info"].callback(cog, admin_ctx, card_arg=str(card_id))
+    view = admin_ctx.sent[-1].view
+    assert isinstance(view, cc_views.CardAdminView)
+
+    view.select._values = ["epic"]
+    inter = AdminInteraction(admin, guild, admin_ctx.sent[-1])
+    await view._changed(inter)
+    assert (await cog.config.guild(guild).pool())[str(card_id)]["rarity"] == "epic"
+    assert "Epic" in {f.name: f.value for f in inter.edits[-1]["embed"].fields}["Rarity"]
+    assert "now **epic**" in inter.followups[-1][0]
+    assert [o.default for o in view.select.options] == [False, False, True, False]
+
+    inter2 = AdminInteraction(admin, guild, admin_ctx.sent[-1])
+    await view._changed(inter2)  # same tier again
+    assert "already epic" in inter2.sent[-1][0]
+
+
+@pytest.mark.asyncio
+async def test_change_rarity_keeps_existing_sell_tokens_at_the_value_they_were_issued_with(cog):
+    guild = FakeGuild(92)
+    card_id = await _seed_one_card(cog, guild, "common")
+    from cardcollect import engine as cc_engine
+    from cardcollect.models import MemberState
+
+    owner = FakeMember(920, guild)
+    token = cc_engine.make_sell_token(card_id, "common")
+    await cog._save_member_state(owner, MemberState(collection=[card_id], sell_tokens=[token]))
+
+    card = await cog.apply_card_rarity(guild, card_id, "legendary")
+    assert card.rarity == "legendary"
+    state = await cog._member_state(owner)
+    assert state.sell_tokens[0].rarity == "common"  # captured at claim time, so no retroactive windfall
+
+
+@pytest.mark.asyncio
+async def test_apply_card_rarity_rejects_a_bad_tier_and_a_missing_card(cog):
+    guild = FakeGuild(93)
+    card_id = await _seed_one_card(cog, guild)
+    with pytest.raises(ValueError):
+        await cog.apply_card_rarity(guild, card_id, "shiny")
+    with pytest.raises(KeyError):
+        await cog.apply_card_rarity(guild, 999, "epic")
