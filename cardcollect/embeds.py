@@ -395,9 +395,7 @@ def draw_results_embed(
         elif result["winner"] is None:
             lines.append(f"{head} — nobody picked it, wasted")
         else:
-            tag = _OUTCOME_TAG.get(result["outcome"], "")
-            if is_test:
-                tag = f"would be {tag}" if tag else ""
+            tag = "" if is_test else _OUTCOME_TAG.get(result["outcome"], "")
             extra = f" · {tag}" if tag else ""
             lines.append(f"{head} — <@{result['winner']}> ({result['pickers']} picked){extra}")
     embed.description = "\n".join(lines)

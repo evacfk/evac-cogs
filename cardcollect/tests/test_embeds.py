@@ -24,6 +24,7 @@ def test_draw_results_embed_test_mode_is_marked_and_red():
     results = [{"position": 0, "card_id": 10, "pickers": 1, "winner": 5, "outcome": "new", "contested": False, "boosted": False}]
     embed = embeds.draw_results_embed(results, cards, 1, [], is_test=True)
     assert embed.colour == embeds.TEST_COLOR
+    assert "would be" not in embed.description and "NEW" not in embed.description
 
 
 def test_sets_and_wishlist_embeds_render_empty_and_full_states():
