@@ -263,9 +263,12 @@ def build_page_data(
 
 PAGE_TEMPLATE = """\
 <style>
-.pulse-page .pulse-card{border:1px solid rgba(128,128,128,.3);border-radius:.5rem;padding:.6rem .9rem;height:100%}
-.pulse-page .pulse-card .v{font-size:1.35rem;font-weight:600;line-height:1.2}
-.pulse-page .pulse-card .s{font-size:.75rem;opacity:.7}
+.pulse-page .text-muted{color:inherit!important;opacity:.8}
+.pulse-page a{color:#8a99ff}
+.pulse-page .pulse-cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(11rem,1fr));gap:.6rem}
+.pulse-page .pulse-card{border:1px solid rgba(128,128,128,.4);border-radius:.5rem;padding:.7rem .9rem}
+.pulse-page .pulse-card .v{font-size:1.3rem;font-weight:600;line-height:1.25;white-space:nowrap}
+.pulse-page .pulse-card .s{font-size:.8rem;opacity:.85}
 .pulse-page table.pulse-heat{border-collapse:separate;border-spacing:2px;font-size:.68rem;width:100%;min-width:720px}
 .pulse-page table.pulse-heat th{font-weight:600;text-align:center;padding:0 1px;white-space:nowrap}
 .pulse-page table.pulse-heat td{text-align:center;padding:.3rem 0;border-radius:3px;min-width:24px}
@@ -297,9 +300,9 @@ PAGE_TEMPLATE = """\
     {% if pulse.since %}<span class="text-muted"> &mdash; data since {{ pulse.since|e }}</span>{% endif %}
   </p>
 
-  <div class="row g-2">
+  <div class="pulse-cards">
     {% for c in pulse.cards %}
-    <div class="col-6 col-md-4 col-xl-2"><div class="pulse-card"><div class="s">{{ c.label|e }}</div><div class="v">{{ c.value|e }}</div><div class="s">{{ c.sub|e }}</div></div></div>
+    <div class="pulse-card"><div class="s">{{ c.label|e }}</div><div class="v">{{ c.value|e }}</div><div class="s">{{ c.sub|e }}</div></div>
     {% endfor %}
   </div>
 
