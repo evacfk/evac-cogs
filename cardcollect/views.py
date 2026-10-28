@@ -10,12 +10,13 @@ over" -- instead of Discord's generic "This interaction failed".
 """
 
 import asyncio
+import io
 import logging
 
 import discord
 
 from . import embeds, import_characters, imagegen
-from .constants import GALLERY_VIEW_TIMEOUT_SECONDS, SERIES_IMPORT_DEFAULT, SERIES_VIEW_TIMEOUT_SECONDS, TIERS
+from .constants import ART_UPLOAD_WAIT_SECONDS, GALLERY_VIEW_TIMEOUT_SECONDS, SERIES_IMPORT_DEFAULT, SERIES_VIEW_TIMEOUT_SECONDS, TIERS
 
 log = logging.getLogger("red.evac-cogs.cardcollect")
 
@@ -285,46 +286,52 @@ class SeriesPickView(_InvokerView):
             self.stop()
             return
         view = SeriesPreviewView(self.cog, self.invoker_id, preview)
-        view.message = await interaction.edit_original_response(
-            content=None, embed=embeds.series_preview_embed(preview, view.limit), view=view
-        )
+        view.message = await interaction.edit_original_response(content=None, view=view, **view.payload())
         self.stop()
 
 
-class RarityModal(discord.ui.Modal):
+class AdjustModal(discord.ui.Modal):
     changes = discord.ui.TextInput(
-        label="One per line, like  Frieren: legendary",
+        label="Rarity lines, or skip 3, 7",
         style=discord.TextStyle.paragraph,
         required=False,
         max_length=4000,
     )
 
     def __init__(self, preview_view: "SeriesPreviewView"):
-        super().__init__(title="Adjust rarities", timeout=600)
+        super().__init__(title="Adjust the import", timeout=600)
         self.preview_view = preview_view
         selected = import_characters.select_top(
-            preview_view.preview.built, preview_view.limit, preview_view.preview.overrides
+            preview_view.preview.built, preview_view.limit, preview_view.preview.overrides, preview_view.preview.skips
         )
         self.changes.default = "\n".join(f"{e['name']}: {e['rarity']}" for e in selected["entries"])[:4000]
+        self.changes.placeholder = "Name: epic   |   skip 3, 7   |   unskip 3"
 
     async def on_submit(self, interaction: discord.Interaction):
         view = self.preview_view
-        entries = view.preview.built["entries"]  # every new character checked, not just the top slice
+        preview = view.preview
+        entries = preview.built["entries"]  # every new character checked, not just the top slice
         base = {e["rank"]: e["rarity"] for e in entries}
-        overrides, problems = import_characters.parse_rarity_overrides(str(self.changes.value), entries)
-        for rank, tier in overrides.items():
+        parsed = import_characters.parse_adjustments(str(self.changes.value), entries)
+        for rank, tier in parsed["overrides"].items():
             if tier == base[rank]:
-                view.preview.overrides.pop(rank, None)  # back to what its favourites say
+                preview.overrides.pop(rank, None)  # back to what its favourites say
             else:
-                view.preview.overrides[rank] = tier
-        await interaction.response.edit_message(embed=embeds.series_preview_embed(view.preview, view.limit), view=view)
-        if problems:
+                preview.overrides[rank] = tier
+        preview.skips |= parsed["skip"]
+        preview.skips -= parsed["unskip"]
+        view.refresh_buttons()
+        await interaction.response.edit_message(view=view, **view.payload())
+        if parsed["problems"]:
             await interaction.followup.send(
-                "Couldn't apply:\n" + "\n".join(f"• {x}" for x in problems[:10]), ephemeral=True
+                "Couldn't apply:\n" + "\n".join(f"• {x}" for x in parsed["problems"][:10]), ephemeral=True
             )
 
     async def on_error(self, interaction: discord.Interaction, error: Exception):
-        log.error("cardcollect: rarity modal error", exc_info=error)
+        log.error("cardcollect: adjust modal error", exc_info=error)
+
+
+RarityModal = AdjustModal  # the pop-up's old name
 
 
 class SeriesPreviewView(_InvokerView):
@@ -338,6 +345,7 @@ class SeriesPreviewView(_InvokerView):
         self.total = len(preview.info["characters"])
         self.limit = min(SERIES_IMPORT_DEFAULT, self.total) or SERIES_IMPORT_DEFAULT
         self._busy = False
+        self._listening = False
 
         self.import_top = discord.ui.Button(label=f"Import top {self.limit}", style=discord.ButtonStyle.success)
         self.import_top.callback = self._import_top
@@ -347,21 +355,41 @@ class SeriesPreviewView(_InvokerView):
             self.import_all = discord.ui.Button(label=f"Import all {self.total}", style=discord.ButtonStyle.primary)
             self.import_all.callback = self._import_all
             self.add_item(self.import_all)
-        self.adjust = discord.ui.Button(label="Adjust rarities", style=discord.ButtonStyle.secondary)
+        self.replace_art = discord.ui.Button(label="Replace art", style=discord.ButtonStyle.secondary)
+        self.replace_art.callback = self._replace_art
+        self.add_item(self.replace_art)
+        self.adjust = discord.ui.Button(label="Adjust", style=discord.ButtonStyle.secondary)
         self.adjust.callback = self._adjust
         self.add_item(self.adjust)
         self.cancel = discord.ui.Button(label="Cancel", style=discord.ButtonStyle.danger)
         self.cancel.callback = self._cancel
         self.add_item(self.cancel)
 
-        top = import_characters.select_top(preview.built, self.limit)
-        if not top["entries"] and not top["links"]:
-            self.import_top.disabled = True  # nothing to do at this size
-        if not preview.built["entries"]:
-            self.adjust.disabled = True
-            if self.import_all is not None:
-                everything = import_characters.select_top(preview.built, self.total)
-                self.import_all.disabled = not everything["entries"] and not everything["links"]
+        self.refresh_buttons()
+
+    def refresh_buttons(self):
+        """Grey out Import when nothing would be added, and the edit buttons
+        when there is nothing new to edit."""
+        preview = self.preview
+        top = import_characters.select_top(preview.built, self.limit, skip=preview.skips)
+        self.import_top.disabled = not top["entries"] and not top["links"]
+        nothing_new = not preview.built["entries"]
+        self.adjust.disabled = nothing_new
+        self.replace_art.disabled = nothing_new
+        if self.import_all is not None:
+            everything = import_characters.select_top(preview.built, self.total, skip=preview.skips)
+            self.import_all.disabled = not everything["entries"] and not everything["links"]
+
+    def payload(self, send: bool = False) -> dict:
+        """What the preview message shows right now: the embed with its
+        numbered art grid. `send=True` is for a brand-new message (which takes
+        `files=`); an edit replaces its attachments instead."""
+        embed = embeds.series_preview_embed(self.preview, self.limit)
+        files = []
+        if any(e["rank"] < self.limit for e in self.preview.built["entries"]):
+            embed.set_image(url="attachment://contact_sheet.png")
+            files = [self.cog.contact_sheet_file(self.preview, self.limit)]
+        return {"embed": embed, "files" if send else "attachments": files}
 
     async def _run_import(self, interaction: discord.Interaction, limit: int):
         if self._busy:
@@ -383,7 +411,7 @@ class SeriesPreviewView(_InvokerView):
             )
             self.stop()
             return
-        await interaction.edit_original_response(content=None, embed=embed, view=None)
+        await interaction.edit_original_response(content=None, embed=embed, attachments=[], view=None)
         self.stop()
 
     async def _import_top(self, interaction: discord.Interaction):
@@ -393,10 +421,47 @@ class SeriesPreviewView(_InvokerView):
         await self._run_import(interaction, self.total)
 
     async def _adjust(self, interaction: discord.Interaction):
-        await interaction.response.send_modal(RarityModal(self))
+        await interaction.response.send_modal(AdjustModal(self))
+
+    async def _replace_art(self, interaction: discord.Interaction):
+        if self._listening:
+            await interaction.response.send_message("Already waiting for an image from you.", ephemeral=True)
+            return
+        self._listening = True
+        await interaction.response.send_message(
+            "Send the new picture in this channel as an image upload, with the card **number** (or name) as the "
+            f"message text, like `4`. I'll wait {ART_UPLOAD_WAIT_SECONDS}s for each one, so you can send several in "
+            "a row. Type `done` when you're finished.",
+            ephemeral=True,
+        )
+        try:
+            while not self.is_finished():
+                message = await self.cog.wait_for_upload(interaction.channel.id, interaction.user.id, ART_UPLOAD_WAIT_SECONDS)
+                if message is None or (message.content or "").strip().lower() in ("done", "stop", "cancel"):
+                    break
+                entry, problem = import_characters.resolve_entry(message.content, self.preview.built["entries"])
+                if entry is None:
+                    await interaction.followup.send(f"{problem} Send the image again with its number.", ephemeral=True)
+                    continue
+                data, problem = await self.cog.read_uploaded_art(message)
+                if data is None:
+                    await interaction.followup.send(problem, ephemeral=True)
+                    continue
+                self.preview.art[entry["rank"]] = data
+                self.preview.skips.discard(entry["rank"])
+                number = import_characters.entry_numbers(self.preview.built)[entry["rank"]]
+                if self.message is not None and entry["rank"] < self.limit:
+                    await self.message.edit(view=self, **self.payload())
+                await interaction.followup.send(
+                    f"Art for **{entry['name']}** (#{number}) replaced. Send another, or type `done`.", ephemeral=True
+                )
+        finally:
+            self._listening = False
 
     async def _cancel(self, interaction: discord.Interaction):
-        await interaction.response.edit_message(content="Import cancelled. Nothing was added.", embed=None, view=None)
+        await interaction.response.edit_message(
+            content="Import cancelled. Nothing was added.", embed=None, attachments=[], view=None
+        )
         self.stop()
 
 
@@ -419,6 +484,47 @@ class CardAdminView(_InvokerView):
         )
         self.select.callback = self._changed
         self.add_item(self.select)
+        self.replace_art = discord.ui.Button(label="Replace art", style=discord.ButtonStyle.secondary, row=1)
+        self.replace_art.callback = self._replace_art
+        self.add_item(self.replace_art)
+        self._listening = False
+
+    def _embed(self) -> discord.Embed:
+        embed = embeds.card_info_embed(self.card, self.owner_count, self.owner_mentions)
+        embed.set_image(url="attachment://card_info.png")
+        return embed
+
+    async def _replace_art(self, interaction: discord.Interaction):
+        if self._listening:
+            await interaction.response.send_message("Already waiting for an image from you.", ephemeral=True)
+            return
+        self._listening = True
+        await interaction.response.send_message(
+            f"Send the new picture for **{self.card.name}** in this channel as an image upload "
+            f"(I'll wait {ART_UPLOAD_WAIT_SECONDS}s). Only the picture changes; owners keep their copies.",
+            ephemeral=True,
+        )
+        try:
+            message = await self.cog.wait_for_upload(interaction.channel.id, interaction.user.id, ART_UPLOAD_WAIT_SECONDS)
+            if message is None:
+                await interaction.followup.send("No image arrived, so the art was left as it was.", ephemeral=True)
+                return
+            data, problem = await self.cog.read_uploaded_art(message)
+            if data is None:
+                await interaction.followup.send(f"{problem} The art was left as it was.", ephemeral=True)
+                return
+            try:
+                await self.cog.replace_card_art(interaction.guild, self.card.card_id, data)
+            except KeyError:
+                await interaction.followup.send("That card is no longer in the pool.", ephemeral=True)
+                return
+            self.has_image = True
+            if self.message is not None:
+                file = discord.File(io.BytesIO(data), filename="card_info.png")
+                await self.message.edit(embed=self._embed(), attachments=[file], view=self)
+            await interaction.followup.send(f"New art saved for **{self.card.name}**.", ephemeral=True)
+        finally:
+            self._listening = False
 
     async def _changed(self, interaction: discord.Interaction):
         tier = self.select.values[0]

@@ -186,3 +186,7 @@ class SeriesPreview:
     built: dict  # build_series_entries() result: entries / links / skipped, each with a `rank`
     pool_tiers: dict  # active (non-retired) pool cards per rarity right now
     overrides: dict = field(default_factory=dict)  # rank -> rarity chosen by the admin
+    skips: set = field(default_factory=set)  # ranks the admin left out of the import
+    images: dict = field(default_factory=dict)  # rank -> AniList art already downloaded for the contact sheet
+    art: dict = field(default_factory=dict)  # rank -> replacement art the admin uploaded (wins over AniList's)
+    flags: dict = field(default_factory=dict)  # rank -> why the AniList art looks poor (placeholder, small, wide...)

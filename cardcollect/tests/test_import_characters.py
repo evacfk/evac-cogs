@@ -630,3 +630,61 @@ def test_parse_rarity_overrides_reports_ambiguous_unknown_and_bad_lines():
 def test_parse_rarity_overrides_handles_a_colon_inside_a_name():
     overrides, problems = import_characters.parse_rarity_overrides("Re:Zero Girl: legendary", [entry(0, "Re:Zero Girl")])
     assert overrides == {0: "legendary"} and problems == []
+
+
+# --- 1.7.1: skip / art helpers ---------------------------------------------------
+
+
+def _entries(*names):
+    return [{"rank": i * 2, "name": n, "image_url": f"https://x/{i}.png", "rarity": "common", "favourites": 1} for i, n in enumerate(names)]
+
+
+def test_resolve_entry_takes_a_number_an_exact_name_or_a_unique_part():
+    entries = _entries("Frieren", "Fern", "Stark")
+    assert import_characters.resolve_entry("2", entries)[0]["name"] == "Fern"
+    assert import_characters.resolve_entry("#3", entries)[0]["name"] == "Stark"
+    assert import_characters.resolve_entry("frie", entries)[0]["name"] == "Frieren"
+    assert import_characters.resolve_entry("fern", entries)[0]["name"] == "Fern"
+    assert "no number 9" in import_characters.resolve_entry("9", entries)[1]
+    assert "No new character matches" in import_characters.resolve_entry("zzz", entries)[1]
+    assert "Name or number missing" in import_characters.resolve_entry("  ", entries)[1]
+    assert "matches several" in import_characters.resolve_entry("r", entries)[1]
+
+
+def test_parse_adjustments_reads_rarity_skip_and_unskip_lines_together():
+    entries = _entries("Frieren", "Fern", "Stark")
+    parsed = import_characters.parse_adjustments("Fern: epic\nskip 1, Stark\nunskip 3\nSKIP: 2\nskip 9", entries)
+    assert parsed["overrides"] == {2: "epic"}
+    assert parsed["skip"] == {0, 2, 4}
+    assert parsed["unskip"] == {4}
+    assert any("no number 9" in p for p in parsed["problems"])
+
+
+def test_a_character_whose_name_starts_with_skip_is_still_a_rarity_line():
+    entries = _entries("Skipper Joe", "Fern")
+    parsed = import_characters.parse_adjustments("Skipper Joe: legendary", entries)
+    assert parsed["overrides"] == {0: "legendary"} and parsed["skip"] == set()
+
+
+def test_select_top_leaves_out_skipped_ranks_and_entry_numbers_count_new_characters_only():
+    built = {"entries": _entries("A", "B", "C"), "links": [], "skipped": [{"rank": 1, "name": "X", "reason": "already in the pool"}]}
+    assert [e["name"] for e in import_characters.select_top(built, 10, skip={2})["entries"]] == ["A", "C"]
+    assert import_characters.entry_numbers(built) == {0: 1, 2: 2, 4: 3}
+
+
+def test_art_flags_catch_placeholders_small_wide_and_broken_images():
+    import io as _io
+    from PIL import Image as _Image
+
+    def png(w, h):
+        buf = _io.BytesIO()
+        _Image.new("RGB", (w, h)).save(buf, format="PNG")
+        return buf.getvalue()
+
+    entry = {"image_url": "https://x/char.png"}
+    assert import_characters.art_flags(entry, png(230, 345)) is None
+    assert "small" in import_characters.art_flags(entry, png(100, 140))
+    assert "wide" in import_characters.art_flags(entry, png(400, 200))
+    assert import_characters.art_flags(entry, b"junk") == "not an image"
+    assert import_characters.art_flags(entry, None) == "download failed"
+    assert import_characters.art_flags({"image_url": "https://s4.anilist.co/x/default.jpg"}, png(230, 345)) == "AniList placeholder"

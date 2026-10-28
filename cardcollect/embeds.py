@@ -288,8 +288,10 @@ def _tier_counts(entries: Sequence[dict]) -> Dict[str, int]:
 
 def series_preview_embed(preview: SeriesPreview, limit: int) -> discord.Embed:
     """The dry-run: exactly what importing the top `limit` characters would do."""
-    sel = import_characters.select_top(preview.built, limit, preview.overrides)
-    everything = import_characters.select_top(preview.built, 10**9, preview.overrides)
+    sel = import_characters.select_top(preview.built, limit, preview.overrides, preview.skips)
+    shown = import_characters.select_top(preview.built, limit, preview.overrides)  # skipped ones too, struck through
+    everything = import_characters.select_top(preview.built, 10**9, preview.overrides, preview.skips)
+    numbers = import_characters.entry_numbers(preview.built)
     info = preview.info
     embed = discord.Embed(title=f"Import series: {info['title']}", color=EMBED_COLOR)
     head = []
@@ -311,8 +313,20 @@ def series_preview_embed(preview: SeriesPreview, limit: int) -> discord.Embed:
         bits.append(f"{no_art} left out (no image on AniList)")
     embed.add_field(name=f"Top {min(limit, len(info['characters']))}", value=" · ".join(bits), inline=False)
 
-    if sel["entries"]:
-        lines = [f"{RARITY_EMOJI.get(e['rarity'], '')} {e['name']} — {e['favourites']:,} ♥" for e in sel["entries"]]
+    if shown["entries"]:
+        lines = []
+        for e in shown["entries"]:
+            rank = e["rank"]
+            number = f"`{numbers[rank]}`"
+            if rank in preview.skips:
+                lines.append(f"{number} ~~{e['name']}~~ skipped")
+                continue
+            line = f"{number} {RARITY_EMOJI.get(e['rarity'], '')} {e['name']} — {e['favourites']:,} ♥"
+            if rank in preview.art:
+                line += " 🖼 your art"
+            elif rank in preview.flags:
+                line += f" ⚠ {preview.flags[rank]}"
+            lines.append(line)
         text = ""
         for i, line in enumerate(lines):
             if len(text) + len(line) + 40 > 1000:
@@ -320,7 +334,10 @@ def series_preview_embed(preview: SeriesPreview, limit: int) -> discord.Embed:
                 break
             text += ("\n" if text else "") + line
         embed.add_field(name="New characters", value=text, inline=False)
+    else:
+        embed.add_field(name="New characters", value="Nothing new at this size.", inline=False)
 
+    if sel["entries"]:
         after = _tier_counts(sel["entries"])
         rows = [
             f"{_rarity_line(t)}: {preview.pool_tiers.get(t, 0)} → {preview.pool_tiers.get(t, 0) + after[t]} (+{after[t]})"
@@ -332,17 +349,25 @@ def series_preview_embed(preview: SeriesPreview, limit: int) -> discord.Embed:
             value="\n".join(rows) + "\nA tier with more cards makes each of them drop less often.",
             inline=False,
         )
-    else:
-        embed.add_field(name="New characters", value="Nothing new at this size.", inline=False)
 
     if len(everything["entries"]) > len(sel["entries"]):
         counts = _tier_counts(everything["entries"])
         mix = ", ".join(f"{counts[t]} {t}" for t in reversed(TIERS) if counts[t])
         embed.add_field(name="Import everything checked", value=f"{len(everything['entries'])} new: {mix}", inline=False)
 
+    edits = []
     if preview.overrides:
-        embed.add_field(name="Rarity edits pending", value=f"{len(preview.overrides)} character(s)", inline=True)
-    embed.set_footer(text="Nothing is imported until you press an Import button. Adjust rarities changes a tier first.")
+        edits.append(f"{len(preview.overrides)} rarity")
+    if preview.skips:
+        edits.append(f"{len(preview.skips)} skipped")
+    if preview.art:
+        edits.append(f"{len(preview.art)} new art")
+    if edits:
+        embed.add_field(name="Your edits", value=", ".join(edits), inline=True)
+    embed.set_footer(
+        text="Nothing is imported until you press an Import button. Red border = poor art, green = your upload. "
+        "Replace art swaps a picture; Adjust changes rarity or skips characters."
+    )
     return embed
 
 

@@ -54,8 +54,11 @@ from .constants import (
     IMPORT_GENDERS,
     MAX_COPIES_KEPT,
     MAX_SHOWCASE_SLOTS,
+    SERIES_IMPORT_DEFAULT,
     SERIES_IMPORT_MAX,
+    SHEET_COLUMNS,
     TIERS,
+    ART_MAX_UPLOAD_BYTES,
 )
 from .models import ActiveDrop, Card, MemberState, SeriesPreview
 
@@ -1608,16 +1611,102 @@ class CardCollect(commands.Cog):
             await self._pool_card_dicts(guild),
         )
         active = Counter(c.rarity for c in await self._rollable_pool_cards(guild))
-        return SeriesPreview(
+        preview = SeriesPreview(
             media=media, info=info, built=built, pool_tiers={t: active.get(t, 0) for t in TIERS}
         )
+        await self._prefetch_preview_art(preview, SERIES_IMPORT_DEFAULT)
+        return preview
+
+    async def _prefetch_preview_art(self, preview: SeriesPreview, limit: int) -> None:
+        """Download the art of the characters the preview shows (the top
+        `limit` new ones) so the contact sheet can show it, and flag the images
+        that look poor. The same bytes are reused at import time."""
+        shown = [e for e in preview.built["entries"] if e["rank"] < limit]
+        downloaded, _failed = await self._download_images(shown)
+        preview.images = {entry["rank"]: image_bytes for entry, image_bytes in downloaded}
+        for entry in shown:
+            reason = import_characters.art_flags(entry, preview.images.get(entry["rank"]))
+            if reason:
+                preview.flags[entry["rank"]] = reason
+
+    @staticmethod
+    def contact_sheet_file(preview: SeriesPreview, limit: int) -> discord.File:
+        """The numbered art grid shown under the series preview."""
+        numbers = import_characters.entry_numbers(preview.built)
+        tiles = []
+        for entry in preview.built["entries"]:
+            rank = entry["rank"]
+            if rank >= limit:
+                continue
+            tiles.append(
+                {
+                    "number": numbers[rank],
+                    "name": entry["name"],
+                    "image": preview.art.get(rank) or preview.images.get(rank),
+                    "flag": None if rank in preview.art else preview.flags.get(rank),
+                    "skipped": rank in preview.skips,
+                    "replaced": rank in preview.art,
+                }
+            )
+        return discord.File(imagegen.render_contact_sheet(tiles, SHEET_COLUMNS), filename="contact_sheet.png")
+
+    async def wait_for_upload(self, channel_id: int, user_id: int, timeout: float):
+        """The next message from `user_id` in the channel, or None if they say
+        nothing for `timeout` seconds."""
+        def check(message):
+            return message.author.id == user_id and message.channel.id == channel_id
+
+        try:
+            return await self.bot.wait_for("message", check=check, timeout=timeout)
+        except asyncio.TimeoutError:
+            return None
+
+    @staticmethod
+    async def read_uploaded_art(message) -> Tuple[Optional[bytes], Optional[str]]:
+        """The first image attached to an admin's message as (bytes, None), or
+        (None, what's wrong with it). Deletes the message afterwards if it can,
+        so uploads don't clutter the channel."""
+        attachment = message.attachments[0] if message.attachments else None
+        if attachment is None:
+            return None, "That message has no image attached."
+        if getattr(attachment, "size", 0) and attachment.size > ART_MAX_UPLOAD_BYTES:
+            return None, f"That image is over {ART_MAX_UPLOAD_BYTES // (1024 * 1024)} MB."
+        data = await attachment.read()
+        if not imagegen.valid_art(data):
+            return None, "That file isn't an image I can read (use PNG, JPG, WebP or GIF)."
+        try:
+            await message.delete()
+        except (discord.HTTPException, AttributeError):
+            pass  # no permission to delete is fine
+        return data, None
+
+    async def replace_card_art(self, guild: discord.Guild, card_id: int, image_bytes: bytes) -> Card:
+        """Swap one pool card's art (the Replace art button on `.card info`).
+        Same effect as `.card setimage`. KeyError if the card is gone,
+        ValueError if the bytes aren't an image."""
+        card = await self._card_by_id(guild, card_id)
+        if card is None:
+            raise KeyError(card_id)
+        if not imagegen.valid_art(image_bytes):
+            raise ValueError("not an image")
+        storage.save_card_image(self.data_path, guild.id, card_id, image_bytes)
+        return card
 
     async def commit_series(self, guild: discord.Guild, preview: SeriesPreview, limit: int) -> discord.Embed:
         """Do the import the admin confirmed: the top `limit` characters, with
         their rarity edits. Returns the result embed."""
-        selected = import_characters.select_top(preview.built, limit, preview.overrides)
+        selected = import_characters.select_top(preview.built, limit, preview.overrides, preview.skips)
+        # art already on hand (downloaded for the contact sheet, or uploaded by
+        # the admin) is reused; only the rest is downloaded now
+        need = [e for e in selected["entries"] if e["rank"] not in preview.art and e["rank"] not in preview.images]
         async with self._importpool_lock:
-            downloaded, failed = await self._download_images(selected["entries"])
+            fetched, failed = await self._download_images(need)
+            by_rank = {entry["rank"]: image_bytes for entry, image_bytes in fetched}
+            downloaded = []
+            for entry in selected["entries"]:
+                image_bytes = preview.art.get(entry["rank"]) or preview.images.get(entry["rank"]) or by_rank.get(entry["rank"])
+                if image_bytes is not None:
+                    downloaded.append((entry, image_bytes))
             added = await self._write_pool_entries(guild, downloaded, selected["links"])
         already = sum(1 for x in selected["skipped"] if x["reason"] == "already in the pool")
         return embeds.series_result_embed(preview.info["title"], added, failed, len(selected["links"]), already)
@@ -1652,7 +1741,7 @@ class CardCollect(commands.Cog):
                 await ctx.send(preview)
                 return
             view = views.SeriesPreviewView(self, ctx.author.id, preview)
-            view.message = await ctx.send(embed=embeds.series_preview_embed(preview, view.limit), view=view)
+            view.message = await ctx.send(view=view, **view.payload(send=True))
             return
 
         view = views.SeriesPickView(self, ctx.author.id, results)

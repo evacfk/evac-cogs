@@ -254,3 +254,48 @@ def test_code_pill_fits_inside_a_drop_tile():
     w, _ = imagegen.CARD_IMAGE_SIZE
     pill_w = imagegen.CODE_CELL_WIDTH * 5 + imagegen.CODE_PILL_PAD_X * 2
     assert pill_w <= w - 8
+
+
+# --- 1.7.1: contact sheet and upload validation ------------------------------
+
+
+def _png(w, h, color=(10, 90, 160)):
+    buf = io.BytesIO()
+    Image.new("RGB", (w, h), color).save(buf, format="PNG")
+    return buf.getvalue()
+
+
+def test_valid_art_accepts_real_images_and_rejects_everything_else():
+    assert imagegen.valid_art(_png(40, 60))
+    assert not imagegen.valid_art(b"")
+    assert not imagegen.valid_art(b"definitely not an image")
+    assert not imagegen.valid_art(_png(40, 60)[:30])  # truncated file
+
+
+def test_contact_sheet_is_a_png_grid_sized_for_its_tiles():
+    tiles = [
+        {"number": i + 1, "name": f"Character number {i + 1} with a rather long name", "image": _png(230, 345)}
+        for i in range(7)
+    ]
+    tiles[1]["flag"] = "small"
+    tiles[2]["skipped"] = True
+    tiles[3]["replaced"] = True
+    tiles[4]["image"] = None  # download failed
+    tiles[5]["image"] = b"junk"  # unreadable
+    sheet = Image.open(imagegen.render_contact_sheet(tiles, columns=5))
+    assert sheet.format == "PNG"
+    tw, th = imagegen.SHEET_TILE
+    assert sheet.width == 5 * tw + 6 * imagegen.SHEET_GAP
+    assert sheet.height == 2 * (th + imagegen.SHEET_CAPTION_HEIGHT) + 3 * imagegen.SHEET_GAP
+
+
+def test_contact_sheet_borders_mark_flagged_and_replaced_art_but_not_skipped():
+    plain = {"number": 1, "name": "A", "image": _png(230, 345, (200, 200, 200))}
+    out = {}
+    for label, extra in (("plain", {}), ("flag", {"flag": "small"}), ("new", {"replaced": True}), ("skip", {"flag": "small", "skipped": True})):
+        sheet = Image.open(imagegen.render_contact_sheet([{**plain, **extra}], columns=5)).convert("RGB")
+        out[label] = sheet.getpixel((imagegen.SHEET_GAP + 1, imagegen.SHEET_GAP + 100))  # left edge of the tile
+    assert out["flag"] == imagegen.SHEET_FLAG
+    assert out["new"] == imagegen.SHEET_NEW
+    assert out["plain"] not in (imagegen.SHEET_FLAG, imagegen.SHEET_NEW)
+    assert out["skip"] not in (imagegen.SHEET_FLAG, imagegen.SHEET_NEW)  # dimmed, no warning border

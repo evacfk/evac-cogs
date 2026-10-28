@@ -87,6 +87,10 @@ SERIES_SEARCH_RESULTS = 5
 SERIES_VIEW_TIMEOUT_SECONDS = 600
 
 # `.card importpool <count> [gender]`
+ART_MIN_SIDE = 150  # AniList art with a shorter side than this is flagged as probably too small
+ART_MAX_UPLOAD_BYTES = 8 * 1024 * 1024  # largest replacement image an admin can upload
+ART_UPLOAD_WAIT_SECONDS = 90  # how long the bot waits for each uploaded image
+SHEET_COLUMNS = 5
 IMPORT_GENDERS = ("any", "female", "male")
 
 # hour-of-day activity tracking, mirrors minigamehub's diagnostics shape
@@ -101,4 +105,4 @@ GALLERY_PAGE_SIZE = GALLERY_COLUMNS * GALLERY_ROWS_PER_PAGE
 GALLERY_VIEW_TIMEOUT_SECONDS = 180  # a stale pager after this just stops responding
 
 # bumped on every deploy so `.card version` can confirm the new build is live
-COG_VERSION = "1.7.0"
+COG_VERSION = "1.7.1"

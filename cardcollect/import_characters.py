@@ -19,9 +19,13 @@ than silently assumed to work.
 """
 
 import asyncio
-from typing import Any, Dict, List, Optional, Tuple
+import io
+import re
+from typing import Any, Dict, Iterable, List, Optional, Tuple
 
-from .constants import DEFAULT_DROP_WEIGHTS, SERIES_IMPORT_MAX, SERIES_SEARCH_RESULTS, TIERS
+from PIL import Image
+
+from .constants import ART_MIN_SIDE, DEFAULT_DROP_WEIGHTS, SERIES_IMPORT_MAX, SERIES_SEARCH_RESULTS, TIERS
 from .engine import fold_text
 
 # AniList's public API rate-limits fairly aggressively (it's been running in
@@ -545,13 +549,20 @@ def build_series_entries(
     return {"entries": entries, "links": links, "skipped": skipped}
 
 
-def select_top(built: Dict[str, list], limit: int, overrides: Optional[Dict[int, str]] = None) -> Dict[str, list]:
+def select_top(
+    built: Dict[str, list],
+    limit: int,
+    overrides: Optional[Dict[int, str]] = None,
+    skip: Optional[Iterable[int]] = None,
+) -> Dict[str, list]:
     """The slice of build_series_entries' result an import of the top `limit`
-    characters would act on, with any rarity overrides (rank -> tier) applied."""
+    characters would act on, with any rarity overrides (rank -> tier) applied
+    and any ranks in `skip` (characters the admin left out) removed."""
     overrides = overrides or {}
+    skip = set(skip or ())
     entries = []
     for entry in built["entries"]:
-        if entry["rank"] < limit:
+        if entry["rank"] < limit and entry["rank"] not in skip:
             entry = dict(entry)
             entry["rarity"] = overrides.get(entry["rank"], entry["rarity"])
             entries.append(entry)
@@ -598,3 +609,84 @@ def parse_rarity_overrides(text: str, entries: List[dict]) -> Tuple[Dict[int, st
         else:
             overrides[matches[0]["rank"]] = tier
     return overrides, problems
+
+
+def entry_numbers(built: Dict[str, list]) -> Dict[int, int]:
+    """rank -> the 1-based number an admin sees next to each new character in
+    the preview (its position among the NEW characters, most-favourited first)."""
+    return {e["rank"]: i + 1 for i, e in enumerate(built["entries"])}
+
+
+def resolve_entry(text: str, entries: List[dict]) -> Tuple[Optional[dict], Optional[str]]:
+    """Find one new character from what the admin typed: its preview number, an
+    exact name, or a unique part of a name. Returns (entry, None) or
+    (None, problem)."""
+    wanted = (text or "").strip().lstrip("#").strip()
+    if not wanted:
+        return None, "Name or number missing."
+    if wanted.isdigit():
+        n = int(wanted)
+        if 1 <= n <= len(entries):
+            return entries[n - 1], None
+        return None, f"There is no number {n} (the new characters are 1 to {len(entries)})."
+    folded = fold_text(wanted)
+    exact = [e for e in entries if fold_text(e["name"]) == folded]
+    matches = exact or [e for e in entries if folded in fold_text(e["name"])]
+    if not matches:
+        return None, f"No new character matches \"{wanted}\"."
+    if len(matches) > 1 and not exact:
+        names = ", ".join(m["name"] for m in matches[:4])
+        return None, f"\"{wanted}\" matches several ({names}); use its number."
+    return matches[0], None
+
+
+_SKIP_LINE = re.compile(r"^\s*(un)?skip\b[\s:,-]*(.*)$", re.IGNORECASE)
+
+
+def parse_adjustments(text: str, entries: List[dict]) -> Dict[str, object]:
+    """Read everything the Adjust pop-up can say: rarity lines ("Name: epic"),
+    `skip 3, 7` / `skip Name` to leave characters out, and `unskip 3` to put
+    them back. Returns {"overrides": {rank: tier}, "skip": set, "unskip": set,
+    "problems": [str]}. A line that can't be applied is reported, never guessed at."""
+    rarity_lines: List[str] = []
+    skip: set = set()
+    unskip: set = set()
+    problems: List[str] = []
+    for raw in (text or "").splitlines():
+        line = raw.strip()
+        match = _SKIP_LINE.match(line)
+        if match and match.group(2) and line.rsplit(None, 1)[-1].strip(":=").lower() not in TIERS:
+            target = unskip if match.group(1) else skip
+            for part in match.group(2).split(","):
+                if not part.strip():
+                    continue
+                entry, problem = resolve_entry(part, entries)
+                if entry is None:
+                    problems.append(problem)
+                else:
+                    target.add(entry["rank"])
+        else:
+            rarity_lines.append(raw)
+    overrides, rarity_problems = parse_rarity_overrides("\n".join(rarity_lines), entries)
+    return {"overrides": overrides, "skip": skip, "unskip": unskip, "problems": problems + rarity_problems}
+
+
+def art_flags(entry: dict, image_bytes: Optional[bytes]) -> Optional[str]:
+    """Why a character's AniList art probably isn't worth using, or None if it
+    looks fine: AniList's "no image" placeholder, a tiny or very wide picture,
+    or a download that isn't an image at all."""
+    name = str(entry.get("image_url") or "").rsplit("/", 1)[-1].lower()
+    if name.startswith("default"):
+        return "AniList placeholder"
+    if image_bytes is None:
+        return "download failed"
+    try:
+        with Image.open(io.BytesIO(image_bytes)) as img:
+            width, height = img.size
+    except Exception:
+        return "not an image"
+    if min(width, height) < ART_MIN_SIDE:
+        return f"small ({width}x{height})"
+    if width > height * 1.1:
+        return f"wide ({width}x{height})"
+    return None

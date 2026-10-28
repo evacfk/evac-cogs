@@ -103,8 +103,10 @@ class FakeChannel:
     def mention(self):
         return f"<#{self.id}>"
 
-    async def send(self, content=None, embed=None, file=None, view=None, **kwargs):
+    async def send(self, content=None, embed=None, file=None, view=None, files=None, **kwargs):
         msg = FakeMessage(self._next_id, self, content=content, embed=embed, file=file, view=view)
+        if files:
+            msg.files.extend(files)
         self._messages[msg.id] = msg
         self._next_id += 1
         self.sent.append(msg)
@@ -2113,9 +2115,9 @@ async def test_failed_flush_keeps_counts_for_retry(cog):
     assert sum(tracking["hourly_buckets"].values()) == 4
 
 
-def test_version_is_1_7_0():
+def test_version_is_1_7_1():
     from cardcollect.constants import COG_VERSION
-    assert COG_VERSION == "1.7.0"
+    assert COG_VERSION == "1.7.1"
 
 
 # --- search / show commands ---------------------------------------------------
@@ -2576,10 +2578,12 @@ class FakeAniList:
     """post() replays JSON payloads in order (the last repeats); get() serves
     card art, failing for chosen URLs the way a flaky image host would."""
 
-    def __init__(self, posts=(), fail_urls=(), post_error=None):
+    def __init__(self, posts=(), fail_urls=(), post_error=None, small_urls=()):
         self._posts = list(posts)
         self.post_calls = 0
         self.fail_urls = set(fail_urls)
+        self.small_urls = set(small_urls)
+        self.get_calls = []
         self.post_error = post_error
 
     def post(self, url, json=None):
@@ -2590,8 +2594,13 @@ class FakeAniList:
         return _AniListResp(payload)
 
     def get(self, url):
+        self.get_calls.append(url)
         if url in self.fail_urls:
             return _AniListResp(error=aiohttp.ClientError("image host down"))
+        if url in self.small_urls:
+            buf = io.BytesIO()
+            Image.new("RGB", (90, 120), (9, 9, 9)).save(buf, format="PNG")
+            return _AniListResp(image=buf.getvalue())
         return _AniListResp(image=fake_art_bytes())
 
 
@@ -2966,7 +2975,7 @@ async def test_importseries_rarity_edits_change_what_gets_imported(cog):
     submit = AdminInteraction(admin, guild, msg)
     await modal.on_submit(submit)
     assert view.preview.overrides == {8: "legendary"}
-    assert "Rarity edits pending" in {f.name for f in submit.edits[-1]["embed"].fields}
+    assert "Your edits" in {f.name for f in submit.edits[-1]["embed"].fields}
     assert "No new character matches" in submit.followups[-1][0]  # the bad line is reported, not guessed at
 
     await view.import_top.callback(AdminInteraction(admin, guild, msg))
@@ -3059,3 +3068,208 @@ async def test_apply_card_rarity_rejects_a_bad_tier_and_a_missing_card(cog):
         await cog.apply_card_rarity(guild, card_id, "shiny")
     with pytest.raises(KeyError):
         await cog.apply_card_rarity(guild, 999, "epic")
+
+
+# ===========================================================================
+# 1.7.1: contact sheet, skip, art upload, poor-art flags, Replace art on info
+# ===========================================================================
+
+import asyncio  # noqa: E402
+
+
+class FakeUpload:
+    """An admin's message carrying an image (or not) in reply to the bot's prompt."""
+
+    def __init__(self, author, channel, content="", data=None):
+        self.author = author
+        self.channel = channel
+        self.content = content
+        self.attachments = [FakeAttachment(data)] if data is not None else []
+        self.deleted = False
+
+    async def delete(self):
+        self.deleted = True
+
+
+def _queue_uploads(cog, *messages):
+    queue = list(messages)
+
+    async def wait_for(event, check=None, timeout=None):
+        assert event == "message"
+        while queue:
+            message = queue.pop(0)
+            if check is None or check(message):
+                return message
+        raise asyncio.TimeoutError
+
+    cog.bot.wait_for = wait_for
+
+
+def _inter(admin, guild, channel, msg):
+    inter = AdminInteraction(admin, guild, msg)
+    inter.channel = channel
+    return inter
+
+
+@pytest.mark.asyncio
+async def test_series_preview_shows_a_numbered_contact_sheet_without_writing(cog):
+    guild = FakeGuild(100)
+    admin = _admin(1000, guild)
+    chan = FakeChannel(10000, guild)
+    ctx, msg = await _open_series_preview(cog, guild, admin, chan, _seventeen_characters())
+    assert [f.filename for f in msg.files] == ["contact_sheet.png"]
+    assert msg.embeds[0].image.url == "attachment://contact_sheet.png"
+    lines = {f.name: f.value for f in msg.embeds[0].fields}["New characters"].splitlines()
+    assert lines[0].startswith("`1`") and "Char00" in lines[0]
+    assert len(cog._session.get_calls) == 15  # one download per card in the grid, none for the other two
+    assert await cog.config.guild(guild).pool() == {}
+
+
+@pytest.mark.asyncio
+async def test_poor_anilist_art_is_flagged_in_the_preview(cog):
+    guild = FakeGuild(101)
+    admin = _admin(1010, guild)
+    chars = _seventeen_characters()
+    chars[2]["image"] = {"large": "https://s4.anilist.co/file/anilistcdn/character/large/default.jpg"}
+    cog._session = FakeAniList(
+        [_search_payload(_media(1, "Sousou no Frieren")), _series_payload(chars)], small_urls={"https://art.invalid/101.png"}
+    )
+    ctx = FakeCtx(admin, guild, FakeChannel(10100, guild))
+    await cog.card.commands["importseries"].callback(cog, ctx, series="frieren")
+    text = {f.name: f.value for f in ctx.sent[-1].embeds[0].fields}["New characters"]
+    assert "⚠ small (90x120)" in text.splitlines()[1]
+    assert "⚠ AniList placeholder" in text.splitlines()[2]
+    assert "⚠" not in text.splitlines()[0]
+
+
+@pytest.mark.asyncio
+async def test_import_reuses_the_art_it_already_downloaded(cog):
+    guild = FakeGuild(102)
+    admin = _admin(1020, guild)
+    ctx, msg = await _open_series_preview(cog, guild, admin, FakeChannel(10200, guild), _seventeen_characters())
+    before = len(cog._session.get_calls)
+    await msg.view.import_top.callback(_inter(admin, guild, ctx.channel, msg))
+    assert len(cog._session.get_calls) == before  # nothing fetched twice
+    assert len(await cog.config.guild(guild).pool()) == 15
+    # "import all" needs only the 2 it never showed
+    ctx2, msg2 = await _open_series_preview(cog, guild, admin, FakeChannel(10201, guild), _seventeen_characters(), "x")
+    before = len(cog._session.get_calls)
+    await msg2.view.import_all.callback(_inter(admin, guild, ctx2.channel, msg2))
+    assert len(cog._session.get_calls) - before == 2
+    assert len(await cog.config.guild(guild).pool()) == 17
+
+
+@pytest.mark.asyncio
+async def test_adjust_can_skip_and_unskip_characters_by_number_or_name(cog):
+    guild = FakeGuild(103)
+    admin = _admin(1030, guild)
+    chan = FakeChannel(10300, guild)
+    ctx, msg = await _open_series_preview(cog, guild, admin, chan, _seventeen_characters())
+    view = msg.view
+    inter = _inter(admin, guild, chan, msg)
+    await view.adjust.callback(inter)
+    modal = inter.modal
+    modal.changes._value = "skip 2, Char04\nskip 99"
+    submit = _inter(admin, guild, chan, msg)
+    await modal.on_submit(submit)
+    assert view.preview.skips == {1, 4}
+    assert "no number 99" in submit.followups[-1][0]
+    text = {f.name: f.value for f in submit.edits[-1]["embed"].fields}["New characters"]
+    assert "~~Char01~~ skipped" in text
+    assert "**13** new" in {f.name: f.value for f in submit.edits[-1]["embed"].fields}["Top 15"]
+
+    await view.import_top.callback(_inter(admin, guild, chan, msg))
+    names = {e["name"] for e in (await cog.config.guild(guild).pool()).values()}
+    assert "Char01" not in names and "Char04" not in names and len(names) == 13
+
+    guild2 = FakeGuild(1031)  # a fresh pool, so the numbers start from the top again
+    ctx2, msg2 = await _open_series_preview(cog, guild2, admin, FakeChannel(10301, guild2), _seventeen_characters(), "y")
+    modal2 = (await _press(msg2.view.adjust, admin, guild2, msg2)).modal
+    modal2.changes._value = "skip 1, 2\nunskip 2"
+    await modal2.on_submit(_inter(admin, guild2, chan, msg2))
+    assert msg2.view.preview.skips == {0}
+
+
+@pytest.mark.asyncio
+async def test_replace_art_by_upload_is_used_for_the_import(cog):
+    guild = FakeGuild(104)
+    admin = _admin(1040, guild)
+    chan = FakeChannel(10400, guild)
+    ctx, msg = await _open_series_preview(cog, guild, admin, chan, _seventeen_characters())
+    mine = fake_art_bytes((1, 2, 3))
+    good = FakeUpload(admin, chan, "3", mine)
+    _queue_uploads(
+        cog,
+        FakeUpload(FakeMember(5, guild), chan, "4", fake_art_bytes()),  # someone else: ignored
+        good,
+        FakeUpload(admin, chan, "4", b"this is not an image"),
+        FakeUpload(admin, chan, "", fake_art_bytes()),  # no number
+        FakeUpload(admin, chan, "Nobody", fake_art_bytes()),
+        FakeUpload(admin, chan, "done"),
+    )
+    inter = _inter(admin, guild, chan, msg)
+    await msg.view.replace_art.callback(inter)
+
+    assert msg.view.preview.art == {2: mine}
+    assert good.deleted  # the upload is cleaned out of the channel
+    said = [c[0] for c in inter.followups]
+    assert any("Char02" in s and "#3" in s and "replaced" in s for s in said)
+    assert any("isn't an image" in s for s in said)
+    assert any("Name or number missing" in s for s in said)
+    assert any('No new character matches "Nobody"' in s for s in said)
+    assert msg.view._listening is False
+
+    await msg.view.import_top.callback(_inter(admin, guild, chan, msg))
+    pool = await cog.config.guild(guild).pool()
+    id_of = {e["name"]: int(k) for k, e in pool.items()}
+    assert storage.read_card_image(cog.data_path, guild.id, id_of["Char02"]) == mine
+    assert storage.read_card_image(cog.data_path, guild.id, id_of["Char03"]) == fake_art_bytes()
+
+
+@pytest.mark.asyncio
+async def test_replace_art_stops_quietly_when_nothing_is_sent(cog):
+    guild = FakeGuild(105)
+    admin = _admin(1050, guild)
+    chan = FakeChannel(10500, guild)
+    ctx, msg = await _open_series_preview(cog, guild, admin, chan, _seventeen_characters())
+    _queue_uploads(cog)
+    inter = _inter(admin, guild, chan, msg)
+    await msg.view.replace_art.callback(inter)
+    assert msg.view.preview.art == {} and msg.view._listening is False
+
+
+@pytest.mark.asyncio
+async def test_card_info_replace_art_swaps_only_the_picture(cog):
+    guild = FakeGuild(106)
+    chan = FakeChannel(10600, guild)
+    card_id = await _seed_one_card(cog, guild, "rare")
+    admin = _admin(1060, guild)
+    ctx = FakeCtx(admin, guild, chan)
+    await cog.card.commands["info"].callback(cog, ctx, card_arg=str(card_id))
+    msg = ctx.sent[-1]
+    view = msg.view
+    mine = fake_art_bytes((7, 7, 7))
+    _queue_uploads(cog, FakeUpload(admin, chan, "", b"junk"))
+    inter = _inter(admin, guild, chan, msg)
+    await view.replace_art.callback(inter)
+    assert storage.read_card_image(cog.data_path, guild.id, card_id) == fake_art_bytes()  # junk rejected
+    assert "isn't an image" in inter.followups[-1][0]
+
+    _queue_uploads(cog, FakeUpload(admin, chan, "", mine))
+    inter = _inter(admin, guild, chan, msg)
+    await view.replace_art.callback(inter)
+    assert storage.read_card_image(cog.data_path, guild.id, card_id) == mine
+    pool = await cog.config.guild(guild).pool()
+    assert pool[str(card_id)]["name"] == "Rem" and pool[str(card_id)]["rarity"] == "rare"
+    assert "New art saved" in inter.followups[-1][0]
+    assert view._listening is False
+
+
+@pytest.mark.asyncio
+async def test_replace_card_art_rejects_a_missing_card_and_a_non_image(cog):
+    guild = FakeGuild(107)
+    card_id = await _seed_one_card(cog, guild)
+    with pytest.raises(KeyError):
+        await cog.replace_card_art(guild, 999, fake_art_bytes())
+    with pytest.raises(ValueError):
+        await cog.replace_card_art(guild, card_id, b"nope")

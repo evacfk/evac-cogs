@@ -417,3 +417,69 @@ def render_single(card: Card, image_bytes: bytes, quantity: int = 1) -> io.Bytes
     tile.convert("RGBA").save(buf, format="PNG")
     buf.seek(0)
     return buf
+
+
+def valid_art(image_bytes: bytes) -> bool:
+    """True if Pillow can fully decode these bytes as an image. Gate for any
+    art an admin uploads: a file that isn't really an image would otherwise be
+    saved and then break every drop and gallery that tries to draw the card."""
+    try:
+        with Image.open(io.BytesIO(image_bytes)) as img:
+            img.load()
+        return True
+    except Exception:
+        return False
+
+
+SHEET_TILE = (150, 210)
+SHEET_CAPTION_HEIGHT = 20
+SHEET_GAP = 10
+SHEET_BG = (32, 34, 37)
+SHEET_FLAG = (231, 76, 60)
+SHEET_NEW = (46, 204, 113)
+
+
+def render_contact_sheet(tiles: Sequence[dict], columns: int = 5) -> io.BytesIO:
+    """A numbered grid of candidate card art, cropped exactly the way the real
+    card will crop it, so an admin can spot bad images before importing. Each
+    tile is {"number", "name", "image" (bytes or None), "flag" (str or None),
+    "skipped" (bool), "replaced" (bool)}. Flagged art gets a red border, art
+    the admin uploaded a green one, skipped characters are dimmed with an X."""
+    tw, th = SHEET_TILE
+    cell_h = th + SHEET_CAPTION_HEIGHT
+    rows = max(1, -(-len(tiles) // columns))
+    width = columns * tw + (columns + 1) * SHEET_GAP
+    height = rows * cell_h + (rows + 1) * SHEET_GAP
+    sheet = Image.new("RGBA", (width, height), SHEET_BG)
+    draw = ImageDraw.Draw(sheet)
+    label_font = _font(14, bold=True)
+    caption_font = _font(12)
+    for i, tile in enumerate(tiles):
+        x = SHEET_GAP + (i % columns) * (tw + SHEET_GAP)
+        y = SHEET_GAP + (i // columns) * (cell_h + SHEET_GAP)
+        art = None
+        if tile.get("image"):
+            try:
+                art = _load_card_art(tile["image"], SHEET_TILE)
+            except Exception:
+                art = None
+        if art is None:
+            art = Image.new("RGBA", SHEET_TILE, (60, 63, 68, 255))
+            ImageDraw.Draw(art).text((tw // 2, th // 2), "no image", fill=TEXT_WHITE, font=caption_font, anchor="mm")
+        if tile.get("skipped"):
+            art = Image.blend(art, Image.new("RGBA", SHEET_TILE, (0, 0, 0, 255)), 0.7)
+            ImageDraw.Draw(art).text((tw // 2, th // 2), "X", fill=TEXT_WHITE, font=_font(64, bold=True), anchor="mm")
+        sheet.alpha_composite(art, (x, y))
+        border = SHEET_NEW if tile.get("replaced") else SHEET_FLAG if tile.get("flag") else None
+        if border is not None and not tile.get("skipped"):
+            draw.rectangle((x, y, x + tw - 1, y + th - 1), outline=border, width=4)
+        draw.rectangle((x, y, x + 30, y + 24), fill=(0, 0, 0))
+        draw.text((x + 15, y + 12), str(tile["number"]), fill=TEXT_WHITE, font=label_font, anchor="mm")
+        name = str(tile.get("name", ""))
+        while name and draw.textlength(name, font=caption_font) > tw and len(name) > 1:
+            name = name[:-2].rstrip() + "…"
+        draw.text((x, y + th + 3), name, fill=TEXT_WHITE, font=caption_font)
+    out = io.BytesIO()
+    sheet.convert("RGB").save(out, format="PNG")
+    out.seek(0)
+    return out
