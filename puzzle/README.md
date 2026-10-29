@@ -77,6 +77,14 @@ Everything is under `[p]puzzle`. "Admin" means admin or Manage Server.
   playable ones with IDs, piece counts and which one is active, with a labeled
   thumbnail grid. Won and retired images are hidden; `all` includes them. Not
   available to regular members because the preview reveals upcoming puzzles.
+- `[p]puzzle next [id|clear]` (admin) — line up which images play next instead of
+  a random pick. `next 12` adds #12 to the end of the queue; run it again to
+  queue more (up to 10, in order). Each time a puzzle starts (after a win or
+  skip, `start`, or a paused game resuming) the front of the queue is used;
+  when it's empty, random rotation carries on. `next` alone shows the queue,
+  `next clear` empties it. Queued images that were deleted or retired are
+  skipped. To switch to the queue right now, the bot owner runs `[p]puzzle skip`.
+  A queued image retires like any other once someone wins it.
 - `[p]puzzle migratepool` (admin) — one-time cleanup for images added by an
   older version of the cog (converts the old grid format, backfills
   duplicate-detection hashes). Safe to run any time; it only touches entries

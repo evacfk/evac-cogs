@@ -21,6 +21,7 @@ from .settings_panel import PanelError, open_panel
 MIN_PIECE_COUNT = 2
 MAX_PIECE_COUNT = 25
 DEFAULT_PIECE_COUNT = 9  # used when no per-server default and no per-image size is set
+MAX_NEXT_QUEUE = 10  # most images that can be queued with `[p]puzzle next`
 DEFAULT_LOW_POOL_THRESHOLD = 2  # warn admins when this many unplayed images (or fewer) remain
 DEFAULT_WIN_PAYOUT = 20000  # economy credits paid to each winner of a puzzle
 
@@ -57,7 +58,7 @@ class Puzzle(commands.Cog):
     per person across every round.
     """
 
-    __version__ = "1.7.1"
+    __version__ = "1.8.0"
 
     def __init__(self, bot: Red):
         self.bot = bot
@@ -76,6 +77,9 @@ class Puzzle(commands.Cog):
             "next_id": 1,
             "used_ids": [],
             "last_image_id": None,  # never picked twice in a row, pool size permitting
+            # image IDs an admin queued with `[p]puzzle next`, in order; the picker
+            # takes from the front (skipping any that are gone or retired)
+            "next_queue": [],
             "winners_count": 1,
             "active": None,
             # default piece count for images added WITHOUT an explicit size.
@@ -522,10 +526,21 @@ class Puzzle(commands.Cog):
         except Exception:
             log.exception("Failed to update the live puzzle status message in guild %s", guild.id)
 
-    async def _pick_next_image_id(self, guild: discord.Guild) -> Optional[int]:
+    async def _pick_next_image_id(self, guild: discord.Guild, use_pin: bool = True) -> Optional[int]:
         pool = await self.config.guild(guild).pool()
         if not pool:
             return None
+        if use_pin:
+            chosen = None
+            async with self.config.guild(guild).next_queue() as queue:
+                chosen, remaining = self._pop_queued(queue, pool)
+                queue[:] = remaining
+            if chosen is not None:
+                async with self.config.guild(guild).used_ids() as used_list:
+                    if chosen not in used_list:
+                        used_list.append(chosen)
+                await self.config.guild(guild).last_image_id.set(chosen)
+                return chosen
         # images that have already been won are retired permanently and are
         # never eligible again, regardless of the used/cycle bookkeeping below
         eligible_ids = {int(i) for i, meta in pool.items() if not meta.get("retired")}
@@ -600,6 +615,19 @@ class Puzzle(commands.Cog):
         currency = await bank.get_currency_name(guild)
         who = "Each winner" if paid > 1 else "The winner"
         return f"\N{MONEY BAG} {who} earned {amount:,} {currency}."
+
+    @staticmethod
+    def _pop_queued(queue: list, pool: dict) -> tuple:
+        """Take the first still-playable image off the front of the queue.
+        Entries that were deleted or retired since queuing are dropped.
+        Returns (chosen id or None, remaining queue)."""
+        remaining = list(queue)
+        while remaining:
+            candidate = remaining.pop(0)
+            meta = pool.get(str(candidate))
+            if meta is not None and not meta.get("retired"):
+                return candidate, remaining
+        return None, remaining
 
     @staticmethod
     def _split_pool(pool: dict) -> tuple:
@@ -1577,6 +1605,76 @@ class Puzzle(commands.Cog):
         if resumed is not None:
             await ctx.send(f"The game had paused with an empty pool, so I started it again with image #{resumed}.")
 
+    @puzzle.command(name="next")
+    @checks.admin_or_permissions(manage_guild=True)
+    async def puzzle_next(self, ctx: commands.Context, image_id: Optional[str] = None):
+        """Choose which images the puzzle uses next, in order, instead of random.
+
+        `[p]puzzle next 12` adds image #12 to the end of the queue. Run it
+        again to line up more (up to 10). Each time a puzzle starts, the front
+        of the queue is used; when the queue is empty, random rotation carries
+        on. That covers a puzzle being won or skipped, `[p]puzzle start`, and
+        a paused game resuming.
+        `[p]puzzle next` shows the queue; `[p]puzzle next clear` empties it.
+        To switch to the front of the queue right now, the bot owner can run
+        `[p]puzzle skip` (that discards the current puzzle's progress)."""
+        conf = self.config.guild(ctx.guild)
+        pool = await conf.pool()
+        queue = list(await conf.next_queue())
+
+        if image_id is None:
+            live = [i for i in queue if pool.get(str(i)) is not None and not pool[str(i)].get("retired")]
+            if not live:
+                await ctx.send("The queue is empty. The next puzzle will be a random one.")
+                return
+            lines = ["**Up next** (in order):"]
+            for pos, iid in enumerate(live, 1):
+                lines.append(f"{pos}. #{iid} ({pool[str(iid)]['filename']})")
+            if len(live) != len(queue):
+                lines.append(f"({len(queue) - len(live)} queued image(s) are no longer playable and will be skipped.)")
+            await ctx.send("\n".join(lines))
+            return
+
+        if image_id.lower() == "clear":
+            await conf.next_queue.set([])
+            await ctx.send("Queue cleared. The next puzzle will be a random one.")
+            return
+
+        try:
+            wanted = int(image_id.lstrip("#"))
+        except ValueError:
+            await ctx.send("Give an image ID (see `[p]puzzle images`) or `clear`.")
+            return
+        meta = pool.get(str(wanted))
+        if meta is None:
+            await ctx.send(f"No image with ID {wanted} in the pool.")
+            return
+        if meta.get("retired"):
+            await ctx.send(f"Image #{wanted} is retired. Bring it back with `[p]puzzle unretire {wanted}` first.")
+            return
+        if wanted in queue:
+            await ctx.send(f"Image #{wanted} is already in the queue (position {queue.index(wanted) + 1}).")
+            return
+        active = await self._get_active(ctx.guild)
+        if active is not None and active["image_id"] == wanted:
+            await ctx.send(f"Image #{wanted} is the puzzle running right now.")
+            return
+        if len(queue) >= MAX_NEXT_QUEUE:
+            await ctx.send(f"The queue is full ({MAX_NEXT_QUEUE}). Use `[p]puzzle next clear` to start over.")
+            return
+
+        queue.append(wanted)
+        await conf.next_queue.set(queue)
+        if active is not None:
+            when = (
+                f"after the current puzzle (#{active['image_id']}) finishes"
+                if len(queue) == 1
+                else f"after {len(queue) - 1} other queued puzzle(s)"
+            )
+        else:
+            when = "when the puzzle next starts" if len(queue) == 1 else f"after {len(queue) - 1} other queued puzzle(s)"
+        await ctx.send(f"Queued image #{wanted} as #{len(queue)} in line: it plays {when}.")
+
     @puzzle.command(name="images")
     @checks.mod_or_permissions(manage_guild=True)
     async def puzzle_images(self, ctx: commands.Context, which: Optional[str] = None):
@@ -1853,7 +1951,7 @@ class Puzzle(commands.Cog):
 
         active = await self._get_active(ctx.guild)
         if active is None:
-            image_id = await self._pick_next_image_id(ctx.guild)
+            image_id = await self._pick_next_image_id(ctx.guild, use_pin=False)
             if image_id is None:
                 self._test_tasks.pop(ctx.guild.id, None)
                 await ctx.send("The image pool is empty. Add some with `[p]puzzle addimage` first.")

@@ -1,12 +1,12 @@
 """The `.puzzle` control panel: every setting that used to be a `set*` / `livestatus` command.
 
 Specs only; every change goes through the cog's `_apply_*` methods. Pool management (`addimage`,
-`images`, `retire`, ...) and the round controls (`start`, `stop`, `skip`) stay commands.
+`images`, `next`, `retire`, ...) and the round controls (`start`, `stop`, `skip`) stay commands.
 """
 from .settings_panel import Field, Spec
 
 INTRO = ("Pick a section, then a setting. Changes save as soon as you choose. Pool and round controls "
-         "(`addimage`, `images`, `retire`, `start`, `stop`) stay as commands; `.puzzle settings` prints a summary.")
+         "(`addimage`, `images`, `next`, `retire`, `start`, `stop`) stay as commands; `.puzzle settings` prints a summary.")
 
 
 def _conf(key):

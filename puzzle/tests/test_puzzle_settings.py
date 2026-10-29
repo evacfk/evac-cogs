@@ -159,7 +159,7 @@ async def test_removed_setter_commands_are_gone():
     for gone in ("setpieces", "setsharedmode", "setsharedwindow", "setannouncechannel", "livestatus", "setchannel",
                  "setinterval", "setrole", "setemoji", "setwinners", "setlowpool", "setpayout", "setalertchannel"):
         assert gone not in names
-    for kept in ("version", "addimage", "settings", "start", "stop", "images", "status", "leaderboard"):
+    for kept in ("version", "addimage", "settings", "start", "stop", "images", "next", "status", "leaderboard"):
         assert kept in names
 
 
