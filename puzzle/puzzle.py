@@ -57,7 +57,7 @@ class Puzzle(commands.Cog):
     per person across every round.
     """
 
-    __version__ = "1.7.0"
+    __version__ = "1.7.1"
 
     def __init__(self, bot: Red):
         self.bot = bot
@@ -377,6 +377,8 @@ class Puzzle(commands.Cog):
             label = f"#{image_id} {piece_count}pc"
             if active_id is not None and image_id == active_id:
                 label += " (active)"
+            if meta.get("retired"):
+                label += " (retired)"
             draw.text((x, y + thumb + 3), label, fill=(230, 230, 230, 255))
 
         buf = io.BytesIO()
@@ -598,6 +600,13 @@ class Puzzle(commands.Cog):
         currency = await bank.get_currency_name(guild)
         who = "Each winner" if paid > 1 else "The winner"
         return f"\N{MONEY BAG} {who} earned {amount:,} {currency}."
+
+    @staticmethod
+    def _split_pool(pool: dict) -> tuple:
+        """(playable entries, retired count). Playable means not retired, which
+        is the same test `_eligible_count` and the picker use."""
+        playable = {iid: meta for iid, meta in pool.items() if not meta.get("retired")}
+        return playable, len(pool) - len(playable)
 
     async def _eligible_count(self, guild: discord.Guild) -> int:
         pool = await self.config.guild(guild).pool()
@@ -1570,12 +1579,18 @@ class Puzzle(commands.Cog):
 
     @puzzle.command(name="images")
     @checks.mod_or_permissions(manage_guild=True)
-    async def puzzle_images(self, ctx: commands.Context):
-        """List the images currently in the pool (mods and admins only: the
-        preview shows upcoming puzzles)."""
+    async def puzzle_images(self, ctx: commands.Context, which: Optional[str] = None):
+        """List the images still in play (mods and admins only: the preview
+        shows upcoming puzzles). Won and retired images are hidden; add `all`
+        to include them. The first line always gives the playable count."""
         pool = await self.config.guild(ctx.guild).pool()
         if not pool:
             await ctx.send("The image pool is empty.")
+            return
+
+        show_all = which is not None and which.lower() == "all"
+        if which is not None and not show_all:
+            await ctx.send(f"Unknown option `{which}`. Use `{ctx.clean_prefix}puzzle images` or `{ctx.clean_prefix}puzzle images all`.")
             return
 
         if any("piece_rows" not in meta for meta in pool.values()):
@@ -1588,19 +1603,36 @@ class Puzzle(commands.Cog):
         active = await self._get_active(ctx.guild)
         active_id = active["image_id"] if active else None
 
-        lines = []
-        for image_id, meta in sorted(pool.items(), key=lambda kv: int(kv[0])):
+        playable, retired_ct = self._split_pool(pool)
+        total = len(pool)
+        header = f"**{len(playable)} playable** image(s) in the pool ({retired_ct} retired, {total} total)."
+
+        shown = pool if show_all else playable
+        if not shown:
+            await ctx.send(
+                f"{header}\nNothing is left to play. Add more with `{ctx.clean_prefix}puzzle addimage`, "
+                f"or see the retired ones with `{ctx.clean_prefix}puzzle images all`."
+            )
+            return
+
+        lines = [header]
+        for image_id, meta in sorted(shown.items(), key=lambda kv: int(kv[0])):
             marker = " (active)" if active is not None and int(image_id) == active_id else ""
             if meta.get("retired"):
                 marker += " (retired)"
             piece_count = sum(meta["piece_rows"])
             lines.append(f"#{image_id}: {piece_count} pieces ({meta['filename']}){marker}")
+        if not show_all and retired_ct:
+            lines.append(f"Add `all` to also list the {retired_ct} retired image(s).")
 
-        buf = await asyncio.to_thread(self._build_pool_preview_image, ctx.guild.id, pool, active_id)
+        buf = await asyncio.to_thread(self._build_pool_preview_image, ctx.guild.id, shown, active_id)
+        content = "\n".join(lines)
+        if len(content) > 1900:
+            content = content[:1900].rsplit("\n", 1)[0] + "\n...list truncated; the preview below shows every image shown here."
         if buf is not None:
-            await ctx.send("\n".join(lines), file=discord.File(buf, filename="pool.png"))
+            await ctx.send(content, file=discord.File(buf, filename="pool.png"))
         else:
-            await ctx.send("\n".join(lines))
+            await ctx.send(content)
 
     def _gallery_line(self, guild: discord.Guild, image_id: str, meta: dict) -> str:
         names = []
