@@ -16,7 +16,7 @@ from datetime import date, datetime, timedelta
 from typing import Dict, List, Optional, Sequence, Tuple
 from zoneinfo import ZoneInfo
 
-from .constants import PITY_CAP, PITY_STEP, SET_BONUS_BASE, SET_BONUS_PER_CARD, SET_MIN_CARDS, TIERS
+from .constants import FINISHES, PITY_CAP, PITY_STEP, SET_BONUS_BASE, SET_BONUS_PER_CARD, SET_MIN_CARDS, TIERS
 from .models import ActiveDrop, Card, SellToken
 
 
@@ -409,6 +409,41 @@ def roll_pack(
 
 def is_epic_or_better(rarity: str) -> bool:
     return rarity in TIERS and TIERS.index(rarity) >= TIERS.index("epic")
+
+
+def upgrade_plan(
+    collection: Sequence[int], sell_tokens: Sequence[SellToken], card_id: int, level: int, costs: dict
+) -> dict:
+    """What upgrading a member's copy of `card_id` from finish `level` to the
+    next one takes, and whether they have it. Duplicates are that card's sell
+    tokens first, then the tradeable spare (the member always keeps one copy).
+
+    Returns {"ok", "reason", "level" (the new level), "finish" (its name),
+    "dupes", "coins", "token_ids" (tokens to spend), "spares" (copies to spend),
+    "have" (duplicates on hand)}. Coins aren't checked here -- the bank is."""
+    count = list(collection).count(card_id)
+    plan = {"ok": False, "reason": "", "level": level + 1, "finish": "", "dupes": 0, "coins": 0,
+            "token_ids": [], "spares": 0, "have": 0}
+    if count == 0:
+        plan["reason"] = "You don't own that card."
+        return plan
+    if level + 1 >= len(FINISHES):
+        plan["reason"] = f"It's already {FINISHES[-1].title()}, the top finish."
+        return plan
+    finish = FINISHES[level + 1]
+    cost = costs.get(finish) or {}
+    dupes, coins = max(0, int(cost.get("dupes", 0))), max(0, int(cost.get("coins", 0)))
+    tokens = [t.token_id for t in sell_tokens if t.card_id == card_id]
+    spares = count - 1
+    plan.update(finish=finish, dupes=dupes, coins=coins, have=len(tokens) + spares)
+    if len(tokens) + spares < dupes:
+        plan["reason"] = (f"{finish.title()} needs {dupes} duplicate{'s' if dupes != 1 else ''} of this card "
+                          f"(a sell token or your spare copy); you have {len(tokens) + spares}.")
+        return plan
+    plan["token_ids"] = tokens[:dupes]
+    plan["spares"] = dupes - len(plan["token_ids"])
+    plan["ok"] = True
+    return plan
 
 
 def gallery_sort_key(card: Card) -> Tuple[int, str, int]:

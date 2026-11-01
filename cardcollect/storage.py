@@ -54,3 +54,37 @@ def read_card_image(base_data_path: Path, guild_id: int, card_id: int) -> Option
     if not path.exists():
         return None
     return path.read_bytes()
+
+
+# --- rendered animations --------------------------------------------------------
+#
+# An animated (prismatic) card takes a couple of seconds to render, so each
+# finished GIF is kept on disk and reused. File names start with the card id and
+# a fingerprint of its art; when the art changes, the old renders for that card
+# are cleared out the next time one is saved.
+
+
+def render_cache_dir(base_data_path: Path, guild_id: int) -> Path:
+    path = base_data_path / str(guild_id) / "render_cache"
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def art_fingerprint(image_bytes: bytes) -> str:
+    import hashlib
+
+    return hashlib.sha1(image_bytes).hexdigest()[:12]
+
+
+def read_render_cache(base_data_path: Path, guild_id: int, card_id: int, art_key: str, variant: str) -> Optional[bytes]:
+    path = render_cache_dir(base_data_path, guild_id) / f"{card_id}-{art_key}-{variant}.gif"
+    return path.read_bytes() if path.exists() else None
+
+
+def write_render_cache(base_data_path: Path, guild_id: int, card_id: int, art_key: str, variant: str, data: bytes) -> None:
+    directory = render_cache_dir(base_data_path, guild_id)
+    keep = f"{card_id}-{art_key}-"
+    for old in directory.glob(f"{card_id}-*.gif"):
+        if not old.name.startswith(keep):
+            old.unlink(missing_ok=True)
+    (directory / f"{keep}{variant}.gif").write_bytes(data)

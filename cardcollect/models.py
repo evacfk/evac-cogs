@@ -110,6 +110,10 @@ class MemberState:
     sets_claimed: list = field(default_factory=list)  # list[str] of series whose completion bonus was paid
     pack_date: str = ""  # ISO date (Pacific) of the last daily pack opened
     pack_pity: int = 0  # packs opened in a row without an epic or better
+    finishes: dict = field(default_factory=dict)  # card_id -> finish level (1 holo, 2 prismatic) of the copy they keep
+
+    def finish_of(self, card_id: int) -> int:
+        return int(self.finishes.get(card_id, 0)) if card_id in self.collection else 0
 
     def owns(self, card_id: int) -> bool:
         return card_id in self.collection
@@ -127,6 +131,7 @@ class MemberState:
             "sets_claimed": list(self.sets_claimed),
             "pack_date": self.pack_date,
             "pack_pity": self.pack_pity,
+            "finishes": {str(k): int(v) for k, v in self.finishes.items() if v},
         }
 
     @staticmethod
@@ -149,6 +154,7 @@ class MemberState:
             sets_claimed=list(data.get("sets_claimed", [])),
             pack_date=data.get("pack_date", "") or "",
             pack_pity=int(data.get("pack_pity", 0) or 0),
+            finishes={int(k): int(v) for k, v in (data.get("finishes") or {}).items() if v},
         )
 
 

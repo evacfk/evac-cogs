@@ -90,6 +90,11 @@ def settings_embed(guild_config: dict, guild_name: str) -> discord.Embed:
         embed.add_field(name="Daily pack", value=f"{guild_config.get('pack_price', 0):,} wondercoin", inline=True)
     else:
         embed.add_field(name="Daily pack", value="off", inline=True)
+    costs = guild_config.get("upgrade_costs") or {}
+    if costs:
+        lines = [f"{f.title()}: {c.get('dupes', 0)} dupe{'s' if c.get('dupes', 0) != 1 else ''} + {c.get('coins', 0):,}"
+                 for f, c in costs.items()]
+        embed.add_field(name="Upgrades", value="\n".join(lines), inline=True)
 
     test_mode = guild_config.get("test_mode", False)
     embed.add_field(name="Test mode", value="ON — drops award nothing" if test_mode else "off", inline=True)

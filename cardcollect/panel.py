@@ -67,6 +67,19 @@ async def _pack_price_get(cog, guild):
     return {"price": await cog.config.guild(guild).pack_price()}
 
 
+async def _upgrade_costs_get(cog, guild):
+    costs = await cog.config.guild(guild).upgrade_costs()
+    return {f"{finish}_{part}": (costs.get(finish) or {}).get(part, 0)
+            for finish in ("holo", "prismatic") for part in ("dupes", "coins")}
+
+
+def _upgrade_costs_fmt(v, guild):
+    if not v:
+        return "?"
+    return (f"Holo: {v['holo_dupes']} dupe + {v['holo_coins']:,} · "
+            f"Prismatic: {v['prismatic_dupes']} dupes + {v['prismatic_coins']:,}")
+
+
 async def _test_mode_get(cog, guild):
     return await cog.config.guild(guild).test_mode()
 
@@ -94,6 +107,16 @@ def build_specs():
              fields=(Field("price", "Wondercoin per pack (0 = free)", value=lambda v: str(v["price"]), max_length=9),),
              help="Keep it above what a pack's cards sell back for (about 11,000 with the default prices), "
                   "or members can open packs just to sell the duplicates."),
+        Spec("upgrades", "Upgrade costs", "Economy", "modal", get=_upgrade_costs_get,
+             apply=_apply("_apply_upgrade_costs"), fmt=_upgrade_costs_fmt, button="Edit…",
+             fields=(Field("holo_dupes", "Holo: duplicates needed", value=lambda v: str(v["holo_dupes"]), max_length=2),
+                     Field("holo_coins", "Holo: wondercoin", value=lambda v: str(v["holo_coins"]), max_length=9),
+                     Field("prismatic_dupes", "Prismatic: duplicates needed",
+                           value=lambda v: str(v["prismatic_dupes"]), max_length=2),
+                     Field("prismatic_coins", "Prismatic: wondercoin", value=lambda v: str(v["prismatic_coins"]),
+                           max_length=9)),
+             help="What it takes to upgrade a card from `.card find`: duplicates of that card (its sell tokens, "
+                  "then the spare copy) plus wondercoin. Prismatic is the second upgrade, on top of Holo."),
         Spec("requests", "Request channel", "Requests", "channel", get=_request_channel_get,
              apply=_apply("_apply_request_channel"), fmt=lambda v, g: _channel_fmt(v, g) if v else "off", channel_types=("text",),
              clearable=True,

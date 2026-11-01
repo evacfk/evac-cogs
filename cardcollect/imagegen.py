@@ -14,13 +14,16 @@ in this project).
 """
 
 import io
+import math
+import random
 from pathlib import Path
 from typing import Optional, Sequence, Tuple
 
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image, ImageChops, ImageDraw, ImageFilter, ImageFont
 
 from .constants import (
     CARD_IMAGE_SIZE,
+    FINISHES,
     GALLERY_COLUMNS,
     GALLERY_FAVORITE_TILE_SIZE,
     GALLERY_TILE_SIZE,
@@ -51,6 +54,11 @@ NAME_PLATE_HEIGHT = 64
 DROP_PADDING = 24
 TEST_BANNER_HEIGHT = 40
 TEST_BANNER_COLOR = (231, 76, 60)
+
+STILL_PHASE = 0.45  # where the light streak sits on a still (non-animated) card
+ANIMATED_FROM = 2  # finish level from which single-card views animate (prismatic)
+ANIMATION_FRAMES = 16
+ANIMATION_FRAME_MS = 75
 
 
 _font_cache: dict = {}
@@ -147,6 +155,8 @@ def render_card(
     size: Tuple[int, int] = CARD_IMAGE_SIZE,
     quantity: int = 1,
     show_id: bool = False,
+    finish: int = 0,
+    phase: float = STILL_PHASE,
 ) -> Image.Image:
     """Build one card tile: art, rarity-colored border, name plate, and
     (if given) the drop's card `number` in a circle at the top-left, matching the
@@ -164,7 +174,18 @@ def render_card(
     by the name-plate width, e.g. "Isuzu Sento..." for "Isuzu Sento(mi)ya",
     and the gallery previously showed neither the full name nor the ID, so
     there was nothing usable to type). Drop tiles never pass this -- the
-    drop number is the only thing that should identify a card there."""
+    drop number is the only thing that should identify a card there.
+
+    `finish` (0 plain, 1 holo, 2 prismatic; see constants.FINISHES) lays a foil
+    over the art and swaps the border for a rainbow one. `phase` (0-1) is where
+    the light streak is; render_card_frames sweeps it to animate a card."""
+    base = _card_base(card, image_bytes, size)
+    return _decorate(_apply_finish(base, finish, phase), card, number, quantity, show_id, finish)
+
+
+def _card_base(card: Card, image_bytes: bytes, size: Tuple[int, int]) -> Image.Image:
+    """The art inside the rounded rarity-colored border: everything that stays
+    the same in every frame of an animated card."""
     w, h = size
     color = RARITY_COLORS.get(card.rarity, RARITY_COLORS["common"])
 
@@ -184,8 +205,14 @@ def render_card(
         outline=color,
         width=BORDER_WIDTH,
     )
+    return canvas
 
-    _draw_name_plate(canvas, card, color)
+
+def _decorate(canvas: Image.Image, card: Card, number, quantity: int, show_id: bool, finish: int) -> Image.Image:
+    """The name plate and badges, drawn on top of the (finished) art."""
+    w, _h = canvas.size
+    color = RARITY_COLORS.get(card.rarity, RARITY_COLORS["common"])
+    _draw_name_plate(canvas, card, color, tag=finish_name(finish))
 
     if number:
         _draw_number_badge(canvas, number)
@@ -219,6 +246,151 @@ def render_card(
         canvas.alpha_composite(id_badge, (w - badge_w - 10, 10))
 
     return canvas
+
+
+# --- finishes ------------------------------------------------------------------
+#
+# A finish is drawn over a card's existing art, so every card in the pool can
+# have one without new artwork: a translucent rainbow foil, a soft light streak,
+# a rainbow border in place of the rarity color, and (prismatic) sparkles. An
+# animated card is the same art with the streak, foil and sparkles moved a
+# little in each frame.
+
+
+def finish_name(level: int) -> str:
+    """"" for a plain card, else the finish's name ("holo", "prismatic")."""
+    return FINISHES[level] if 0 < level < len(FINISHES) else ""
+
+
+def _rainbow_luts():
+    import colorsys
+
+    rgb = [colorsys.hsv_to_rgb(i / 256, 0.65, 1.0) for i in range(256)]
+    return tuple([int(c[k] * 255) for c in rgb] for k in range(3))
+
+
+_RAINBOW_LUT = _rainbow_luts()
+_hue_fields: dict = {}
+
+
+def _rainbow(size: Tuple[int, int], shift: float, direction: int = 1) -> Image.Image:
+    """Diagonal rainbow bands across `size`; `shift` (0-1) slides the colors."""
+    w, h = size
+    key = (w, h, direction)
+    field = _hue_fields.get(key)
+    if field is None:
+        # built at full size: hues wrap from 255 back to 0, and scaling a smaller
+        # field up would blend across that wrap into a visible seam
+        field = Image.new("L", (w, h))
+        span = (w + h) / 1.6
+        field.putdata([int((((x + y * direction) / span) % 1.0) * 255) for y in range(h) for x in range(w)])
+        if len(_hue_fields) > 32:
+            _hue_fields.clear()
+        _hue_fields[key] = field
+    offset = int(shift * 256)
+    index = field.point(lambda v: (v + offset) % 256)
+    return Image.merge("RGB", [index.point(lut) for lut in _RAINBOW_LUT]).convert("RGBA")
+
+
+def _light_band(size: Tuple[int, int], phase: float, width: float, strength: int) -> Image.Image:
+    """A soft diagonal band of light as an L mask; `phase` 0-1 sweeps it from
+    just off the left edge to just off the right one."""
+    w, h = size
+    band = Image.new("L", (w * 2, h * 2), 0)
+    left = int(-w * 0.6 + phase * w * 2.6)
+    ImageDraw.Draw(band).rectangle([(left, 0), (left + int(width * w), h * 2)], fill=strength)
+    band = band.filter(ImageFilter.GaussianBlur(max(2, w * 0.07))).rotate(25, resample=Image.BICUBIC)
+    x0, y0 = (band.width - w) // 2, (band.height - h) // 2
+    return band.crop((x0, y0, x0 + w, y0 + h))
+
+
+def _sparkles(size: Tuple[int, int], phase: float, seed: int) -> Image.Image:
+    w, h = size
+    layer = Image.new("RGBA", size, (0, 0, 0, 0))
+    draw = ImageDraw.Draw(layer)
+    rnd = random.Random(seed)
+    scale = w / 400
+    for _ in range(14):
+        x = rnd.randint(int(w * 0.08), int(w * 0.92))
+        y = rnd.randint(int(h * 0.06), max(int(h * 0.07), h - NAME_PLATE_HEIGHT - 20))
+        glow = max(0.0, math.sin((phase + rnd.random()) * 2 * math.pi))
+        alpha = int(255 * glow)
+        if alpha < 20:
+            continue
+        arm = (3 + 7 * glow) * scale + 1
+        line = max(1, int(2 * scale))
+        draw.line([(x - arm, y), (x + arm, y)], fill=(255, 255, 255, alpha), width=line)
+        draw.line([(x, y - arm), (x, y + arm)], fill=(255, 255, 255, alpha), width=line)
+    return layer
+
+
+def _apply_finish(base: Image.Image, level: int, phase: float) -> Image.Image:
+    if level <= 0:
+        return base.copy()
+    w, h = base.size
+    prismatic = level >= 2
+    # effects stay on the art: off the rounded corners and the name plate
+    art_mask = _rounded_mask((w, h), CORNER_RADIUS)
+    ImageDraw.Draw(art_mask).rectangle([(0, h - NAME_PLATE_HEIGHT), (w, h)], fill=0)
+
+    card = base.copy()
+    foil = Image.new("L", (w, h), 70 if prismatic else 38)
+    if prismatic:
+        foil = ImageChops.add(foil, _light_band((w, h), phase, 0.4, 110))
+    foil = ImageChops.multiply(foil, art_mask)
+    card = Image.composite(Image.alpha_composite(card, _rainbow((w, h), phase)), card, foil)
+
+    streak = ImageChops.multiply(_light_band((w, h), phase, 0.125, 170 if prismatic else 120), art_mask)
+    card = Image.composite(Image.new("RGBA", (w, h), (255, 255, 255, 255)), card, streak)
+
+    border = Image.new("L", (w, h), 0)
+    ImageDraw.Draw(border).rounded_rectangle(
+        [(BORDER_WIDTH // 2, BORDER_WIDTH // 2), (w - BORDER_WIDTH // 2, h - BORDER_WIDTH // 2)],
+        radius=CORNER_RADIUS, outline=255, width=BORDER_WIDTH + 2,
+    )
+    border = ImageChops.multiply(border, _rounded_mask((w, h), CORNER_RADIUS))
+    card = Image.composite(_rainbow((w, h), phase * 2, direction=-1), card, border)
+
+    if prismatic:
+        card = Image.alpha_composite(card, _sparkles((w, h), phase, seed=w * 31 + h))
+    return card
+
+
+def render_card_frames(
+    card: Card,
+    image_bytes: bytes,
+    size: Tuple[int, int] = CARD_IMAGE_SIZE,
+    quantity: int = 1,
+    show_id: bool = False,
+    finish: int = 2,
+    frames: int = ANIMATION_FRAMES,
+) -> list:
+    """The frames of an animated card: the art is drawn once, and only the
+    finish (light streak, foil colors, sparkles) changes between frames."""
+    base = _card_base(card, image_bytes, size)
+    return [
+        _decorate(_apply_finish(base, finish, i / frames), card, None, quantity, show_id, finish)
+        for i in range(frames)
+    ]
+
+
+def encode_gif(frames: Sequence[Image.Image], background=(20, 20, 24)) -> io.BytesIO:
+    """Frames -> a looping GIF. Transparent corners are flattened onto the
+    same dark background the static renders use."""
+    paletted = []
+    for frame in frames:
+        flat = Image.new("RGBA", frame.size, background + (255,))
+        flat.alpha_composite(frame)
+        paletted.append(flat.convert("RGB").quantize(colors=255, method=Image.MEDIANCUT, dither=Image.FLOYDSTEINBERG))
+    buf = io.BytesIO()
+    paletted[0].save(buf, format="GIF", save_all=True, append_images=paletted[1:], duration=ANIMATION_FRAME_MS,
+                     loop=0, optimize=True, disposal=2)
+    buf.seek(0)
+    return buf
+
+
+def is_animated(level: int) -> bool:
+    return level >= ANIMATED_FROM
 
 
 def render_drop(
@@ -269,8 +441,10 @@ def render_gallery(
     columns: int = GALLERY_COLUMNS,
     quantities: Optional[dict] = None,
     showcase_pool: Optional[Sequence[Tuple[Card, bytes]]] = None,
+    finishes: Optional[dict] = None,
 ) -> io.BytesIO:
-    """Build a member's collection gallery. Showcase cards (up to a few, in
+    """Build a member's collection gallery (`finishes`: card_id -> finish level,
+    drawn still). Showcase cards (up to a few, in
     showcase order) render larger in a header row; the full grid below still
     includes every owned card -- showcased ones too -- so the grid alone
     stays a complete view of the collection rather than "everything except
@@ -293,6 +467,7 @@ def render_gallery(
         raise ValueError("render_gallery needs at least one card")
 
     quantities = quantities or {}
+    finishes = finishes or {}
     showcase_pool = entries if showcase_pool is None else showcase_pool
     by_id = {card.card_id: (card, image_bytes) for card, image_bytes in showcase_pool}
     showcase_entries = [by_id[cid] for cid in showcase_card_ids if cid in by_id]
@@ -319,7 +494,8 @@ def render_gallery(
     if showcase_entries:
         for i, (card, image_bytes) in enumerate(showcase_entries):
             tile = render_card(
-                card, image_bytes, size=(fav_w, fav_h), quantity=quantities.get(card.card_id, 1), show_id=True
+                card, image_bytes, size=(fav_w, fav_h), quantity=quantities.get(card.card_id, 1), show_id=True,
+                finish=finishes.get(card.card_id, 0),
             )
             _draw_showcase_star(tile, fav_h)
             x = padding + i * (fav_w + padding)
@@ -329,7 +505,8 @@ def render_gallery(
         col = i % columns
         row = i // columns
         tile = render_card(
-            card, image_bytes, size=(tile_w, tile_h), quantity=quantities.get(card.card_id, 1), show_id=True
+            card, image_bytes, size=(tile_w, tile_h), quantity=quantities.get(card.card_id, 1), show_id=True,
+            finish=finishes.get(card.card_id, 0),
         )
         x = padding + col * (tile_w + padding)
         y = header_h + padding + row * (tile_h + padding)
@@ -352,7 +529,9 @@ def _draw_showcase_star(tile: Image.Image, tile_h: int) -> None:
 def render_showcase(
     entries: Sequence[Tuple[Card, bytes]],
     quantities: Optional[dict] = None,
-) -> io.BytesIO:
+    finishes: Optional[dict] = None,
+    animate: bool = False,
+):
     """Build a standalone showcase image: just the member's pinned cards,
     at the same large size render_gallery uses for its header row, side by
     side -- no grid of the rest of the collection underneath.
@@ -369,37 +548,64 @@ def render_showcase(
     `entries` must be given in the caller's intended display order (i.e.
     `MemberState.showcase_card_ids` order) -- unlike render_gallery, there's
     no separate showcase_card_ids parameter to reorder by, since every
-    entry here *is* a showcase entry."""
+    entry here *is* a showcase entry.
+
+    Returns a PNG, or -- with `animate` and at least one animated finish among
+    the cards -- a GIF in which those cards shimmer. Check the first bytes (or
+    use showcase_is_animated) to name the file."""
     if not entries:
         raise ValueError("render_showcase needs at least one card")
 
     quantities = quantities or {}
+    finishes = finishes or {}
     fav_w, fav_h = GALLERY_FAVORITE_TILE_SIZE
     padding = 16
 
     total_w = len(entries) * fav_w + (len(entries) + 1) * padding
     total_h = fav_h + padding * 2
+    moving = animate and any(is_animated(finishes.get(card.card_id, 0)) for card, _ in entries)
+    frame_count = ANIMATION_FRAMES if moving else 1
 
-    canvas = Image.new("RGBA", (total_w, total_h), (20, 20, 24, 255))
+    per_card = []
+    for card, image_bytes in entries:
+        level = finishes.get(card.card_id, 0)
+        qty = quantities.get(card.card_id, 1)
+        if moving and is_animated(level):
+            tiles = render_card_frames(card, image_bytes, (fav_w, fav_h), qty, True, level, frame_count)
+        else:
+            tiles = [render_card(card, image_bytes, size=(fav_w, fav_h), quantity=qty, show_id=True, finish=level)]
+        for tile in tiles:
+            _draw_showcase_star(tile, fav_h)
+        per_card.append(tiles)
 
-    for i, (card, image_bytes) in enumerate(entries):
-        tile = render_card(
-            card, image_bytes, size=(fav_w, fav_h), quantity=quantities.get(card.card_id, 1), show_id=True
-        )
-        _draw_showcase_star(tile, fav_h)
-        x = padding + i * (fav_w + padding)
-        canvas.alpha_composite(tile, (x, padding))
+    frames = []
+    for f in range(frame_count):
+        canvas = Image.new("RGBA", (total_w, total_h), (20, 20, 24, 255))
+        for i, tiles in enumerate(per_card):
+            x = padding + i * (fav_w + padding)
+            canvas.alpha_composite(tiles[f % len(tiles)], (x, padding))
+        frames.append(canvas)
 
+    if moving:
+        return encode_gif(frames)
     buf = io.BytesIO()
-    canvas.convert("RGB").save(buf, format="PNG")
+    frames[0].convert("RGB").save(buf, format="PNG")
     buf.seek(0)
     return buf
 
 
-def render_single(card: Card, image_bytes: bytes, quantity: int = 1) -> io.BytesIO:
+def is_gif(buf: io.BytesIO) -> bool:
+    return buf.getvalue()[:4] == b"GIF8"
+
+
+def render_single(card: Card, image_bytes: bytes, quantity: int = 1, finish: int = 0, animate: bool = False) -> io.BytesIO:
     """One card at full size with its "#<id>" badge, for `.card show`.
-    Never carries a drop number -- that only exists on drop tiles."""
-    tile = render_card(card, image_bytes, quantity=quantity, show_id=True)
+    Never carries a drop number -- that only exists on drop tiles. With
+    `animate` and an animated finish (prismatic) it's a looping GIF instead of
+    a PNG (see is_gif)."""
+    if animate and is_animated(finish):
+        return encode_gif(render_card_frames(card, image_bytes, quantity=quantity, show_id=True, finish=finish))
+    tile = render_card(card, image_bytes, quantity=quantity, show_id=True, finish=finish)
     buf = io.BytesIO()
     tile.convert("RGBA").save(buf, format="PNG")
     buf.seek(0)

@@ -466,6 +466,7 @@ class CollectionView(_InvokerView):
                     showcase_card_ids=state.showcase_card_ids if self.page == 0 else (),
                     quantities=Counter(state.collection),
                     showcase_pool=entries,
+                    finishes={cid: state.finish_of(cid) for cid in state.finishes},
                 )
                 payload["file"] = (gallery, "collection.png")
                 label = f"{whose} collection"
@@ -870,6 +871,7 @@ class FindView(_InvokerView):
         self.requests_open = bool(await self.cog.config.guild(guild).request_channel_id())
         if self.card is not None:
             embed, file, quantity, _owners, state = await self.cog.card_detail(guild, self.member, self.card)
+            self.plan = await self.cog.upgrade_preview(guild, self.member, self.card.card_id) if quantity else None
             self._build_detail(quantity, state)
             return {"embed": embed, "file": file}
         embed = await self._list_embed()
@@ -961,6 +963,16 @@ class FindView(_InvokerView):
             )
             self.personal.callback = self._on_showcase
             self.add_item(self.personal)
+            plan = getattr(self, "plan", None)
+            if plan is not None and plan["finish"]:
+                self.upgrade = discord.ui.Button(
+                    label=f"Upgrade to {plan['finish'].title()}",
+                    emoji="✨",
+                    style=discord.ButtonStyle.success if plan["ok"] else discord.ButtonStyle.secondary,
+                    row=1,
+                )
+                self.upgrade.callback = self._on_upgrade
+                self.add_item(self.upgrade)
         else:
             wished = card.card_id in state.wishlist
             self.personal = discord.ui.Button(
@@ -1052,6 +1064,43 @@ class FindView(_InvokerView):
         await interaction.response.defer()
         await self._refresh(interaction, text)
 
+    async def _on_upgrade(self, interaction: discord.Interaction):
+        plan = await self.cog.upgrade_preview(self.member.guild, self.member, self.card.card_id)
+        cost = upgrade_cost_text(plan)
+        if not plan["ok"]:
+            await interaction.response.send_message(
+                f"{plan['reason']}\n{plan['finish'].title()} costs {cost}." if plan["finish"] else plan["reason"],
+                ephemeral=True,
+            )
+            return
+        spends = []
+        if plan["token_ids"]:
+            spends.append(f"{len(plan['token_ids'])} sell token{'s' if len(plan['token_ids']) != 1 else ''}")
+        if plan["spares"]:
+            spends.append("your spare copy")
+        await interaction.response.send_message(
+            f"Upgrade your **{self.card.name}** to **{plan['finish'].title()}** for {cost}? "
+            f"This uses {' and '.join(spends)} of it. The finish stays on your copy, and goes with it if you "
+            "ever give or trade your last one.",
+            view=UpgradeConfirmView(self),
+            ephemeral=True,
+        )
+
+    async def finish_upgrade(self, interaction: discord.Interaction):
+        """The confirm button: do the upgrade, refresh this card page, and show it off in the channel."""
+        result = await self.cog.upgrade_card(self.member.guild, self.member, self.card.card_id)
+        if isinstance(result, str):
+            await interaction.edit_original_response(content=result, view=None)
+            return
+        await interaction.edit_original_response(content=f"Done! Your **{self.card.name}** is now **{result['finish'].title()}**.", view=None)
+        if self.message is not None:
+            try:
+                payload = await self.render()
+                await self.message.edit(view=self, **self._for_edit(payload))
+            except discord.HTTPException:
+                log.warning("cardcollect: couldn't refresh a card page after an upgrade", exc_info=True)
+        await self.cog.announce_upgrade(interaction.channel, self.member, self.card, result["level"])
+
     async def _on_wish(self, interaction: discord.Interaction):
         text = await self.cog.toggle_wish(self.member.guild, self.member, self.card.card_id)
         await interaction.response.defer()
@@ -1127,6 +1176,39 @@ class FindView(_InvokerView):
             await interaction.followup.send(f"New art saved for **{self.card.name}**.", ephemeral=True)
         finally:
             self._listening = False
+
+
+def upgrade_cost_text(plan: dict) -> str:
+    parts = []
+    if plan["dupes"]:
+        parts.append(f"{plan['dupes']} duplicate{'s' if plan['dupes'] != 1 else ''}")
+    if plan["coins"]:
+        parts.append(f"{plan['coins']:,} wondercoin")
+    return " + ".join(parts) or "nothing"
+
+
+class UpgradeConfirmView(discord.ui.View):
+    """The private "Upgrade it" step on a card page."""
+
+    def __init__(self, find_view: "FindView"):
+        super().__init__(timeout=120)
+        self.find_view = find_view
+        self._busy = False
+
+    @discord.ui.button(label="Upgrade it", emoji="✨", style=discord.ButtonStyle.success)
+    async def confirm(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if self._busy:
+            await interaction.response.send_message("Upgrading it already.", ephemeral=True)
+            return
+        self._busy = True
+        self.stop()
+        await interaction.response.defer()
+        await self.find_view.finish_upgrade(interaction)
+
+    @discord.ui.button(label="Not now", style=discord.ButtonStyle.secondary)
+    async def cancel(self, interaction: discord.Interaction, button: discord.ui.Button):
+        self.stop()
+        await interaction.response.edit_message(content="No upgrade.", view=None)
 
 
 # ---------------------------------------------------------------------------

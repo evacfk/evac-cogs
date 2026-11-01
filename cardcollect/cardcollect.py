@@ -51,6 +51,8 @@ from .constants import (
     DEFAULT_PACK_PRICE,
     DEFAULT_SELL_PRICES,
     DEFAULT_TIER_CUTOFFS,
+    DEFAULT_UPGRADE_COSTS,
+    FINISHES,
     GALLERY_PAGE_SIZE,
     IMPORT_GENDERS,
     MAX_COPIES_KEPT,
@@ -107,6 +109,7 @@ DEFAULT_GUILD = {
     "next_request_id": 1,
     "packs_enabled": True,
     "pack_price": DEFAULT_PACK_PRICE,
+    "upgrade_costs": {k: dict(v) for k, v in DEFAULT_UPGRADE_COSTS.items()},
 }
 
 DEFAULT_MEMBER = {
@@ -121,6 +124,7 @@ DEFAULT_MEMBER = {
     "sets_claimed": [],
     "pack_date": "",
     "pack_pity": 0,
+    "finishes": {},
 }
 
 
@@ -526,6 +530,32 @@ class CardCollect(commands.Cog):
             if card.card_id in state.wishlist:
                 state.wishlist.remove(card.card_id)
         return outcome, price
+
+    def _move_copy(
+        self, giver: MemberState, receiver: MemberState, card: Card, sell_prices: dict
+    ) -> Tuple[str, int]:
+        """Hand one copy of `card` from one member's state to another's (a gift or
+        part of a trade). The giver's spare goes first; their finish stays on the
+        copy they keep. Giving away the last copy takes the finish along: the
+        receiver ends up with the better of their own finish and that one. The
+        receiver gets it the way a draw win would (new copy, spare, or a sell
+        token at the copy limit). Returns (receiver's outcome, finish carried)."""
+        cid = card.card_id
+        giver.collection.remove(cid)  # removes exactly one copy
+        carried = 0
+        if not giver.owns(cid):
+            carried = int(giver.finishes.pop(cid, 0))
+            # only drop the showcase entry if that was the giver's last copy --
+            # giving away a tradeable spare shouldn't un-showcase the one they kept
+            if cid in giver.showcase_card_ids:
+                giver.showcase_card_ids.remove(cid)
+        # same MAX_COPIES_KEPT cap a draw win respects: a gift that would push
+        # the receiver past it converts straight to a sell token instead of
+        # silently discarding it or piling up a 3rd+ copy
+        outcome, _price = self._grant_card(receiver, card, sell_prices)
+        if carried and receiver.owns(cid) and carried > receiver.finishes.get(cid, 0):
+            receiver.finishes[cid] = carried
+        return outcome, carried
 
     async def _complete_set(
         self, guild: discord.Guild, member: Optional[discord.abc.User], state: MemberState, card: Card, outcome: str
@@ -1038,10 +1068,12 @@ class CardCollect(commands.Cog):
             await ctx.send(caption + "\n" + "\n".join(lines))
             return
 
+        finishes = {cid: state.finish_of(cid) for cid in state.showcase_card_ids}
         showcase_img = await asyncio.to_thread(
-            imagegen.render_showcase, entries, quantities=quantities
+            imagegen.render_showcase, entries, quantities=quantities, finishes=finishes, animate=True
         )
-        await ctx.send(content=caption, file=discord.File(showcase_img, filename="showcase.png"))
+        name = "showcase.gif" if imagegen.is_gif(showcase_img) else "showcase.png"
+        await ctx.send(content=caption, file=discord.File(showcase_img, filename=name))
 
     @card_showcase.command(name="add")
     @commands.guild_only()
@@ -1121,15 +1153,18 @@ class CardCollect(commands.Cog):
             mentions.append(owner.mention if owner is not None else f"<@{member_id}>")
         state = await self._member_state(member)
         quantity = state.collection.count(card.card_id)
+        finish = state.finish_of(card.card_id)
         embed = embeds.card_info_embed(card, len(owner_ids), mentions)
         image_bytes = self._read_card_image(guild, card.card_id)
         file = None
         if image_bytes is not None:
-            rendered = await asyncio.to_thread(imagegen.render_single, card, image_bytes, max(1, quantity))
-            file = discord.File(rendered, filename="card_info.png")
-            embed.set_image(url="attachment://card_info.png")
+            file = await self.render_card_file(guild, card, image_bytes, max(1, quantity), finish, name="card_info")
+            embed.set_image(url=f"attachment://{file.filename}")
         if quantity:
-            embed.add_field(name="You", value=f"You own **{quantity}**" + (" (a tradeable spare)" if quantity > 1 else ""), inline=True)
+            owned = f"You own **{quantity}**" + (" (a tradeable spare)" if quantity > 1 else "")
+            if finish:
+                owned += f" · ✨ {imagegen.finish_name(finish).title()}"
+            embed.add_field(name="You", value=owned, inline=True)
         elif card.card_id in state.wishlist:
             embed.add_field(name="You", value="★ On your wishlist", inline=True)
         return embed, file, quantity, len(owner_ids), state
@@ -1213,6 +1248,84 @@ class CardCollect(commands.Cog):
             await self._save_member_state(member, state)
         await self._bump_stats(guild, daily_pull_date=today)
         return card, outcome, price, streak, bonus, set_done
+
+    # -- finishes and upgrades ------------------------------------------------
+
+    async def render_card_file(
+        self, guild: discord.Guild, card: Card, image_bytes: bytes, quantity: int = 1, finish: int = 0, name: str = "card"
+    ) -> discord.File:
+        """One card as an attachment: a PNG, or for an animated finish a GIF
+        (rendered once, then reused from the render cache)."""
+        if not imagegen.is_animated(finish):
+            buf = await asyncio.to_thread(imagegen.render_single, card, image_bytes, quantity, finish)
+            return discord.File(buf, filename=f"{name}.png")
+        art_key = storage.art_fingerprint(image_bytes)
+        plate = engine.fold_text(f"{card.name}|{card.display_series}|{card.rarity}")
+        variant = f"f{finish}-q{quantity}-{storage.art_fingerprint(plate.encode())[:6]}-{COG_VERSION}"
+        data = storage.read_render_cache(self.data_path, guild.id, card.card_id, art_key, variant)
+        if data is None:
+            buf = await asyncio.to_thread(imagegen.render_single, card, image_bytes, quantity, finish, True)
+            data = buf.getvalue()
+            try:
+                storage.write_render_cache(self.data_path, guild.id, card.card_id, art_key, variant, data)
+            except OSError:
+                log.warning("cardcollect: couldn't cache an animated card render", exc_info=True)
+        return discord.File(io.BytesIO(data), filename=f"{name}.gif")
+
+    async def upgrade_preview(self, guild: discord.Guild, member: discord.Member, card_id: int) -> dict:
+        """engine.upgrade_plan for this member's copy of a card, as it stands now."""
+        state = await self._member_state(member)
+        costs = await self.config.guild(guild).upgrade_costs()
+        return engine.upgrade_plan(state.collection, state.sell_tokens, card_id, state.finish_of(card_id), costs)
+
+    async def upgrade_card(self, guild: discord.Guild, member: discord.Member, card_id: int):
+        """Upgrade a member's copy of a card to the next finish, spending the
+        duplicates and wondercoin it costs. Returns an error string, or the plan
+        that was carried out (see engine.upgrade_plan)."""
+        card = await self._card_by_id(guild, card_id)
+        if card is None:
+            return "That card is no longer in the pool."
+        async with self._get_claim_lock(guild.id):
+            state = await self._member_state(member)
+            costs = await self.config.guild(guild).upgrade_costs()
+            plan = engine.upgrade_plan(state.collection, state.sell_tokens, card_id, state.finish_of(card_id), costs)
+            if not plan["ok"]:
+                return plan["reason"]
+            coins = plan["coins"]
+            try:
+                if coins and not await bank.can_spend(member, coins):
+                    balance = await bank.get_balance(member)
+                    return f"{plan['finish'].title()} costs **{coins:,}** wondercoin and you have **{balance:,}**."
+                if coins:
+                    await bank.withdraw_credits(member, coins)
+            except ValueError:
+                return f"{plan['finish'].title()} costs **{coins:,}** wondercoin and you don't have enough."
+            try:
+                spend = set(plan["token_ids"])
+                state.sell_tokens = [t for t in state.sell_tokens if t.token_id not in spend]
+                for _ in range(plan["spares"]):
+                    state.collection.remove(card_id)
+                state.finishes[card_id] = plan["level"]
+                await self._save_member_state(member, state)
+            except Exception:
+                log.exception("cardcollect: an upgrade failed for %s; refunding", member.id)
+                if coins:
+                    await bank.deposit_credits(member, coins)
+                return "Something went wrong with that upgrade. You were refunded."
+        await self._bump_stats(guild, upgrades=1)
+        return plan
+
+    async def announce_upgrade(self, channel, member: discord.Member, card: Card, level: int):
+        """Show off a freshly upgraded card where the upgrade was done."""
+        image_bytes = self._read_card_image(member.guild, card.card_id)
+        text = f"✨ {member.mention} upgraded **{card.name}** to **{imagegen.finish_name(level).title()}**!"
+        kwargs = {"content": text, "allowed_mentions": discord.AllowedMentions.none()}
+        if image_bytes is not None:
+            state = await self._member_state(member)
+            kwargs["file"] = await self.render_card_file(
+                member.guild, card, image_bytes, max(1, state.collection.count(card.card_id)), level, name="upgrade"
+            )
+        await self._post_to_channel(channel, **kwargs)
 
     # -- daily pack -------------------------------------------------------
 
@@ -1351,18 +1464,10 @@ class CardCollect(commands.Cog):
                 await ctx.send("You don't own that card.")
                 return
             receiver_state = await self._member_state(member)
-
-            giver_state.collection.remove(card.card_id)  # removes exactly one copy
-            # only drop the showcase entry if that was the giver's last copy --
-            # giving away a tradeable spare shouldn't un-showcase the one they kept
-            if not giver_state.owns(card.card_id) and card.card_id in giver_state.showcase_card_ids:
-                giver_state.showcase_card_ids.remove(card.card_id)
+            outcome, _finish = self._move_copy(
+                giver_state, receiver_state, card, await self.config.guild(ctx.guild).sell_prices()
+            )
             await self._save_member_state(ctx.author, giver_state)
-
-            # same MAX_COPIES_KEPT cap a draw win respects: a gift that would push
-            # the receiver past it converts straight to a sell token instead of
-            # silently discarding it or piling up a 3rd+ copy
-            outcome, _price = self._grant_card(receiver_state, card, await self.config.guild(ctx.guild).sell_prices())
             set_done = await self._complete_set(ctx.guild, member, receiver_state, card, outcome)
             await self._save_member_state(member, receiver_state)
 
@@ -1494,6 +1599,18 @@ class CardCollect(commands.Cog):
         price = self._whole(values, "price", "Price", 0)
         await self.config.guild(guild).pack_price.set(price)
         return f"A daily pack now costs {price:,} wondercoin." if price else "Daily packs are now free."
+
+    async def _apply_upgrade_costs(self, guild, member, values) -> str:
+        costs = {}
+        for finish in ("holo", "prismatic"):
+            label = finish.title()
+            costs[finish] = {
+                "dupes": self._whole(values, f"{finish}_dupes", f"{label} duplicates", 0),
+                "coins": self._whole(values, f"{finish}_coins", f"{label} wondercoin", 0),
+            }
+        await self.config.guild(guild).upgrade_costs.set(costs)
+        return (f"Holo now costs {costs['holo']['dupes']} duplicate(s) + {costs['holo']['coins']:,}; Prismatic "
+                f"{costs['prismatic']['dupes']} duplicate(s) + {costs['prismatic']['coins']:,}.")
 
     async def _apply_daily_odds(self, guild, member, values) -> str:
         weights = {}
