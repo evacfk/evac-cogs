@@ -123,6 +123,16 @@ def settings_embed(guild_config: dict, guild_name: str) -> discord.Embed:
     return embed
 
 
+def _legendary_rate_line(stats: dict) -> str:
+    """How often drops have had a legendary, counted since 2.7.2 started tracking it."""
+    tracked = stats.get("drops_legend_tracked", 0)
+    if not tracked:
+        return ""
+    found = stats.get("legendaries_offered", 0)
+    rate = f"about 1 in {tracked / found:.1f} drops" if found else "none yet"
+    return f"\nLegendaries offered: **{found}** in {tracked} drops ({rate})"
+
+
 def diagnostics_embed(
     hourly_buckets: Dict[str, int],
     suggested_drop_chance: float,
@@ -166,7 +176,15 @@ def diagnostics_embed(
                 f"Picks: **{picks}** (about {picks / drops:.1f} per drop)\n"
                 f"Cards nobody picked: **{unpicked}** ({unpicked / offered * 100:.0f}%)\n"
                 f"Draws with a real contest: **{stats.get('contested', 0)}**"
+                + _legendary_rate_line(stats)
             ),
+            inline=False,
+        )
+    if stats and any(stats.get(k) for k in ("packs", "upgrades", "trades", "trade_ups")):
+        embed.add_field(
+            name="Economy",
+            value=(f"Packs opened: **{stats.get('packs', 0)}** · Upgrades: **{stats.get('upgrades', 0)}** · "
+                   f"Trades: **{stats.get('trades', 0)}** · Trade-ups: **{stats.get('trade_ups', 0)}**"),
             inline=False,
         )
     if stats and stats.get("daily_pulls"):

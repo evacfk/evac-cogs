@@ -472,7 +472,8 @@ class CardCollect(commands.Cog):
         drop.task = asyncio.ensure_future(self._close_drop_later(drop, window))
 
         if not is_test:
-            await self._bump_stats(guild, drops=1, cards_offered=len(entries))
+            await self._bump_stats(guild, drops=1, cards_offered=len(entries), legendaries_offered=len(legendaries),
+                                  drops_legend_tracked=1)  # drops counted since legendaries were tracked
             asyncio.ensure_future(self._post_wish_pings(drop, [card for card, _ in entries]))
         return None
 
@@ -1299,7 +1300,8 @@ class CardCollect(commands.Cog):
             buf = await asyncio.to_thread(imagegen.render_single, card, image_bytes, quantity, finish)
             return discord.File(buf, filename=f"{name}.png")
         art_key = storage.art_fingerprint(image_bytes)
-        plate = engine.fold_text(f"{card.name}|{card.display_series}|{card.rarity}")
+        # everything drawn on the card besides the art: change any of it and the render is redone
+        plate = engine.fold_text(f"{card.name}|{card.display_series}|{card.rarity}|{card.event}")
         variant = f"f{finish}-q{quantity}-{storage.art_fingerprint(plate.encode())[:6]}-{COG_VERSION}"
         data = storage.read_render_cache(self.data_path, guild.id, card.card_id, art_key, variant)
         if data is None:

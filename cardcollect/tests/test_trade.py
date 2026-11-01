@@ -181,3 +181,30 @@ async def test_you_cant_trade_with_yourself_or_a_bot(cog):
     assert "yourself" in ctx.sent[-1].content
     await cog.card.commands["trade"].callback(cog, ctx, FakeMember(7, guild, bot=True))
     assert "Bots" in ctx.sent[-1].content
+
+
+@pytest.mark.asyncio
+async def test_the_offer_form_fits_discords_limits_and_prefills_the_offer(cog):
+    guild, a, b, channel, ids = await setup(cog, 607)
+    await set_state(cog, a, collection=[ids["Rem"]])
+    trade = await open_trade(cog, guild, a, b, channel)
+    await trade.set_offer(TradeInter(a, channel), a, "Rem", "250")
+    modal = views.TradeOfferModal(trade, a)
+    for box in (modal.cards, modal.coins):
+        assert len(box.label) <= 45 and len(box.placeholder or "") <= 100  # Discord rejects longer ones
+    assert modal.cards.default == str(ids["Rem"]) and modal.coins.default == "250"
+
+
+@pytest.mark.asyncio
+async def test_offers_and_cancel_are_locked_while_the_swap_runs(cog):
+    guild, a, b, channel, ids = await setup(cog, 608)
+    await set_state(cog, a, collection=[ids["Rem"]])
+    trade = await open_trade(cog, guild, a, b, channel)
+    await trade.set_offer(TradeInter(a, channel), a, "Rem", "")
+    trade._busy = True  # as if the second Accept is mid-swap
+    late = TradeInter(b, channel)
+    await trade.set_offer(late, b, "", "5")
+    assert "locked" in late.response.messages[-1][0] and trade.offers[b.id]["coins"] == 0
+    stop = TradeInter(b, channel)
+    await trade.cancel.callback(stop)
+    assert "Too late" in stop.response.messages[-1][0] and not trade.done

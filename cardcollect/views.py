@@ -39,6 +39,7 @@ from .constants import (
 
 log = logging.getLogger("red.evac-cogs.cardcollect")
 
+NO_EVENT = "__none__"  # the event dropdown's "regular card" choice
 FIND_PAGE_SIZE = 20  # results per page in `.card find` (a dropdown holds 25 at most)
 DRAW_OVER_TEXT = "This drop is over — its draw has already closed."
 
@@ -1014,7 +1015,8 @@ class FindView(_InvokerView):
             events = getattr(self, "events", {}) or {}
             if events:
                 current = engine.event_key(card.event) if card.event else ""
-                options = [discord.SelectOption(label="Regular card (no event)", value="", default=not current)]
+                # Discord rejects an empty option value, so "no event" has a placeholder one
+                options = [discord.SelectOption(label="Regular card (no event)", value=NO_EVENT, default=not current)]
                 for key, event in list(events.items())[:24]:
                     options.append(discord.SelectOption(
                         label=_clip(event["name"], 100), value=key, default=key == current,
@@ -1142,6 +1144,7 @@ class FindView(_InvokerView):
 
     async def _on_event(self, interaction: discord.Interaction):
         key = self.event_select.values[0]
+        key = "" if key == NO_EVENT else key
         try:
             card = await self.cog.apply_card_event(interaction.guild, self.card.card_id, key)
         except KeyError:
@@ -1288,8 +1291,8 @@ class TradeOfferModal(discord.ui.Modal):
     """One side's offer: which of their cards, and how much wondercoin."""
 
     cards = discord.ui.TextInput(
-        label="Your cards (names or #numbers, comma-separated)",
-        placeholder="e.g. 12, Rem, #40   (leave empty for none)",
+        label="Your cards (names or #numbers)",  # Discord caps labels at 45 characters
+        placeholder="Comma-separated, e.g. 12, Rem, #40 (leave empty for none)",
         style=discord.TextStyle.paragraph,
         max_length=400,
         required=False,
@@ -1362,6 +1365,9 @@ class TradeView(discord.ui.View):
             await interaction.response.edit_message(embed=embed, view=self)
 
     async def set_offer(self, interaction: discord.Interaction, member, cards_text: str, coins_text: str):
+        if self._busy or self.done:
+            await interaction.response.send_message("The trade is going through (or over); offers are locked.", ephemeral=True)
+            return
         coins_text = coins_text.replace(",", "").strip()
         if coins_text and not coins_text.isdigit():
             await interaction.response.send_message("Wondercoin must be a whole number.", ephemeral=True)
@@ -1414,6 +1420,9 @@ class TradeView(discord.ui.View):
 
     @discord.ui.button(label="Cancel", style=discord.ButtonStyle.danger)
     async def cancel(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if self._busy or self.done:
+            await interaction.response.send_message("Too late to cancel: the trade is already going through.", ephemeral=True)
+            return
         self.done = True
         self.stop()
         embed = discord.Embed(
@@ -1436,7 +1445,10 @@ class TradeView(discord.ui.View):
         return embed
 
     async def on_timeout(self):
-        if self.done or self.message is None:
+        if self.done:
+            return
+        self.done = True  # an offer form still open when the trade expires can't revive it
+        if self.message is None:
             return
         try:
             await self.message.edit(

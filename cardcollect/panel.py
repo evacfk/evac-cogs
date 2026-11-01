@@ -177,8 +177,8 @@ def build_specs():
                            max_length=10, placeholder="2026-12-01"),
                      Field("end", "Last day (YYYY-MM-DD, inclusive)", value=lambda r: r.get("end", ""),
                            max_length=10, placeholder="2026-12-31"),
-                     Field("series", "Make every card of this series an event card (optional)", required=False,
-                           max_length=100, placeholder="exact series name, e.g. Attack on Titan")),
+                     Field("series", "Tag a whole series (optional)", required=False,
+                           max_length=100, placeholder="Exact series name: all its cards become event cards")),
              help="Event cards only drop (and show up in packs, 3x as likely) between the start and last day. "
                   "Owners keep them afterwards. Tag a whole series here, or single cards from their `.card find` "
                   "page. Removing an event turns its cards back into regular cards."),

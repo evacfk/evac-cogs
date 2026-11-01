@@ -167,3 +167,56 @@ async def test_a_single_card_can_be_made_an_event_card(cog, monkeypatch):
     embed, *_ = await cog.card_detail(guild, member, tagged)
     assert any(f.name == "Event card" and "drops when it starts" in f.value for f in embed.fields)
     assert (await cog.apply_card_event(guild, card.card_id, "")).event == ""
+
+
+@pytest.mark.asyncio
+async def test_the_admin_event_dropdown_has_no_empty_values(cog, monkeypatch):
+    from cardcollect import views
+    guild, admin, channel = await setup(cog, 707)
+    await cog._apply_event_save(guild, admin, None, {"name": "Winter", "start": "2026-12-01", "end": "2026-12-31"}, None)
+    card = (await cog._pool_cards(guild))[0]
+    view = views.FindView(cog, admin, str(card.card_id))
+    await view.start(FakeCtx(admin, guild, channel))
+    values = [o.value for o in view.event_select.options]
+    assert all(values) and len(values) == 2  # Discord rejects an empty option value
+    view.event_select._values = [values[1]]
+    await view._on_event(_Inter(admin, channel))
+    assert (await cog._card_by_id(guild, card.card_id)).event == "Winter"
+    view.event_select._values = [values[0]]
+    await view._on_event(_Inter(admin, channel))
+    assert (await cog._card_by_id(guild, card.card_id)).event == ""
+
+
+@pytest.mark.asyncio
+async def test_tagging_an_event_redraws_a_cached_animated_card(cog, monkeypatch):
+    from cardcollect import imagegen
+    guild, admin, _channel = await setup(cog, 708)
+    await cog._apply_event_save(guild, admin, None, {"name": "Winter", "start": "2026-12-01", "end": "2026-12-31"}, None)
+    card = (await cog._pool_cards(guild))[0]
+    calls = []
+    real = imagegen.render_single
+    monkeypatch.setattr(imagegen, "render_single", lambda *a, **k: calls.append(1) or real(*a, **k))
+    art = cog._read_card_image(guild, card.card_id)
+    await cog.render_card_file(guild, card, art, 1, 2)
+    tagged = await cog.apply_card_event(guild, card.card_id, "winter")
+    await cog.render_card_file(guild, tagged, art, 1, 2)
+    assert len(calls) == 2  # the event badge is part of the picture, so the cached GIF can't be reused
+
+
+def test_diagnostics_show_the_legendary_rate_and_economy():
+    from cardcollect import embeds
+    stats = {"drops": 40, "cards_offered": 120, "picks": 90, "cards_unpicked": 4, "contested": 9,
+             "legendaries_offered": 4, "drops_legend_tracked": 36, "packs": 7, "upgrades": 2, "trades": 1}
+    embed = embeds.diagnostics_embed({}, 0.02, 900, 0, "G", stats)
+    text = "\n".join(f.value for f in embed.fields)
+    assert "about 1 in 9.0 drops" in text and "Packs opened: **7**" in text
+
+
+class _Inter:
+    def __init__(self, user, channel):
+        from test_trade import TradeInter
+        self.__dict__.update(TradeInter(user, channel).__dict__)
+        self.guild = channel.guild
+
+    async def edit_original_response(self, **kwargs):
+        self.original_edit = kwargs
