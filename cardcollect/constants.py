@@ -37,6 +37,25 @@ DEFAULT_DAILY_WEIGHTS = {
 }
 DAILY_STREAK_BONUS_EVERY = 7  # every 7th day in a row, that day's pull is bumped up one tier
 
+# Daily pack: one per member per Pacific day, bought for wondercoin from the
+# button on `.card daily`. PACK_SIZE cards: all but the last roll with the daily
+# odds (any rarity), the last is guaranteed rare or better. After
+# PACK_PITY_AFTER packs in a row with no epic or better, the next pack's
+# guaranteed card is epic or better.
+DEFAULT_PACK_PRICE = 30000
+PACK_SIZE = 3
+PACK_PITY_AFTER = 5
+
+# Finishes: a personal upgrade on a member's own copy of a card. Level 0 is
+# plain; each level costs duplicates of that card (its sell tokens first, then
+# the tradeable spare) plus wondercoin. Holo is a static foil; Prismatic is
+# animated where a single card is shown.
+FINISHES = ["plain", "holo", "prismatic"]
+DEFAULT_UPGRADE_COSTS = {
+    "holo": {"dupes": 1, "coins": 50000},
+    "prismatic": {"dupes": 2, "coins": 100000},
+}
+
 DEFAULT_DROP_SIZE = 3
 
 DEFAULT_DROP_CHANCE = 0.02  # 2% per qualifying message, retune via .card diagnostics
@@ -111,7 +130,7 @@ GALLERY_PAGE_SIZE = GALLERY_COLUMNS * GALLERY_ROWS_PER_PAGE
 GALLERY_VIEW_TIMEOUT_SECONDS = 180  # a stale pager after this just stops responding
 
 # bumped on every deploy so `.card version` can confirm the new build is live
-COG_VERSION = "2.2.0"
+COG_VERSION = "2.3.0"
 
 UPLOAD_CANCELLED = "cancelled"  # what wait_for_upload returns when the admin backs out
 UPLOAD_CANCEL_WORDS = ("cancel", "stop", "nevermind", "never mind", "exit", "quit")

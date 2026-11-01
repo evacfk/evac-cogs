@@ -48,6 +48,7 @@ from .constants import (
     DEFAULT_DROP_COOLDOWN_SECONDS,
     DEFAULT_DROP_SIZE,
     DEFAULT_DROP_WEIGHTS,
+    DEFAULT_PACK_PRICE,
     DEFAULT_SELL_PRICES,
     DEFAULT_TIER_CUTOFFS,
     GALLERY_PAGE_SIZE,
@@ -57,6 +58,8 @@ from .constants import (
     MAX_DROP_SIZE,
     MAX_SHOWCASE_SLOTS,
     MIN_DRAW_WINDOW_SECONDS,
+    PACK_PITY_AFTER,
+    PACK_SIZE,
     REQUEST_MAX_LENGTH,
     UPLOAD_CANCEL_WORDS,
     UPLOAD_CANCELLED,
@@ -102,6 +105,8 @@ DEFAULT_GUILD = {
     "request_channel_id": None,
     "requests": {},  # request id (str) -> {"user_id", "text", "status", "message_id", "card_id"}
     "next_request_id": 1,
+    "packs_enabled": True,
+    "pack_price": DEFAULT_PACK_PRICE,
 }
 
 DEFAULT_MEMBER = {
@@ -114,6 +119,8 @@ DEFAULT_MEMBER = {
     "wishlist": [],
     "wish_pings_off": False,
     "sets_claimed": [],
+    "pack_date": "",
+    "pack_pity": 0,
 }
 
 
@@ -379,7 +386,9 @@ class CardCollect(commands.Cog):
         drop_size = max(1, min(MAX_DROP_SIZE, await conf.drop_size()))
         window = await conf.draw_window_seconds()
 
-        drop = engine.build_drop(pool_cards, weights, drop_size, guild.id, channel.id, is_test=is_test)
+        drop = engine.build_drop(
+            pool_cards, weights, drop_size, guild.id, channel.id, is_test=is_test, boosts=await self._roll_boosts(guild)
+        )
         if drop is None:
             return "Couldn't roll a drop from the current pool (no cards available in any rarity tier)."
 
@@ -1138,10 +1147,18 @@ class CardCollect(commands.Cog):
     @commands.guild_only()
     async def card_daily(self, ctx: commands.Context):
         """Your free card for today. Mostly commons, sometimes rares, rarely epics,
-        very rarely a legendary. Every 7th day in a row is bumped up one rarity."""
+        very rarely a legendary. Every 7th day in a row is bumped up one rarity.
+        The reply also has a button to buy today's pack."""
         result = await self.daily_pull(ctx.guild, ctx.author)
+        pack_price = await self.pack_offer(ctx.guild, ctx.author)
+        pack_view = views.PackView(self, ctx.author, pack_price) if pack_price is not None else None
+        extra = {"view": pack_view} if pack_view is not None else {}
         if isinstance(result, str):
-            await ctx.send(result)
+            if pack_view is not None:
+                result += f"\nToday's pack is still waiting: {PACK_SIZE} cards, one guaranteed rare or better."
+            sent = await ctx.send(result, **extra)
+            if pack_view is not None:
+                pack_view.message = sent
             return
         card, outcome, price, streak, bonus, set_done = result
         lines = [f"\U0001f3b4 {ctx.author.mention} pulled **{card.name}**"
@@ -1159,14 +1176,18 @@ class CardCollect(commands.Cog):
             left = DAILY_STREAK_BONUS_EVERY - (streak % DAILY_STREAK_BONUS_EVERY)
             streak_line += f" · bonus pull in {left} day{'s' if left != 1 else ''}"
         lines.append(streak_line)
+        if pack_view is not None:
+            lines.append(f"\U0001f381 Want more? Today's pack: {PACK_SIZE} cards, one guaranteed rare or better.")
         image_bytes = self._read_card_image(ctx.guild, card.card_id)
         if image_bytes is None:
-            await ctx.send("\n".join(lines), allowed_mentions=discord.AllowedMentions.none())
-            return
-        rendered = await asyncio.to_thread(imagegen.render_single, card, image_bytes,
-                                           (await self._member_state(ctx.author)).collection.count(card.card_id))
-        await ctx.send("\n".join(lines), file=discord.File(rendered, filename="daily.png"),
-                       allowed_mentions=discord.AllowedMentions.none())
+            sent = await ctx.send("\n".join(lines), allowed_mentions=discord.AllowedMentions.none(), **extra)
+        else:
+            rendered = await asyncio.to_thread(imagegen.render_single, card, image_bytes,
+                                               (await self._member_state(ctx.author)).collection.count(card.card_id))
+            sent = await ctx.send("\n".join(lines), file=discord.File(rendered, filename="daily.png"),
+                                  allowed_mentions=discord.AllowedMentions.none(), **extra)
+        if pack_view is not None:
+            pack_view.message = sent
 
     async def daily_pull(self, guild: discord.Guild, member: discord.Member):
         """Do one `.card daily` pull. Returns an error string, or
@@ -1180,7 +1201,10 @@ class CardCollect(commands.Cog):
                         f"(streak: {state.daily_streak} day{'s' if state.daily_streak != 1 else ''}).")
             conf = self.config.guild(guild)
             bonus = engine.is_bonus_day(streak, DAILY_STREAK_BONUS_EVERY)
-            card = engine.roll_daily(await self._rollable_pool_cards(guild), await conf.daily_weights(), bonus)
+            card = engine.roll_daily(
+                await self._rollable_pool_cards(guild), await conf.daily_weights(), bonus,
+                boosts=await self._roll_boosts(guild),
+            )
             if card is None:
                 return "The card pool is empty right now, so there's nothing to pull."
             outcome, price = self._grant_card(state, card, await conf.sell_prices())
@@ -1189,6 +1213,118 @@ class CardCollect(commands.Cog):
             await self._save_member_state(member, state)
         await self._bump_stats(guild, daily_pull_date=today)
         return card, outcome, price, streak, bonus, set_done
+
+    # -- daily pack -------------------------------------------------------
+
+    async def _roll_boosts(self, guild: discord.Guild, for_pack: bool = False) -> Dict[int, float]:
+        """Per-card weight multipliers for the next roll (card_id -> weight).
+        Empty means every card in a tier is equally likely."""
+        return {}
+
+    async def pack_offer(self, guild: discord.Guild, member: discord.Member) -> Optional[int]:
+        """The price of today's pack if this member can still buy one, else None
+        (packs off, or already opened today)."""
+        conf = self.config.guild(guild)
+        if not await conf.packs_enabled():
+            return None
+        state = await self._member_state(member)
+        if state.pack_date == engine.today_str(ACTIVITY_TIMEZONE):
+            return None
+        return int(await conf.pack_price())
+
+    async def open_pack(self, guild: discord.Guild, member: discord.Member):
+        """Buy and open today's pack. Returns an error string, or a dict:
+        price, entries [(card, outcome, sell price or None)], set_lines, pity_used
+        (the guaranteed card was epic+ because of pity), pity (packs in a row
+        without an epic+ after this one)."""
+        conf = self.config.guild(guild)
+        if not await conf.packs_enabled():
+            return "Packs are turned off right now."
+        async with self._get_claim_lock(guild.id):
+            today = engine.today_str(ACTIVITY_TIMEZONE)
+            state = await self._member_state(member)
+            if state.pack_date == today:
+                return "You've already opened today's pack. A new one is available at midnight Pacific."
+            pool = await self._rollable_pool_cards(guild)
+            if not pool:
+                return "The card pool is empty right now, so there's nothing to open."
+            price = int(await conf.pack_price())
+            try:
+                if price > 0 and not await bank.can_spend(member, price):
+                    balance = await bank.get_balance(member)
+                    return f"A pack costs **{price:,}** wondercoin and you have **{balance:,}**."
+                if price > 0:
+                    await bank.withdraw_credits(member, price)
+            except ValueError:
+                return f"A pack costs **{price:,}** wondercoin and you don't have enough."
+            try:
+                floor = engine.pack_floor(state.pack_pity, PACK_PITY_AFTER)
+                cards = engine.roll_pack(
+                    pool, await conf.daily_weights(), PACK_SIZE, floor, rng=self._rng,
+                    boosts=await self._roll_boosts(guild, for_pack=True),
+                )
+                sell_prices = await conf.sell_prices()
+                entries, set_lines = [], []
+                for card in cards:
+                    outcome, sell = self._grant_card(state, card, sell_prices)
+                    entries.append((card, outcome, sell))
+                    done = await self._complete_set(guild, member, state, card, outcome)
+                    if done is not None:
+                        set_lines.append(f"\U0001f3c6 Set complete: **{done[0]}**! +{done[1]:,} wondercoin.")
+                hit = any(engine.is_epic_or_better(c.rarity) for c in cards)
+                state.pack_pity = 0 if hit else state.pack_pity + 1
+                state.pack_date = today
+                await self._save_member_state(member, state)
+            except Exception:
+                log.exception("cardcollect: opening a pack failed for %s; refunding", member.id)
+                if price > 0:
+                    await bank.deposit_credits(member, price)
+                return "Something went wrong opening that pack. You were refunded."
+        await self._bump_stats(guild, packs=1)
+        return {
+            "price": price, "entries": entries, "set_lines": set_lines,
+            "pity_used": floor == "epic", "pity": state.pack_pity,
+        }
+
+    async def pack_result_message(self, guild: discord.Guild, member: discord.Member, result: dict):
+        """The public reveal for an opened pack: (text, file or None)."""
+        lines = [f"\U0001f381 {member.mention} opened today's pack:"]
+        for card, outcome, sell in result["entries"]:
+            series = f" ({card.display_series})" if card.display_series else ""
+            tag = {"new": " · **NEW**", "duplicate": " · spare copy",
+                   "sell_token": f" · sell token ({sell:,})" if sell else " · sell token"}.get(outcome, "")
+            lines.append(f"{embeds.RARITY_EMOJI.get(card.rarity, '')} **{card.name}**{series} · {card.rarity}"
+                         f" · `#{card.card_id}`{tag}")
+        if result["pity_used"]:
+            lines.append(f"\U0001f340 Pack pity: {PACK_PITY_AFTER} packs without an epic, so this one guaranteed one.")
+        elif result["pity"]:
+            left = PACK_PITY_AFTER - result["pity"]
+            lines.append(f"No epic this time. {left} more pack{'s' if left != 1 else ''} without one and the next is guaranteed.")
+        lines.extend(result["set_lines"])
+        art = []
+        for card, _outcome, _sell in result["entries"]:
+            image_bytes = self._read_card_image(guild, card.card_id)
+            if image_bytes is not None:
+                art.append((card, image_bytes))
+        file = None
+        if art:
+            composite = await asyncio.to_thread(imagegen.render_drop, art, False, False)
+            file = discord.File(composite, filename="pack.png")
+        return "\n".join(lines), file
+
+    async def announce_pack_hits(self, guild: discord.Guild, member: discord.Member, result: dict, posted_in_id: int):
+        """Epic and legendary pack pulls get a line in the drop channel, unless
+        the pack was opened right there already."""
+        hits = [card for card, _o, _s in result["entries"] if engine.is_epic_or_better(card.rarity)]
+        channel_id = await self.config.guild(guild).channel_id()
+        channel = guild.get_channel(channel_id) if channel_id else None
+        if not hits or channel is None or channel.id == posted_in_id:
+            return
+        names = ", ".join(f"{embeds.RARITY_EMOJI.get(c.rarity, '')} **{c.name}** ({c.rarity})" for c in hits)
+        await self._post_to_channel(
+            channel, content=f"✨ {member.mention} pulled {names} from a pack!",
+            allowed_mentions=discord.AllowedMentions.none(),
+        )
 
     # -- give / sell ------------------------------------------------------
 
@@ -1349,6 +1485,15 @@ class CardCollect(commands.Cog):
         if reason is not None:
             raise PanelError(reason)
         return f"Test drop posted in {channel.mention}. It awards nothing."
+
+    async def _apply_packs_enabled(self, guild, member, value) -> str:
+        await self.config.guild(guild).packs_enabled.set(bool(value))
+        return "Daily packs are on: members see the button on `.card daily`." if value else "Daily packs are off."
+
+    async def _apply_pack_price(self, guild, member, values) -> str:
+        price = self._whole(values, "price", "Price", 0)
+        await self.config.guild(guild).pack_price.set(price)
+        return f"A daily pack now costs {price:,} wondercoin." if price else "Daily packs are now free."
 
     async def _apply_daily_odds(self, guild, member, values) -> str:
         weights = {}

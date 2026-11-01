@@ -22,6 +22,7 @@ from .constants import (
     GALLERY_PAGE_SIZE,
     GALLERY_VIEW_TIMEOUT_SECONDS,
     MAX_DROP_SIZE,
+    PACK_SIZE,
     PICK_BUTTON_PREFIX,
     REQUEST_ADD_ID,
     REQUEST_APPROVE_ID,
@@ -1126,6 +1127,97 @@ class FindView(_InvokerView):
             await interaction.followup.send(f"New art saved for **{self.card.name}**.", ephemeral=True)
         finally:
             self._listening = False
+
+
+# ---------------------------------------------------------------------------
+# the daily pack button on `.card daily`
+# ---------------------------------------------------------------------------
+
+
+class PackView(_InvokerView):
+    """The "Open today's pack" button under a `.card daily` reply. Pressing it
+    asks for a private confirmation first, since it spends wondercoin."""
+
+    reject_text = "That's someone else's pack. Run `.card daily` for your own."
+
+    def __init__(self, cog, member, price: int):
+        super().__init__(member.id, 600)
+        self.cog = cog
+        self.member = member
+        self.price = price
+        self.opened = False
+        self.button = discord.ui.Button(
+            label=f"Open today's pack · {price:,}" if price else "Open today's pack · free",
+            emoji="\U0001f381",
+            style=discord.ButtonStyle.success,
+        )
+        self.button.callback = self._on_press
+        self.add_item(self.button)
+
+    async def _on_press(self, interaction: discord.Interaction):
+        if self.opened:
+            await interaction.response.send_message("You've already opened today's pack.", ephemeral=True)
+            return
+        confirm = PackConfirmView(self)
+        cost = f"**{self.price:,}** wondercoin" if self.price else "nothing today"
+        await interaction.response.send_message(
+            f"Open today's pack for {cost}? You get {PACK_SIZE} cards, one guaranteed rare or better.",
+            view=confirm,
+            ephemeral=True,
+        )
+
+    async def mark_opened(self):
+        self.opened = True
+        self.button.disabled = True
+        self.button.label = "Pack opened"
+        self.stop()
+        if self.message is not None:
+            try:
+                await self.message.edit(view=self)
+            except discord.HTTPException:
+                log.warning("cardcollect: couldn't disable a pack button", exc_info=True)
+
+
+class PackConfirmView(discord.ui.View):
+    """The private "Open it" step for a pack."""
+
+    def __init__(self, pack_view: PackView):
+        super().__init__(timeout=120)
+        self.pack_view = pack_view
+        self._busy = False
+
+    @discord.ui.button(label="Open it", style=discord.ButtonStyle.success)
+    async def confirm(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if self._busy:
+            await interaction.response.send_message("Opening it already.", ephemeral=True)
+            return
+        self._busy = True
+        cog, member = self.pack_view.cog, self.pack_view.member
+        await interaction.response.defer()
+        result = await cog.open_pack(member.guild, member)
+        self.stop()
+        if isinstance(result, str):
+            await interaction.edit_original_response(content=result, view=None)
+            if "already opened" in result:
+                await self.pack_view.mark_opened()
+            return
+        await interaction.edit_original_response(content="Pack opened! The cards are in the channel.", view=None)
+        await self.pack_view.mark_opened()
+        text, file = await cog.pack_result_message(member.guild, member, result)
+        kwargs = {"content": text, "allowed_mentions": discord.AllowedMentions.none()}
+        if file is not None:
+            kwargs["file"] = file
+        try:
+            await interaction.channel.send(**kwargs)
+        except discord.HTTPException:
+            log.exception("cardcollect: couldn't post a pack reveal")
+            await interaction.followup.send(text, ephemeral=True)
+        await cog.announce_pack_hits(member.guild, member, result, interaction.channel.id)
+
+    @discord.ui.button(label="Not now", style=discord.ButtonStyle.secondary)
+    async def cancel(self, interaction: discord.Interaction, button: discord.ui.Button):
+        self.stop()
+        await interaction.response.edit_message(content="No pack opened.", view=None)
 
 
 # ---------------------------------------------------------------------------

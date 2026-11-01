@@ -86,6 +86,10 @@ def settings_embed(guild_config: dict, guild_name: str) -> discord.Embed:
 
     pool_size = len(guild_config.get("pool", {}))
     embed.add_field(name="Pool size", value=f"{pool_size} characters", inline=True)
+    if guild_config.get("packs_enabled", True):
+        embed.add_field(name="Daily pack", value=f"{guild_config.get('pack_price', 0):,} wondercoin", inline=True)
+    else:
+        embed.add_field(name="Daily pack", value="off", inline=True)
 
     test_mode = guild_config.get("test_mode", False)
     embed.add_field(name="Test mode", value="ON — drops award nothing" if test_mode else "off", inline=True)

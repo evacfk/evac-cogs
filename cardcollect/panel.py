@@ -59,6 +59,14 @@ def _odds_field(tier):
     return Field(tier, f"{tier.title()} weight", value=lambda v, t=tier: f"{v.get(t, 0):g}", max_length=8)
 
 
+async def _packs_get(cog, guild):
+    return await cog.config.guild(guild).packs_enabled()
+
+
+async def _pack_price_get(cog, guild):
+    return {"price": await cog.config.guild(guild).pack_price()}
+
+
 async def _test_mode_get(cog, guild):
     return await cog.config.guild(guild).test_mode()
 
@@ -77,6 +85,15 @@ def build_specs():
              fmt=_odds_fmt, button="Edit…",
              fields=tuple(_odds_field(t) for t in ("common", "rare", "epic", "legendary")),
              help="Relative weights for `.card daily`; they don't need to add up to 100."),
+        Spec("packs", "Daily pack", "Economy", "toggle", get=_packs_get, apply=_apply("_apply_packs_enabled"),
+             help="A button on `.card daily` that sells each member one pack a day: 3 cards, one guaranteed rare "
+                  "or better, using the daily pull odds. Five packs in a row without an epic make the next one "
+                  "guarantee an epic."),
+        Spec("packprice", "Pack price", "Economy", "modal", get=_pack_price_get, apply=_apply("_apply_pack_price"),
+             fmt=lambda v, g: f"{v['price']:,} wondercoin" if v else "?", button="Edit…",
+             fields=(Field("price", "Wondercoin per pack (0 = free)", value=lambda v: str(v["price"]), max_length=9),),
+             help="Keep it above what a pack's cards sell back for (about 11,000 with the default prices), "
+                  "or members can open packs just to sell the duplicates."),
         Spec("requests", "Request channel", "Requests", "channel", get=_request_channel_get,
              apply=_apply("_apply_request_channel"), fmt=lambda v, g: _channel_fmt(v, g) if v else "off", channel_types=("text",),
              clearable=True,

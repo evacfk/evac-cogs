@@ -262,6 +262,35 @@ def build_fake_redbot_modules():
     _deposit_credits.calls = []
     bank_mod.deposit_credits = _deposit_credits
 
+    # balances for spending (packs, upgrades, trades): unset members start at 0;
+    # deposits are recorded in `calls` above and also credited here
+    bank_mod.balances = {}
+
+    def _key(member):
+        return (getattr(getattr(member, "guild", None), "id", None), member.id)
+
+    async def _get_balance(member):
+        return bank_mod.balances.get(_key(member), 0)
+
+    async def _can_spend(member, amount):
+        return bank_mod.balances.get(_key(member), 0) >= amount
+
+    async def _withdraw_credits(member, amount):
+        if bank_mod.balances.get(_key(member), 0) < amount:
+            raise ValueError("Insufficient funds")
+        bank_mod.balances[_key(member)] = bank_mod.balances.get(_key(member), 0) - amount
+        return bank_mod.balances[_key(member)]
+
+    async def _deposit_and_credit(member, amount):
+        _deposit_credits.calls.append((member, amount))
+        bank_mod.balances[_key(member)] = bank_mod.balances.get(_key(member), 0) + amount
+
+    _deposit_and_credit.calls = _deposit_credits.calls
+    bank_mod.deposit_credits = _deposit_and_credit
+    bank_mod.get_balance = _get_balance
+    bank_mod.can_spend = _can_spend
+    bank_mod.withdraw_credits = _withdraw_credits
+
     _data_dirs = {}
 
     def _cog_data_path(cog_instance):

@@ -224,11 +224,14 @@ def render_card(
 def render_drop(
     entries: Sequence[Tuple[Card, bytes]],
     is_test: bool = False,
+    numbered: bool = True,
 ) -> io.BytesIO:
     """Build the composite image posted for a drop: the cards side by side,
     numbered 1, 2, 3... to match their buttons. A test drop gets a visible red
-    banner so it's never mistaken for a real one."""
-    tiles = [render_card(card, image_bytes, number=i + 1) for i, (card, image_bytes) in enumerate(entries)]
+    banner so it's never mistaken for a real one. A pack reveal uses the same
+    layout without the numbers (`numbered=False`)."""
+    tiles = [render_card(card, image_bytes, number=i + 1 if numbered else None)
+             for i, (card, image_bytes) in enumerate(entries)]
     if not tiles:
         raise ValueError("render_drop needs at least one card")
 

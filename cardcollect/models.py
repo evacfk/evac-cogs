@@ -108,6 +108,8 @@ class MemberState:
     wishlist: list = field(default_factory=list)  # list[int] of wished-for card_ids
     wish_pings_off: bool = False  # True = never ping this member about wishlist cards
     sets_claimed: list = field(default_factory=list)  # list[str] of series whose completion bonus was paid
+    pack_date: str = ""  # ISO date (Pacific) of the last daily pack opened
+    pack_pity: int = 0  # packs opened in a row without an epic or better
 
     def owns(self, card_id: int) -> bool:
         return card_id in self.collection
@@ -123,6 +125,8 @@ class MemberState:
             "wishlist": list(self.wishlist),
             "wish_pings_off": self.wish_pings_off,
             "sets_claimed": list(self.sets_claimed),
+            "pack_date": self.pack_date,
+            "pack_pity": self.pack_pity,
         }
 
     @staticmethod
@@ -143,6 +147,8 @@ class MemberState:
             wishlist=list(data.get("wishlist", [])),
             wish_pings_off=bool(data.get("wish_pings_off", False)),
             sets_claimed=list(data.get("sets_claimed", [])),
+            pack_date=data.get("pack_date", "") or "",
+            pack_pity=int(data.get("pack_pity", 0) or 0),
         )
 
 

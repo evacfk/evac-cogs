@@ -51,14 +51,23 @@ def roll_tier(weights: dict, rng: Optional[random.Random] = None) -> str:
     return tiers[-1]  # float rounding fallback
 
 
-def pick_card_for_tier(pool: Sequence[Card], tier: str, rng: Optional[random.Random] = None) -> Optional[Card]:
-    """Pick uniformly among pool cards in the given tier. Returns None if the
-    pool has no cards in that tier (caller should re-roll or fall back)."""
+def pick_card_for_tier(
+    pool: Sequence[Card], tier: str, rng: Optional[random.Random] = None, boosts: Optional[Dict[int, float]] = None
+) -> Optional[Card]:
+    """Pick among pool cards in the given tier. Returns None if the pool has no
+    cards in that tier (caller should re-roll or fall back). Every card is
+    equally likely unless `boosts` gives it a weight (card_id -> multiplier,
+    e.g. 3.0 for this week's featured series)."""
     rng = _rng(rng)
     candidates = [c for c in pool if c.rarity == tier]
     if not candidates:
         return None
-    return rng.choice(candidates)
+    if not boosts:
+        return rng.choice(candidates)
+    weights = [max(0.0, float(boosts.get(c.card_id, 1.0))) for c in candidates]
+    if sum(weights) <= 0:
+        return rng.choice(candidates)
+    return rng.choices(candidates, weights=weights, k=1)[0]
 
 
 def should_drop(drop_chance: float, rng: Optional[random.Random] = None) -> bool:
@@ -79,6 +88,7 @@ def build_drop(
     channel_id: int,
     rng: Optional[random.Random] = None,
     is_test: bool = False,
+    boosts: Optional[Dict[int, float]] = None,
 ) -> Optional[ActiveDrop]:
     """Roll a full drop: up to `drop_size` different cards, each an independent
     weighted-tier roll (a card is never offered twice in one drop). Returns
@@ -92,7 +102,7 @@ def build_drop(
         card = None
         for _attempt in range(20):  # a tier with few cards may keep repeating one we already have
             tier = roll_tier(weights, rng)
-            candidate = pick_card_for_tier([c for c in pool if c.card_id not in taken], tier, rng)
+            candidate = pick_card_for_tier([c for c in pool if c.card_id not in taken], tier, rng, boosts)
             if candidate is not None:
                 card = candidate
                 break
@@ -322,7 +332,10 @@ def is_bonus_day(streak: int, every: int) -> bool:
     return every > 0 and streak > 0 and streak % every == 0
 
 
-def roll_daily(pool: Sequence[Card], weights: dict, bonus: bool, rng: Optional[random.Random] = None) -> Optional[Card]:
+def roll_daily(
+    pool: Sequence[Card], weights: dict, bonus: bool, rng: Optional[random.Random] = None,
+    boosts: Optional[Dict[int, float]] = None,
+) -> Optional[Card]:
     """Roll a tier with `weights` (bumped one tier on a bonus day) and pick a
     card in it. If the pool has nothing in that tier, fall back to the nearest
     tier that has cards, preferring rarer first so a member is never shortchanged."""
@@ -335,10 +348,67 @@ def roll_daily(pool: Sequence[Card], weights: dict, bonus: bool, rng: Optional[r
     i = TIERS.index(tier)
     order = [tier] + [TIERS[j] for j in range(i + 1, len(TIERS))] + [TIERS[j] for j in range(i - 1, -1, -1)]
     for t in order:
-        card = pick_card_for_tier(pool, t, rng)
+        card = pick_card_for_tier(pool, t, rng, boosts)
         if card is not None:
             return card
     return None
+
+
+def _tier_fallback_order(tier: str) -> List[str]:
+    """`tier`, then rarer tiers, then commoner ones: where to look when a tier
+    has no cards left, so a member is never shortchanged."""
+    i = TIERS.index(tier)
+    return [tier] + TIERS[i + 1:] + TIERS[:i][::-1]
+
+
+def pack_floor(pity: int, pity_after: int) -> str:
+    """The guaranteed slot's lowest tier: rare, or epic once a member has opened
+    `pity_after` packs in a row without an epic or better."""
+    return "epic" if pity_after > 0 and pity >= pity_after else "rare"
+
+
+def roll_pack(
+    pool: Sequence[Card],
+    weights: dict,
+    size: int,
+    floor: str = "rare",
+    rng: Optional[random.Random] = None,
+    boosts: Optional[Dict[int, float]] = None,
+) -> List[Card]:
+    """A daily pack: `size` different cards. All but the last roll with
+    `weights` (any rarity); the last is guaranteed `floor` or better, rolled
+    with the same weights restricted to those tiers. A tier with no cards left
+    falls back to the nearest tier that has some, rarer first. A pool smaller
+    than `size` gives a smaller pack."""
+    rng = _rng(rng)
+    remaining = list(pool)
+    chosen: List[Card] = []
+    floor_index = TIERS.index(floor)
+    for slot in range(min(size, len(pool))):
+        guaranteed = slot == size - 1
+        slot_weights = dict(weights)
+        if guaranteed:
+            slot_weights = {t: w for t, w in weights.items() if t in TIERS and TIERS.index(t) >= floor_index}
+            if not any(w > 0 for w in slot_weights.values()):
+                slot_weights = {floor: 1}
+        tier = roll_tier(slot_weights, rng)
+        order = _tier_fallback_order(tier)
+        if guaranteed:  # never fall back below the guarantee unless nothing at or above it is left
+            order = [t for t in order if TIERS.index(t) >= floor_index] + [t for t in order if TIERS.index(t) < floor_index]
+        card = None
+        for t in order:
+            card = pick_card_for_tier(remaining, t, rng, boosts)
+            if card is not None:
+                break
+        if card is None:
+            break
+        remaining = [c for c in remaining if c.card_id != card.card_id]
+        chosen.append(card)
+    return chosen
+
+
+def is_epic_or_better(rarity: str) -> bool:
+    return rarity in TIERS and TIERS.index(rarity) >= TIERS.index("epic")
 
 
 def gallery_sort_key(card: Card) -> Tuple[int, str, int]:
