@@ -1,13 +1,12 @@
-"""The `.lurkerset` control panel: the Lurker role and sweep, mod reports, and the year club roles.
+"""The `.lurkerset` control panel: the Lurker role and sweep, mod reports.
 
 Specs only; every change goes through the cog's `_apply_*` methods. Flagging by hand, previews, backfills,
-`.lurkerset settings`/`postinfo` and `.yearclub check`/`sync` stay commands.
+`.lurkerset settings`/`postinfo` stay commands.
 """
-from . import engine
-from .settings_panel import Field, Pick, Spec
+from .settings_panel import Field, Spec
 
 INTRO = ("Pick a setting. Changes save as soon as you choose. Turn the daily sweep on last, after the role, "
-         "channel and exempt roles are set. `.lurkersweeppreview`, `.lurkerbackfill` and `.yearclub sync` stay commands.")
+         "channel and exempt roles are set. `.lurkersweeppreview`, and `.lurkerbackfill` stay commands.")
 
 
 def _conf(key):
@@ -51,28 +50,6 @@ async def _days_get(cog, guild):
     return {"days": await cog.config.guild(guild).report_interval_days()}
 
 
-async def _clubs_get(cog, guild):
-    mapping = engine.club_mapping(await cog.config.guild(guild).yearclub_roles())
-    out = []
-    for years in sorted(mapping):
-        role = guild.get_role(mapping[years])
-        out.append((str(years), f"{years} year club", role.mention if role is not None else "role deleted"))
-    return out
-
-
-async def _club_get(cog, guild, item_id):
-    mapping = engine.club_mapping(await cog.config.guild(guild).yearclub_roles())
-    return {"years": item_id, "role_id": mapping.get(int(item_id))}
-
-
-async def _club_save(cog, guild, member, item_id, values, picked):
-    return await cog._apply_yearclub_save(guild, member, item_id, values, picked)
-
-
-async def _club_remove(cog, guild, member, item_id):
-    return await cog._apply_yearclub_remove(guild, member, item_id)
-
-
 def build_specs():
     return [
         # -- Lurkers
@@ -100,16 +77,4 @@ def build_specs():
         Spec("welcome_channel", "Welcome-back channel", "Reports", "channel", get=_conf("welcome_channel_id"),
              apply=_apply("_apply_welcome_channel"), fmt=lambda v, g: _channel_fmt(v, g) if v else "off",
              channel_types=("text",), clearable=True, help="Mods get a post when a lurker reactivates themselves."),
-        # -- Year club
-        Spec("yearclub_enabled", "Year club upkeep", "Year club", "toggle", get=_conf("yearclub_enabled"),
-             apply=_apply("_apply_yearclub_enabled"),
-             help="Swaps each active member's \"N year club!\" role on their join anniversary (checked hourly)."),
-        Spec("yearclub_detect", "Find club roles", "Year club", "action", apply=_apply("_apply_yearclub_autodetect"),
-             button="Find club roles", confirm="This replaces the whole year → role list with every role named like `5 year club!`.",
-             help="Maps every role named like `5 year club!`. Replaces the list below."),
-        Spec("yearclub_roles", "Club roles", "Year club", "collection", get=_clubs_get, item_get=_club_get,
-             save=_club_save, remove=_club_remove,
-             fields=(Field("years", "Years in the server (1-50)", new_only=True, max_length=2),),
-             pick=Pick("role", "Choose the role for this year", defaults=lambda r: [r["role_id"]] if r.get("role_id") else []),
-             help="A member holds the role for their completed years (the highest year at or below theirs)."),
     ]

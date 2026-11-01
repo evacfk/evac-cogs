@@ -1,9 +1,10 @@
 """Config defaults and fixed values for celebrations."""
 from zoneinfo import ZoneInfo
 
-COG_VERSION = "1.1.0"
+COG_VERSION = "1.2.0"
 TZ = ZoneInfo("America/Los_Angeles")
 CONFIG_IDENTIFIER = 0xCE1EB8A7
+LURKER_CONFIG_IDENTIFIER = 928374651  # the lurker cog's Config: year club settings used to live there
 
 TICK_MINUTES = 10
 RECENT_CELEBRATION_DAYS = 300  # never celebrate (or gift) the same member twice inside this window
@@ -24,6 +25,10 @@ DEFAULT_GUILD = {
     "star_emoji": "\N{WHITE MEDIUM STAR}",  # added to the #cuddle post so people can star it; "" = off
     "anniversaries": True,
     "anniversary_gift": 0,
+    "yearclub_roles": {},           # str(years) -> role id ("N year club!")
+    "yearclub_enabled": False,      # hourly upkeep; `.yearclub sync` works regardless
+    "yearclub_last": {},            # {"ts","changed","skipped_lurkers","blocked","errors","aborted"}
+    "yearclub_migrated": False,     # settings copied over from the lurker cog (once)
     "state": {},                    # {"date": iso, "birthdays": {uid: {...}}, "anniv_posted": bool}
 }
 

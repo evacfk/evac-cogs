@@ -11,7 +11,8 @@ Birthdays (all dates are America/Los_Angeles):
 
 Anniversaries: once a day at the announce hour, one embed in the chat channel
 listing everyone whose join anniversary is today (current join date). The
-"N year club!" roles themselves are handled by the lurker cog (`.yearclub`).
+"N year club!" roles are kept here too (`.yearclub`): one per member, swapped on each
+anniversary, checked hourly.
 
 Lurkers (hidden by the lurker cog) are skipped for both.
 """
@@ -20,6 +21,9 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
+from datetime import datetime, timezone
+from typing import Dict, Optional
+
 import discord
 from redbot.core import Config, bank, commands
 
@@ -32,6 +36,7 @@ from .constants import (
     CONFIG_IDENTIFIER,
     DEFAULT_GUILD,
     DEFAULT_MEMBER,
+    LURKER_CONFIG_IDENTIFIER,
     TICK_MINUTES,
 )
 
@@ -49,6 +54,9 @@ class Celebrations(commands.Cog):
         self.config.register_guild(**DEFAULT_GUILD)
         self.config.register_member(**DEFAULT_MEMBER)
         self._locks: dict[int, asyncio.Lock] = {}
+        self._member_locks: dict[tuple, asyncio.Lock] = {}
+        self._yearclub_running: set[int] = set()
+        self._yearclub_checked: dict[int, float] = {}
         self._task = self.bot.loop.create_task(self._loop())
 
     def cog_unload(self):
@@ -63,9 +71,24 @@ class Celebrations(commands.Cog):
     # ------------------------------------------------------------------
 
     async def transient_role_ids(self, guild: discord.Guild) -> set[int]:
-        """Roles the lurker cog must strip but never store/restore (the birthday role)."""
-        role_id = await self.config.guild(guild).role_id()
-        return {role_id} if role_id else set()
+        """Roles the lurker cog must strip but never store/restore (the birthday role and the year club roles)."""
+        await self._migrate_yearclub(guild)
+        gconf = self.config.guild(guild)
+        role_id = await gconf.role_id()
+        ids = {role_id} if role_id else set()
+        if await gconf.yearclub_enabled():
+            ids |= set(engine.club_mapping(await gconf.yearclub_roles()).values())
+        return ids
+
+    async def club_role_for(self, member: discord.Member) -> Optional[int]:
+        """The year club role id this member should hold right now (None if off / under a year)."""
+        await self._migrate_yearclub(member.guild)
+        gconf = self.config.guild(member.guild)
+        if not await gconf.yearclub_enabled() or member.joined_at is None:
+            return None
+        mapping = engine.club_mapping(await gconf.yearclub_roles())
+        years = engine.years_completed(member.joined_at.timestamp(), datetime.now(timezone.utc).timestamp())
+        return engine.club_target(years, mapping)
 
     async def _lurker_role_id(self, guild: discord.Guild):
         lurker = self.bot.get_cog("Lurker")
@@ -114,6 +137,7 @@ class Celebrations(commands.Cog):
                     raise
                 except Exception:
                     log.exception("celebrations: tick failed for guild %s", guild.id)
+            await self._run_yearclub_upkeep()
             await asyncio.sleep(TICK_MINUTES * 60)
 
     async def _tick(self, guild: discord.Guild, now_ts: float | None = None) -> None:
@@ -426,6 +450,293 @@ class Celebrations(commands.Cog):
     async def celebrations_version(self, ctx: commands.Context):
         """Show the running build (deploy probe)."""
         await ctx.send(f"Celebrations v{COG_VERSION}")
+
+
+    # ------------------------------------------------------------------
+    # year club ("N year club!" roles; these used to live in the lurker cog)
+    # ------------------------------------------------------------------
+
+    async def _migrate_yearclub(self, guild: discord.Guild) -> None:
+        """Copy the year club settings out of the lurker cog's Config, once per server."""
+        gconf = self.config.guild(guild)
+        if await gconf.yearclub_migrated():
+            return
+        try:
+            old = Config.get_conf(None, identifier=LURKER_CONFIG_IDENTIFIER, cog_name="Lurker", force_registration=False)
+            old.register_guild(yearclub_roles={}, yearclub_enabled=False, yearclub_last={})
+            old_roles = await old.guild(guild).yearclub_roles()
+            if old_roles and not await gconf.yearclub_roles():
+                await gconf.yearclub_roles.set(old_roles)
+                await gconf.yearclub_enabled.set(bool(await old.guild(guild).yearclub_enabled()))
+                await gconf.yearclub_last.set(await old.guild(guild).yearclub_last())
+        except Exception:
+            log.exception("celebrations: could not copy the year club settings from the lurker cog")
+            return  # try again next time
+        await gconf.yearclub_migrated.set(True)
+
+    async def _lurker_report_channel(self, guild: discord.Guild):
+        lurker = self.bot.get_cog("Lurker")
+        if lurker is None:
+            return None
+        try:
+            channel_id = await lurker.config.guild(guild).report_channel_id()
+        except Exception:
+            return None
+        return guild.get_channel(channel_id) if channel_id else None
+
+    async def _alert_mods(self, guild: discord.Guild, text: str) -> None:
+        channel = await self._lurker_report_channel(guild)
+        if channel is None:
+            log.warning("celebrations: %s", text)
+            return
+        try:
+            await channel.send(text)
+        except _DISCORD_ERRORS:
+            log.warning("celebrations: could not post an alert in %s", channel)
+
+    def _member_lock(self, guild_id: int, user_id: int) -> asyncio.Lock:
+        """Share the lurker cog's per-member lock so a flag and a club swap never interleave."""
+        lurker = self.bot.get_cog("Lurker")
+        shared = getattr(lurker, "_lock_for", None)
+        if shared is not None:
+            return shared(guild_id, user_id)
+        return self._member_locks.setdefault((guild_id, user_id), asyncio.Lock())
+
+    def _yearclub_plans(self, guild: discord.Guild, mapping: Dict[int, int], lurker_role_id: Optional[int], now: float):
+        """Every member who needs a change: [(member, add_role_or_None, [roles_to_remove])], plus stats."""
+        club_ids = set(mapping.values())
+        top = guild.me.top_role
+        plans, stats = [], {"skipped_lurkers": 0, "blocked": 0}
+        for member in guild.members:
+            if member.bot or member.joined_at is None:
+                continue
+            current = {r.id for r in member.roles}
+            if lurker_role_id and lurker_role_id in current:
+                stats["skipped_lurkers"] += 1
+                continue
+            years = engine.years_completed(member.joined_at.timestamp(), now)
+            add_id, remove_ids = engine.club_plan(current, engine.club_target(years, mapping), club_ids)
+            if add_id is None and not remove_ids:
+                continue
+            add = guild.get_role(add_id) if add_id else None
+            remove = [r for r in member.roles if r.id in remove_ids]
+            if (add_id and add is None) or any(r >= top or r.managed for r in ([add] if add else []) + remove):
+                stats["blocked"] += 1
+                continue
+            plans.append((member, add, remove))
+        return plans, stats
+
+    async def _apply_club_plan(self, member: discord.Member, mapping: Dict[int, int], lurker_role_id: Optional[int]) -> bool:
+        """Re-check under the member lock (a flag may have landed meanwhile), then add-then-remove."""
+        guild = member.guild
+        async with self._member_lock(guild.id, member.id):
+            current = {r.id for r in member.roles}
+            if lurker_role_id and lurker_role_id in current:
+                return False
+            years = engine.years_completed(member.joined_at.timestamp(), datetime.now(timezone.utc).timestamp())
+            add_id, remove_ids = engine.club_plan(current, engine.club_target(years, mapping), set(mapping.values()))
+            add = guild.get_role(add_id) if add_id else None
+            remove = [r for r in member.roles if r.id in remove_ids]
+            if add is not None:
+                await member.add_roles(add, reason=f"Year club: {years} year(s) in the server")
+            if remove:
+                await member.remove_roles(*remove, reason="Year club: replaced by current year")
+            return add is not None or bool(remove)
+
+    async def _yearclub_pass(self, guild: discord.Guild, *, auto: bool, progress=None) -> Optional[dict]:
+        await self._migrate_yearclub(guild)
+        gconf = self.config.guild(guild)
+        mapping = engine.club_mapping(await gconf.yearclub_roles())
+        if not mapping or guild.id in self._yearclub_running:
+            return None
+        self._yearclub_running.add(guild.id)
+        try:
+            lurker_role_id = await self._lurker_role_id(guild)
+            now = datetime.now(timezone.utc).timestamp()
+            plans, stats = self._yearclub_plans(guild, mapping, lurker_role_id, now)
+            stats.update({"ts": now, "planned": len(plans), "changed": 0, "errors": 0, "aborted": False})
+            if auto and len(plans) > engine.YEARCLUB_AUTO_MAX:
+                stats["aborted"] = True
+                await gconf.yearclub_last.set(stats)
+                await self._alert_mods(
+                    guild,
+                    f"⚠️ **Year club upkeep paused.** {len(plans)} members need a role change, more than "
+                    f"an hourly anniversary pass should ever see ({engine.YEARCLUB_AUTO_MAX}). Nothing was "
+                    "changed. Check `.yearclub`, then run `.yearclub sync` to review and apply.",
+                )
+                return stats
+            for i, (member, _add, _remove) in enumerate(plans, 1):
+                try:
+                    if await self._apply_club_plan(member, mapping, lurker_role_id):
+                        stats["changed"] += 1
+                except Exception:
+                    stats["errors"] += 1
+                    log.exception("celebrations: year club failed to update %s in %s", member.id, guild.id)
+                await asyncio.sleep(0.5)  # gentle pacing against role-edit rate limits
+                if progress is not None and i % 25 == 0:
+                    await progress(i, len(plans))
+            if not auto or plans:  # an hourly no-op pass must not rewrite the settings file
+                await gconf.yearclub_last.set(stats)
+            return stats
+        finally:
+            self._yearclub_running.discard(guild.id)
+
+    async def _run_yearclub_upkeep(self) -> None:
+        """Hourly: apply anniversaries for every server with the year club switched on."""
+        now = time.monotonic()
+        for guild in list(self.bot.guilds):
+            if now - self._yearclub_checked.get(guild.id, -3600.0) < 3600:
+                continue
+            self._yearclub_checked[guild.id] = now
+            try:
+                await self._migrate_yearclub(guild)
+                if await self.config.guild(guild).yearclub_enabled():
+                    await self._yearclub_pass(guild, auto=True)
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                log.exception("celebrations: year club upkeep failed for %s", guild.id)
+
+    @commands.group(name="yearclub", invoke_without_command=True)
+    @commands.guild_only()
+    @commands.admin_or_permissions(manage_roles=True)
+    async def yearclub(self, ctx: commands.Context):
+        """Year club roles: one "N year club!" role per member, swapped on each join anniversary."""
+        await self._migrate_yearclub(ctx.guild)
+        gconf = self.config.guild(ctx.guild)
+        mapping = engine.club_mapping(await gconf.yearclub_roles())
+        lines = [f"Automatic anniversary upkeep: **{'ON' if await gconf.yearclub_enabled() else 'off'}** (checks hourly)"]
+        if not mapping:
+            lines.append("No club roles mapped yet. Open `.celebrations` → Year club and press Find club roles (finds roles named like `5 year club!`).")
+        for years in sorted(mapping):
+            role = ctx.guild.get_role(mapping[years])
+            lines.append(f"`{years:>2}` year → {role.mention + f' ({len(role.members)} members)' if role else '⚠️ role deleted'}")
+        last = await gconf.yearclub_last()
+        if last:
+            note = " — PAUSED by safety limit" if last.get("aborted") else ""
+            lines.append(
+                f"Last pass: <t:{int(last['ts'])}:R>: {last.get('changed', 0)} updated, "
+                f"{last.get('skipped_lurkers', 0)} lurkers skipped, {last.get('blocked', 0)} blocked, "
+                f"{last.get('errors', 0)} errors{note}"
+            )
+        lines.append("Commands: `check @member`, `sync`. Roles and the on/off switch live in `.celebrations` → Year club.")
+        await ctx.send("\n".join(lines), allowed_mentions=discord.AllowedMentions.none())
+
+    @yearclub.command(name="check")
+    async def yearclub_check(self, ctx: commands.Context, member: discord.Member):
+        """Show a member's years in the server and what club role they should hold."""
+        gconf = self.config.guild(ctx.guild)
+        mapping = engine.club_mapping(await gconf.yearclub_roles())
+        years = engine.years_completed(member.joined_at.timestamp(), datetime.now(timezone.utc).timestamp()) if member.joined_at else 0
+        target = engine.club_target(years, mapping)
+        holds = [r.mention for r in member.roles if r.id in set(mapping.values())]
+        lurker_role_id = await self._lurker_role_id(ctx.guild)
+        note = " (a lurker: skipped until they're back)" if lurker_role_id and any(r.id == lurker_role_id for r in member.roles) else ""
+        await ctx.send(
+            f"{member.mention}: **{years}** year(s) in the server.\n"
+            f"Should hold: {f'<@&{target}>' if target else 'no club role'}{note}\n"
+            f"Holds now: {', '.join(holds) if holds else 'no club role'}",
+            allowed_mentions=discord.AllowedMentions.none(),
+        )
+
+    @yearclub.command(name="sync")
+    async def yearclub_sync(self, ctx: commands.Context, confirm: Optional[str] = None):
+        """Preview the one-time fix for every member; `.yearclub sync confirm` applies it.
+
+        Each active member ends with exactly one club role (their current year).
+        Lurkers are skipped: they get the right one back when they reactivate.
+        Safe to re-run any time; it only touches members who are wrong.
+        """
+        await self._migrate_yearclub(ctx.guild)
+        gconf = self.config.guild(ctx.guild)
+        mapping = engine.club_mapping(await gconf.yearclub_roles())
+        if not mapping:
+            await ctx.send("No club roles mapped. Open `.celebrations` → Year club first.")
+            return
+        if ctx.guild.id in self._yearclub_running:
+            await ctx.send("A year club pass is already running.")
+            return
+        plans, stats = self._yearclub_plans(
+            ctx.guild, mapping, await self._lurker_role_id(ctx.guild), datetime.now(timezone.utc).timestamp())
+        adds: Dict[int, int] = {}
+        removes = 0
+        for _m, add, remove in plans:
+            if add is not None:
+                adds[add.id] = adds.get(add.id, 0) + 1
+            removes += len(remove)
+        summary = (
+            f"**{len(plans)}** members need a change: {sum(adds.values())} role adds, {removes} role removals.\n"
+            + "".join(f"• +<@&{rid}> ×{n}\n" for rid, n in sorted(adds.items(), key=lambda kv: -kv[1]))
+            + f"Skipped: {stats['skipped_lurkers']} lurkers (fixed on reactivation), {stats['blocked']} blocked "
+            "(role above the bot / managed / deleted)."
+        )
+        if (confirm or "").lower() != "confirm":
+            await ctx.send(summary + f"\nApply with `.yearclub sync confirm` (~{max(1, len(plans) // 120)} min).",
+                           allowed_mentions=discord.AllowedMentions.none())
+            return
+        if not plans:
+            await ctx.send("Everyone already holds the right club role.")
+            return
+        status = await ctx.send(f"Applying… 0/{len(plans)}")
+
+        async def progress(done, total):
+            try:
+                await status.edit(content=f"Applying… {done}/{total}")
+            except discord.HTTPException:
+                pass
+
+        result = await self._yearclub_pass(ctx.guild, auto=False, progress=progress)
+        if result is None:
+            await ctx.send("Could not start (another pass is running, or no roles mapped).")
+            return
+        await status.edit(content=(
+            f"✅ Year club sync done: {result['changed']} members updated, {result['errors']} errors, "
+            f"{result['skipped_lurkers']} lurkers skipped, {result['blocked']} blocked."
+        ))
+
+    async def _apply_yearclub_enabled(self, guild, member, state: bool) -> str:
+        gconf = self.config.guild(guild)
+        if state and not engine.club_mapping(await gconf.yearclub_roles()):
+            raise PanelError("Map the club roles first (Find club roles, or add them one by one).")
+        await gconf.yearclub_enabled.set(bool(state))
+        if state:
+            return "Year club upkeep on. Anniversaries are applied within the hour (Pacific dates). Run `.yearclub sync` once to fix everyone now."
+        return "Year club upkeep off. Roles are left as they are."
+
+    async def _apply_yearclub_autodetect(self, guild, member, _value=None) -> str:
+        found = {}
+        for role in guild.roles:
+            n = engine.parse_club_role_name(role.name)
+            if n is not None and n not in found:
+                found[n] = role.id
+        if not found:
+            raise PanelError("No roles named like `5 year club!` found. Add them one by one instead.")
+        await self.config.guild(guild).yearclub_roles.set({str(k): v for k, v in found.items()})
+        listed = ", ".join(f"{n}→<@&{found[n]}>" for n in sorted(found))
+        return f"Mapped {len(found)} club roles: {listed}. Next: `.yearclub sync` to preview the one-time fix."
+
+    async def _apply_yearclub_save(self, guild, member, item_id, values, picked) -> str:
+        if item_id is None:
+            try:
+                years = int(str((values or {}).get("years", "")).strip())
+            except ValueError:
+                raise PanelError("Years must be a whole number.")
+        else:
+            years = int(item_id)
+        if not 1 <= years <= 50:
+            raise PanelError("Years must be between 1 and 50.")
+        role = (picked or [None])[0]
+        if role is None:
+            raise PanelError("Pick the role for that year.")
+        async with self.config.guild(guild).yearclub_roles() as roles:
+            roles[str(years)] = role.id
+        return f"{years} year → {role.mention}."
+
+    async def _apply_yearclub_remove(self, guild, member, item_id) -> str:
+        async with self.config.guild(guild).yearclub_roles() as roles:
+            if roles.pop(str(item_id), None) is None:
+                raise PanelError("That year isn't mapped.")
+        return f"Removed the {item_id}-year mapping (the role itself is not deleted)."
 
     # ---------- settings (the panel calls these) ----------
 

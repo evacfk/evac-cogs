@@ -12,7 +12,7 @@ from redbot.core.bot import Red
 from . import panel as panel_specs
 from .settings_panel import PanelError, open_panel
 
-COG_VERSION = "1.1.0"
+COG_VERSION = "1.1.1"
 
 # ---------------------------------------------------------------------------
 # Wondercasino hub — how a "game" entry works
@@ -354,9 +354,6 @@ class _EphemeralRelay:
     async def trigger_typing(self):
         return None
 
-    async def trigger_typing(self):
-        return None
-
     def typing(self):
         return _NoopTyping()
 
@@ -393,6 +390,7 @@ class GambleThreads(commands.Cog):
             "shared_sessions": {},
         }
         self.config.register_guild(**default_guild)
+        self._bg_tasks: set = set()
         self._cleanup_task = self.bot.loop.create_task(self._cleanup_loop())
 
     async def cog_load(self):
@@ -800,7 +798,9 @@ class GambleThreads(commands.Cog):
             except Exception:
                 pass
 
-        asyncio.create_task(_reset())
+        task = asyncio.create_task(_reset())
+        self._bg_tasks.add(task)  # held so it can't be garbage-collected mid-run
+        task.add_done_callback(self._bg_tasks.discard)
 
     async def _invoke_direct(
         self,

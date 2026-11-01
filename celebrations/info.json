@@ -1,7 +1,7 @@
 {
     "name": "Celebrations",
-    "short": "Birthdays (hoisted role, wondercoin gift, posts) and join-anniversary shout-outs.",
-    "description": "Members save their birthday with `.birthday set March 14` (year optional). On the day (Pacific time) they get a hoisted birthday role and a configurable wondercoin gift, a birthday embed is posted in the chat channel with a star reaction for the starboard, and a temporary post goes to #announcements that is deleted when the day ends. Also posts a daily shout-out for members celebrating their join anniversary. Lurkers are skipped.",
+    "short": "Birthdays (hoisted role, wondercoin gift, posts), join-anniversary shout-outs and year club roles.",
+    "description": "Members save their birthday with `.birthday set March 14` (year optional). On the day (Pacific time) they get a hoisted birthday role and a configurable wondercoin gift, a birthday embed is posted in the chat channel with a star reaction for the starboard, and a temporary post goes to #announcements that is deleted when the day ends. Also posts a daily shout-out for members celebrating their join anniversary, and keeps exactly one 'N year club!' role on every active member, swapped on each join anniversary (`.yearclub`). Lurkers are skipped.",
     "end_user_data_statement": "This cog stores each member's birthday (month, day and, only if they provide it, year) and the date they were last celebrated. Members can remove it with `.birthday remove`; it is deleted on a Red data-deletion request.",
     "install_msg": "Run `.celebrations` (needs Manage Server) to open the settings panel: pick the birthday channel (#cuddle), the announcements channel and the birthday role (or press Create role). Members use `.birthday set March 14`. `.celebrations settings` prints a summary.",
     "author": [

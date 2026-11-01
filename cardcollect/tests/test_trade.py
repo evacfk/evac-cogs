@@ -208,3 +208,27 @@ async def test_offers_and_cancel_are_locked_while_the_swap_runs(cog):
     stop = TradeInter(b, channel)
     await trade.cancel.callback(stop)
     assert "Too late" in stop.response.messages[-1][0] and not trade.done
+
+
+@pytest.mark.asyncio
+async def test_a_trade_that_fails_after_the_coins_move_refunds_them_and_keeps_both_collections(cog, monkeypatch):
+    guild, a, b, channel, ids = await setup(cog, 691)
+    await set_state(cog, a, collection=[ids["Rem"]])
+    await set_state(cog, b, collection=[ids["Ram"]])
+    real_save = cog._save_member_state
+    calls = {"n": 0}
+
+    async def flaky(member, state):
+        calls["n"] += 1
+        if calls["n"] == 2:  # the second collection fails to save, after the first one did
+            raise RuntimeError("disk full")
+        return await real_save(member, state)
+
+    monkeypatch.setattr(cog, "_save_member_state", flaky)
+    result = await cog.execute_trade(guild, a, {"cards": [ids["Rem"]], "coins": 2_000},
+                                     b, {"cards": [ids["Ram"]], "coins": 500})
+    assert isinstance(result, str) and "refunded" in result
+    monkeypatch.setattr(cog, "_save_member_state", real_save)
+    assert (await cog._member_state(a)).collection == [ids["Rem"]]
+    assert (await cog._member_state(b)).collection == [ids["Ram"]]
+    assert bank.balances[(guild.id, a.id)] == 10_000 and bank.balances[(guild.id, b.id)] == 10_000

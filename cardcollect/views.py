@@ -1873,10 +1873,14 @@ class SellView(_InvokerView):
         self._busy = True
         try:
             await interaction.response.defer()
-            if rarity is not None:
-                count, total = await self.cog.sell_tokens(interaction.guild, self.member, rarity=rarity, keep_upgrades=True)
-            else:
-                count, total = await self.cog.sell_tokens(interaction.guild, self.member, token_ids)
+            try:
+                if rarity is not None:
+                    count, total = await self.cog.sell_tokens(interaction.guild, self.member, rarity=rarity, keep_upgrades=True)
+                else:
+                    count, total = await self.cog.sell_tokens(interaction.guild, self.member, token_ids)
+            except Exception:
+                await interaction.followup.send("Couldn't pay you for those just now. Your tokens are still here; try again.", ephemeral=True)
+                return
             embed = await self._build()
             note = f"Sold {count} token{'s' if count != 1 else ''} for **{total:,}** wondercoin." if count else "Those tokens were already gone."
             if embed is None:

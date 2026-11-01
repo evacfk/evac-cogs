@@ -5,7 +5,7 @@ import calendar
 import random
 import re
 from datetime import date, datetime, timedelta
-from typing import NamedTuple, Optional
+from typing import Dict, NamedTuple, Optional, Set, Tuple
 
 from .constants import MIN_AGE, RECENT_CELEBRATION_DAYS, TZ
 
@@ -165,3 +165,59 @@ def fmt_birthday(month: int, day: int, year: Optional[int] = None) -> str:
 def ordinal(n: int) -> str:
     suffix = "th" if 10 <= n % 100 <= 20 else {1: "st", 2: "nd", 3: "rd"}.get(n % 10, "th")
     return f"{n}{suffix}"
+
+
+# ------------------------------------------------------------- year club
+#
+# "N year club!" roles: a member holds exactly ONE club role, the one for the
+# number of full years since their (current) join date. The anniversary is the
+# same calendar date in America/Los_Angeles; a Feb 29 join counts on Mar 1 in
+# non-leap years. Anyone past the highest configured role keeps the highest.
+
+# auto-pass circuit breaker: the hourly upkeep only ever has a handful of real
+# anniversaries to apply; more than this means a config change, which must go
+# through the explicit `.yearclub sync` instead.
+YEARCLUB_AUTO_MAX = 50
+
+_CLUB_NAME_RE = re.compile(r"^\W*(\d{1,2})\s*-?\s*(?:years?|yrs?)\s*club", re.IGNORECASE)
+
+
+def years_completed(joined_ts: float, now_ts: float, tz=TZ) -> int:
+    """Full years between the join and now, by local calendar date."""
+    j = datetime.fromtimestamp(joined_ts, tz).date()
+    n = datetime.fromtimestamp(now_ts, tz).date()
+    years = n.year - j.year - ((n.month, n.day) < (j.month, j.day))
+    return max(0, years)
+
+
+def parse_club_role_name(name: str) -> Optional[int]:
+    """'7 year club!' -> 7, '1 Year Club' -> 1, anything else -> None."""
+    m = _CLUB_NAME_RE.match(name or "")
+    if not m:
+        return None
+    n = int(m.group(1))
+    return n if n >= 1 else None
+
+
+def club_target(years: int, mapping: Dict[int, int]) -> Optional[int]:
+    """Role id for `years` (largest configured N <= years), or None under one year."""
+    eligible = [n for n in mapping if n <= years]
+    return mapping[max(eligible)] if eligible else None
+
+
+def club_plan(current_ids: Set[int], target: Optional[int], club_ids: Set[int]) -> Tuple[Optional[int], Set[int]]:
+    """(role to add or None, club roles to remove) so the member ends with only `target`."""
+    remove = {rid for rid in current_ids if rid in club_ids and rid != target}
+    add = target if target is not None and target not in current_ids else None
+    return add, remove
+
+
+def club_mapping(raw: Dict[str, int]) -> Dict[int, int]:
+    """Config stores {"7": role_id}; normalise to {7: role_id}."""
+    out: Dict[int, int] = {}
+    for k, v in (raw or {}).items():
+        try:
+            out[int(k)] = int(v)
+        except (TypeError, ValueError):
+            continue
+    return out

@@ -5,5 +5,6 @@
     "short": "Image-reveal puzzle game with an auto-rotating image pool.",
     "hidden": false,
     "disabled": false,
+    "requirements": ["Pillow"],
     "tags": ["game", "fun", "engagement"]
 }

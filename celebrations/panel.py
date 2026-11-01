@@ -1,9 +1,10 @@
-"""The `.celebrations` control panel: channels, birthday role, gift, timing, star and anniversaries.
+"""The `.celebrations` control panel: channels, birthday role, gift, timing, star, anniversaries and the year club.
 
 Specs only; every change goes through the cog's `_apply_*` methods. `setfor`, `clearfor`, `preview`,
 `run` and `settings` stay commands.
 """
-from .settings_panel import Field, Spec
+from . import engine
+from .settings_panel import Field, Pick, Spec
 
 INTRO = ("Pick a section, then a setting. Changes save as soon as you choose. `.celebrations setfor`, `clearfor`, "
          "`preview`, `run` and `settings` stay as commands; members use `.birthday`.")
@@ -57,6 +58,28 @@ def _one(key, label, tab, conf_key, field, box, apply_name, fmt, help="", max_le
                                               max_length=max_length, required=required),), help=help)
 
 
+async def _clubs_get(cog, guild):
+    mapping = engine.club_mapping(await cog.config.guild(guild).yearclub_roles())
+    out = []
+    for years in sorted(mapping):
+        role = guild.get_role(mapping[years])
+        out.append((str(years), f"{years} year club", role.mention if role is not None else "role deleted"))
+    return out
+
+
+async def _club_get(cog, guild, item_id):
+    mapping = engine.club_mapping(await cog.config.guild(guild).yearclub_roles())
+    return {"years": str(item_id), "role_id": mapping.get(int(item_id))}
+
+
+async def _club_save(cog, guild, member, item_id, values, picked):
+    return await cog._apply_yearclub_save(guild, member, item_id, values, picked)
+
+
+async def _club_remove(cog, guild, member, item_id):
+    return await cog._apply_yearclub_remove(guild, member, item_id)
+
+
 def build_specs():
     return [
         Spec("channel", "Birthday channel", "Birthdays", "channel", get=_conf("channel_id"), apply=_apply("_apply_channel"),
@@ -85,4 +108,16 @@ def build_specs():
              apply=_apply("_apply_anniversaries"), help="A daily post celebrating members' join anniversaries."),
         _one("anniversary_gift", "Anniversary gift", "Anniversaries", "anniversary_gift", "amount",
              "Coins per anniversary (0 = off)", "_apply_anniversary_gift", lambda a: f"{a:,}" if a else "off", max_length=9),
+        # -- Year club
+        Spec("yearclub_enabled", "Year club upkeep", "Year club", "toggle", get=_conf("yearclub_enabled"),
+             apply=_apply("_apply_yearclub_enabled"),
+             help="Swaps each active member's \"N year club!\" role on their join anniversary (checked hourly)."),
+        Spec("yearclub_detect", "Find club roles", "Year club", "action", apply=_apply("_apply_yearclub_autodetect"),
+             button="Find club roles", confirm="This replaces the whole year → role list with every role named like `5 year club!`.",
+             help="Maps every role named like `5 year club!`. Replaces the list below."),
+        Spec("yearclub_roles", "Club roles", "Year club", "collection", get=_clubs_get, item_get=_club_get,
+             save=_club_save, remove=_club_remove,
+             fields=(Field("years", "Years in the server (1-50)", new_only=True, max_length=2),),
+             pick=Pick("role", "Choose the role for this year", defaults=lambda r: [r["role_id"]] if r.get("role_id") else []),
+             help="A member holds the role for their completed years (the highest year at or below theirs)."),
     ]

@@ -36,17 +36,6 @@ def _sweep_text(last_sweep: dict, now_ts: float) -> str:
     return text
 
 
-def _yearclub_text(last: dict, now_ts: float) -> str:
-    if not last:
-        return "never run"
-    text = f"{format_age(last.get('ts'), now_ts)}: {last.get('changed', 0)} changed"
-    if last.get("errors"):
-        text += f", {last['errors']} errors"
-    if last.get("aborted"):
-        text += " (ABORTED)"
-    return text
-
-
 def build_overview(
     *,
     enabled: bool,
@@ -59,9 +48,6 @@ def build_overview(
     last_sweep: dict,
     sweep_max: int,
     exempt_names: list,
-    yearclub_enabled: bool,
-    yearclub_role_count: int,
-    yearclub_last: dict,
     lurker_member_count: Optional[int],
     tracked_count: int,
     now_ts: float,
@@ -82,11 +68,6 @@ def build_overview(
             f"{report_channel_name} every {report_interval_days} days, last sent {format_age(last_report_ts, now_ts)}"
             if report_channel_name
             else "off",
-        ),
-        (
-            "Year club",
-            ("enabled" if yearclub_enabled else "disabled")
-            + f", {yearclub_role_count} roles, last run {_yearclub_text(yearclub_last, now_ts)}",
         ),
     ]
 

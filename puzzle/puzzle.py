@@ -58,7 +58,7 @@ class Puzzle(commands.Cog):
     per person across every round.
     """
 
-    __version__ = "1.8.0"
+    __version__ = "1.8.1"
 
     def __init__(self, bot: Red):
         self.bot = bot

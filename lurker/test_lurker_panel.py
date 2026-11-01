@@ -25,7 +25,7 @@ from lurker.settings_panel import NEW_ITEM, PanelError, SettingsPanel
 DEFAULTS = dict(
     lurker_role_id=None, lurker_channel_id=None, welcome_channel_id=912520841613418596, exempt_role_ids=[],
     threshold_days=30, enabled=False, last_sweep_ts=0, report_channel_id=None, report_interval_days=7,
-    last_report_ts=0, sweep_max=250, yearclub_roles={}, yearclub_enabled=False,
+    last_report_ts=0, sweep_max=250,
 )
 
 
@@ -76,7 +76,7 @@ class Guild:
     id, name = 1, "Wonderland"
 
     def __init__(self):
-        self.roles = [Role(id=7, name="5 year club!"), Role(id=8, name="12 Year Club"), Role(id=9, name="Mods")]
+        self.roles = [Role(id=7, name="RoleA"), Role(id=8, name="RoleB"), Role(id=9, name="Mods")]
         self.chans = {10: Chan(id=10), 11: Chan(id=11)}
 
     def get_role(self, rid):
@@ -198,36 +198,10 @@ async def test_reports_and_welcome_settings():
     assert g.welcome_channel_id.data is None
 
 
-async def test_year_club_mapping_autodetect_save_remove_and_enable_guard():
-    cog, g, guild = make()
-    with pytest.raises(PanelError):
-        await cog._apply_yearclub_enabled(guild, None, True)
-    await cog._apply_yearclub_autodetect(guild, None)
-    assert g.yearclub_roles.data == {"5": 7, "12": 8}
-    await cog._apply_yearclub_enabled(guild, None, True)
-    assert g.yearclub_enabled.data is True
-    with pytest.raises(PanelError):
-        await cog._apply_yearclub_save(guild, None, None, {"years": "0"}, [guild.roles[2]])
-    with pytest.raises(PanelError):
-        await cog._apply_yearclub_save(guild, None, None, {"years": "x"}, [guild.roles[2]])
-    with pytest.raises(PanelError):
-        await cog._apply_yearclub_save(guild, None, None, {"years": "13"}, [])
-    await cog._apply_yearclub_save(guild, None, None, {"years": "13"}, [guild.roles[2]])
-    await cog._apply_yearclub_save(guild, None, "5", {}, [guild.roles[1]])  # editing keeps the year, swaps the role
-    assert g.yearclub_roles.data == {"5": 8, "12": 8, "13": 9}
-    await cog._apply_yearclub_remove(guild, None, "13")
-    with pytest.raises(PanelError):
-        await cog._apply_yearclub_remove(guild, None, "13")
-    guild.roles = [r for r in guild.roles if r.id not in (7, 8)]
-    with pytest.raises(PanelError, match="No roles named"):
-        await cog._apply_yearclub_autodetect(guild, None)
-    assert g.yearclub_roles.data == {"5": 8, "12": 8}  # a failed detect leaves the list alone
-
-
-async def test_panel_tabs_roles_and_year_club_collection_through_widgets():
+async def test_panel_tabs_and_roles_through_widgets():
     cog, g, guild = make()
     p, a = await open_it(cog, guild)
-    assert set(p.tabs) == {"Lurkers", "Reports", "Year club"}
+    assert set(p.tabs) == {"Lurkers", "Reports"}
     for tab in p.tabs:
         await p._on_tab(Click(a, [tab]))
         for spec in p.tab_specs():
@@ -246,40 +220,11 @@ async def test_panel_tabs_roles_and_year_club_collection_through_widgets():
     click = Click(a)
     await p._on_edit_modal(click)
     assert click.response.modal.boxes["days"].default == "30"
-    # the year-club list: add (years form, then the role dropdown), then edit (dropdown only) and remove
-    await p._on_tab(Click(a, ["Year club"]))
-    await p._on_setting(Click(a, ["yearclub_roles"]))
-    await p._on_item(Click(a, [NEW_ITEM]))
-    click = Click(a)
-    await p._on_item_edit(click)
-    modal = click.response.modal
-    assert set(modal.boxes) == {"years"}
-    modal.boxes["years"]._value = "3"
-    await modal.on_submit(Click(a))
-    assert p.mode == "pick"
-    next(c for c in p.children if isinstance(c, discord.ui.RoleSelect))._values = [guild.roles[2]]
-    done = Click(a)
-    await p._on_pick_done(done)
-    assert g.yearclub_roles.data == {"3": 9} and "\u2705" in note(done)
-    await p._on_item(Click(a, ["3"]))
-    click = Click(a)
-    await p._on_item_edit(click)
-    assert p.mode == "pick"
-    assert [d.id for d in next(c for c in p.children if isinstance(c, discord.ui.RoleSelect)).default_values] == [9]
-    await p._on_cancel(Click(a))
-    await p._on_item_remove(Click(a))
-    assert g.yearclub_roles.data == {}
-    # find club roles asks first, then replaces the list
-    await p._on_setting(Click(a, ["yearclub_detect"]))
-    await p._on_action(Click(a))
-    assert p.mode == "confirm" and g.yearclub_roles.data == {}
-    await p._on_confirm(Click(a))
-    assert g.yearclub_roles.data == {"5": 7, "12": 8}
 
 
 def test_removed_setters_are_gone_and_kept_commands_remain():
     set_names = {c.name for c in Lurker.lurkerset.commands}
     assert set_names == {"settings", "postinfo"}
-    assert {c.name for c in Lurker.yearclub.commands} == {"check", "sync"}
+    assert not hasattr(Lurker, "yearclub")  # moved to the celebrations cog
     for kept in ("lurker_manual", "lurker_version", "lurker_status", "lurker_report"):
         assert isinstance(getattr(Lurker, kept), discord.ext.commands.Command), kept

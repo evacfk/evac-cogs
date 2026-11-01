@@ -36,7 +36,7 @@ def cogmod(monkeypatch):
 class FakeLurkerCog:
     def __init__(self, role_id):
         self.config = tk.FakeConfig()
-        self.config.register_guild(lurker_role_id=role_id)
+        self.config.register_guild(lurker_role_id=role_id, report_channel_id=None)
 
 
 @pytest.fixture
@@ -319,9 +319,9 @@ async def test_group_opens_panel_for_admins_and_summary_for_mods(env, monkeypatc
         async def send(self, text=None, **kw):
             sent.append(text)
     await env.cog.celebrations.callback(env.cog, Ctx(True))
-    assert opened == [("Celebrations", 9)] and sent == []
+    assert opened == [("Celebrations", 12)] and sent == []
     await env.cog.celebrations.callback(env.cog, Ctx(False))
-    assert opened == [("Celebrations", 9)] and "Celebrations v" in sent[-1]
+    assert opened == [("Celebrations", 12)] and "Celebrations v" in sent[-1]
 
 
 async def test_removed_setter_commands_are_gone(env):
@@ -330,3 +330,128 @@ async def test_removed_setter_commands_are_gone(env):
         assert not hasattr(env.cog, f"celebrations_{gone}")
     for kept in ("settings", "setfor", "clearfor", "preview", "run", "version"):
         assert hasattr(env.cog, f"celebrations_{kept}")
+
+
+# ------------------------------------------------------------- year club (moved here from the lurker cog)
+
+def _years_ago(years, extra_days=0):
+    from datetime import timedelta
+    now_local = datetime.now(TZ)
+    try:
+        j = now_local.replace(year=now_local.year - years)
+    except ValueError:  # Feb 29
+        j = now_local.replace(year=now_local.year - years, day=28)
+    return j - timedelta(days=extra_days)
+
+
+async def _club_env(env, enabled=True):
+    club = {n: env.guild.add_role(700 + n, f"{n} year club!", position=30 + n) for n in range(1, 13)}
+    gconf = env.cog.config.guild(env.guild)
+    await gconf.yearclub_roles.set({str(n): r.id for n, r in club.items()})
+    await gconf.yearclub_enabled.set(enabled)
+    await gconf.yearclub_migrated.set(True)
+    return club
+
+
+async def test_yearclub_sync_leaves_exactly_one_current_role(env):
+    club = await _club_env(env)
+    extra = env.guild.add_role(800, "Other", position=20)
+    stacked = tk.FakeMember(env.guild, 20, _years_ago(3, 10), roles=[club[1], club[2], club[3], extra])
+    due = tk.FakeMember(env.guild, 21, _years_ago(2, 1), roles=[club[1]])  # anniversary passed: 1 -> 2
+    fresh = tk.FakeMember(env.guild, 22, _years_ago(0, 30), roles=[club[1]])  # under a year: stale role goes
+    veteran = tk.FakeMember(env.guild, 23, _years_ago(14, 5))  # past the top role: keeps 12
+    lurk = tk.FakeMember(env.guild, 24, _years_ago(5, 5), roles=[env.lurker, club[1]])
+    correct = tk.FakeMember(env.guild, 25, _years_ago(4, 5), roles=[club[4]])
+
+    stats = await env.cog._yearclub_pass(env.guild, auto=False)
+
+    assert stacked.role_ids() == {club[3].id, extra.id}
+    assert due.role_ids() == {club[2].id}
+    assert fresh.role_ids() == set()
+    assert veteran.role_ids() == {club[12].id}
+    assert lurk.role_ids() == {env.lurker.id, club[1].id}  # lurkers are never touched
+    assert correct.role_ids() == {club[4].id}
+    assert stats["changed"] == 4 and stats["skipped_lurkers"] == 1 and stats["errors"] == 0
+    assert (await env.cog.config.guild(env.guild).yearclub_last())["changed"] == 4
+
+
+async def test_yearclub_auto_pass_aborts_on_mass_change_and_alerts_the_lurker_report_channel(env, monkeypatch):
+    club = await _club_env(env)
+    monkeypatch.setattr(env.mod.engine, "YEARCLUB_AUTO_MAX", 2)
+    report = env.guild.add_channel(300, "mod-log")
+    await env.cog.bot.get_cog("Lurker").config.guild(env.guild).report_channel_id.set(300)
+    members = [tk.FakeMember(env.guild, 30 + i, _years_ago(3, 3), roles=[club[1]]) for i in range(3)]
+
+    stats = await env.cog._yearclub_pass(env.guild, auto=True)
+
+    assert stats["aborted"] is True and len(report.sent) == 1 and "paused" in report.sent[0].content
+    assert all(m.role_ids() == {club[1].id} for m in members)  # nothing changed
+
+
+async def test_a_pass_with_nothing_mapped_does_nothing(env):
+    await env.cog.config.guild(env.guild).yearclub_migrated.set(True)
+    assert await env.cog._yearclub_pass(env.guild, auto=True) is None
+
+
+async def test_lurker_asks_which_roles_are_transient_and_what_a_returner_gets(env):
+    club = await _club_env(env)
+    await env.setup()
+    ids = await env.cog.transient_role_ids(env.guild)
+    assert ids == {env.role.id} | {r.id for r in club.values()}
+    m = tk.FakeMember(env.guild, 40, _years_ago(3, 2), roles=[club[2]])
+    assert await env.cog.club_role_for(m) == club[3].id
+    new = tk.FakeMember(env.guild, 41, _years_ago(0, 20))
+    assert await env.cog.club_role_for(new) is None
+
+
+async def test_with_the_year_club_off_nothing_is_transient_and_nobody_gets_a_club_role(env):
+    club = await _club_env(env, enabled=False)
+    await env.setup()
+    assert await env.cog.transient_role_ids(env.guild) == {env.role.id}
+    m = tk.FakeMember(env.guild, 42, _years_ago(3, 2), roles=[club[3]])
+    assert await env.cog.club_role_for(m) is None
+
+
+async def test_settings_move_over_from_the_lurker_cog_once(env, monkeypatch):
+    old = tk.FakeConfig()
+    old.register_guild(yearclub_roles={}, yearclub_enabled=False, yearclub_last={})
+    old_g = old.guild(env.guild)
+    await old_g.yearclub_roles.set({"1": 701, "2": 702})
+    await old_g.yearclub_enabled.set(True)
+    await old_g.yearclub_last.set({"ts": 1, "changed": 5})
+    monkeypatch.setattr(env.mod.Config, "get_conf", classmethod(lambda cls, *a, **k: old), raising=False)
+
+    await env.cog._migrate_yearclub(env.guild)
+    g = env.cog.config.guild(env.guild)
+    assert await g.yearclub_roles() == {"1": 701, "2": 702}
+    assert await g.yearclub_enabled() is True and (await g.yearclub_last())["changed"] == 5
+    assert await g.yearclub_migrated() is True
+
+    await old_g.yearclub_roles.set({"9": 999})  # a later change on the old side is ignored
+    await env.cog._migrate_yearclub(env.guild)
+    assert await g.yearclub_roles() == {"1": 701, "2": 702}
+
+
+async def test_a_server_that_already_has_celebrations_club_settings_keeps_them(env, monkeypatch):
+    old = tk.FakeConfig()
+    old.register_guild(yearclub_roles={}, yearclub_enabled=False, yearclub_last={})
+    await old.guild(env.guild).yearclub_roles.set({"5": 5})
+    monkeypatch.setattr(env.mod.Config, "get_conf", classmethod(lambda cls, *a, **k: old), raising=False)
+    g = env.cog.config.guild(env.guild)
+    await g.yearclub_roles.set({"1": 701})
+    await env.cog._migrate_yearclub(env.guild)
+    assert await g.yearclub_roles() == {"1": 701}
+
+
+async def test_upkeep_runs_at_most_hourly_and_only_when_switched_on(env):
+    club = await _club_env(env)
+    m = tk.FakeMember(env.guild, 50, _years_ago(2, 1), roles=[club[1]])
+    await env.cog._run_yearclub_upkeep()
+    assert m.role_ids() == {club[2].id}
+    m.roles = [env.guild.default_role, club[1]]
+    await env.cog._run_yearclub_upkeep()  # same hour: skipped
+    assert m.role_ids() == {club[1].id}
+    env.cog._yearclub_checked.clear()
+    await env.cog.config.guild(env.guild).yearclub_enabled.set(False)
+    await env.cog._run_yearclub_upkeep()  # off: nothing happens
+    assert m.role_ids() == {club[1].id}

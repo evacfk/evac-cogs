@@ -15,6 +15,8 @@ except ImportError:
 if not _real_red:
     pytest.skip("real Red not installed", allow_module_level=True)
 
+import copy
+
 from celebrations import constants, panel as panel_mod
 from celebrations.celebrations import Celebrations
 from celebrations.settings_panel import SettingsPanel
@@ -34,6 +36,15 @@ class Val:
 
     async def set(self, value):
         self.data = value
+
+    async def __aenter__(self):
+        self.obj = copy.deepcopy(self.data)
+        return self.obj
+
+    async def __aexit__(self, *exc):
+        if exc[0] is None:
+            self.data = self.obj
+        return False
 
 
 class Group:
@@ -123,9 +134,9 @@ def note(click):
 def test_specs_fit_discord_limits():
     specs = panel_mod.build_specs()
     keys = [s.key for s in specs]
-    assert len(keys) == len(set(keys)) == 9
+    assert len(keys) == len(set(keys)) == 12
     assert all(len(s.fields) <= 5 for s in specs)
-    assert {s.tab for s in specs} == {"Birthdays", "Anniversaries"}
+    assert {s.tab for s in specs} == {"Birthdays", "Anniversaries", "Year club"}
 
 
 async def test_panel_shows_values_and_gift_modal_saves_and_rejects():
@@ -159,3 +170,92 @@ async def test_only_the_opener_with_manage_server_can_use_it():
     assert await p.interaction_check(Click(a)) is True
     a.guild_permissions.manage_guild = False
     assert await p.interaction_check(Click(a)) is False
+
+
+# ------------------------------------------------------------- year club tab (moved from the lurker panel)
+
+class ClubRole(SimpleNamespace):
+    @property
+    def mention(self):
+        return f"<@&{self.id}>"
+
+
+class ClubGuild:
+    id, name = 1, "Wonderland"
+
+    def __init__(self):
+        self.roles = [ClubRole(id=7, name="5 year club!"), ClubRole(id=8, name="12 Year Club"), ClubRole(id=9, name="Mods")]
+        self.chans = {}
+
+    def get_role(self, rid):
+        return next((r for r in self.roles if r.id == rid), None)
+
+    def get_channel(self, cid):
+        return self.chans.get(cid)
+
+
+async def test_year_club_mapping_autodetect_save_remove_and_enable_guard():
+    cog, g = make()
+    guild = ClubGuild()
+    from celebrations.settings_panel import PanelError
+    with pytest.raises(PanelError):
+        await cog._apply_yearclub_enabled(guild, None, True)
+    await cog._apply_yearclub_autodetect(guild, None)
+    assert g.yearclub_roles.data == {"5": 7, "12": 8}
+    await cog._apply_yearclub_enabled(guild, None, True)
+    assert g.yearclub_enabled.data is True
+    for bad in ({"years": "0"}, {"years": "x"}):
+        with pytest.raises(PanelError):
+            await cog._apply_yearclub_save(guild, None, None, bad, [guild.roles[2]])
+    with pytest.raises(PanelError):
+        await cog._apply_yearclub_save(guild, None, None, {"years": "13"}, [])
+    await cog._apply_yearclub_save(guild, None, None, {"years": "13"}, [guild.roles[2]])
+    await cog._apply_yearclub_save(guild, None, "5", {}, [guild.roles[1]])  # editing keeps the year, swaps the role
+    assert g.yearclub_roles.data == {"5": 8, "12": 8, "13": 9}
+    await cog._apply_yearclub_remove(guild, None, "13")
+    with pytest.raises(PanelError):
+        await cog._apply_yearclub_remove(guild, None, "13")
+    guild.roles = [r for r in guild.roles if r.id not in (7, 8)]
+    with pytest.raises(PanelError, match="No roles named"):
+        await cog._apply_yearclub_autodetect(guild, None)
+    assert g.yearclub_roles.data == {"5": 8, "12": 8}  # a failed detect leaves the list alone
+
+
+async def test_year_club_tab_collection_through_widgets():
+    cog, g = make()
+    guild = ClubGuild()
+    a = admin()
+    p = SettingsPanel(cog, guild, a, panel_mod.build_specs(), title="Celebrations", intro=panel_mod.INTRO)
+    await p.refresh_data()
+    p.rebuild()
+    from celebrations.settings_panel import NEW_ITEM
+    await p._on_tab(Click(a, ["Year club"]))
+    for spec in p.tab_specs():
+        await p._on_setting(Click(a, [spec.key]))
+        assert len(p.to_components()) <= 5 and p.build_embed().description
+    await p._on_setting(Click(a, ["yearclub_roles"]))
+    await p._on_item(Click(a, [NEW_ITEM]))
+    click = Click(a)
+    await p._on_item_edit(click)
+    modal = click.response.modal
+    assert set(modal.boxes) == {"years"}
+    modal.boxes["years"]._value = "3"
+    await modal.on_submit(Click(a))
+    assert p.mode == "pick"
+    next(c for c in p.children if isinstance(c, discord.ui.RoleSelect))._values = [guild.roles[2]]
+    done = Click(a)
+    await p._on_pick_done(done)
+    assert g.yearclub_roles.data == {"3": 9} and "\u2705" in note(done)
+    await p._on_item(Click(a, ["3"]))
+    click = Click(a)
+    await p._on_item_edit(click)
+    assert p.mode == "pick"
+    assert [d.id for d in next(c for c in p.children if isinstance(c, discord.ui.RoleSelect)).default_values] == [9]
+    await p._on_cancel(Click(a))
+    await p._on_item_remove(Click(a))
+    assert g.yearclub_roles.data == {}
+    await p._on_setting(Click(a, ["yearclub_detect"]))
+    await p._on_action(Click(a))
+    assert p.mode == "confirm" and g.yearclub_roles.data == {}
+    await p._on_confirm(Click(a))
+    assert g.yearclub_roles.data == {"5": 7, "12": 8}

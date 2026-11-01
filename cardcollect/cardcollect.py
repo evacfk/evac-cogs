@@ -160,6 +160,7 @@ class CardCollect(commands.Cog):
         # mid-draw never resolves (its buttons then answer "this drop is over"),
         # never touches persisted collections/tokens
         self.active_drops: Dict[int, ActiveDrop] = {}  # message_id -> ActiveDrop
+        self._bg_tasks: set = set()  # fire-and-forget tasks, held so they aren't garbage-collected
         self.last_drop_time: Dict[int, float] = {}  # guild_id -> monotonic time
         self._drop_locks: Dict[int, asyncio.Lock] = {}  # guild_id -> lock (drop cooldown)
         # One lock per guild around every write that gives or takes cards
@@ -212,6 +213,8 @@ class CardCollect(commands.Cog):
         for drop in list(self.active_drops.values()):
             if drop.task is not None:
                 drop.task.cancel()
+        for task in list(self._bg_tasks):
+            task.cancel()
         try:
             await self._flush_activity()
         except Exception:
@@ -485,7 +488,9 @@ class CardCollect(commands.Cog):
         if not is_test:
             await self._bump_stats(guild, drops=1, cards_offered=len(entries), legendaries_offered=len(legendaries),
                                   drops_legend_tracked=1)  # drops counted since legendaries were tracked
-            asyncio.ensure_future(self._post_wish_pings(drop, [card for card, _ in entries]))
+            ping = asyncio.ensure_future(self._post_wish_pings(drop, [card for card, _ in entries]))
+            self._bg_tasks.add(ping)  # keep a reference so it can't be garbage-collected mid-run
+            ping.add_done_callback(self._bg_tasks.discard)
         return None
 
     # ------------------------------------------------------------------
@@ -1962,6 +1967,7 @@ class CardCollect(commands.Cog):
                     cards[cid] = card
                 if offer["coins"] and not await bank.can_spend(giver, offer["coins"]):
                     return f"{giver.display_name} doesn't have {offer['coins']:,} wondercoin any more."
+            originals = {uid: st.to_dict() for uid, st in states.items()}
             paid = []
             try:
                 for giver, offer, _ in sides:
@@ -1972,19 +1978,33 @@ class CardCollect(commands.Cog):
                 for giver, amount in paid:
                     await bank.deposit_credits(giver, amount)
                 return "Someone's wondercoin changed mid-trade. Nothing was swapped."
-            sell_prices = await self.config.guild(guild).sell_prices()
-            set_lines = []
-            outcomes = []
-            for giver, offer, receiver in sides:
-                for cid in offer["cards"]:
-                    outcome, _carried = self._move_copy(states[giver.id], states[receiver.id], cards[cid], sell_prices)
-                    outcomes.append((receiver, cards[cid], outcome))
-            for receiver, card, outcome in outcomes:
-                done = await self._complete_set(guild, receiver, states[receiver.id], card, outcome)
-                if done is not None:
-                    set_lines.append(f"\U0001f3c6 {receiver.mention} completed the **{done[0]}** set: +{done[1]:,} wondercoin!")
-            await self._save_member_state(a, states[a.id])
-            await self._save_member_state(b, states[b.id])
+            try:
+                sell_prices = await self.config.guild(guild).sell_prices()
+                set_lines = []
+                outcomes = []
+                for giver, offer, receiver in sides:
+                    for cid in offer["cards"]:
+                        outcome, _carried = self._move_copy(states[giver.id], states[receiver.id], cards[cid], sell_prices)
+                        outcomes.append((receiver, cards[cid], outcome))
+                for receiver, card, outcome in outcomes:
+                    done = await self._complete_set(guild, receiver, states[receiver.id], card, outcome)
+                    if done is not None:
+                        set_lines.append(f"\U0001f3c6 {receiver.mention} completed the **{done[0]}** set: +{done[1]:,} wondercoin!")
+                await self._save_member_state(a, states[a.id])
+                await self._save_member_state(b, states[b.id])
+            except Exception:
+                log.exception("cardcollect: a trade between %s and %s failed; refunding", a.id, b.id)
+                for member in (a, b):  # put both collections back exactly as they were
+                    try:
+                        await self._save_member_state(member, MemberState.from_dict(originals[member.id]))
+                    except Exception:
+                        log.exception("cardcollect: could not restore %s's collection after a failed trade", member.id)
+                for giver, amount in paid:
+                    try:
+                        await bank.deposit_credits(giver, amount)
+                    except Exception:
+                        log.exception("cardcollect: could not refund %s to %s after a failed trade", amount, giver.id)
+                return "Something went wrong with that trade. Any wondercoin was refunded and no cards moved."
             for giver, offer, receiver in sides:
                 if offer["coins"]:
                     await bank.deposit_credits(receiver, offer["coins"])
@@ -2079,9 +2099,16 @@ class CardCollect(commands.Cog):
                 return 0, 0
             prices = await self.config.guild(guild).sell_prices()
             total = sum(engine.sell_price(t.rarity, prices) for t in chosen)
+            before = list(state.sell_tokens)
             state.sell_tokens = [t for t in state.sell_tokens if t not in chosen]
             await self._save_member_state(member, state)
-        await bank.deposit_credits(member, total)
+            try:
+                await bank.deposit_credits(member, total)
+            except Exception:
+                log.exception("cardcollect: paying %s for %s tokens failed for %s; restoring them", total, len(chosen), member.id)
+                state.sell_tokens = before
+                await self._save_member_state(member, state)
+                raise
         return len(chosen), total
 
     @card.command(name="leaderboard")

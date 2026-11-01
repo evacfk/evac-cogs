@@ -121,3 +121,17 @@ async def test_draw_results_list_who_can_upgrade_now(cog):
     ready = next(f for f in embed.fields if f.name == "Upgrades ready")
     assert f"<@{winner.id}>" in ready.value and "Holo" in ready.value
     assert "duplicate token" in embed.description
+
+
+@pytest.mark.asyncio
+async def test_a_failed_payout_gives_the_tokens_back(cog, monkeypatch):
+    guild, _ad, a, channel, ids = await setup(cog, 977)
+    await set_state(cog, a, sell_tokens=[SellToken("x1", ids["Plain One"], "rare", 0.0)])
+
+    async def broken(member, amount):
+        raise RuntimeError("bank down")
+
+    monkeypatch.setattr("cardcollect.cardcollect.bank.deposit_credits", broken)
+    with pytest.raises(RuntimeError):
+        await cog.sell_tokens(guild, a, ["x1"])
+    assert [t.token_id for t in (await cog._member_state(a)).sell_tokens] == ["x1"]

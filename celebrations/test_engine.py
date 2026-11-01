@@ -91,3 +91,35 @@ def test_formatting():
     assert engine.fmt_birthday(3, 14, 1998) == "March 14, 1998"
     assert [engine.ordinal(n) for n in (1, 2, 3, 4, 11, 12, 13, 21, 22, 101)] == [
         "1st", "2nd", "3rd", "4th", "11th", "12th", "13th", "21st", "22nd", "101st"]
+
+
+# ------------------------------------------------------------- year club
+
+def test_years_completed_uses_local_calendar_date():
+    from datetime import datetime
+    tz = engine.TZ
+    joined = datetime(2020, 10, 3, 12, 0, tzinfo=tz).timestamp()
+    assert engine.years_completed(joined, datetime(2026, 10, 2, 23, 59, tzinfo=tz).timestamp()) == 5
+    assert engine.years_completed(joined, datetime(2026, 10, 3, 0, 1, tzinfo=tz).timestamp()) == 6
+    leap = datetime(2024, 2, 29, 9, 0, tzinfo=tz).timestamp()
+    assert engine.years_completed(leap, datetime(2025, 2, 28, 23, 0, tzinfo=tz).timestamp()) == 0
+    assert engine.years_completed(leap, datetime(2025, 3, 1, 0, 30, tzinfo=tz).timestamp()) == 1
+    assert engine.years_completed(leap, datetime(2020, 1, 1, tzinfo=tz).timestamp()) == 0  # never negative
+
+
+def test_club_names_targets_and_plans():
+    mapping = {1: 11, 2: 12, 3: 13, 12: 112}
+    assert engine.parse_club_role_name("7 year club!") == 7
+    assert engine.parse_club_role_name("12 Year Club") == 12
+    assert engine.parse_club_role_name("1 yr club") == 1
+    assert engine.parse_club_role_name("year club fan") is None
+    assert engine.parse_club_role_name("Movie Night") is None
+    assert engine.club_target(0, mapping) is None
+    assert engine.club_target(2, mapping) == 12
+    assert engine.club_target(7, mapping) == 13  # gap: keeps the highest configured <= years
+    assert engine.club_target(14, mapping) == 112
+    clubs = set(mapping.values())
+    assert engine.club_plan({11, 12, 13, 99}, 13, clubs) == (None, {11, 12})
+    assert engine.club_plan({99}, 12, clubs) == (12, set())
+    assert engine.club_plan({11, 99}, None, clubs) == (None, {11})
+    assert engine.club_mapping({"3": "13", "x": 1, "4": None}) == {3: 13}
