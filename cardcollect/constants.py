@@ -165,7 +165,7 @@ GALLERY_PAGE_SIZE = GALLERY_COLUMNS * GALLERY_ROWS_PER_PAGE
 GALLERY_VIEW_TIMEOUT_SECONDS = 180  # a stale pager after this just stops responding
 
 # bumped on every deploy so `.card version` can confirm the new build is live
-COG_VERSION = "2.12.0"
+COG_VERSION = "2.12.1"
 
 UPLOAD_CANCELLED = "cancelled"  # what wait_for_upload returns when the admin backs out
 UPLOAD_CANCEL_WORDS = ("cancel", "stop", "nevermind", "never mind", "exit", "quit")
