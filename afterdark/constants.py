@@ -1,8 +1,8 @@
 """All defaults and lookup tables for afterdark -- no discord/redbot imports."""
 
-VERSION = "1.8.1"
+VERSION = "1.8.2"
 CHANNEL_PREFIX = "🤖・"   # every bot-made channel starts like this, matching the other bot channels
-BUILD = "afterdark build: feeds-v1 (interests, channels and Reddit/Telegram feeds are set up together from .afterdark)"
+BUILD = "afterdark build: digest-v1 (sweep digest can be muted; a dry run only repeats when its findings change)"
 
 CONFIG_IDENTIFIER = 7316482950
 DAY = 86400
@@ -120,6 +120,8 @@ GUILD_DEFAULTS = dict(
     last_sweep={},
     digest_last=0.0,             # unix time of the last sweep digest posted (sweeps report at most once a day)
     digest_pending={},           # {"dry": bool, "revoke": [...], "remove": [...], "warn": [...]} waiting for the next digest
+    digest_enabled=True,         # False mutes the daily sweep digest (aborts and errors still post)
+    digest_sig="",               # fingerprint of the last DRY-RUN digest posted: an identical one is not posted again
     # ---- invitations ----
     invites_enabled=False,
     invite_min=3,

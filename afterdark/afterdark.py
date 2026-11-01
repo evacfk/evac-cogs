@@ -13,6 +13,7 @@ Design notes
 - The sweep is DRY-RUN by default and has a circuit breaker.
 """
 import asyncio
+import hashlib
 import logging
 import random
 import time
@@ -872,14 +873,30 @@ class AfterDark(commands.Cog):
         if not any(queued[k] for k in ("revoke", "remove", "warn")):
             await conf.digest_pending.set({})
             return  # (daily invitations log themselves)
+        if not force and not await conf.digest_enabled():
+            await conf.digest_pending.set({})  # muted: nothing queues up for later
+            return
         if force or now - float(await conf.digest_last()) >= C.DIGEST_SECONDS:
-            await self._post_digest(guild, queued)
+            await self._post_digest(guild, queued, force=force)
         else:
             await conf.digest_pending.set(queued)
 
-    async def _post_digest(self, guild, queued: dict):
+    @staticmethod
+    def _digest_signature(queued: dict) -> str:
+        parts = [str(bool(queued.get("dry")))]
+        for kind in ("warn", "remove", "revoke"):
+            parts.append(kind + ":" + "|".join(sorted(queued.get(kind, []))))
+        return hashlib.sha1("\n".join(parts).encode("utf-8")).hexdigest()
+
+    async def _post_digest(self, guild, queued: dict, *, force: bool = False):
         conf = self.config.guild(guild)
         dry = bool(queued.get("dry"))
+        sig = self._digest_signature(queued)
+        if dry and not force and sig == await conf.digest_sig():
+            # A dry run keeps finding the same members: say it once, not every day.
+            await conf.digest_last.set(self._clock())
+            await conf.digest_pending.set({})
+            return
         counts = {k: len(queued.get(k, [])) for k in ("revoke", "remove", "warn")}
         verb = {"revoke": "revoked", "remove": "removed", "warn": "warned"}
         if dry:
@@ -892,6 +909,7 @@ class AfterDark(commands.Cog):
         await self._log(guild, "\n".join(lines))
         await conf.digest_last.set(self._clock())
         await conf.digest_pending.set({})
+        await conf.digest_sig.set(sig if dry else "")
 
     async def _post_alert(self, guild, summary: dict):
         """Circuit-breaker aborts and per-member errors: posted immediately."""
@@ -1412,6 +1430,8 @@ class AfterDark(commands.Cog):
             ("Access mode", cfg["access_mode"]),
             ("Inactivity", f"warn {cfg['warn_days']}d / remove {cfg['remove_days']}d"),
             ("Sweep", f"{'DRY-RUN' if cfg['dry_run'] else 'LIVE'}, every {cfg['sweep_interval_minutes']}m, max {cfg['sweep_max']} actions"),
+            ("Sweep digest", "ON: one post a day, a dry run repeats only when the findings change" if cfg["digest_enabled"]
+             else "MUTED (aborts and errors still post; `.afterdark sweep` still reports)"),
             ("Last sweep", last or "never"),
             ("Invitations", f"{'ON' if cfg['invites_enabled'] else 'OFF'}: you approve each one, {cfg['invite_min']}-{cfg['invite_max']}/day, highest level first, expire {cfg['invite_ttl_days']}d"),
             ("Not now (snoozed)", f"{len([1 for t in cfg['invite_snoozed'].values() if float(t) > self._clock()])} member(s), {cfg['invite_snooze_days']}d each"),
@@ -2277,6 +2297,11 @@ class AfterDark(commands.Cog):
         await self.config.guild(guild).dry_run.set(value)
         await self._log(guild, f"\u2699\ufe0f {member.display_name} set sweep dry-run {'ON' if value else 'OFF (LIVE)'}.")
         return f"Sweep is now {'DRY-RUN' if value else 'LIVE'}."
+
+    async def _apply_digest_enabled(self, guild, member, value: bool) -> str:
+        await self.config.guild(guild).digest_enabled.set(bool(value))
+        await self.config.guild(guild).digest_pending.set({})
+        return f"Sweep digest {'ON' if value else 'MUTED (aborts and errors still post)'}."
 
     async def _apply_invites_enabled(self, guild, member, value: bool) -> str:
         await self.config.guild(guild).invites_enabled.set(bool(value))

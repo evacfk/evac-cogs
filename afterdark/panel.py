@@ -140,6 +140,10 @@ async def _toggle_invites(cog, guild, member, value):
     return await cog._apply_invites_enabled(guild, member, value)
 
 
+async def _toggle_digest(cog, guild, member, value):
+    return await cog._apply_digest_enabled(guild, member, value)
+
+
 async def _apply_mode(cog, guild, member, value):
     return await cog._apply_access_mode(guild, member, value)
 
@@ -234,6 +238,9 @@ def build_specs():
              confirm="Go live? The hourly sweep will start removing access from members who fail the checks. It aborts at the circuit-breaker limit.",
              confirm_if=lambda v: v == "live",
              help="Starts as a dry run. Check `.afterdark sweep` output before going live."),
+        Spec("digest", "Daily sweep digest", "Access & sweep", "toggle", get=_cfg("digest_enabled"), apply=_toggle_digest,
+             help="Off mutes the daily 'would warn / would remove' post in the log channel. Aborts and errors still post, "
+                  "and `.afterdark sweep` still reports. A dry run only repeats itself when the findings change."),
         _modal("min_level", "Minimum level to be admitted", "Access & sweep", _cfg("min_level"), "_apply_min_level",
                (Field("level", "LevelUp level", value=lambda v: str(v), max_length=4),), lambda v, g: f"level {v}",
                help="Only needed to get in, never to stay."),

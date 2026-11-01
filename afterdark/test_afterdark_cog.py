@@ -704,7 +704,44 @@ async def test_dry_run_reports_once_a_day_with_counts(w):
     assert "1 would warn" in log_text(w) and "0 would remove" in log_text(w)
     w.clock[0] = NOW + DAY + 1
     await sweep_and_report(w)
-    assert len(w.log.sent) == 2  # next day: one more digest
+    assert len(w.log.sent) == 1  # next day, same dry-run findings: not repeated
+    await tracked(w, 9, name="newly-idle")
+    w.clock[0] = NOW + 2 * DAY + 2
+    await sweep_and_report(w)
+    assert len(w.log.sent) == 2  # the findings changed: one more digest
+    assert "newly-idle" in w.log.sent[1]
+
+
+async def test_muted_digest_posts_nothing_but_alerts_and_manual_sweeps_still_do(w):
+    await add_feet(w)
+    await set_cfg(w, digest_enabled=False)
+    await tracked(w, 8)
+    await sweep_and_report(w)
+    assert w.log.sent == []
+    assert await w.cog.config.guild(w.guild).digest_pending() == {}
+    await sweep_and_report(w, force=True)        # `.afterdark sweep` is an explicit ask
+    assert len(w.log.sent) == 1 and "would warn" in log_text(w)
+    await set_cfg(w, dry_run=False, sweep_max=1)
+    for _ in range(2):
+        kid = w.member(roles=[w.adult, w.under])
+        kid.roles.append(w.rabbit)
+    await sweep_and_report(w)
+    assert "ABORTED" in w.log.sent[-1]           # a circuit-breaker abort is never muted
+
+
+async def test_live_digest_is_never_deduplicated(w):
+    await add_feet(w)
+    await set_cfg(w, dry_run=False)
+    await tracked(w, 8, name="warnme")
+    await sweep_and_report(w)
+    assert len(w.log.sent) == 1
+    assert await w.cog.config.guild(w.guild).digest_sig() == ""
+
+
+async def test_digest_toggle_in_the_settings_panel(w):
+    msg = await w.cog._apply_digest_enabled(w.guild, w.member("admin"), False)
+    assert "MUTED" in msg and await w.cog.config.guild(w.guild).digest_enabled() is False
+    assert "ON" in await w.cog._apply_digest_enabled(w.guild, w.member("admin"), True)
 
 
 async def test_live_warnings_and_removals_are_batched_into_one_daily_digest(w):
