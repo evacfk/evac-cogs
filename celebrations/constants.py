@@ -1,7 +1,7 @@
 """Config defaults and fixed values for celebrations."""
 from zoneinfo import ZoneInfo
 
-COG_VERSION = "1.2.0"
+COG_VERSION = "1.2.1"
 TZ = ZoneInfo("America/Los_Angeles")
 CONFIG_IDENTIFIER = 0xCE1EB8A7
 LURKER_CONFIG_IDENTIFIER = 928374651  # the lurker cog's Config: year club settings used to live there

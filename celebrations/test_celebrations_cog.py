@@ -455,3 +455,24 @@ async def test_upkeep_runs_at_most_hourly_and_only_when_switched_on(env):
     await env.cog.config.guild(env.guild).yearclub_enabled.set(False)
     await env.cog._run_yearclub_upkeep()  # off: nothing happens
     assert m.role_ids() == {club[1].id}
+
+
+async def test_no_pass_runs_when_the_lurker_cog_or_role_is_missing(env):
+    club = await _club_env(env)
+    hidden = tk.FakeMember(env.guild, 60, _years_ago(3, 3), roles=[env.lurker])
+    env.cog.bot._cogs.clear()  # lurker cog not loaded
+    assert await env.cog._yearclub_pass(env.guild, auto=False) is None
+    assert hidden.role_ids() == {env.lurker.id}
+    sent = []
+
+    class Ctx:
+        guild = env.guild
+
+        async def send(self, text=None, **kw):
+            sent.append(text)
+
+    await env.cog.yearclub_sync.callback(env.cog, Ctx())
+    assert sent and "Lurker cog isn't loaded" in sent[0]
+    env.cog.bot._cogs["Lurker"] = FakeLurkerCog(None)  # loaded but no role chosen
+    assert "role isn't set" in await env.cog._club_blocker(env.guild)
+    assert club  # roles untouched

@@ -494,6 +494,15 @@ class Celebrations(commands.Cog):
         except _DISCORD_ERRORS:
             log.warning("celebrations: could not post an alert in %s", channel)
 
+    async def _club_blocker(self, guild: discord.Guild) -> Optional[str]:
+        """Why a year club pass must not run right now, or None. Without the lurker cog (or its role)
+        we can't tell who the hidden members are, and a pass would hand club roles to thousands of them."""
+        if self.bot.get_cog("Lurker") is None:
+            return "The Lurker cog isn't loaded, so I can't tell who the lurkers are. Load it first."
+        if not await self._lurker_role_id(guild):
+            return "The Lurker role isn't set in `.lurkerset`, so I can't tell who the lurkers are."
+        return None
+
     def _member_lock(self, guild_id: int, user_id: int) -> asyncio.Lock:
         """Share the lurker cog's per-member lock so a flag and a club swap never interleave."""
         lurker = self.bot.get_cog("Lurker")
@@ -548,6 +557,10 @@ class Celebrations(commands.Cog):
         gconf = self.config.guild(guild)
         mapping = engine.club_mapping(await gconf.yearclub_roles())
         if not mapping or guild.id in self._yearclub_running:
+            return None
+        blocked = await self._club_blocker(guild)
+        if blocked:
+            log.warning("celebrations: year club pass skipped in %s: %s", guild.id, blocked)
             return None
         self._yearclub_running.add(guild.id)
         try:
@@ -655,6 +668,10 @@ class Celebrations(commands.Cog):
             return
         if ctx.guild.id in self._yearclub_running:
             await ctx.send("A year club pass is already running.")
+            return
+        blocked = await self._club_blocker(ctx.guild)
+        if blocked:
+            await ctx.send(blocked)
             return
         plans, stats = self._yearclub_plans(
             ctx.guild, mapping, await self._lurker_role_id(ctx.guild), datetime.now(timezone.utc).timestamp())

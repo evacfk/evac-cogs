@@ -17,7 +17,7 @@ reports, previews, testing, member commands) stay typed.
 | `secrethunt` | 1.14.1 | WoW-style secret hunts: personalised puzzles in forum posts, Hall of Secrets, tier badge roles. Members use `.secrets`. | `.secrethunt` | `.secrethunt version` |
 | `lurker` | 2.7.0 | Auto-hides inactive members behind a Lurker role; mod reports; year-club roles moved to `celebrations`. | `.lurkerset` | `.lurkerversion` |
 | `rejoinwatch` | 1.1.0 | Tracks voluntary leaves, warns rejoiners, flags repeat leavers to mods with a ban button. | `.rejoinwatch` | `.rejoinwatch settings` |
-| `celebrations` | 1.2.0 | Birthdays (role, coin gift, posts), join-anniversary shout-outs and the year club roles (`.yearclub`). Members use `.birthday`. | `.celebrations` | `.celebrations version` |
+| `celebrations` | 1.2.1 | Birthdays (role, coin gift, posts), join-anniversary shout-outs and the year club roles (`.yearclub`). Members use `.birthday`. | `.celebrations` | `.celebrations version` |
 | `wonderevents` | 1.4.0 | Movie and game nights: RSVP buttons, scheduled events, votes, reminders, attendance. | `.event settings` | `.event version` |
 | `verdict` | 1.4.0 | Daily crowd question: pick an answer, then guess what everyone else picks. | `.verdict settings` | `.verdict version` |
 | `bumpreward` | 1.1.0 | Coin rewards, streaks, reminders and a daily board for Disboard bumps. | `.bumpreward settings` | `.bumpreward version` |
