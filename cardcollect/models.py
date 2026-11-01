@@ -30,6 +30,13 @@ class Card:
         if self.rarity not in TIERS:
             raise ValueError(f"Unknown rarity {self.rarity!r}, must be one of {TIERS}")
 
+    @property
+    def display_series(self) -> str:
+        """The series as members should see it: the English title when there is
+        one (AniList's romaji "Shingeki no Kyojin" -> "Attack on Titan"), else
+        whatever the card was given."""
+        return (self.series_alt or self.series or "").strip()
+
     def to_dict(self) -> dict:
         return {
             "name": self.name,

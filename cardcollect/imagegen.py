@@ -43,6 +43,8 @@ RARITY_COLORS = {
 CARD_BG = (30, 30, 34)
 PLATE_BG = (0, 0, 0, 175)
 TEXT_WHITE = (240, 240, 240)
+SERIES_GREY = (190, 190, 196)
+SERIES_MIN_CARD_WIDTH = 200  # cards narrower than this (gallery grid tiles) leave the series off
 BORDER_WIDTH = 8
 CORNER_RADIUS = 18
 NAME_PLATE_HEIGHT = 64
@@ -89,6 +91,46 @@ def _load_card_art(image_bytes: bytes, size: Tuple[int, int]) -> Image.Image:
         y0 = (src_h - new_h) // 2
         art = art.crop((0, y0, src_w, y0 + new_h))
     return art.resize(size, Image.LANCZOS)
+
+
+def fit_text(text: str, font: ImageFont.FreeTypeFont, max_width: float) -> str:
+    """`text` shortened with an ellipsis until it fits in `max_width` pixels."""
+    text = str(text or "")
+    if font.getlength(text) <= max_width:
+        return text
+    while text and font.getlength(text + "…") > max_width:
+        text = text[:-1]
+    text = text.rstrip()
+    return text + "…" if text else ""
+
+
+def _draw_name_plate(canvas: Image.Image, card: Card, color, tag: str = "") -> None:
+    """The dark bar along the bottom of a card: the name, then the rarity (in
+    its color), an optional tag such as a finish, and the series, each cut to
+    fit the card's width."""
+    w, h = canvas.size
+    plate = Image.new("RGBA", (w, NAME_PLATE_HEIGHT), (0, 0, 0, 0))
+    plate_draw = ImageDraw.Draw(plate)
+    plate_draw.rectangle([(0, 0), (w, NAME_PLATE_HEIGHT)], fill=PLATE_BG)
+    name_font = _font(20, bold=True)
+    small_bold = _font(14, bold=True)
+    small = _font(14)
+    left, room = 14, w - 28
+    plate_draw.text((left, 8), fit_text(card.name, name_font, room), font=name_font, fill=TEXT_WHITE)
+    x = left
+    rarity = card.rarity.upper()
+    plate_draw.text((x, 34), rarity, font=small_bold, fill=color)
+    x += small_bold.getlength(rarity)
+    if tag:
+        tag_text = f" {tag.upper()}"
+        plate_draw.text((x, 34), tag_text, font=small_bold, fill=TEXT_WHITE)
+        x += small_bold.getlength(tag_text)
+    series = card.display_series
+    if series and w >= SERIES_MIN_CARD_WIDTH:  # a small gallery tile has no room for more than "Attac…"
+        rest = fit_text(f" · {series}", small, left + room - x)
+        if rest.strip(" ·…"):
+            plate_draw.text((x, 34), rest, font=small, fill=SERIES_GREY)
+    canvas.alpha_composite(plate, (0, h - NAME_PLATE_HEIGHT))
 
 
 def _rounded_mask(size: Tuple[int, int], radius: int) -> Image.Image:
@@ -143,15 +185,7 @@ def render_card(
         width=BORDER_WIDTH,
     )
 
-    # name plate along the bottom: semi-transparent bar + name + rarity label
-    plate = Image.new("RGBA", (w, NAME_PLATE_HEIGHT), (0, 0, 0, 0))
-    plate_draw = ImageDraw.Draw(plate)
-    plate_draw.rectangle([(0, 0), (w, NAME_PLATE_HEIGHT)], fill=PLATE_BG)
-    name_font = _font(20, bold=True)
-    rarity_font = _font(14, bold=True)
-    plate_draw.text((14, 8), card.name, font=name_font, fill=TEXT_WHITE)
-    plate_draw.text((14, 32), card.rarity.upper(), font=rarity_font, fill=color)
-    canvas.alpha_composite(plate, (0, h - NAME_PLATE_HEIGHT))
+    _draw_name_plate(canvas, card, color)
 
     if number:
         _draw_number_badge(canvas, number)

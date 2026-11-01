@@ -48,7 +48,7 @@ def sell_result_embed(token: SellToken, price: int, member: discord.abc.User) ->
 
 def give_result_embed(card: Card, giver: discord.abc.User, receiver: discord.abc.User) -> discord.Embed:
     embed = discord.Embed(title="Card gifted", color=EMBED_COLOR)
-    embed.add_field(name="Card", value=f"**{card.name}** ({card.series})", inline=True)
+    embed.add_field(name="Card", value=f"**{card.name}**" + (f" ({card.display_series})" if card.display_series else ""), inline=True)
     embed.add_field(name="Rarity", value=_rarity_line(card.rarity), inline=True)
     embed.add_field(name="From → To", value=f"{giver.mention} → {receiver.mention}", inline=False)
     return embed
@@ -387,7 +387,11 @@ def draw_results_embed(
     lines = []
     for result in results:
         card = cards.get(result["card_id"])
-        name = f"**{discord.utils.escape_markdown(card.name)}**" if card is not None else "a removed card"
+        name = "a removed card"
+        if card is not None:
+            name = f"**{discord.utils.escape_markdown(card.name)}**"
+            if card.display_series:
+                name += f" ({discord.utils.escape_markdown(card.display_series)[:50]})"
         emoji = RARITY_EMOJI.get(card.rarity, "") if card is not None else ""
         head = f"{emoji} {name}".strip()
         if result["outcome"] == "error":
@@ -405,8 +409,12 @@ def draw_results_embed(
     return embed
 
 
-def sets_embed(rows: Sequence[Tuple[str, int, int]], claimed: set, whose: str, total_sets: int) -> discord.Embed:
-    """The Sets tab: series the member has started, with progress."""
+def sets_embed(
+    rows: Sequence[Tuple[str, int, int]], claimed: set, whose: str, total_sets: int, names: Optional[Dict[str, str]] = None
+) -> discord.Embed:
+    """The Sets tab: series the member has started, with progress. `names` maps
+    a set's series key to the title members see (its English title if known)."""
+    names = names or {}
     embed = discord.Embed(title=f"{whose} sets", color=EMBED_COLOR)
     if not rows:
         embed.description = (
@@ -421,7 +429,7 @@ def sets_embed(rows: Sequence[Tuple[str, int, int]], claimed: set, whose: str, t
         bar = "█" * round(8 * have / total) + "░" * (8 - round(8 * have / total))
         mark = "✅" if done else "▫️"
         paid = " 🏆" if done and series in claimed else ""
-        lines.append(f"{mark} **{discord.utils.escape_markdown(series)[:60]}** `{bar}` {have}/{total}{paid}")
+        lines.append(f"{mark} **{discord.utils.escape_markdown(names.get(series) or series)[:60]}** `{bar}` {have}/{total}{paid}")
     if len(rows) > 15:
         lines.append(f"…and {len(rows) - 15} more started")
     embed.description = "\n".join(lines)
@@ -434,7 +442,7 @@ def wishlist_embed(cards: Sequence[Card], pings_off: bool) -> discord.Embed:
     if cards:
         embed.description = "\n".join(
             f"{RARITY_EMOJI.get(c.rarity, '')} **{discord.utils.escape_markdown(c.name)}**"
-            + (f" — {discord.utils.escape_markdown(c.series)[:50]}" if c.series else "")
+            + (f" — {discord.utils.escape_markdown(c.display_series)[:50]}" if c.display_series else "")
             for c in cards
         )
     else:

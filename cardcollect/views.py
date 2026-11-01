@@ -417,7 +417,7 @@ class CollectionView(_InvokerView):
                     min_values=1,
                     max_values=len(wish_cards),
                     options=[
-                        discord.SelectOption(label=_clip(c.name, 100), value=str(c.card_id), description=_clip(c.series, 100) or None)
+                        discord.SelectOption(label=_clip(c.name, 100), value=str(c.card_id), description=_clip(c.display_series, 100) or None)
                         for c in wish_cards
                     ],
                     row=3,
@@ -900,7 +900,7 @@ class FindView(_InvokerView):
             mark = "✅" if c.card_id in owned else ("★" if c.card_id in state.wishlist else "⬜")
             tail = " · retired" if c.retired else ""
             lines.append(f"{mark} {embeds.RARITY_EMOJI.get(c.rarity, '')} **{_clip(discord.utils.escape_markdown(c.name), 60)}**"
-                         f" — {_clip(discord.utils.escape_markdown(c.series or '—'), 50)} `#{c.card_id}`{tail}")
+                         f" — {_clip(discord.utils.escape_markdown(c.display_series or '—'), 50)} `#{c.card_id}`{tail}")
         embed.description = "\n".join(lines)
         page_note = f"Page {self.page + 1}/{pages} · " if pages > 1 else ""
         embed.set_footer(text=f"{page_note}✅ owned · ★ wishlisted · open one with the dropdown")
@@ -919,7 +919,7 @@ class FindView(_InvokerView):
                 placeholder="Open a card…",
                 options=[
                     discord.SelectOption(
-                        label=_clip(c.name, 100), value=str(c.card_id), description=_clip(c.series, 100) or None,
+                        label=_clip(c.name, 100), value=str(c.card_id), description=_clip(c.display_series, 100) or None,
                         emoji=embeds.RARITY_EMOJI.get(c.rarity),
                     )
                     for c in self._page_cards()

@@ -34,3 +34,9 @@ def test_sets_and_wishlist_embeds_render_empty_and_full_states():
     assert embeds.wishlist_embed([], False).description
     cards = [Card(1, "Fern", "Frieren", "rare", "1.png")]
     assert "Fern" in embeds.wishlist_embed(cards, True).description
+
+
+def test_sets_embed_shows_the_display_title_for_a_series_key():
+    from cardcollect import embeds as e
+    embed = e.sets_embed([("Shingeki no Kyojin", 2, 3)], set(), "Your", 1, {"Shingeki no Kyojin": "Attack on Titan"})
+    assert "Attack on Titan" in embed.description and "Shingeki" not in embed.description

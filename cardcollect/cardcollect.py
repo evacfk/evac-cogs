@@ -452,7 +452,9 @@ class CardCollect(commands.Cog):
     async def pick_reply(self, member: discord.abc.User, drop: ActiveDrop, position: int, previous: Optional[int]) -> str:
         """The private reply to a pick: what they're in for, and any caveat."""
         card = await self._card_by_id(drop.guild, drop.card_at(position)["card_id"])
-        name = f"**{card.name}**" if card is not None else "that card"
+        name = "that card"
+        if card is not None:
+            name = f"**{card.name}**" + (f" ({card.display_series})" if card.display_series else "")
         if previous == position:
             head = f"You're already in for {name}."
         elif previous is None:
@@ -537,7 +539,7 @@ class CardCollect(commands.Cog):
                 log.exception("cardcollect: couldn't pay a set bonus to %s", getattr(member, "id", "?"))
                 return None
         state.sets_claimed.append(card.series)
-        return card.series, bonus
+        return card.display_series or card.series, bonus
 
     async def _bump_stats(self, guild: discord.Guild, daily_pull_date: Optional[str] = None, **counts):
         """Add to the diagnostics counters (`.card diagnostics`). Pass
@@ -918,7 +920,10 @@ class CardCollect(commands.Cog):
 
     async def sets_embed(self, guild: discord.Guild, state: MemberState, whose: str) -> discord.Embed:
         sets = engine.build_sets(await self._pool_cards(guild))
-        return embeds.sets_embed(engine.set_progress(sets, state.collection), set(state.sets_claimed), whose, len(sets))
+        names = {series: members[0].display_series for series, members in sets.items()}
+        return embeds.sets_embed(
+            engine.set_progress(sets, state.collection), set(state.sets_claimed), whose, len(sets), names
+        )
 
     async def wishlist_cards(self, guild: discord.Guild, state: MemberState) -> List[Card]:
         cards = [await self._card_by_id(guild, cid) for cid in state.wishlist]
@@ -1140,7 +1145,7 @@ class CardCollect(commands.Cog):
             return
         card, outcome, price, streak, bonus, set_done = result
         lines = [f"\U0001f3b4 {ctx.author.mention} pulled **{card.name}**"
-                 + (f" ({card.series})" if card.series else "") + f" · **{card.rarity}** · `#{card.card_id}`"]
+                 + (f" ({card.display_series})" if card.display_series else "") + f" · **{card.rarity}** · `#{card.card_id}`"]
         if outcome == "duplicate":
             lines.append("Spare copy: you can trade it with `.card give`.")
         elif outcome == "sell_token":

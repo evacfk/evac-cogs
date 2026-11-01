@@ -264,3 +264,36 @@ def test_contact_sheet_borders_mark_flagged_and_replaced_art_but_not_skipped():
     assert out["new"] == imagegen.SHEET_NEW
     assert out["plain"] not in (imagegen.SHEET_FLAG, imagegen.SHEET_NEW)
     assert out["skip"] not in (imagegen.SHEET_FLAG, imagegen.SHEET_NEW)  # dimmed, no warning border
+
+
+# --- 2.2.0: the series on the name plate ---------------------------------------
+
+
+def test_display_series_prefers_the_english_title():
+    assert Card(1, "Eren", "Shingeki no Kyojin", "rare", "", series_alt="Attack on Titan").display_series == "Attack on Titan"
+    assert Card(2, "Xal'atath", "World of Warcraft", "epic", "").display_series == "World of Warcraft"
+    assert Card(3, "Nobody", "", "common", "").display_series == ""
+
+
+def _plate_pixels(tile):
+    """The series text sits on the plate's second line, right of the rarity word."""
+    w, h = tile.size
+    return tile.crop((110, h - imagegen.NAME_PLATE_HEIGHT + 34, w - 14, h - 10)).convert("L")
+
+
+def test_name_plate_draws_the_series_and_leaves_it_out_when_there_is_none():
+    with_series = imagegen.render_card(Card(1, "Alice", "Some Anime", "common", ""), fake_art((0, 0, 0)))
+    without = imagegen.render_card(Card(1, "Alice", "", "common", ""), fake_art((0, 0, 0)))
+    assert _plate_pixels(with_series).getextrema()[1] > 120  # light text present
+    assert _plate_pixels(without).getextrema()[1] < 60
+
+
+def test_long_names_and_series_are_cut_to_fit_the_card():
+    font = imagegen._font(20, bold=True)
+    long = "Isuzu Sentomiya of the Very Long Name Academy"
+    cut = imagegen.fit_text(long, font, 120)
+    assert cut.endswith("…") and font.getlength(cut) <= 120
+    assert imagegen.fit_text("Ann", font, 120) == "Ann"
+    tile = imagegen.render_card(Card(1, long, "A Series Title That Never Ends At All", "legendary", ""), fake_art(),
+                                size=(140, 196))
+    assert tile.size == (140, 196)
