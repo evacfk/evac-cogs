@@ -67,6 +67,17 @@ async def _pack_price_get(cog, guild):
     return {"price": await cog.config.guild(guild).pack_price()}
 
 
+async def _sell_prices_get(cog, guild):
+    prices = await cog.config.guild(guild).sell_prices()
+    return {t: int(prices.get(t, 0)) for t in ("common", "rare", "epic", "legendary")}
+
+
+def _sell_prices_fmt(v, guild):
+    if not v:
+        return "?"
+    return " · ".join(f"{t} {v[t]:,}" for t in ("common", "rare", "epic", "legendary"))
+
+
 async def _upgrade_costs_get(cog, guild):
     costs = await cog.config.guild(guild).upgrade_costs()
     return {f"{finish}_{part}": (costs.get(finish) or {}).get(part, 0)
@@ -151,6 +162,13 @@ def build_specs():
              fields=(Field("price", "Wondercoin per pack (0 = free)", value=lambda v: str(v["price"]), max_length=9),),
              help="Keep it above what a pack's cards sell back for (about 11,000 with the default prices), "
                   "or members can open packs just to sell the duplicates."),
+        Spec("sellprices", "Sell prices", "Economy", "modal", get=_sell_prices_get,
+             apply=_apply("_apply_sell_prices"), fmt=_sell_prices_fmt, button="Edit…",
+             fields=tuple(Field(t, f"{t.title()} token sells for", value=lambda v, t=t: str(v[t]), max_length=9)
+                          for t in ("common", "rare", "epic", "legendary")),
+             help="What `.card sell` pays per sell token (a copy past the limit of 2). Applies to tokens members "
+                  "already hold too. Keep the pack price well above 3 cards' worth, or opening packs to sell becomes "
+                  "free money."),
         Spec("upgrades", "Upgrade costs", "Economy", "modal", get=_upgrade_costs_get,
              apply=_apply("_apply_upgrade_costs"), fmt=_upgrade_costs_fmt, button="Edit…",
              fields=(Field("holo_dupes", "Holo: duplicates needed", value=lambda v: str(v["holo_dupes"]), max_length=2),

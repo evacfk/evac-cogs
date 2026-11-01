@@ -1874,6 +1874,11 @@ class CardCollect(commands.Cog):
         await self.config.guild(guild).pack_price.set(price)
         return f"A daily pack now costs {price:,} wondercoin." if price else "Daily packs are now free."
 
+    async def _apply_sell_prices(self, guild, member, values) -> str:
+        prices = {t: self._whole(values, t, f"{t.title()} price", 0) for t in TIERS}
+        await self.config.guild(guild).sell_prices.set(prices)
+        return "Sell tokens now pay: " + ", ".join(f"{t} {v:,}" for t, v in prices.items()) + " wondercoin."
+
     async def _apply_upgrade_costs(self, guild, member, values) -> str:
         costs = {}
         for finish in ("holo", "prismatic"):

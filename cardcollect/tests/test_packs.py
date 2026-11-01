@@ -243,3 +243,16 @@ async def test_epic_pack_pulls_are_announced_in_the_drop_channel(cog):
     drops.sent.clear()
     await cog.announce_pack_hits(guild, member, result, drops.id)  # opened in the drop channel itself
     assert not drops.sent
+
+
+@pytest.mark.asyncio
+async def test_sell_prices_are_editable_in_settings_and_apply_to_tokens_already_held(cog):
+    from cardcollect.models import SellToken
+    guild, admin, member, _c = await setup(cog, 409)
+    state = await cog._member_state(member)
+    state.sell_tokens = [SellToken("t1", 1, "rare", 0.0)]
+    await cog._save_member_state(member, state)
+    await cog._apply_sell_prices(guild, admin, {"common": "500", "rare": "2,000".replace(",", ""), "epic": "8000",
+                                                "legendary": "20000"})
+    assert await cog.config.guild(guild).sell_prices() == {"common": 500, "rare": 2000, "epic": 8000, "legendary": 20000}
+    assert await cog.sell_tokens(guild, member) == (1, 2000)
