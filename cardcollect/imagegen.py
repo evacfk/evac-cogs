@@ -47,6 +47,7 @@ CARD_BG = (30, 30, 34)
 PLATE_BG = (0, 0, 0, 175)
 TEXT_WHITE = (240, 240, 240)
 SERIES_GREY = (190, 190, 196)
+EVENT_COLOR = (230, 126, 34)
 SERIES_MIN_CARD_WIDTH = 200  # cards narrower than this (gallery grid tiles) leave the series off
 BORDER_WIDTH = 8
 CORNER_RADIUS = 18
@@ -213,6 +214,8 @@ def _decorate(canvas: Image.Image, card: Card, number, quantity: int, show_id: b
     w, _h = canvas.size
     color = RARITY_COLORS.get(card.rarity, RARITY_COLORS["common"])
     _draw_name_plate(canvas, card, color, tag=finish_name(finish))
+    if card.event and w >= SERIES_MIN_CARD_WIDTH:
+        _draw_event_badge(canvas, card.event)
 
     if number:
         _draw_number_badge(canvas, number)
@@ -246,6 +249,22 @@ def _decorate(canvas: Image.Image, card: Card, number, quantity: int, show_id: b
         canvas.alpha_composite(id_badge, (w - badge_w - 10, 10))
 
     return canvas
+
+
+def _draw_event_badge(canvas: Image.Image, event: str) -> None:
+    """A small orange tag with the event's name near the top-left, under the
+    corner badges (the bottom-left is where "★ SHOWCASE" goes)."""
+    w, h = canvas.size
+    font = _font(13, bold=True)
+    text = fit_text(f"★ {event.upper()}", font, w * 0.7)
+    pad_x, pad_y = 8, 4
+    text_w = font.getlength(text)
+    box_w, box_h = int(text_w + pad_x * 2), 13 + pad_y * 2 + 2
+    badge = Image.new("RGBA", (box_w, box_h), (0, 0, 0, 0))
+    bd = ImageDraw.Draw(badge)
+    bd.rounded_rectangle([(0, 0), (box_w - 1, box_h - 1)], radius=box_h // 2, fill=EVENT_COLOR + (235,))
+    bd.text((pad_x, pad_y), text, font=font, fill=(255, 255, 255))
+    canvas.alpha_composite(badge, (12, 76))
 
 
 # --- finishes ------------------------------------------------------------------

@@ -142,14 +142,16 @@ async def test_not_enough_wondercoin_opens_nothing_and_charges_nothing(cog):
 @pytest.mark.asyncio
 async def test_pity_counts_packs_without_an_epic_and_then_guarantees_one(cog, monkeypatch):
     guild, _a, member, _c = await setup(cog, 404, spec={"common": 30, "rare": 10, "epic": 3})
-    days = iter(f"2026-11-{d:02d}" for d in range(1, 30))
-    monkeypatch.setattr(engine, "today_str", lambda tz, now=None: next(days))
+    today = ["2026-11-01"]
+    monkeypatch.setattr(engine, "today_str", lambda tz, now=None: today[0])
     no_epics = {"common": 1, "rare": 1, "epic": 0, "legendary": 0}  # a normal pack can't roll an epic
     await cog.config.guild(guild).daily_weights.set(no_epics)
     bank.balances[(guild.id, member.id)] = 10_000_000
     for expected in range(1, PACK_PITY_AFTER + 1):
+        today[0] = f"2026-11-{expected:02d}"
         result = await cog.open_pack(guild, member)
         assert not result["pity_used"] and result["pity"] == expected
+    today[0] = "2026-11-20"
     result = await cog.open_pack(guild, member)
     assert result["pity_used"] and result["entries"][-1][0].rarity == "epic" and result["pity"] == 0
 

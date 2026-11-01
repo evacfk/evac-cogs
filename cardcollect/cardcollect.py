@@ -52,6 +52,10 @@ from .constants import (
     DEFAULT_SELL_PRICES,
     DEFAULT_TIER_CUTOFFS,
     DEFAULT_UPGRADE_COSTS,
+    EVENT_NAME_MAX,
+    EVENT_PACK_BOOST,
+    FEATURED_BOOST,
+    FEATURED_HISTORY,
     FINISHES,
     GALLERY_PAGE_SIZE,
     IMPORT_GENDERS,
@@ -69,6 +73,7 @@ from .constants import (
     REQUEST_MAX_PENDING,
     SERIES_IMPORT_DEFAULT,
     SERIES_IMPORT_MAX,
+    SET_MIN_CARDS,
     SHEET_COLUMNS,
     TIERS,
     WISH_PING_MAX,
@@ -111,6 +116,9 @@ DEFAULT_GUILD = {
     "packs_enabled": True,
     "pack_price": DEFAULT_PACK_PRICE,
     "upgrade_costs": {k: dict(v) for k, v in DEFAULT_UPGRADE_COSTS.items()},
+    "featured_enabled": True,
+    "featured": {"week": "", "series": "", "history": []},
+    "events": {},  # event key (folded name) -> {"name", "start", "end"} (Pacific ISO dates, inclusive)
 }
 
 DEFAULT_MEMBER = {
@@ -170,6 +178,8 @@ class CardCollect(commands.Cog):
         self._activity_pending: Dict[int, Dict[str, int]] = {}  # guild_id -> {hour: count}
         self._activity_since: Dict[int, float] = {}  # guild_id -> first-buffered time
         self._activity_task: Optional[asyncio.Task] = None
+        self._featured_locks: Dict[int, asyncio.Lock] = {}  # guild_id -> lock around picking the week's series
+        self._featured_week: Dict[int, str] = {}  # guild_id -> week already checked (skip Config per message)
 
     async def cog_load(self):
         # Shared, persistent views: a press of a button on a drop (or a request)
@@ -209,11 +219,13 @@ class CardCollect(commands.Cog):
         return [Card.from_dict(int(cid), data) for cid, data in pool.items()]
 
     async def _rollable_pool_cards(self, guild: discord.Guild) -> List[Card]:
-        """Cards eligible to actually drop -- excludes retired characters.
-        Retired cards stay in the pool dict (and their art stays on disk) so
+        """Cards eligible to actually drop -- excludes retired characters, and
+        event cards outside their event's dates. Retired cards stay in the pool dict (and their art stays on disk) so
         members who already own one still get a working gallery entry; see
         card_removecard."""
-        return [c for c in await self._pool_cards(guild) if not c.retired]
+        events = await self.config.guild(guild).events()
+        today = engine.today_str(ACTIVITY_TIMEZONE)
+        return [c for c in await self._pool_cards(guild) if engine.can_roll(c, events, today)]
 
     async def _card_by_id(self, guild: discord.Guild, card_id: int) -> Optional[Card]:
         pool = await self.config.guild(guild).pool()
@@ -307,6 +319,8 @@ class CardCollect(commands.Cog):
         # makes the whole decision atomic. _post_drop itself runs outside
         # the lock so rendering/sending one drop never blocks the next
         # message's eligibility check.
+        await self._maybe_roll_featured(guild)
+
         test_mode = False
         should_post = False
         async with self._get_drop_lock(guild.id):
@@ -961,6 +975,9 @@ class CardCollect(commands.Cog):
     async def sets_embed(self, guild: discord.Guild, state: MemberState, whose: str) -> discord.Embed:
         sets = engine.build_sets(await self._pool_cards(guild))
         names = {series: members[0].display_series for series, members in sets.items()}
+        featured = await self.featured_series(guild)
+        if featured in names:
+            names[featured] = f"\U0001f31f {names[featured] or featured}"
         return embeds.sets_embed(
             engine.set_progress(sets, state.collection), set(state.sets_claimed), whose, len(sets), names
         )
@@ -1156,6 +1173,12 @@ class CardCollect(commands.Cog):
         quantity = state.collection.count(card.card_id)
         finish = state.finish_of(card.card_id)
         embed = embeds.card_info_embed(card, len(owner_ids), mentions)
+        if card.event:
+            event = (await self.config.guild(guild).events()).get(engine.event_key(card.event))
+            status = engine.event_status(event, engine.today_str(ACTIVITY_TIMEZONE))
+            when = f" ({event['start']} to {event['end']})" if event else ""
+            note = {"live": "dropping now", "upcoming": "drops when it starts", "ended": "no longer drops"}[status]
+            embed.add_field(name="Event card", value=f"**{card.event}**{when}: {note}", inline=False)
         image_bytes = self._read_card_image(guild, card.card_id)
         file = None
         if image_bytes is not None:
@@ -1331,9 +1354,69 @@ class CardCollect(commands.Cog):
     # -- daily pack -------------------------------------------------------
 
     async def _roll_boosts(self, guild: discord.Guild, for_pack: bool = False) -> Dict[int, float]:
-        """Per-card weight multipliers for the next roll (card_id -> weight).
+        """Per-card weight multipliers for the next roll (card_id -> weight):
+        this week's featured series everywhere, and live event cards in packs.
         Empty means every card in a tier is equally likely."""
-        return {}
+        featured = await self.featured_series(guild)
+        return engine.roll_boosts(
+            await self._rollable_pool_cards(guild), featured, FEATURED_BOOST, EVENT_PACK_BOOST if for_pack else 1.0
+        )
+
+    # -- weekly featured series ------------------------------------------------
+
+    async def featured_series(self, guild: discord.Guild, force_new: bool = False) -> Optional[str]:
+        """This week's featured series (its series key), picking and announcing
+        a new one the first time it's needed in a new week (Monday, Pacific).
+        None when the feature is off or there are no sets."""
+        conf = self.config.guild(guild)
+        if not await conf.featured_enabled():
+            return None
+        week = engine.week_start(engine.today_str(ACTIVITY_TIMEZONE))
+        lock = self._featured_locks.setdefault(guild.id, asyncio.Lock())
+        announce = None
+        async with lock:
+            featured = await conf.featured()
+            if featured.get("week") == week and not force_new:
+                self._featured_week[guild.id] = week
+                return featured.get("series") or None
+            sets = engine.build_sets(await self._rollable_pool_cards_plain(guild))
+            history = list(featured.get("history", []))
+            series = engine.pick_featured(sets, history, rng=self._rng)
+            if series:
+                history = (history + [series])[-FEATURED_HISTORY:]
+                announce = (series, sets[series])
+            await conf.featured.set({"week": week, "series": series or "", "history": history})
+            self._featured_week[guild.id] = week
+        if announce is not None:
+            await self._announce_featured(guild, *announce)
+        return announce[0] if announce else None
+
+    async def _rollable_pool_cards_plain(self, guild: discord.Guild) -> List[Card]:
+        """Rollable cards minus event cards: the series a week can feature."""
+        return [c for c in await self._rollable_pool_cards(guild) if not c.event]
+
+    async def _announce_featured(self, guild: discord.Guild, series: str, cards: List[Card]):
+        channel_id = await self.config.guild(guild).channel_id()
+        channel = guild.get_channel(channel_id) if channel_id else None
+        if channel is None:
+            return
+        title = cards[0].display_series or series
+        await self._post_to_channel(
+            channel,
+            content=(f"\U0001f31f **This week's featured series: {discord.utils.escape_markdown(title)}** "
+                     f"({len(cards)} cards). Its cards are {FEATURED_BOOST:g}x as likely in drops, daily pulls "
+                     "and packs until Monday."),
+            allowed_mentions=discord.AllowedMentions.none(),
+        )
+
+    async def _maybe_roll_featured(self, guild: discord.Guild):
+        """Cheap per-message check: only touches Config once the week changes."""
+        week = engine.week_start(engine.today_str(ACTIVITY_TIMEZONE))
+        if self._featured_week.get(guild.id) != week:
+            try:
+                await self.featured_series(guild)
+            except Exception:
+                log.exception("cardcollect: picking the featured series failed")
 
     async def pack_offer(self, guild: discord.Guild, member: discord.Member) -> Optional[int]:
         """The price of today's pack if this member can still buy one, else None
@@ -1730,6 +1813,103 @@ class CardCollect(commands.Cog):
         await self.config.guild(guild).upgrade_costs.set(costs)
         return (f"Holo now costs {costs['holo']['dupes']} duplicate(s) + {costs['holo']['coins']:,}; Prismatic "
                 f"{costs['prismatic']['dupes']} duplicate(s) + {costs['prismatic']['coins']:,}.")
+
+    # -- featured series and events (panel) ----------------------------------
+
+    async def _apply_featured_enabled(self, guild, member, value) -> str:
+        await self.config.guild(guild).featured_enabled.set(bool(value))
+        if not value:
+            return "Weekly featured series is off."
+        series = await self.featured_series(guild)
+        return "Weekly featured series is on." + (f" This week: **{series}**." if series else "")
+
+    async def _apply_featured_reroll(self, guild, member, value) -> str:
+        if not await self.config.guild(guild).featured_enabled():
+            raise PanelError("Turn the weekly featured series on first.")
+        series = await self.featured_series(guild, force_new=True)
+        if not series:
+            raise PanelError(f"No series has {SET_MIN_CARDS}+ cards to feature yet.")
+        return f"This week's featured series is now **{series}** (announced in the drop channel)."
+
+    @staticmethod
+    def _parse_day(text, label) -> str:
+        text = str(text or "").strip()
+        try:
+            return datetime.strptime(text, "%Y-%m-%d").date().isoformat()
+        except ValueError:
+            raise PanelError(f"{label} must be a date like 2026-12-01.")
+
+    async def _apply_event_save(self, guild, member, item_id, values, picked) -> str:
+        conf = self.config.guild(guild)
+        name = " ".join(str((values or {}).get("name", "")).split()) if item_id is None else None
+        start = self._parse_day((values or {}).get("start"), "Start")
+        end = self._parse_day((values or {}).get("end"), "End")
+        if end < start:
+            raise PanelError("The event can't end before it starts.")
+        series_text = str((values or {}).get("series", "") or "").strip()
+        async with conf.events() as events:
+            if item_id is None:
+                if not name or len(name) > EVENT_NAME_MAX:
+                    raise PanelError(f"Give the event a name of 1-{EVENT_NAME_MAX} characters.")
+                key = engine.event_key(name)
+                if key in events:
+                    raise PanelError("There's already an event with that name.")
+                events[key] = {"name": name, "start": start, "end": end}
+            else:
+                if item_id not in events:
+                    raise PanelError("That event no longer exists.")
+                key = item_id
+                events[key].update(start=start, end=end)
+            event_name = events[key]["name"]
+        tagged = 0
+        if series_text:
+            wanted = engine.fold_text(series_text)
+            async with conf.pool() as pool:
+                for data in pool.values():
+                    if wanted in (engine.fold_text(data.get("series", "")), engine.fold_text(data.get("series_alt", ""))):
+                        data["event"] = event_name
+                        tagged += 1
+            if not tagged:
+                raise PanelError(f"Saved the event, but no card has the series “{series_text[:60]}”. "
+                                 "Check the spelling, or tag cards one by one from `.card find`.")
+        status = engine.event_status({"start": start, "end": end}, engine.today_str(ACTIVITY_TIMEZONE))
+        note = f" Tagged {tagged} card{'s' if tagged != 1 else ''} from that series." if tagged else ""
+        return (f"**{event_name}** runs {start} to {end} (Pacific), {status} now.{note} "
+                "Add single cards from their `.card find` page.")
+
+    async def _apply_event_remove(self, guild, member, item_id) -> str:
+        conf = self.config.guild(guild)
+        async with conf.events() as events:
+            event = events.pop(item_id, None)
+        if event is None:
+            raise PanelError("That event no longer exists.")
+        freed = 0
+        async with conf.pool() as pool:
+            for data in pool.values():
+                if engine.event_key(data.get("event", "")) == item_id:
+                    data["event"] = ""
+                    freed += 1
+        return f"Removed **{event['name']}**. Its {freed} card{'s' if freed != 1 else ''} are regular cards again."
+
+    async def event_cards_count(self, guild) -> Dict[str, int]:
+        counts: Dict[str, int] = {}
+        for card in await self._pool_cards(guild):
+            if card.event:
+                key = engine.event_key(card.event)
+                counts[key] = counts.get(key, 0) + 1
+        return counts
+
+    async def apply_card_event(self, guild: discord.Guild, card_id: int, event_key: str) -> Card:
+        """Make a pool card part of an event ("" = a regular card again). KeyError if it's gone."""
+        conf = self.config.guild(guild)
+        events = await conf.events()
+        name = events[event_key]["name"] if event_key else ""
+        async with conf.pool() as pool:
+            data = pool.get(str(card_id))
+            if data is None:
+                raise KeyError(card_id)
+            data["event"] = name
+        return await self._card_by_id(guild, card_id)
 
     async def _apply_daily_odds(self, guild, member, values) -> str:
         weights = {}

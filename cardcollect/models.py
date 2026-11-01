@@ -25,6 +25,7 @@ class Card:
     retired: bool = False  # removed from future rolls, but existing owners keep it
     anilist_id: Optional[int] = None  # None for hand-added cards; used to dedupe re-imports
     series_alt: str = ""  # the series' English title (series holds AniList's romaji one), so search finds either
+    event: str = ""  # name of the limited event this card belongs to ("" = a regular card)
 
     def __post_init__(self):
         if self.rarity not in TIERS:
@@ -48,6 +49,7 @@ class Card:
             "retired": self.retired,
             "anilist_id": self.anilist_id,
             "series_alt": self.series_alt,
+            "event": self.event,
         }
 
     @staticmethod
@@ -63,6 +65,7 @@ class Card:
             retired=data.get("retired", False),
             anilist_id=data.get("anilist_id"),
             series_alt=data.get("series_alt", "") or "",
+            event=data.get("event", "") or "",
         )
 
 

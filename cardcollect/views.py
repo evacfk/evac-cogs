@@ -874,6 +874,7 @@ class FindView(_InvokerView):
         if self.card is not None:
             embed, file, quantity, _owners, state = await self.cog.card_detail(guild, self.member, self.card)
             self.plan = await self.cog.upgrade_preview(guild, self.member, self.card.card_id) if quantity else None
+            self.events = await self.cog.config.guild(guild).events() if self.admin else {}
             self._build_detail(quantity, state)
             return {"embed": embed, "file": file}
         embed = await self._list_embed()
@@ -1009,6 +1010,18 @@ class FindView(_InvokerView):
             )
             self.retire.callback = self._on_retire
             self.add_item(self.retire)
+            events = getattr(self, "events", {}) or {}
+            if events:
+                current = engine.event_key(card.event) if card.event else ""
+                options = [discord.SelectOption(label="Regular card (no event)", value="", default=not current)]
+                for key, event in list(events.items())[:24]:
+                    options.append(discord.SelectOption(
+                        label=_clip(event["name"], 100), value=key, default=key == current,
+                        description=f"{event['start']} to {event['end']}",
+                    ))
+                self.event_select = discord.ui.Select(placeholder="Event card…", options=options, row=4)
+                self.event_select.callback = self._on_event
+                self.add_item(self.event_select)
 
     # -- shared refresh ------------------------------------------------------------
 
@@ -1125,6 +1138,19 @@ class FindView(_InvokerView):
             f"**{card.name}** is now **{tier}**. This changes how it drops from now on and how it looks in "
             "everyone's collection; sell tokens already issued keep the value they were made with.",
         )
+
+    async def _on_event(self, interaction: discord.Interaction):
+        key = self.event_select.values[0]
+        try:
+            card = await self.cog.apply_card_event(interaction.guild, self.card.card_id, key)
+        except KeyError:
+            await interaction.response.send_message("That card or event no longer exists.", ephemeral=True)
+            return
+        self.card = card
+        await interaction.response.defer()
+        note = (f"**{card.name}** is now a **{card.event}** event card: it only drops during the event."
+                if card.event else f"**{card.name}** is a regular card again.")
+        await self._refresh(interaction, note)
 
     async def _on_retire(self, interaction: discord.Interaction):
         retire = not self.card.retired

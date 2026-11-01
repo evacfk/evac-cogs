@@ -1004,15 +1004,17 @@ async def test_daily_pull_once_per_day_and_streak(cog, monkeypatch):
     channel = FakeChannel(700, guild)
     await _pool_with(cog, guild, channel, author, [("common", "A"), ("rare", "B")])
 
-    days = iter(["2026-10-01", "2026-10-01", "2026-10-02", "2026-10-04"])
-    monkeypatch.setattr(engine, "today_str", lambda tz, now=None: next(days))
+    today = ["2026-10-01"]  # the date every today_str() call sees, changed between pulls
+    monkeypatch.setattr(engine, "today_str", lambda tz, now=None: today[0])
 
     first = await cog.daily_pull(guild, author)
     assert not isinstance(first, str) and first[3] == 1
     again = await cog.daily_pull(guild, author)
     assert isinstance(again, str) and "already pulled" in again
+    today[0] = "2026-10-02"
     second = await cog.daily_pull(guild, author)
     assert second[3] == 2
+    today[0] = "2026-10-04"
     after_gap = await cog.daily_pull(guild, author)
     assert after_gap[3] == 1  # missed Oct 3 -> streak restarts
 

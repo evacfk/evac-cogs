@@ -56,6 +56,19 @@ DEFAULT_UPGRADE_COSTS = {
     "prismatic": {"dupes": 2, "coins": 100000},
 }
 
+# Weekly featured series: every Monday (Pacific) one series with at least
+# SET_MIN_CARDS cards is picked at random, avoiding the last FEATURED_HISTORY
+# picks; its cards are FEATURED_BOOST times as likely as others of their rarity
+# in drops, daily pulls and packs that week.
+FEATURED_BOOST = 3.0
+FEATURED_HISTORY = 6
+
+# Event cards drop (and appear in packs) only between their event's start and
+# end dates, Pacific, inclusive; in packs they're EVENT_PACK_BOOST times as
+# likely as others of their rarity. Owners keep them after the event.
+EVENT_PACK_BOOST = 3.0
+EVENT_NAME_MAX = 24
+
 DEFAULT_DROP_SIZE = 3
 
 DEFAULT_DROP_CHANCE = 0.02  # 2% per qualifying message, retune via .card diagnostics
@@ -135,7 +148,7 @@ GALLERY_PAGE_SIZE = GALLERY_COLUMNS * GALLERY_ROWS_PER_PAGE
 GALLERY_VIEW_TIMEOUT_SECONDS = 180  # a stale pager after this just stops responding
 
 # bumped on every deploy so `.card version` can confirm the new build is live
-COG_VERSION = "2.5.0"
+COG_VERSION = "2.6.0"
 
 UPLOAD_CANCELLED = "cancelled"  # what wait_for_upload returns when the admin backs out
 UPLOAD_CANCEL_WORDS = ("cancel", "stop", "nevermind", "never mind", "exit", "quit")
