@@ -152,6 +152,10 @@ async def _set_role_remove(cog, guild, member, item_id):
     return await cog._apply_set_role_remove(guild, member, item_id)
 
 
+async def _trade_channel_get(cog, guild):
+    return await cog.config.guild(guild).trade_channel_id()
+
+
 async def _legendary_role_get(cog, guild):
     return await cog.config.guild(guild).legendary_ping_role_id()
 
@@ -236,6 +240,10 @@ def build_specs():
         Spec("setrolesync", "Give set roles now", "Rewards", "action", apply=_apply("_apply_set_roles_sync"),
              button="Give roles",
              help="Hands out set roles to everyone who already qualifies (for sets finished before a role existed)."),
+        Spec("tradechannel", "Trade board channel", "Rewards", "channel", get=_trade_channel_get,
+             apply=_apply("_apply_trade_channel"), fmt=lambda v, g: _channel_fmt(v, g) if v else "wherever it's run",
+             channel_types=("text",), clearable=True,
+             help="Where `.card tradepost` listings go. Clear it to post them in whatever channel the command is run."),
         Spec("requests", "Request channel", "Requests", "channel", get=_request_channel_get,
              apply=_apply("_apply_request_channel"), fmt=lambda v, g: _channel_fmt(v, g) if v else "off", channel_types=("text",),
              clearable=True,

@@ -64,6 +64,8 @@ from .constants import (
     MAX_DROP_SIZE,
     MAX_SHOWCASE_SLOTS,
     TRADE_MAX_CARDS,
+    LISTING_DAYS,
+    LISTING_WANT_MAX,
     TRADE_UP_COUNT,
     MIN_DRAW_WINDOW_SECONDS,
     PACK_PITY_AFTER,
@@ -121,6 +123,9 @@ DEFAULT_GUILD = {
     "featured": {"week": "", "series": "", "history": []},
     "legendary_ping_role_id": None,
     "set_roles": {},  # sets completed (str) -> role id given on reaching that many
+    "trade_channel_id": None,  # where `.card tradepost` listings go (None = wherever it's run)
+    "listings": {},  # listing id (str) -> {"user_id", "have", "want", "channel_id", "message_id", "created", "open"}
+    "next_listing_id": 1,
     "events": {},  # event key (folded name) -> {"name", "start", "end"} (Pacific ISO dates, inclusive)
 }
 
@@ -188,7 +193,9 @@ class CardCollect(commands.Cog):
         # Shared, persistent views: a press of a button on a drop (or a request)
         # that predates a restart still lands here, and is answered ("this drop
         # is over") instead of Discord showing "This interaction failed".
-        self._persistent_views = [views.DrawView(self, None), views.RequestReviewView(self), views.RequestFollowView(self)]
+        self._persistent_views = [
+            views.DrawView(self, None), views.RequestReviewView(self), views.RequestFollowView(self), views.ListingView(self),
+        ]
         for view in self._persistent_views:
             self.bot.add_view(view)
 
@@ -1727,6 +1734,165 @@ class CardCollect(commands.Cog):
             view=view,
             allowed_mentions=discord.AllowedMentions(users=[member], roles=False, everyone=False),
         )
+
+    # -- trade board -------------------------------------------------------
+
+    @card.command(name="tradepost", aliases=["listing", "tradeboard"])
+    @commands.guild_only()
+    async def card_tradepost(self, ctx: commands.Context):
+        """Post a "have / want" listing on the trade board so anyone can offer
+        you a trade, even while you're offline. One open listing at a time; it
+        lasts a few days."""
+        view = views.ListingStartView(self, ctx.author)
+        view.message = await ctx.send(
+            "List the cards you'd trade away and what you're after. Anyone can then press "
+            "**Offer a trade** on your listing to start a trade with you.",
+            view=view,
+        )
+
+    async def post_listing(self, guild: discord.Guild, member: discord.Member, have_text: str, want_text: str,
+                           fallback_channel) -> str:
+        """Create (or replace) a member's listing and post it. Returns the reply for them."""
+        have, problem = await self.resolve_offer(guild, member, have_text)
+        if problem:
+            return problem
+        want = " ".join(str(want_text or "").split())[:LISTING_WANT_MAX]
+        if not have and not want:
+            return "Put at least one card you have, or something you want."
+        conf = self.config.guild(guild)
+        channel_id = await conf.trade_channel_id()
+        channel = guild.get_channel(channel_id) if channel_id else None
+        channel = channel or fallback_channel
+        old = None
+        async with conf.all() as data:
+            for lid, listing in data["listings"].items():
+                if listing["user_id"] == member.id and listing.get("open"):
+                    listing["open"] = False
+                    old = (lid, dict(listing))
+            listing_id = str(data["next_listing_id"])
+            data["next_listing_id"] += 1
+            record = {"user_id": member.id, "have": have, "want": want, "channel_id": channel.id,
+                      "message_id": None, "created": time.time(), "open": True}
+            data["listings"][listing_id] = record
+            # keep the store small: forget closed listings beyond the newest 200
+            closed = sorted((k for k, v in data["listings"].items() if not v.get("open")), key=int)
+            for k in closed[:-200]:
+                data["listings"].pop(k, None)
+        if old is not None:
+            await self._close_listing_message(guild, old[1], "Replaced by a newer listing.")
+        embed = await self.listing_embed(guild, member, record, listing_id)
+        try:
+            sent = await channel.send(embed=embed, view=views.ListingView(self),
+                                      allowed_mentions=discord.AllowedMentions.none())
+        except discord.HTTPException:
+            log.exception("cardcollect: couldn't post a trade listing")
+            async with conf.listings() as listings:
+                listings.pop(listing_id, None)
+            return "I couldn't post your listing. Ask an admin to check the trade board channel."
+        async with conf.listings() as listings:
+            if listing_id in listings:
+                listings[listing_id]["message_id"] = sent.id
+        where = channel.mention if hasattr(channel, "mention") else "the channel"
+        return f"Your listing is up in {where}." + (" Your old one was closed." if old else "")
+
+    async def listing_embed(self, guild: discord.Guild, member, listing: dict, listing_id: str) -> discord.Embed:
+        embed = discord.Embed(title=f"Trade board: {getattr(member, 'display_name', 'a member')}", color=embeds.EMBED_COLOR)
+        lines = []
+        for cid in listing["have"]:
+            card = await self._card_by_id(guild, cid)
+            if card is not None:
+                series = f" ({card.display_series})" if card.display_series else ""
+                lines.append(f"{embeds.RARITY_EMOJI.get(card.rarity, '')} **{discord.utils.escape_markdown(card.name)}**"
+                             f"{discord.utils.escape_markdown(series)} `#{cid}`")
+        embed.add_field(name="Has", value="\n".join(lines)[:1024] or "—", inline=True)
+        embed.add_field(name="Wants", value=discord.utils.escape_markdown(listing["want"]) or "Offers welcome", inline=True)
+        expires = int(listing["created"] + LISTING_DAYS * 86400)
+        embed.description = (f"<@{listing['user_id']}> is trading. Press **Offer a trade** to start one with them; "
+                             f"listing ends <t:{expires}:R>.")
+        embed.set_footer(text=f"Listing #{listing_id} · post your own with .card tradepost")
+        return embed
+
+    async def _close_listing_message(self, guild: discord.Guild, listing: dict, note: str):
+        channel = guild.get_channel(listing.get("channel_id") or 0)
+        if channel is None or not listing.get("message_id"):
+            return
+        try:
+            message = await channel.fetch_message(listing["message_id"])
+            embed = discord.Embed(title="Trade board", description=f"This listing is closed. {note}", color=embeds.EMBED_COLOR)
+            await message.edit(embed=embed, view=None)
+        except (discord.HTTPException, AttributeError):
+            pass
+
+    async def _listing_for_message(self, guild: discord.Guild, message_id: int):
+        listings = await self.config.guild(guild).listings()
+        return next(((lid, l) for lid, l in listings.items() if l.get("message_id") == message_id), (None, None))
+
+    async def _end_listing(self, guild: discord.Guild, listing_id: str):
+        async with self.config.guild(guild).listings() as listings:
+            if listing_id in listings:
+                listings[listing_id]["open"] = False
+
+    async def listing_offer(self, interaction: discord.Interaction):
+        """Someone pressed "Offer a trade" on a listing: open a trade with the poster,
+        the poster's side filled in with the listed cards they still have."""
+        guild = interaction.guild
+        listing_id, listing = await self._listing_for_message(guild, interaction.message.id)
+        if listing is None or not listing.get("open"):
+            await interaction.response.send_message("This listing is closed.", ephemeral=True)
+            return
+        if time.time() > listing["created"] + LISTING_DAYS * 86400:
+            await self._end_listing(guild, listing_id)
+            await interaction.response.send_message("This listing has expired.", ephemeral=True)
+            await self._close_listing_message(guild, listing, "It expired.")
+            return
+        poster = guild.get_member(listing["user_id"])
+        if poster is None:
+            await self._end_listing(guild, listing_id)
+            await interaction.response.send_message("That member isn't on the server any more.", ephemeral=True)
+            await self._close_listing_message(guild, listing, "They left the server.")
+            return
+        if interaction.user.id == poster.id:
+            await interaction.response.send_message("That's your own listing. Close it with the other button.", ephemeral=True)
+            return
+        state = await self._member_state(poster)
+        left = list(state.collection)
+        still = []
+        for cid in listing["have"]:
+            if cid in left:
+                left.remove(cid)
+                still.append(cid)
+        await interaction.response.send_message("Trade started below.", ephemeral=True)
+        view = views.TradeView(self, interaction.user, poster)
+        view.offers[poster.id] = {"cards": still, "coins": 0}
+        try:
+            view.message = await interaction.channel.send(
+                content=f"{poster.mention}, {interaction.user.mention} wants to trade for your listing.",
+                embed=await view.build_embed(), view=view,
+                allowed_mentions=discord.AllowedMentions(users=[poster], roles=False, everyone=False),
+            )
+        except discord.HTTPException:
+            log.exception("cardcollect: couldn't open a trade from a listing")
+
+    async def listing_close(self, interaction: discord.Interaction):
+        guild = interaction.guild
+        listing_id, listing = await self._listing_for_message(guild, interaction.message.id)
+        if listing is None or not listing.get("open"):
+            await interaction.response.send_message("This listing is already closed.", ephemeral=True)
+            return
+        if interaction.user.id != listing["user_id"] and not await self._is_pool_admin(interaction.user):
+            await interaction.response.send_message("Only the person who posted it (or an admin) can close it.", ephemeral=True)
+            return
+        await self._end_listing(guild, listing_id)
+        embed = discord.Embed(title="Trade board", description="This listing is closed.", color=embeds.EMBED_COLOR)
+        await interaction.response.edit_message(embed=embed, view=None)
+
+    async def _apply_trade_channel(self, guild, member, channel) -> str:
+        conf = self.config.guild(guild)
+        if channel is None:
+            await conf.trade_channel_id.set(None)
+            return "Listings will post wherever `.card tradepost` is run."
+        await conf.trade_channel_id.set(channel.id)
+        return f"Listings will post in {channel.mention}."
 
     async def resolve_offer(self, guild: discord.Guild, member: discord.Member, text: str) -> Tuple[List[int], Optional[str]]:
         """Turn what a member typed into an offer ("12, Rem, #40") into card ids

@@ -31,6 +31,9 @@ from .constants import (
     SERIES_IMPORT_DEFAULT,
     SERIES_VIEW_TIMEOUT_SECONDS,
     TIERS,
+    LISTING_CLOSE_ID,
+    LISTING_OFFER_ID,
+    LISTING_WANT_MAX,
     TRADE_MAX_CARDS,
     TRADE_TIMEOUT_SECONDS,
     TRADE_UP_COUNT,
@@ -1458,6 +1461,70 @@ class TradeView(discord.ui.View):
             )
         except discord.HTTPException:
             pass
+
+
+# ---------------------------------------------------------------------------
+# the trade board: `.card tradepost`
+# ---------------------------------------------------------------------------
+
+
+class ListingModal(discord.ui.Modal):
+    have = discord.ui.TextInput(
+        label="Cards you'd trade away", style=discord.TextStyle.paragraph, required=False, max_length=400,
+        placeholder="Names or #numbers, comma-separated, e.g. 12, Rem, #40",
+    )
+    want = discord.ui.TextInput(
+        label="What you're looking for", style=discord.TextStyle.paragraph, required=False, max_length=LISTING_WANT_MAX,
+        placeholder="e.g. any Re:Zero epic, or wondercoin",
+    )
+
+    def __init__(self, cog, member):
+        super().__init__(title="Trade board listing", timeout=300)
+        self.cog = cog
+        self.member = member
+
+    async def on_submit(self, interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True)
+        reply = await self.cog.post_listing(
+            interaction.guild, self.member, str(self.have.value or ""), str(self.want.value or ""), interaction.channel
+        )
+        await interaction.followup.send(reply, ephemeral=True)
+
+    async def on_error(self, interaction: discord.Interaction, error: Exception):
+        log.error("cardcollect: listing modal error", exc_info=error)
+
+
+class ListingStartView(_InvokerView):
+    """The button under `.card tradepost` that opens the listing form."""
+
+    reject_text = "Run `.card tradepost` yourself to post a listing."
+
+    def __init__(self, cog, member):
+        super().__init__(member.id, 300)
+        self.cog = cog
+        self.member = member
+
+    @discord.ui.button(label="Write my listing", emoji="\U0001f4dd", style=discord.ButtonStyle.primary)
+    async def write(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.send_modal(ListingModal(self.cog, self.member))
+
+
+class ListingView(discord.ui.View):
+    """The buttons on a trade board listing. Persistent (fixed custom ids, one
+    instance registered in cog_load) so a listing keeps working for days,
+    across restarts."""
+
+    def __init__(self, cog):
+        super().__init__(timeout=None)
+        self.cog = cog
+
+    @discord.ui.button(label="Offer a trade", emoji="\U0001f91d", style=discord.ButtonStyle.success, custom_id=LISTING_OFFER_ID)
+    async def offer(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.cog.listing_offer(interaction)
+
+    @discord.ui.button(label="Close listing", style=discord.ButtonStyle.secondary, custom_id=LISTING_CLOSE_ID)
+    async def close(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.cog.listing_close(interaction)
 
 
 # ---------------------------------------------------------------------------
