@@ -353,9 +353,9 @@ def _apply_finish(base: Image.Image, level: int, phase: float) -> Image.Image:
     ImageDraw.Draw(art_mask).rectangle([(0, h - NAME_PLATE_HEIGHT), (w, h)], fill=0)
 
     card = base.copy()
-    foil = Image.new("L", (w, h), 70 if prismatic else 38)
+    foil = Image.new("L", (w, h), 55 if prismatic else 38)
     if prismatic:
-        foil = ImageChops.add(foil, _light_band((w, h), phase, 0.4, 110))
+        foil = ImageChops.add(foil, _light_band((w, h), phase, 0.4, 70))
     foil = ImageChops.multiply(foil, art_mask)
     card = Image.composite(Image.alpha_composite(card, _rainbow((w, h), phase)), card, foil)
 
@@ -396,11 +396,21 @@ def render_card_frames(
 def encode_gif(frames: Sequence[Image.Image], background=(20, 20, 24)) -> io.BytesIO:
     """Frames -> a looping GIF. Transparent corners are flattened onto the
     same dark background the static renders use."""
-    paletted = []
+    flats = []
     for frame in frames:
         flat = Image.new("RGBA", frame.size, background + (255,))
         flat.alpha_composite(frame)
-        paletted.append(flat.convert("RGB").quantize(colors=255, method=Image.MEDIANCUT, dither=Image.FLOYDSTEINBERG))
+        flats.append(flat.convert("RGB"))
+    # one palette for the whole loop, taken from a few frames side by side, and
+    # every frame dithered onto it: per-frame palettes without dithering turn
+    # smooth foil gradients into flickering blotches
+    sample_frames = flats[:: max(1, len(flats) // 4)][:4]
+    w, h = flats[0].size
+    sheet = Image.new("RGB", (w * len(sample_frames), h))
+    for i, frame in enumerate(sample_frames):
+        sheet.paste(frame, (i * w, 0))
+    palette = sheet.quantize(colors=255, method=Image.MEDIANCUT)
+    paletted = [frame.quantize(palette=palette, dither=Image.FLOYDSTEINBERG) for frame in flats]
     buf = io.BytesIO()
     paletted[0].save(buf, format="GIF", save_all=True, append_images=paletted[1:], duration=ANIMATION_FRAME_MS,
                      loop=0, optimize=True, disposal=2)

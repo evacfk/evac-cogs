@@ -1384,9 +1384,10 @@ class CardCollect(commands.Cog):
         a new one the first time it's needed in a new week (Monday, Pacific).
         None when the feature is off or there are no sets."""
         conf = self.config.guild(guild)
-        if not await conf.featured_enabled():
-            return None
         week = engine.week_start(engine.today_str(ACTIVITY_TIMEZONE))
+        if not await conf.featured_enabled():
+            self._featured_week[guild.id] = week  # nothing to pick: don't re-check on every message this week
+            return None
         lock = self._featured_locks.setdefault(guild.id, asyncio.Lock())
         announce = None
         async with lock:
