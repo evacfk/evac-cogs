@@ -474,12 +474,12 @@ class CollectionView(_InvokerView):
                 )
                 payload["file"] = (gallery, "collection.png")
                 label = f"{whose} collection"
+                standing = await self.cog.standing(guild, self.target)
+                if standing is not None:
+                    score, rank, ranked = standing
+                    label += f" · score **{score:,}** · #{rank} of {ranked} on the server"
                 if len(self.pages) > 1:
-                    label += f": (page {self.page + 1}/{len(self.pages)})"
-                elif not self.own:
-                    label = f"{self.target.display_name}'s collection:"
-                else:
-                    label = None
+                    label += f" (page {self.page + 1}/{len(self.pages)})"
                 payload["content"] = label
         self._rebuild(wish_cards, pings_off)
         return payload

@@ -48,6 +48,7 @@ PLATE_BG = (0, 0, 0, 175)
 TEXT_WHITE = (240, 240, 240)
 SERIES_GREY = (190, 190, 196)
 EVENT_COLOR = (230, 126, 34)
+FEATURED_COLOR = (241, 196, 15)
 SERIES_MIN_CARD_WIDTH = 200  # cards narrower than this (gallery grid tiles) leave the series off
 BORDER_WIDTH = 8
 CORNER_RADIUS = 18
@@ -158,6 +159,7 @@ def render_card(
     show_id: bool = False,
     finish: int = 0,
     phase: float = STILL_PHASE,
+    featured: bool = False,
 ) -> Image.Image:
     """Build one card tile: art, rarity-colored border, name plate, and
     (if given) the drop's card `number` in a circle at the top-left, matching the
@@ -181,7 +183,7 @@ def render_card(
     over the art and swaps the border for a rainbow one. `phase` (0-1) is where
     the light streak is; render_card_frames sweeps it to animate a card."""
     base = _card_base(card, image_bytes, size)
-    return _decorate(_apply_finish(base, finish, phase), card, number, quantity, show_id, finish)
+    return _decorate(_apply_finish(base, finish, phase), card, number, quantity, show_id, finish, featured)
 
 
 def _card_base(card: Card, image_bytes: bytes, size: Tuple[int, int]) -> Image.Image:
@@ -209,13 +211,19 @@ def _card_base(card: Card, image_bytes: bytes, size: Tuple[int, int]) -> Image.I
     return canvas
 
 
-def _decorate(canvas: Image.Image, card: Card, number, quantity: int, show_id: bool, finish: int) -> Image.Image:
+def _decorate(
+    canvas: Image.Image, card: Card, number, quantity: int, show_id: bool, finish: int, featured: bool = False
+) -> Image.Image:
     """The name plate and badges, drawn on top of the (finished) art."""
     w, _h = canvas.size
     color = RARITY_COLORS.get(card.rarity, RARITY_COLORS["common"])
     _draw_name_plate(canvas, card, color, tag=finish_name(finish))
-    if card.event and w >= SERIES_MIN_CARD_WIDTH:
-        _draw_event_badge(canvas, card.event)
+    if w >= SERIES_MIN_CARD_WIDTH:
+        y = 76
+        if card.event:
+            y += _draw_tag(canvas, f"★ {card.event.upper()}", EVENT_COLOR, y) + 6
+        if featured:
+            _draw_tag(canvas, "★ FEATURED", FEATURED_COLOR, y, text_color=(40, 30, 0))
 
     if number:
         _draw_number_badge(canvas, number)
@@ -251,20 +259,20 @@ def _decorate(canvas: Image.Image, card: Card, number, quantity: int, show_id: b
     return canvas
 
 
-def _draw_event_badge(canvas: Image.Image, event: str) -> None:
-    """A small orange tag with the event's name near the top-left, under the
-    corner badges (the bottom-left is where "★ SHOWCASE" goes)."""
-    w, h = canvas.size
+def _draw_tag(canvas: Image.Image, text: str, color, y: int, text_color=(255, 255, 255)) -> int:
+    """A small rounded tag near the top-left, under the corner badges (the
+    bottom-left is where "★ SHOWCASE" goes). Returns its height so tags can stack."""
+    w, _h = canvas.size
     font = _font(13, bold=True)
-    text = fit_text(f"★ {event.upper()}", font, w * 0.7)
+    text = fit_text(text, font, w * 0.7)
     pad_x, pad_y = 8, 4
-    text_w = font.getlength(text)
-    box_w, box_h = int(text_w + pad_x * 2), 13 + pad_y * 2 + 2
+    box_w, box_h = int(font.getlength(text) + pad_x * 2), 13 + pad_y * 2 + 2
     badge = Image.new("RGBA", (box_w, box_h), (0, 0, 0, 0))
     bd = ImageDraw.Draw(badge)
-    bd.rounded_rectangle([(0, 0), (box_w - 1, box_h - 1)], radius=box_h // 2, fill=EVENT_COLOR + (235,))
-    bd.text((pad_x, pad_y), text, font=font, fill=(255, 255, 255))
-    canvas.alpha_composite(badge, (12, 76))
+    bd.rounded_rectangle([(0, 0), (box_w - 1, box_h - 1)], radius=box_h // 2, fill=tuple(color) + (235,))
+    bd.text((pad_x, pad_y), text, font=font, fill=text_color)
+    canvas.alpha_composite(badge, (12, y))
+    return box_h
 
 
 # --- finishes ------------------------------------------------------------------
@@ -426,12 +434,13 @@ def render_drop(
     entries: Sequence[Tuple[Card, bytes]],
     is_test: bool = False,
     numbered: bool = True,
+    featured_ids=(),
 ) -> io.BytesIO:
     """Build the composite image posted for a drop: the cards side by side,
     numbered 1, 2, 3... to match their buttons. A test drop gets a visible red
     banner so it's never mistaken for a real one. A pack reveal uses the same
     layout without the numbers (`numbered=False`)."""
-    tiles = [render_card(card, image_bytes, number=i + 1 if numbered else None)
+    tiles = [render_card(card, image_bytes, number=i + 1 if numbered else None, featured=card.card_id in set(featured_ids))
              for i, (card, image_bytes) in enumerate(entries)]
     if not tiles:
         raise ValueError("render_drop needs at least one card")

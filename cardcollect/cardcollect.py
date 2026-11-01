@@ -431,8 +431,10 @@ class CardCollect(commands.Cog):
 
         # Pillow work off the event loop: a 3-card composite is tens of ms of
         # CPU, which is long enough to delay gateway heartbeats if done inline
+        featured = await self.featured_series(guild)
+        featured_ids = {card.card_id for card, _ in entries if featured and card.series == featured}
         composite = await asyncio.get_running_loop().run_in_executor(
-            None, functools.partial(imagegen.render_drop, entries, is_test=is_test)
+            None, functools.partial(imagegen.render_drop, entries, is_test=is_test, featured_ids=featured_ids)
         )
         closes_epoch = int(time.time()) + window
         if is_test:
@@ -1211,6 +1213,9 @@ class CardCollect(commands.Cog):
         the member owns, owner count, owner mentions)."""
         everyone = await self.config.all_members(guild)
         owner_ids = [mid for mid, data in everyone.items() if card.card_id in data.get("collection", [])]
+        spare_ids = [mid for mid in owner_ids
+                     if mid != member.id and everyone[mid].get("collection", []).count(card.card_id) >= MAX_COPIES_KEPT
+                     and guild.get_member(mid) is not None]
         mentions = []
         for member_id in owner_ids[:10]:
             owner = guild.get_member(member_id)
@@ -1237,6 +1242,11 @@ class CardCollect(commands.Cog):
             embed.add_field(name="You", value=owned, inline=True)
         elif card.card_id in state.wishlist:
             embed.add_field(name="You", value="★ On your wishlist", inline=True)
+        if spare_ids and quantity < MAX_COPIES_KEPT:
+            shown = ", ".join(f"<@{mid}>" for mid in spare_ids[:8])
+            more = f" +{len(spare_ids) - 8} more" if len(spare_ids) > 8 else ""
+            embed.add_field(name="Spares to trade for", value=f"{shown}{more}\nAsk them with `.card trade @member`.",
+                            inline=False)
         return embed, file, quantity, len(owner_ids), state
 
     @card.command(name="find", aliases=["search", "info", "show", "pool", "poolsearch"])
@@ -1255,7 +1265,7 @@ class CardCollect(commands.Cog):
         very rarely a legendary. Every 7th day in a row is bumped up one rarity.
         The reply also has a button to buy today's pack."""
         result = await self.daily_pull(ctx.guild, ctx.author)
-        pack_price = await self.pack_offer(ctx.guild, ctx.author)
+        pack_price = await self.pack_offer(ctx.guild, ctx.author)  # after the pull: a streak bonus day halves it
         pack_view = views.PackView(self, ctx.author, pack_price) if pack_price is not None else None
         extra = {"view": pack_view} if pack_view is not None else {}
         if isinstance(result, str):
@@ -1286,7 +1296,11 @@ class CardCollect(commands.Cog):
             streak_line += f" · bonus pull in {left} day{'s' if left != 1 else ''}"
         lines.append(streak_line)
         if pack_view is not None:
-            lines.append(f"\U0001f381 Want more? Today's pack: {PACK_SIZE} cards, one guaranteed rare or better.")
+            if bonus and pack_price:
+                lines.append(f"\U0001f381 Streak bonus: today's pack is **half price** ({pack_price:,}). "
+                             f"{PACK_SIZE} cards, one guaranteed rare or better.")
+            else:
+                lines.append(f"\U0001f381 Want more? Today's pack: {PACK_SIZE} cards, one guaranteed rare or better.")
         image_bytes = self._read_card_image(ctx.guild, card.card_id)
         if image_bytes is None:
             sent = await ctx.send("\n".join(lines), allowed_mentions=discord.AllowedMentions.none(), **extra)
@@ -1477,9 +1491,18 @@ class CardCollect(commands.Cog):
         if not await conf.packs_enabled():
             return None
         state = await self._member_state(member)
-        if state.pack_date == engine.today_str(ACTIVITY_TIMEZONE):
+        today = engine.today_str(ACTIVITY_TIMEZONE)
+        if state.pack_date == today:
             return None
-        return int(await conf.pack_price())
+        return self._pack_price_for(int(await conf.pack_price()), state, today)
+
+    @staticmethod
+    def streak_pack_day(state: MemberState, today: str) -> bool:
+        """Today's daily pull was a streak bonus day (every 7th in a row): today's pack is half price."""
+        return state.daily_pull_date == today and engine.is_bonus_day(state.daily_streak, DAILY_STREAK_BONUS_EVERY)
+
+    def _pack_price_for(self, price: int, state: MemberState, today: str) -> int:
+        return price // 2 if self.streak_pack_day(state, today) else price
 
     async def open_pack(self, guild: discord.Guild, member: discord.Member):
         """Buy and open today's pack. Returns an error string, or a dict:
@@ -1497,7 +1520,7 @@ class CardCollect(commands.Cog):
             pool = await self._rollable_pool_cards(guild)
             if not pool:
                 return "The card pool is empty right now, so there's nothing to open."
-            price = int(await conf.pack_price())
+            price = self._pack_price_for(int(await conf.pack_price()), state, today)
             try:
                 if price > 0 and not await bank.can_spend(member, price):
                     balance = await bank.get_balance(member)
@@ -1565,7 +1588,9 @@ class CardCollect(commands.Cog):
                 art.append((card, image_bytes))
         file = None
         if art:
-            composite = await asyncio.to_thread(imagegen.render_drop, art, False, False)
+            featured = await self.featured_series(guild)
+            featured_ids = {card.card_id for card, _ in art if featured and card.series == featured}
+            composite = await asyncio.to_thread(imagegen.render_drop, art, False, False, featured_ids)
             file = discord.File(composite, filename="pack.png")
         return "\n".join(lines), file
 
@@ -1846,8 +1871,18 @@ class CardCollect(commands.Cog):
         view = views.LeaderboardView(self, ctx.author.id, ctx.guild)
         view.message = await ctx.send(embed=await view.build_embed(), view=view)
 
-    async def leaderboard_rows(self, guild: discord.Guild, mode: str) -> List[Tuple[discord.Member, int, int]]:
-        """(member, score, cards owned) for the top 10, by "score" or "cards"."""
+    async def standing(self, guild: discord.Guild, member) -> Optional[Tuple[int, int, int]]:
+        """(score, rank by score, members ranked) for one member, or None if they own nothing."""
+        rows = await self.leaderboard_rows(guild, "score", limit=None)
+        for rank, (m, score, _cards) in enumerate(rows, start=1):
+            if m.id == member.id:
+                return score, rank, len(rows)
+        return None
+
+    async def leaderboard_rows(
+        self, guild: discord.Guild, mode: str, limit: Optional[int] = 10
+    ) -> List[Tuple[discord.Member, int, int]]:
+        """(member, score, cards owned), best first by "score" or "cards" (top `limit`, or everyone)."""
         rarity_of = {c.card_id: c.rarity for c in await self._pool_cards(guild)}
         rows = []
         for member_id, data in (await self.config.all_members(guild)).items():
@@ -1861,7 +1896,7 @@ class CardCollect(commands.Cog):
             rows.append((member, engine.collection_score(collection, finishes, rarity_of), len(collection)))
         index = 1 if mode == "score" else 2
         rows.sort(key=lambda r: (-r[index], -r[3 - index], r[0].id))
-        return rows[:10]
+        return rows if limit is None else rows[:limit]
 
     @card.command(name="settings")
     @commands.guild_only()
