@@ -124,7 +124,7 @@ async def test_only_one_pack_a_day(cog):
     guild, _a, member, _c = await setup(cog, 402)
     assert isinstance(await cog.open_pack(guild, member), dict)
     again = await cog.open_pack(guild, member)
-    assert isinstance(again, str) and "already opened" in again
+    assert isinstance(again, str) and "already used" in again
     assert bank.balances[(guild.id, member.id)] == 70000  # charged once
     assert await cog.pack_offer(guild, member) is None
 
@@ -256,3 +256,51 @@ async def test_sell_prices_are_editable_in_settings_and_apply_to_tokens_already_
                                                 "legendary": "20000"})
     assert await cog.config.guild(guild).sell_prices() == {"common": 500, "rare": 2000, "epic": 8000, "legendary": 20000}
     assert await cog.sell_tokens(guild, member) == (1, 2000)
+
+
+# --- 2.10.0: gifting today's pack ----------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_gifting_a_pack_charges_the_buyer_and_gives_the_cards_to_the_recipient(cog):
+    guild, _a, member, channel = await setup(cog, 410)
+    friend = FakeMember(4109, guild)
+    guild.members[friend.id] = friend
+    result = await cog.gift_pack(guild, member, friend)
+    assert isinstance(result, dict) and result["gifted_by"] is member
+    assert bank.balances[(guild.id, member.id)] == 70_000
+    buyer, receiver = await cog._member_state(member), await cog._member_state(friend)
+    assert buyer.collection == [] and buyer.pack_date  # used up the buyer's pack
+    assert len(receiver.collection) + len(receiver.sell_tokens) == 3 and receiver.pack_date == ""  # theirs is untouched
+    assert "already used" in await cog.open_pack(guild, member)
+    text, _file = await cog.pack_result_message(guild, friend, result)
+    assert text.startswith(f"\U0001f381 {member.mention} gifted {friend.mention} a pack!")
+
+
+@pytest.mark.asyncio
+async def test_you_cant_gift_a_pack_to_yourself_or_a_bot(cog):
+    guild, _a, member, _c = await setup(cog, 411)
+    assert "your own pack" in await cog.gift_pack(guild, member, member)
+    assert "Bots" in await cog.gift_pack(guild, member, FakeMember(4119, guild, bot=True))
+    assert bank.balances[(guild.id, member.id)] == 100_000
+
+
+@pytest.mark.asyncio
+async def test_the_gift_button_picks_a_member_then_sends_the_pack(cog):
+    guild, _a, member, channel = await setup(cog, 412)
+    friend = FakeMember(4129, guild)
+    guild.members[friend.id] = friend
+    ctx = FakeCtx(member, guild, channel)
+    await cog.card.commands["daily"].callback(cog, ctx)
+    pack_view = ctx.sent[-1].view
+    press = Inter(member, channel)
+    await pack_view.gift_button.callback(press)
+    gift = press.sent_views[-1]
+    assert isinstance(gift, views.GiftPackView) and gift.send.disabled
+    gift.picker._values = [friend]
+    pick = Inter(member, channel)
+    await gift.picker.callback(pick)
+    assert not gift.send.disabled and friend.mention in pick.response.edited["content"]
+    await gift.send.callback(Inter(member, channel))
+    assert "gifted" in channel.sent[-1].content and pack_view.button.disabled and pack_view.gift_button.disabled
+    assert len((await cog._member_state(friend)).collection) + len((await cog._member_state(friend)).sell_tokens) == 3

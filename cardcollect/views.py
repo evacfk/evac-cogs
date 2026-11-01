@@ -1484,6 +1484,19 @@ class PackView(_InvokerView):
         )
         self.button.callback = self._on_press
         self.add_item(self.button)
+        self.gift_button = discord.ui.Button(label="Gift it instead", emoji="\U0001f49d", style=discord.ButtonStyle.secondary)
+        self.gift_button.callback = self._on_gift
+        self.add_item(self.gift_button)
+
+    async def _on_gift(self, interaction: discord.Interaction):
+        if self.opened:
+            await interaction.response.send_message("You've already used today's pack.", ephemeral=True)
+            return
+        await interaction.response.send_message(
+            "Who should get today's pack? You pay, they get the 3 cards (and it uses up your pack for today).",
+            view=GiftPackView(self),
+            ephemeral=True,
+        )
 
     async def _on_press(self, interaction: discord.Interaction):
         if self.opened:
@@ -1497,16 +1510,75 @@ class PackView(_InvokerView):
             ephemeral=True,
         )
 
-    async def mark_opened(self):
+    async def mark_opened(self, label: str = "Pack opened"):
         self.opened = True
         self.button.disabled = True
-        self.button.label = "Pack opened"
+        self.gift_button.disabled = True
+        self.button.label = label
         self.stop()
         if self.message is not None:
             try:
                 await self.message.edit(view=self)
             except discord.HTTPException:
                 log.warning("cardcollect: couldn't disable a pack button", exc_info=True)
+
+
+class GiftPackView(discord.ui.View):
+    """The private "Gift it" step: pick a member, then confirm."""
+
+    def __init__(self, pack_view: PackView):
+        super().__init__(timeout=180)
+        self.pack_view = pack_view
+        self.recipient = None
+        self._busy = False
+        self.picker = discord.ui.UserSelect(placeholder="Pick a member…", min_values=1, max_values=1)
+        self.picker.callback = self._on_pick
+        self.add_item(self.picker)
+        self.send = discord.ui.Button(label="Gift it", emoji="\U0001f381", style=discord.ButtonStyle.success, disabled=True)
+        self.send.callback = self._on_send
+        self.add_item(self.send)
+
+    async def _on_pick(self, interaction: discord.Interaction):
+        who = self.picker.values[0]
+        if who.id == self.pack_view.member.id or getattr(who, "bot", False):
+            await interaction.response.send_message(
+                "Pick another member (not yourself or a bot).", ephemeral=True
+            )
+            return
+        self.recipient = who
+        self.send.disabled = False
+        price = self.pack_view.price
+        cost = f"**{price:,}** wondercoin" if price else "nothing"
+        await interaction.response.edit_message(
+            content=f"Gift today's pack to {who.mention} for {cost}? They get the 3 cards.", view=self
+        )
+
+    async def _on_send(self, interaction: discord.Interaction):
+        if self._busy or self.recipient is None:
+            await interaction.response.send_message("One moment.", ephemeral=True)
+            return
+        self._busy = True
+        cog, buyer = self.pack_view.cog, self.pack_view.member
+        await interaction.response.defer()
+        recipient = buyer.guild.get_member(self.recipient.id) or self.recipient
+        result = await cog.gift_pack(buyer.guild, buyer, recipient)
+        self.stop()
+        if isinstance(result, str):
+            await interaction.edit_original_response(content=result, view=None)
+            if "already used" in result:
+                await self.pack_view.mark_opened()
+            return
+        await interaction.edit_original_response(content=f"Sent! {recipient.mention}'s cards are in the channel.", view=None)
+        await self.pack_view.mark_opened("Pack gifted")
+        text, file = await cog.pack_result_message(buyer.guild, recipient, result)
+        kwargs = {"content": text, "allowed_mentions": discord.AllowedMentions(users=[recipient], roles=False, everyone=False)}
+        if file is not None:
+            kwargs["file"] = file
+        try:
+            await interaction.channel.send(**kwargs)
+        except discord.HTTPException:
+            log.exception("cardcollect: couldn't post a gifted pack")
+        await cog.announce_pack_hits(buyer.guild, recipient, result, interaction.channel.id)
 
 
 class PackConfirmView(discord.ui.View):
@@ -1529,7 +1601,7 @@ class PackConfirmView(discord.ui.View):
         self.stop()
         if isinstance(result, str):
             await interaction.edit_original_response(content=result, view=None)
-            if "already opened" in result:
+            if "already used" in result:
                 await self.pack_view.mark_opened()
             return
         await interaction.edit_original_response(content="Pack opened! The cards are in the channel.", view=None)

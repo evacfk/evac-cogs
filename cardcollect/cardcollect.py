@@ -1509,28 +1509,43 @@ class CardCollect(commands.Cog):
         price, entries [(card, outcome, sell price or None)], set_lines, pity_used
         (the guaranteed card was epic+ because of pity), pity (packs in a row
         without an epic+ after this one)."""
+        return await self._buy_pack(guild, member, member)
+
+    async def gift_pack(self, guild: discord.Guild, buyer: discord.Member, recipient: discord.Member):
+        """Spend today's pack on someone else: the buyer pays (and uses up their
+        pack for the day), the recipient gets the cards. Pack pity is neither's
+        to use or build here. Same results as open_pack, plus "gifted_by"."""
+        if recipient.id == buyer.id:
+            return "That's just opening your own pack."
+        if getattr(recipient, "bot", False):
+            return "Bots don't collect cards."
+        return await self._buy_pack(guild, buyer, recipient)
+
+    async def _buy_pack(self, guild: discord.Guild, buyer: discord.Member, recipient: discord.Member):
         conf = self.config.guild(guild)
         if not await conf.packs_enabled():
             return "Packs are turned off right now."
+        gift = recipient.id != buyer.id
         async with self._get_claim_lock(guild.id):
             today = engine.today_str(ACTIVITY_TIMEZONE)
-            state = await self._member_state(member)
-            if state.pack_date == today:
-                return "You've already opened today's pack. A new one is available at midnight Pacific."
+            buyer_state = await self._member_state(buyer)
+            if buyer_state.pack_date == today:
+                return "You've already used today's pack. A new one is available at midnight Pacific."
+            state = await self._member_state(recipient) if gift else buyer_state
             pool = await self._rollable_pool_cards(guild)
             if not pool:
                 return "The card pool is empty right now, so there's nothing to open."
-            price = self._pack_price_for(int(await conf.pack_price()), state, today)
+            price = self._pack_price_for(int(await conf.pack_price()), buyer_state, today)
             try:
-                if price > 0 and not await bank.can_spend(member, price):
-                    balance = await bank.get_balance(member)
+                if price > 0 and not await bank.can_spend(buyer, price):
+                    balance = await bank.get_balance(buyer)
                     return f"A pack costs **{price:,}** wondercoin and you have **{balance:,}**."
                 if price > 0:
-                    await bank.withdraw_credits(member, price)
+                    await bank.withdraw_credits(buyer, price)
             except ValueError:
                 return f"A pack costs **{price:,}** wondercoin and you don't have enough."
             try:
-                floor = engine.pack_floor(state.pack_pity, PACK_PITY_AFTER)
+                floor = "rare" if gift else engine.pack_floor(state.pack_pity, PACK_PITY_AFTER)
                 cards = engine.roll_pack(
                     pool, await conf.daily_weights(), PACK_SIZE, floor, rng=self._rng,
                     boosts=await self._roll_boosts(guild, for_pack=True),
@@ -1540,34 +1555,45 @@ class CardCollect(commands.Cog):
                 for card in cards:
                     outcome, sell = self._grant_card(state, card, sell_prices)
                     entries.append((card, outcome, sell))
-                    done = await self._complete_set(guild, member, state, card, outcome)
+                    done = await self._complete_set(guild, recipient, state, card, outcome)
                     if done is not None:
-                        set_lines.append(f"\U0001f3c6 Set complete: **{done[0]}**! +{done[1]:,} wondercoin.")
-                hit = any(engine.is_epic_or_better(c.rarity) for c in cards)
-                state.pack_pity = 0 if hit else state.pack_pity + 1
-                state.pack_date = today
-                await self._save_member_state(member, state)
+                        who = f"{recipient.mention} completed" if gift else "Set complete:"
+                        set_lines.append(f"\U0001f3c6 {who} **{done[0]}**! +{done[1]:,} wondercoin.")
+                if not gift:
+                    hit = any(engine.is_epic_or_better(c.rarity) for c in cards)
+                    state.pack_pity = 0 if hit else state.pack_pity + 1
+                buyer_state.pack_date = today
+                await self._save_member_state(buyer, buyer_state)
+                if gift:
+                    await self._save_member_state(recipient, state)
             except Exception:
-                log.exception("cardcollect: opening a pack failed for %s; refunding", member.id)
+                log.exception("cardcollect: a pack failed for %s; refunding", buyer.id)
                 if price > 0:
-                    await bank.deposit_credits(member, price)
+                    await bank.deposit_credits(buyer, price)
                 return "Something went wrong opening that pack. You were refunded."
-        await self._bump_stats(guild, packs=1)
+        await self._bump_stats(guild, packs=1, **({"gift_packs": 1} if gift else {}))
         return {
             "price": price, "entries": entries, "set_lines": set_lines,
-            "pity_used": floor == "epic", "pity": state.pack_pity,
+            "pity_used": floor == "epic", "pity": 0 if gift else state.pack_pity,
+            "gifted_by": buyer if gift else None,
         }
 
     async def pack_result_message(self, guild: discord.Guild, member: discord.Member, result: dict):
         """The public reveal for an opened pack: (text, file or None)."""
-        lines = [f"\U0001f381 {member.mention} opened today's pack:"]
+        giver = result.get("gifted_by")
+        if giver is not None:
+            lines = [f"\U0001f381 {giver.mention} gifted {member.mention} a pack!"]
+        else:
+            lines = [f"\U0001f381 {member.mention} opened today's pack:"]
         for card, outcome, sell in result["entries"]:
             series = f" ({card.display_series})" if card.display_series else ""
             tag = {"new": " · **NEW**", "duplicate": " · spare copy",
                    "sell_token": f" · duplicate token (sells for {sell:,})" if sell else " · duplicate token"}.get(outcome, "")
             lines.append(f"{embeds.RARITY_EMOJI.get(card.rarity, '')} **{card.name}**{series} · {card.rarity}"
                          f" · `#{card.card_id}`{tag}")
-        if result["pity_used"]:
+        if result.get("gifted_by") is not None:
+            pass  # pity belongs to a member's own packs
+        elif result["pity_used"]:
             lines.append(f"\U0001f340 Pack pity: {PACK_PITY_AFTER} packs without an epic, so this one guaranteed one.")
         elif result["pity"]:
             left = PACK_PITY_AFTER - result["pity"]
