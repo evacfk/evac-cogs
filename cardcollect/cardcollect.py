@@ -59,6 +59,7 @@ from .constants import (
     MAX_DRAW_WINDOW_SECONDS,
     MAX_DROP_SIZE,
     MAX_SHOWCASE_SLOTS,
+    TRADE_MAX_CARDS,
     MIN_DRAW_WINDOW_SECONDS,
     PACK_PITY_AFTER,
     PACK_SIZE,
@@ -1480,6 +1481,124 @@ class CardCollect(commands.Cog):
             await ctx.send(embed=embeds.give_result_embed(card, ctx.author, member))
         if set_done is not None:
             await ctx.send(f"\U0001f3c6 {member.mention} completed the **{set_done[0]}** set: +{set_done[1]:,} wondercoin!")
+
+    # -- trade --------------------------------------------------------------
+
+    @card.command(name="trade")
+    @commands.guild_only()
+    async def card_trade(self, ctx: commands.Context, member: discord.Member):
+        """Trade cards and wondercoin with another member. Each of you sets an
+        offer with the buttons; when you both press Accept, everything swaps at
+        once. Changing an offer clears both accepts."""
+        if member.id == ctx.author.id:
+            await ctx.send("You can't trade with yourself.")
+            return
+        if member.bot:
+            await ctx.send("Bots don't collect cards.")
+            return
+        view = views.TradeView(self, ctx.author, member)
+        view.message = await ctx.send(
+            content=f"{member.mention}, {ctx.author.mention} wants to trade cards with you.",
+            embed=await view.build_embed(),
+            view=view,
+            allowed_mentions=discord.AllowedMentions(users=[member], roles=False, everyone=False),
+        )
+
+    async def resolve_offer(self, guild: discord.Guild, member: discord.Member, text: str) -> Tuple[List[int], Optional[str]]:
+        """Turn what a member typed into an offer ("12, Rem, #40") into card ids
+        from their own collection. Returns (card ids, problem or None)."""
+        state = await self._member_state(member)
+        owned = [c for c in await self._pool_cards(guild) if c.card_id in state.collection]
+        ids: List[int] = []
+        for raw in [part.strip() for part in str(text or "").replace("\n", ",").split(",")]:
+            if not raw:
+                continue
+            bare = raw.lstrip("#").strip()
+            if bare.isdigit():
+                match = [c for c in owned if c.card_id == int(bare)]
+            else:
+                found = engine.search_cards(owned, bare)
+                exact = [c for c in found if engine.fold_text(c.name) == engine.fold_text(bare)]
+                match = exact if len(exact) == 1 else found
+            if not match:
+                return [], f"You don't have a card matching “{raw[:60]}”."
+            if len(match) > 1:
+                names = ", ".join(f"{c.name} (#{c.card_id})" for c in match[:5])
+                return [], f"“{raw[:60]}” could be several of your cards: {names}. Use the number."
+            ids.append(match[0].card_id)
+        if len(ids) > TRADE_MAX_CARDS:
+            return [], f"Put in at most {TRADE_MAX_CARDS} cards."
+        missing = engine.missing_for_offer(state.collection, ids)
+        if missing:
+            return [], f"You only have so many copies of #{missing[0]}."
+        return ids, None
+
+    async def describe_offer(self, guild: discord.Guild, member: discord.Member, card_ids: List[int], coins: int) -> str:
+        """The lines a trade shows for one side's offer."""
+        state = await self._member_state(member)
+        lines = []
+        left = list(state.collection)
+        for cid in card_ids:
+            card = await self._card_by_id(guild, cid)
+            if cid in left:
+                left.remove(cid)
+            finish = state.finish_of(cid) if cid not in left else 0  # the last copy carries the finish
+            name = discord.utils.escape_markdown(card.name) if card is not None else f"card #{cid}"
+            tag = f" · ✨ {imagegen.finish_name(finish).title()}" if finish else ""
+            emoji = embeds.RARITY_EMOJI.get(card.rarity, "") if card is not None else ""
+            lines.append(f"{emoji} **{name}** `#{cid}`{tag}")
+        if coins:
+            lines.append(f"\U0001fa99 **{coins:,}** wondercoin")
+        return "\n".join(lines) or "*nothing yet*"
+
+    async def execute_trade(self, guild: discord.Guild, a: discord.Member, a_offer: dict, b: discord.Member, b_offer: dict):
+        """Swap both offers at once ({"cards": [ids], "coins": n} each). Returns
+        why it couldn't happen (a string; nothing changes then), or on success
+        {"set_lines", "token_lines"} to announce."""
+        sides = ((a, a_offer, b), (b, b_offer, a))
+        async with self._get_claim_lock(guild.id):
+            states = {a.id: await self._member_state(a), b.id: await self._member_state(b)}
+            cards = {}
+            for giver, offer, _ in sides:
+                if engine.missing_for_offer(states[giver.id].collection, offer["cards"]):
+                    return f"{giver.display_name} no longer has every card in their offer."
+                for cid in offer["cards"]:
+                    card = await self._card_by_id(guild, cid)
+                    if card is None:
+                        return f"Card #{cid} is no longer in the pool."
+                    cards[cid] = card
+                if offer["coins"] and not await bank.can_spend(giver, offer["coins"]):
+                    return f"{giver.display_name} doesn't have {offer['coins']:,} wondercoin any more."
+            paid = []
+            try:
+                for giver, offer, _ in sides:
+                    if offer["coins"]:
+                        await bank.withdraw_credits(giver, offer["coins"])
+                        paid.append((giver, offer["coins"]))
+            except ValueError:
+                for giver, amount in paid:
+                    await bank.deposit_credits(giver, amount)
+                return "Someone's wondercoin changed mid-trade. Nothing was swapped."
+            sell_prices = await self.config.guild(guild).sell_prices()
+            set_lines = []
+            outcomes = []
+            for giver, offer, receiver in sides:
+                for cid in offer["cards"]:
+                    outcome, _carried = self._move_copy(states[giver.id], states[receiver.id], cards[cid], sell_prices)
+                    outcomes.append((receiver, cards[cid], outcome))
+            for receiver, card, outcome in outcomes:
+                done = await self._complete_set(guild, receiver, states[receiver.id], card, outcome)
+                if done is not None:
+                    set_lines.append(f"\U0001f3c6 {receiver.mention} completed the **{done[0]}** set: +{done[1]:,} wondercoin!")
+            await self._save_member_state(a, states[a.id])
+            await self._save_member_state(b, states[b.id])
+            for giver, offer, receiver in sides:
+                if offer["coins"]:
+                    await bank.deposit_credits(receiver, offer["coins"])
+        await self._bump_stats(guild, trades=1)
+        tokens = [f"{receiver.display_name}'s **{card.name}** became a sell token (copy limit)"
+                  for receiver, card, outcome in outcomes if outcome == "sell_token"]
+        return {"set_lines": set_lines, "token_lines": tokens}
 
     @card.command(name="sell", aliases=["tokens"])
     @commands.guild_only()

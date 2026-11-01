@@ -446,6 +446,21 @@ def upgrade_plan(
     return plan
 
 
+def missing_for_offer(collection: Sequence[int], card_ids: Sequence[int]) -> List[int]:
+    """Card ids in an offer the member doesn't hold enough copies of (offering
+    the same card twice needs two copies). Empty means they can give it all."""
+    have = {}
+    for cid in collection:
+        have[cid] = have.get(cid, 0) + 1
+    missing = []
+    for cid in card_ids:
+        if have.get(cid, 0) > 0:
+            have[cid] -= 1
+        else:
+            missing.append(cid)
+    return missing
+
+
 def gallery_sort_key(card: Card) -> Tuple[int, str, int]:
     """Collection order: rarest tier first (legendary, epic, rare, common),
     then alphabetical by name (case- and accent-insensitive), then card id so

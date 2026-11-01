@@ -31,6 +31,8 @@ from .constants import (
     SERIES_IMPORT_DEFAULT,
     SERIES_VIEW_TIMEOUT_SECONDS,
     TIERS,
+    TRADE_MAX_CARDS,
+    TRADE_TIMEOUT_SECONDS,
     UPLOAD_CANCELLED,
 )
 
@@ -1209,6 +1211,175 @@ class UpgradeConfirmView(discord.ui.View):
     async def cancel(self, interaction: discord.Interaction, button: discord.ui.Button):
         self.stop()
         await interaction.response.edit_message(content="No upgrade.", view=None)
+
+
+# ---------------------------------------------------------------------------
+# `.card trade @member`
+# ---------------------------------------------------------------------------
+
+
+class TradeOfferModal(discord.ui.Modal):
+    """One side's offer: which of their cards, and how much wondercoin."""
+
+    cards = discord.ui.TextInput(
+        label="Your cards (names or #numbers, comma-separated)",
+        placeholder="e.g. 12, Rem, #40   (leave empty for none)",
+        style=discord.TextStyle.paragraph,
+        max_length=400,
+        required=False,
+    )
+    coins = discord.ui.TextInput(label="Wondercoin (0 for none)", max_length=9, required=False)
+
+    def __init__(self, trade: "TradeView", member):
+        super().__init__(title="Your side of the trade", timeout=300)
+        self.trade = trade
+        self.member = member
+        offer = trade.offers[member.id]
+        self.cards.default = ", ".join(str(cid) for cid in offer["cards"])[:400]
+        self.coins.default = str(offer["coins"]) if offer["coins"] else ""
+
+    async def on_submit(self, interaction: discord.Interaction):
+        await self.trade.set_offer(interaction, self.member, str(self.cards.value or ""), str(self.coins.value or ""))
+
+    async def on_error(self, interaction: discord.Interaction, error: Exception):
+        log.error("cardcollect: trade modal error", exc_info=error)
+
+
+class TradeView(discord.ui.View):
+    """A two-person trade. Each side sets an offer; when both have accepted the
+    current offers, everything swaps at once (CardCollect.execute_trade). Any
+    change to an offer clears both accepts, so nobody can swap something in
+    after the other side said yes."""
+
+    def __init__(self, cog, a, b):
+        super().__init__(timeout=TRADE_TIMEOUT_SECONDS)
+        self.cog = cog
+        self.a, self.b = a, b
+        self.offers = {a.id: {"cards": [], "coins": 0}, b.id: {"cards": [], "coins": 0}}
+        self.accepted = set()
+        self.done = False
+        self.message = None
+        self._busy = False
+
+    def _member(self, user_id):
+        return self.a if user_id == self.a.id else self.b
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id not in self.offers:
+            await interaction.response.send_message("This trade is between two other members.", ephemeral=True)
+            return False
+        return True
+
+    async def build_embed(self, note: str = "") -> discord.Embed:
+        guild = self.a.guild
+        embed = discord.Embed(title="Card trade", color=embeds.EMBED_COLOR)
+        for member in (self.a, self.b):
+            offer = self.offers[member.id]
+            mark = "✅ Accepted" if member.id in self.accepted else "⏳ Not accepted"
+            embed.add_field(
+                name=f"{member.display_name} gives · {mark}",
+                value=await self.cog.describe_offer(guild, member, offer["cards"], offer["coins"]),
+                inline=True,
+            )
+        embed.description = note or (
+            "Each of you: **Set my offer** with your cards (names or #numbers) and any wondercoin. "
+            "When you both press **Accept**, everything swaps at once. Changing an offer clears both accepts."
+        )
+        embed.set_footer(text=f"Up to {TRADE_MAX_CARDS} cards each · closes after {TRADE_TIMEOUT_SECONDS // 60} minutes")
+        return embed
+
+    async def _redraw(self, interaction: discord.Interaction, note: str = ""):
+        embed = await self.build_embed(note)
+        if interaction.response.is_done():
+            await interaction.edit_original_response(embed=embed, view=self)
+        else:
+            await interaction.response.edit_message(embed=embed, view=self)
+
+    async def set_offer(self, interaction: discord.Interaction, member, cards_text: str, coins_text: str):
+        coins_text = coins_text.replace(",", "").strip()
+        if coins_text and not coins_text.isdigit():
+            await interaction.response.send_message("Wondercoin must be a whole number.", ephemeral=True)
+            return
+        coins = int(coins_text or 0)
+        card_ids, problem = await self.cog.resolve_offer(member.guild, member, cards_text)
+        if problem:
+            await interaction.response.send_message(problem, ephemeral=True)
+            return
+        if self.done:
+            await interaction.response.send_message("This trade is already over.", ephemeral=True)
+            return
+        self.offers[member.id] = {"cards": card_ids, "coins": coins}
+        self.accepted.clear()
+        await self._redraw(interaction, f"{member.display_name} changed their offer, so both accepts were cleared.")
+
+    @discord.ui.button(label="Set my offer", emoji="\U0001f4dd", style=discord.ButtonStyle.primary)
+    async def set_mine(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.send_modal(TradeOfferModal(self, self._member(interaction.user.id)))
+
+    @discord.ui.button(label="Accept", emoji="✅", style=discord.ButtonStyle.success)
+    async def accept(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if self._busy or self.done:
+            await interaction.response.send_message("One moment.", ephemeral=True)
+            return
+        if not any(o["cards"] or o["coins"] for o in self.offers.values()):
+            await interaction.response.send_message("Nothing's been offered yet.", ephemeral=True)
+            return
+        self.accepted.add(interaction.user.id)
+        if len(self.accepted) < 2:
+            await self._redraw(interaction)
+            return
+        self._busy = True
+        try:
+            await interaction.response.defer()
+            result = await self.cog.execute_trade(
+                self.a.guild, self.a, self.offers[self.a.id], self.b, self.offers[self.b.id]
+            )
+            if isinstance(result, str):
+                self.accepted.clear()
+                await self._redraw(interaction, f"⚠️ {result} Both accepts were cleared.")
+                return
+            self.done = True
+            self.stop()
+            lines = ["✅ **Trade complete!** Everything has swapped."] + result["token_lines"] + result["set_lines"]
+            embed = await self._final_embed("\n".join(lines))
+            await interaction.edit_original_response(embed=embed, view=None)
+        finally:
+            self._busy = False
+
+    @discord.ui.button(label="Cancel", style=discord.ButtonStyle.danger)
+    async def cancel(self, interaction: discord.Interaction, button: discord.ui.Button):
+        self.done = True
+        self.stop()
+        embed = discord.Embed(
+            title="Card trade", description=f"Cancelled by {interaction.user.display_name}.", color=embeds.EMBED_COLOR
+        )
+        await interaction.response.edit_message(embed=embed, view=None)
+
+    async def _final_embed(self, text: str) -> discord.Embed:
+        embed = discord.Embed(title="Card trade", description=text, color=discord.Color.green())
+        for member, other in ((self.a, self.b), (self.b, self.a)):
+            offer = self.offers[member.id]
+            lines = []
+            for cid in offer["cards"]:
+                card = await self.cog._card_by_id(member.guild, cid)
+                lines.append(f"**{card.name if card else f'#{cid}'}** `#{cid}`")
+            if offer["coins"]:
+                lines.append(f"\U0001fa99 {offer['coins']:,} wondercoin")
+            embed.add_field(name=f"{member.display_name} → {other.display_name}", value="\n".join(lines) or "nothing",
+                            inline=True)
+        return embed
+
+    async def on_timeout(self):
+        if self.done or self.message is None:
+            return
+        try:
+            await self.message.edit(
+                embed=discord.Embed(title="Card trade", description="This trade expired. Nothing was swapped.",
+                                    color=embeds.EMBED_COLOR),
+                view=None,
+            )
+        except discord.HTTPException:
+            pass
 
 
 # ---------------------------------------------------------------------------
