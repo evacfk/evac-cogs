@@ -188,6 +188,7 @@ class CardCollect(commands.Cog):
         self._activity_task: Optional[asyncio.Task] = None
         self._featured_locks: Dict[int, asyncio.Lock] = {}  # guild_id -> lock around picking the week's series
         self._featured_week: Dict[int, str] = {}  # guild_id -> week already checked (skip Config per message)
+        self._listing_lock = asyncio.Lock()  # trade board listing ids and replacements
 
     async def cog_load(self):
         # Shared, persistent views: a press of a button on a drop (or a request)
@@ -1636,8 +1637,9 @@ class CardCollect(commands.Cog):
             state = await self._member_state(member)
             if any(outcome == "sell_token" for _c, outcome, _s in result["entries"]):
                 lines.append("Duplicate tokens are for card upgrades (`.card find`), or sell them with `.card sell`.")
+            who = member.mention if result.get("gifted_by") is not None else "You"
             for card in {c.card_id: c for c, outcome, _s in result["entries"] if outcome != "new"}.values():
-                nudge = await self.upgrade_nudge(guild, state, card)
+                nudge = await self.upgrade_nudge(guild, state, card, who=who)
                 if nudge:
                     lines.append(nudge)
         art = []
@@ -1764,20 +1766,21 @@ class CardCollect(commands.Cog):
         channel = guild.get_channel(channel_id) if channel_id else None
         channel = channel or fallback_channel
         old = None
-        async with conf.all() as data:
-            for lid, listing in data["listings"].items():
-                if listing["user_id"] == member.id and listing.get("open"):
-                    listing["open"] = False
-                    old = (lid, dict(listing))
-            listing_id = str(data["next_listing_id"])
-            data["next_listing_id"] += 1
+        async with self._listing_lock:  # one listing write at a time; only the listings are rewritten
+            listing_id = str(await conf.next_listing_id())
+            await conf.next_listing_id.set(int(listing_id) + 1)
             record = {"user_id": member.id, "have": have, "want": want, "channel_id": channel.id,
                       "message_id": None, "created": time.time(), "open": True}
-            data["listings"][listing_id] = record
-            # keep the store small: forget closed listings beyond the newest 200
-            closed = sorted((k for k, v in data["listings"].items() if not v.get("open")), key=int)
-            for k in closed[:-200]:
-                data["listings"].pop(k, None)
+            async with conf.listings() as listings:
+                for lid, listing in listings.items():
+                    if listing["user_id"] == member.id and listing.get("open"):
+                        listing["open"] = False
+                        old = (lid, dict(listing))
+                listings[listing_id] = record
+                # keep the store small: forget closed listings beyond the newest 200
+                closed = sorted((k for k, v in listings.items() if not v.get("open")), key=int)
+                for k in closed[:-200]:
+                    listings.pop(k, None)
         if old is not None:
             await self._close_listing_message(guild, old[1], "Replaced by a newer listing.")
         embed = await self.listing_embed(guild, member, record, listing_id)

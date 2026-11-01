@@ -304,3 +304,19 @@ async def test_the_gift_button_picks_a_member_then_sends_the_pack(cog):
     await gift.send.callback(Inter(member, channel))
     assert "gifted" in channel.sent[-1].content and pack_view.button.disabled and pack_view.gift_button.disabled
     assert len((await cog._member_state(friend)).collection) + len((await cog._member_state(friend)).sell_tokens) == 3
+
+
+@pytest.mark.asyncio
+async def test_a_gifted_reveal_names_the_recipient_in_upgrade_nudges(cog):
+    from cardcollect.models import Card
+    guild, _a, member, _c = await setup(cog, 413)
+    friend = FakeMember(4139, guild)
+    guild.members[friend.id] = friend
+    card = (await cog._pool_cards(guild))[0]
+    state = await cog._member_state(friend)
+    state.collection = [card.card_id, card.card_id]
+    await cog._save_member_state(friend, state)
+    result = {"entries": [(card, "duplicate", None)], "pity_used": False, "pity": 0, "set_lines": [],
+              "price": 0, "gifted_by": member}
+    text, _file = await cog.pack_result_message(guild, friend, result)
+    assert f"{friend.mention} has enough duplicates" in text and "You have" not in text

@@ -1845,6 +1845,11 @@ class SellView(_InvokerView):
         async def callback(interaction: discord.Interaction):
             self.mode = mode
             embed = await self._build()
+            if embed is None:  # spent or sold elsewhere while this was open
+                self.stop()
+                embed = discord.Embed(title="Your duplicate tokens", description="No tokens left.", color=embeds.EMBED_COLOR)
+                await interaction.response.edit_message(embed=embed, view=None)
+                return
             await interaction.response.edit_message(embed=embed, view=self)
 
         return callback
