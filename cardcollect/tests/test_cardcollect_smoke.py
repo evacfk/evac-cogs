@@ -316,7 +316,9 @@ async def test_card_give_converts_to_sell_token_when_receiver_at_duplicate_cap(c
     receiver_state = await cog._member_state(receiver)
     assert receiver_state.collection == [card_id, card_id]  # unchanged, no 3rd copy
     assert len(receiver_state.sell_tokens) == 1
-    assert "duplicate limit" in give_ctx.sent[-1].content.lower()
+    said = [m.content or "" for m in give_ctx.sent]
+    assert any("duplicate token" in t for t in said)
+    assert any("enough duplicates to upgrade" in t for t in said)  # their 3rd copy makes a Holo possible
 
 
 @pytest.mark.asyncio

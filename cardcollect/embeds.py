@@ -25,6 +25,11 @@ EMBED_COLOR = discord.Color.from_rgb(155, 89, 182)
 TEST_COLOR = discord.Color.from_rgb(231, 76, 60)
 
 
+def plural(rarity: str) -> str:
+    """"commons", "rares", "epics", "legendaries"."""
+    return rarity[:-1] + "ies" if rarity.endswith("y") else rarity + "s"
+
+
 def _rarity_line(rarity: str) -> str:
     return f"{RARITY_EMOJI.get(rarity, '')} {rarity.title()}"
 
@@ -416,7 +421,7 @@ def series_result_embed(
     return embed
 
 
-_OUTCOME_TAG = {"new": "NEW", "duplicate": "spare copy", "sell_token": "sell token"}
+_OUTCOME_TAG = {"new": "NEW", "duplicate": "spare copy", "sell_token": "duplicate token"}
 
 
 def draw_results_embed(
@@ -425,6 +430,7 @@ def draw_results_embed(
     picker_count: int,
     set_lines: Sequence[str] = (),
     is_test: bool = False,
+    upgrade_lines: Sequence[str] = (),
 ) -> discord.Embed:
     """The drop message after its draw: one line per card with the winner, how
     many picked it, and what it was to them. Pick counts are shown only now
@@ -454,6 +460,8 @@ def draw_results_embed(
     embed.description = "\n".join(lines)
     if set_lines:
         embed.add_field(name="Sets", value="\n".join(set_lines), inline=False)
+    if upgrade_lines:
+        embed.add_field(name="Upgrades ready", value="\n".join(upgrade_lines)[:1024], inline=False)
     embed.set_footer(text=f"{picker_count} member{'s' if picker_count != 1 else ''} picked")
     return embed
 

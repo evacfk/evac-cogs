@@ -1093,7 +1093,7 @@ class FindView(_InvokerView):
             return
         spends = []
         if plan["token_ids"]:
-            spends.append(f"{len(plan['token_ids'])} sell token{'s' if len(plan['token_ids']) != 1 else ''}")
+            spends.append(f"{len(plan['token_ids'])} duplicate token{'s' if len(plan['token_ids']) != 1 else ''}")
         if plan["spares"]:
             spends.append("your spare copy")
         await interaction.response.send_message(
@@ -1139,7 +1139,7 @@ class FindView(_InvokerView):
         await self._refresh(
             interaction,
             f"**{card.name}** is now **{tier}**. This changes how it drops from now on and how it looks in "
-            "everyone's collection; sell tokens already issued keep the value they were made with.",
+            "everyone's collection; duplicate tokens already issued keep the rarity they were made with.",
         )
 
     async def _on_event(self, interaction: discord.Interaction):
@@ -1557,7 +1557,15 @@ class PackConfirmView(discord.ui.View):
 
 
 class SellView(_InvokerView):
-    """`.card sell`: your sell tokens, sold all at once or one at a time."""
+    """`.card sell`: your duplicate tokens. Two screens:
+
+    - Sell: one button per rarity that sells all of that rarity's tokens except
+      ones kept for an upgrade you've started (engine.kept_for_upgrades), plus
+      one dropdown per rarity to sell exactly the tokens you pick.
+    - Trade up: one dropdown per rarity with 5+ tokens; pick 5 to swap for a
+      random card one rarity up.
+
+    Every dropdown holds at most 25 tokens (Discord's limit), listed A-Z."""
 
     reject_text = "Only the person who ran `.card sell` can use this."
 
@@ -1566,11 +1574,16 @@ class SellView(_InvokerView):
         self.cog = cog
         self.member = member
         self._busy = False
+        self.mode = "sell"
+        self.sell_buttons = {}
+        self.sell_lists = {}
+        self.trade_ups = {}
+        self.trade_up = None
 
     async def start(self, ctx):
         embed = await self._build()
         if embed is None:
-            await ctx.send("No sell tokens on hand. Winning a card you're already at the copy limit for gives you one.")
+            await ctx.send("No duplicate tokens on hand. You get one when you win a card you already have 2 copies of.")
             return
         self.message = await ctx.send(embed=embed, view=self)
 
@@ -1580,95 +1593,146 @@ class SellView(_InvokerView):
         state = await self.cog._member_state(self.member)
         tokens = state.sell_tokens
         self.clear_items()
+        self.sell_buttons, self.sell_lists, self.trade_ups = {}, {}, {}
+        self.trade_up = None
         if not tokens:
             return None
         prices = await self.cog.config.guild(guild).sell_prices()
-        values = [engine.sell_price(t.rarity, prices) for t in tokens]
-        counts = Counter(t.rarity for t in tokens)
-        embed = discord.Embed(title="Your sell tokens", color=embeds.EMBED_COLOR)
-        embed.description = "\n".join(
-            f"{embeds.RARITY_EMOJI[t]} {t.title()} × {counts[t]} — {counts[t] * prices.get(t, 0):,}" for t in reversed(TIERS) if counts[t]
-        )
-        embed.set_footer(text=f"{len(tokens)} token{'s' if len(tokens) != 1 else ''} worth {sum(values):,} wondercoin")
-        sell_all = discord.ui.Button(label=f"Sell all ({len(tokens)} · {sum(values):,})", style=discord.ButtonStyle.success)
-        sell_all.callback = self._on_sell_all
-        self.add_item(sell_all)
-        self.sell_all = sell_all
-        names = {}
-        for t in tokens[:25]:
-            card = await self.cog._card_by_id(guild, t.card_id)
-            names[t.token_id] = card.name if card is not None else f"card #{t.card_id}"
-        self.one = discord.ui.Select(
-            placeholder="Sell just one…",
-            options=[
-                discord.SelectOption(
-                    label=_clip(f"{t.rarity.title()} — {names[t.token_id]}", 100),
-                    value=t.token_id,
-                    description=f"{engine.sell_price(t.rarity, prices):,} wondercoin",
-                    emoji=embeds.RARITY_EMOJI[t.rarity],
-                )
-                for t in tokens[:25]
-            ],
-            row=1,
-        )
-        self.one.callback = self._on_sell_one
-        self.add_item(self.one)
-        # One trade-up dropdown per rarity (common, rare, epic), each listing up to
-        # 25 of that rarity's tokens. A single shared dropdown could only show the
-        # first 25 tokens overall, so a member with lots of rares never saw their
-        # commons at all.
-        if any(t.token_id not in names for t in tokens):
-            pool = {c.card_id: c for c in await self.cog._pool_cards(guild)}
-            for t in tokens:
-                card = pool.get(t.card_id)
-                names.setdefault(t.token_id, card.name if card is not None else f"card #{t.card_id}")
-        self.trade_ups = {}
-        for row, rarity in enumerate(TIERS[:-1], start=2):  # legendary is the top: nothing to trade up to
-            of_rarity = sorted((t for t in tokens if t.rarity == rarity), key=lambda t: (names[t.token_id].casefold(), t.token_id))
-            if len(of_rarity) < TRADE_UP_COUNT:
+        pool = {c.card_id: c for c in await self.cog._pool_cards(guild)}
+        names = {t.token_id: (pool[t.card_id].name if t.card_id in pool else f"card #{t.card_id}") for t in tokens}
+        kept = engine.kept_for_upgrades(tokens, state.finishes, state.collection)
+        by_rarity = {r: sorted((t for t in tokens if t.rarity == r), key=lambda t: (names[t.token_id].casefold(), t.token_id))
+                     for r in TIERS}
+        by_rarity = {r: ts for r, ts in by_rarity.items() if ts}
+
+        embed = discord.Embed(title="Your duplicate tokens", color=embeds.EMBED_COLOR)
+        lines = []
+        for rarity in reversed(TIERS):
+            ts = by_rarity.get(rarity)
+            if not ts:
                 continue
-            shown = of_rarity[:25]
-            seen = Counter()
-            options = []
-            for t in shown:
-                seen[t.card_id] += 1
-                copies = sum(1 for x in shown if x.card_id == t.card_id)
-                tail = f" ({seen[t.card_id]})" if copies > 1 else ""  # tell apart two tokens of the same card
-                options.append(discord.SelectOption(
-                    label=_clip(f"{names[t.token_id]}{tail}", 100), value=t.token_id, emoji=embeds.RARITY_EMOJI[rarity],
-                ))
-            target = engine.upgrade_tier(rarity)
-            select = discord.ui.Select(
-                placeholder=f"Trade up {TRADE_UP_COUNT} {rarity} tokens → 1 {target} card ({len(of_rarity)} {rarity})",
-                min_values=TRADE_UP_COUNT,
-                max_values=TRADE_UP_COUNT,
-                options=options,
-                row=row,
-            )
-            select.callback = self._trade_up_callback(select)
-            self.trade_ups[rarity] = select
-            self.add_item(select)
-        self.trade_up = next(iter(self.trade_ups.values()), None)  # kept for older callers/tests
-        if self.trade_ups:
-            more = [r for r in self.trade_ups if sum(1 for t in tokens if t.rarity == r) > 25]
-            note = (f" Only the first 25 {', '.join(more)} tokens (A-Z) fit in a list; sell or trade some to see the rest."
-                    if more else "")
+            price = prices.get(rarity, 0)
+            keep = sum(1 for t in ts if t.token_id in kept)
+            tail = f" ({keep} kept for upgrades)" if keep else ""
+            lines.append(f"{embeds.RARITY_EMOJI[rarity]} {rarity.title()} × {len(ts)} — {len(ts) * price:,}{tail}")
+        embed.description = "\n".join(lines)
+        tradeable = [r for r in TIERS[:-1] if len(by_rarity.get(r, [])) >= TRADE_UP_COUNT]
+
+        if self.mode == "tradeup" and tradeable:
+            back = discord.ui.Button(label="◀ Back to selling", style=discord.ButtonStyle.secondary, row=0)
+            back.callback = self._mode_callback("sell")
+            self.add_item(back)
+            for row, rarity in enumerate(tradeable, start=1):
+                ts = by_rarity[rarity]
+                select = discord.ui.Select(
+                    placeholder=_clip(f"Trade up {TRADE_UP_COUNT} {rarity} → 1 {engine.upgrade_tier(rarity)} "
+                                      f"(you have {len(ts)})", 150),
+                    min_values=TRADE_UP_COUNT, max_values=TRADE_UP_COUNT,
+                    options=self._token_options(ts[:25], names, kept, lambda t: None), row=row,
+                )
+                select.callback = self._trade_up_callback(select)
+                self.trade_ups[rarity] = select
+                self.add_item(select)
+            self.trade_up = next(iter(self.trade_ups.values()), None)
             embed.add_field(
                 name="Trade up",
-                value=(f"Swap {TRADE_UP_COUNT} tokens of one rarity for a random card one rarity up "
-                       f"(one you don't own yet, when there is one). Keep tokens you want for upgrades.{note}"),
+                value=(f"Pick {TRADE_UP_COUNT} tokens of one rarity to swap for a random card one rarity up "
+                       "(one you don't own yet, when there is one)."),
                 inline=False,
             )
+        else:
+            self.mode = "sell"
+            for rarity in reversed(TIERS):
+                ts = by_rarity.get(rarity)
+                if not ts:
+                    continue
+                sellable = [t for t in ts if t.token_id not in kept]
+                total = len(sellable) * prices.get(rarity, 0)
+                button = discord.ui.Button(
+                    label=f"Sell {embeds.plural(rarity)} ({len(sellable)} · {total:,})",
+                    style=discord.ButtonStyle.success, disabled=not sellable, row=0,
+                )
+                button.callback = self._sell_rarity_callback(rarity)
+                self.sell_buttons[rarity] = button
+                self.add_item(button)
+            if tradeable:
+                go = discord.ui.Button(label="Trade up ▸", style=discord.ButtonStyle.primary, row=0)
+                go.callback = self._mode_callback("tradeup")
+                self.add_item(go)
+            for row, rarity in enumerate((r for r in reversed(TIERS) if r in by_rarity), start=1):
+                ts = by_rarity[rarity][:25]
+                select = discord.ui.Select(
+                    placeholder=f"Sell {rarity} tokens one by one…",
+                    min_values=1, max_values=len(ts),
+                    options=self._token_options(
+                        ts, names, kept, lambda t: f"{prices.get(t.rarity, 0):,} wondercoin"
+                    ),
+                    row=row,
+                )
+                select.callback = self._sell_list_callback(select)
+                self.sell_lists[rarity] = select
+                self.add_item(select)
+            if kept:
+                embed.add_field(
+                    name="Kept for upgrades",
+                    value=("The rarity buttons skip duplicates of cards you've started upgrading (Holo → Prismatic). "
+                           "Pick them from a list to sell them anyway."),
+                    inline=False,
+                )
+        more = [r for r, ts in by_rarity.items() if len(ts) > 25]
+        footer = f"{len(tokens)} token{'s' if len(tokens) != 1 else ''} · tokens also pay for card upgrades"
+        if more:
+            footer += f" · lists show the first 25 {'/'.join(more)} (A-Z)"
+        embed.set_footer(text=footer)
         return embed
 
-    async def _sell(self, interaction: discord.Interaction, token_ids):
+    @staticmethod
+    def _token_options(tokens, names, kept, describe):
+        seen, options = Counter(), []
+        for t in tokens:
+            seen[t.card_id] += 1
+            copies = sum(1 for x in tokens if x.card_id == t.card_id)
+            tail = f" ({seen[t.card_id]})" if copies > 1 else ""  # tell apart two tokens of the same card
+            desc = describe(t)
+            if t.token_id in kept:
+                desc = (desc + " · " if desc else "") + "kept for your upgrade"
+            options.append(discord.SelectOption(
+                label=_clip(f"{names[t.token_id]}{tail}", 100), value=t.token_id,
+                description=_clip(desc, 100) if desc else None, emoji=embeds.RARITY_EMOJI[t.rarity],
+            ))
+        return options
+
+    def _mode_callback(self, mode: str):
+        async def callback(interaction: discord.Interaction):
+            self.mode = mode
+            embed = await self._build()
+            await interaction.response.edit_message(embed=embed, view=self)
+
+        return callback
+
+    def _sell_rarity_callback(self, rarity: str):
+        async def callback(interaction: discord.Interaction):
+            await self._sell(interaction, None, rarity=rarity)
+
+        return callback
+
+    def _sell_list_callback(self, select):
+        async def callback(interaction: discord.Interaction):
+            await self._sell(interaction, list(select.values))
+
+        return callback
+
+    async def _sell(self, interaction: discord.Interaction, token_ids, rarity: str = None):
         if self._busy:
             await interaction.response.send_message("One moment, still selling.", ephemeral=True)
             return
         self._busy = True
         try:
             await interaction.response.defer()
-            count, total = await self.cog.sell_tokens(interaction.guild, self.member, token_ids)
+            if rarity is not None:
+                count, total = await self.cog.sell_tokens(interaction.guild, self.member, rarity=rarity, keep_upgrades=True)
+            else:
+                count, total = await self.cog.sell_tokens(interaction.guild, self.member, token_ids)
             embed = await self._build()
             note = f"Sold {count} token{'s' if count != 1 else ''} for **{total:,}** wondercoin." if count else "Those tokens were already gone."
             if embed is None:
@@ -1699,7 +1763,7 @@ class SellView(_InvokerView):
             embed = await self._build()
             if embed is None:
                 await interaction.edit_original_response(
-                    embed=discord.Embed(title="Your sell tokens", description="No tokens left.", color=embeds.EMBED_COLOR),
+                    embed=discord.Embed(title="Your duplicate tokens", description="No tokens left.", color=embeds.EMBED_COLOR),
                     view=None,
                 )
                 self.stop()
@@ -1713,8 +1777,4 @@ class SellView(_InvokerView):
         finally:
             self._busy = False
 
-    async def _on_sell_all(self, interaction: discord.Interaction):
-        await self._sell(interaction, None)
 
-    async def _on_sell_one(self, interaction: discord.Interaction):
-        await self._sell(interaction, list(self.one.values))

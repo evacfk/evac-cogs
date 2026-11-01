@@ -438,12 +438,22 @@ def upgrade_plan(
     plan.update(finish=finish, dupes=dupes, coins=coins, have=len(tokens) + spares)
     if len(tokens) + spares < dupes:
         plan["reason"] = (f"{finish.title()} needs {dupes} duplicate{'s' if dupes != 1 else ''} of this card "
-                          f"(a sell token or your spare copy); you have {len(tokens) + spares}.")
+                          f"(a duplicate token or your spare copy); you have {len(tokens) + spares}.")
         return plan
     plan["token_ids"] = tokens[:dupes]
     plan["spares"] = dupes - len(plan["token_ids"])
     plan["ok"] = True
     return plan
+
+
+def kept_for_upgrades(sell_tokens: Sequence[SellToken], finishes: Dict[int, int], collection: Sequence[int]) -> set:
+    """Token ids a bulk sale leaves alone: tokens of cards the member has
+    already started upgrading (Holo, still short of the top finish), since
+    those duplicates are what the next upgrade costs. They can still be sold
+    one by one."""
+    top = len(FINISHES) - 1
+    started = {cid for cid, level in finishes.items() if 0 < int(level) < top and cid in collection}
+    return {t.token_id for t in sell_tokens if t.card_id in started}
 
 
 def missing_for_offer(collection: Sequence[int], card_ids: Sequence[int]) -> List[int]:

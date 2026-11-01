@@ -125,7 +125,7 @@ async def test_picking_a_card_you_own_warns_privately_about_the_priority_rule(co
     await cog._save_member_state_by_id(guild, a.id, state)
     assert "only win a spare" in await cog.handle_pick(a, message.id, 0)
     await cog._save_member_state_by_id(guild, a.id, MemberState(collection=[card_at(drop, 0)] * 2))
-    assert "copy limit" in await cog.handle_pick(a, message.id, 0)
+    assert "already have 2 copies" in await cog.handle_pick(a, message.id, 0)
 
 
 @pytest.mark.asyncio
@@ -694,7 +694,7 @@ async def test_sell_with_no_tokens_says_so_and_has_no_buttons(cog):
     guild, admin, asker, review, other = await request_setup(cog, 370)
     ctx = FakeCtx(asker, guild, other)
     await cog.card.commands["sell"].callback(cog, ctx)
-    assert "No sell tokens" in ctx.sent[-1].content and ctx.sent[-1].view is None
+    assert "No duplicate tokens" in ctx.sent[-1].content and ctx.sent[-1].view is None
 
 
 async def tokens_for(cog, guild, member, rarities):
@@ -706,18 +706,19 @@ async def tokens_for(cog, guild, member, rarities):
 
 
 @pytest.mark.asyncio
-async def test_sell_all_pays_out_every_token(cog):
+async def test_selling_by_rarity_pays_out_just_that_rarity(cog):
     guild, admin, asker, review, other = await request_setup(cog, 371)
-    await tokens_for(cog, guild, asker, ["common", "rare"])
+    await tokens_for(cog, guild, asker, ["common", "rare", "common"])
     prices = await cog.config.guild(guild).sell_prices()
     paid = cc_module.bank.deposit_credits.calls
     paid.clear()
     ctx = FakeCtx(asker, guild, other)
-    await cog.card.commands["tokens"].callback(cog, ctx) if "tokens" in cog.card.commands else await cog.card.commands["sell"].callback(cog, ctx)
+    await cog.card.commands["sell"].callback(cog, ctx)
     view = ctx.sent[-1].view
-    await view._on_sell_all(AdminInteraction(asker, guild, message=ctx.sent[-1]))
-    assert paid == [(asker, prices["common"] + prices["rare"])]
-    assert (await state_of(cog, guild, asker)).sell_tokens == []
+    assert view.sell_buttons["common"].label == f"Sell commons (2 · {2 * prices['common']:,})"
+    await view.sell_buttons["common"].callback(AdminInteraction(asker, guild, message=ctx.sent[-1]))
+    assert paid == [(asker, 2 * prices["common"])]
+    assert [t.rarity for t in (await state_of(cog, guild, asker)).sell_tokens] == ["rare"]
 
 
 @pytest.mark.asyncio
@@ -727,8 +728,8 @@ async def test_sell_one_sells_just_the_chosen_token(cog):
     ctx = FakeCtx(asker, guild, other)
     await cog.card.commands["sell"].callback(cog, ctx)
     view = ctx.sent[-1].view
-    view.one._values = [tokens[1].token_id]
-    await view._on_sell_one(AdminInteraction(asker, guild, message=ctx.sent[-1]))
+    view.sell_lists["epic"]._values = [tokens[1].token_id]
+    await view.sell_lists["epic"].callback(AdminInteraction(asker, guild, message=ctx.sent[-1]))
     left = (await state_of(cog, guild, asker)).sell_tokens
     assert [t.token_id for t in left] == [tokens[0].token_id]
 

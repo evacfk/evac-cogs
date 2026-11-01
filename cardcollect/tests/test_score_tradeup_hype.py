@@ -105,10 +105,12 @@ async def test_the_sell_view_offers_trade_up_only_with_enough_tokens(cog):
     await set_state(cog, a, sell_tokens=[SellToken(f"t{i}", ids["C1"], "common", 0.0) for i in range(4)])
     view = views.SellView(cog, a)
     await view.start(FakeCtx(a, guild, channel))
-    assert view.trade_up is None
+    assert not any(getattr(c, "label", "") == "Trade up ▸" for c in view.children)
     await set_state(cog, a, sell_tokens=[SellToken(f"t{i}", ids["C1"], "common", 0.0) for i in range(5)])
     view = views.SellView(cog, a)
     await view.start(FakeCtx(a, guild, channel))
+    go = next(c for c in view.children if getattr(c, "label", "") == "Trade up ▸")
+    await go.callback(TradeInter(a, channel))
     assert view.trade_up is not None and view.trade_up.min_values == TRADE_UP_COUNT
     view.trade_up._values = [f"t{i}" for i in range(5)]
     await view._on_trade_up(TradeInter(a, channel))
@@ -169,12 +171,14 @@ async def test_every_rarity_gets_its_own_trade_up_list_even_with_lots_of_tokens(
     await set_state(cog, a, sell_tokens=rares + commons)
     view = views.SellView(cog, a)
     await view.start(FakeCtx(a, guild, channel))
+    view.mode = "tradeup"
+    await view._build()
     assert set(view.trade_ups) == {"common", "rare"}
     common_list = view.trade_ups["common"]
     assert sorted(o.value for o in common_list.options) == [f"c{i}" for i in range(6)]
     assert "C1 (1)" in [o.label for o in common_list.options]  # same card twice: told apart
     assert len(view.trade_ups["rare"].options) == 25
-    assert "first 25 rare" in view.message.embeds[0].fields[-1].value
+    assert "first 25 rare" in (await view._build()).footer.text
     common_list._values = [f"c{i}" for i in range(5)]
     await common_list.callback(TradeInter(a, channel))
     state = await cog._member_state(a)

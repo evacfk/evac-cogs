@@ -513,7 +513,8 @@ class CardCollect(commands.Cog):
             lines.append("You already own it, so you only win a spare if nobody who doesn't own it picks it too.")
         elif tier == 2:
             lines.append(
-                "You're already at your copy limit for it, so you only win it (as a sell token) if nobody else wants it."
+                "You already have 2 copies, so you only win it (as a duplicate token, for upgrades or selling) "
+                "if nobody else wants it."
             )
         boost = engine.pity_multiplier(state.pity)
         if tier == 0 and boost > 1.0:
@@ -561,6 +562,30 @@ class CardCollect(commands.Cog):
             if card.card_id in state.wishlist:
                 state.wishlist.remove(card.card_id)
         return outcome, price
+
+    @staticmethod
+    def token_note(card: Card, price: Optional[int]) -> str:
+        """What a member is told when a card turns into a duplicate token."""
+        sell = f"sell it for {price:,} with `.card sell`" if price else "sell it with `.card sell`"
+        return (f"You already have 2 copies, so this one became a **duplicate token**: keep it to upgrade "
+                f"**{card.name}** (`.card find {card.card_id}`), or {sell}.")
+
+    async def upgrade_ready(self, guild: discord.Guild, state: MemberState, card: Card) -> Optional[dict]:
+        """The upgrade plan if this member now holds enough duplicates of `card`
+        for its next finish (wondercoin aside), else None."""
+        costs = await self.config.guild(guild).upgrade_costs()
+        plan = engine.upgrade_plan(state.collection, state.sell_tokens, card.card_id, state.finish_of(card.card_id), costs)
+        return plan if plan["ok"] else None
+
+    async def upgrade_nudge(self, guild: discord.Guild, state: MemberState, card: Card, who: str = "You") -> Optional[str]:
+        """"✨ You have enough duplicates to upgrade X to Holo ..." or None."""
+        plan = await self.upgrade_ready(guild, state, card)
+        if plan is None:
+            return None
+        cost = f" for {plan['coins']:,} wondercoin" if plan["coins"] else ""
+        have = "have" if who == "You" else "has"
+        return (f"✨ {who} {have} enough duplicates to upgrade **{card.name}** to **{plan['finish'].title()}**"
+                f"{cost}: `.card find {card.card_id}`")
 
     def _move_copy(
         self, giver: MemberState, receiver: MemberState, card: Card, sell_prices: dict
@@ -650,6 +675,7 @@ class CardCollect(commands.Cog):
             )
             cards = {c["card_id"]: await self._card_by_id(guild, c["card_id"]) for c in drop.cards}
             set_lines: List[str] = []
+            upgrade_lines: List[str] = []
             failed = set()
             if not drop.is_test:
                 for result in results:
@@ -667,6 +693,10 @@ class CardCollect(commands.Cog):
                         done = await self._complete_set(guild, guild.get_member(winner), state, card, outcome)
                         await self._save_member_state_by_id(guild, winner, state)
                         result["outcome"], result["price"] = outcome, price
+                        if outcome in ("duplicate", "sell_token"):
+                            nudge = await self.upgrade_nudge(guild, state, card, who=f"<@{winner}>")
+                            if nudge:
+                                upgrade_lines.append(nudge)
                         if done is not None:
                             set_lines.append(
                                 f"\U0001f3c6 <@{winner}> completed the **{done[0]}** set: +{done[1]:,} wondercoin!"
@@ -688,7 +718,7 @@ class CardCollect(commands.Cog):
                     guild, picks=len(picks), cards_unpicked=unpicked, contested=sum(1 for r in results if r["contested"])
                 )
 
-        embed = embeds.draw_results_embed(results, cards, len(picks), set_lines, drop.is_test)
+        embed = embeds.draw_results_embed(results, cards, len(picks), set_lines, drop.is_test, upgrade_lines)
         await self._edit_drop_message(drop, embed)
         return results
 
@@ -1239,9 +1269,13 @@ class CardCollect(commands.Cog):
         lines = [f"\U0001f3b4 {ctx.author.mention} pulled **{card.name}**"
                  + (f" ({card.display_series})" if card.display_series else "") + f" · **{card.rarity}** · `#{card.card_id}`"]
         if outcome == "duplicate":
-            lines.append("Spare copy: you can trade it with `.card give`.")
+            lines.append("Spare copy: trade or gift it, or use it to upgrade your card.")
         elif outcome == "sell_token":
-            lines.append(f"Already at your copy limit, so it became a sell token (`.card sell` for {price:,}).")
+            lines.append(self.token_note(card, price))
+        if outcome in ("duplicate", "sell_token"):
+            nudge = await self.upgrade_nudge(ctx.guild, await self._member_state(ctx.author), card)
+            if nudge:
+                lines.append(nudge)
         if set_done is not None:
             lines.append(f"\U0001f3c6 Set complete: **{set_done[0]}**! +{set_done[1]:,} wondercoin.")
         streak_line = f"\U0001f525 Streak: **{streak}** day{'s' if streak != 1 else ''}"
@@ -1507,7 +1541,7 @@ class CardCollect(commands.Cog):
         for card, outcome, sell in result["entries"]:
             series = f" ({card.display_series})" if card.display_series else ""
             tag = {"new": " · **NEW**", "duplicate": " · spare copy",
-                   "sell_token": f" · sell token ({sell:,})" if sell else " · sell token"}.get(outcome, "")
+                   "sell_token": f" · duplicate token (sells for {sell:,})" if sell else " · duplicate token"}.get(outcome, "")
             lines.append(f"{embeds.RARITY_EMOJI.get(card.rarity, '')} **{card.name}**{series} · {card.rarity}"
                          f" · `#{card.card_id}`{tag}")
         if result["pity_used"]:
@@ -1516,6 +1550,14 @@ class CardCollect(commands.Cog):
             left = PACK_PITY_AFTER - result["pity"]
             lines.append(f"No epic this time. {left} more pack{'s' if left != 1 else ''} without one and the next is guaranteed.")
         lines.extend(result["set_lines"])
+        if any(outcome in ("duplicate", "sell_token") for _c, outcome, _s in result["entries"]):
+            state = await self._member_state(member)
+            if any(outcome == "sell_token" for _c, outcome, _s in result["entries"]):
+                lines.append("Duplicate tokens are for card upgrades (`.card find`), or sell them with `.card sell`.")
+            for card in {c.card_id: c for c, outcome, _s in result["entries"] if outcome != "new"}.values():
+                nudge = await self.upgrade_nudge(guild, state, card)
+                if nudge:
+                    lines.append(nudge)
         art = []
         for card, _outcome, _sell in result["entries"]:
             image_bytes = self._read_card_image(guild, card.card_id)
@@ -1575,13 +1617,17 @@ class CardCollect(commands.Cog):
 
         if outcome == "sell_token":
             await ctx.send(
-                f"{member.mention} is already at their duplicate limit for **{card.name}** — "
-                f"it was converted to a sell token for them instead."
+                f"{member.mention} already had 2 copies of **{card.name}**, so it became a duplicate token for them: "
+                "they can use it to upgrade the card, or sell it."
             )
         else:
             await ctx.send(embed=embeds.give_result_embed(card, ctx.author, member))
         if set_done is not None:
             await ctx.send(f"\U0001f3c6 {member.mention} completed the **{set_done[0]}** set: +{set_done[1]:,} wondercoin!")
+        if outcome in ("duplicate", "sell_token"):
+            nudge = await self.upgrade_nudge(ctx.guild, receiver_state, card, who=member.mention)
+            if nudge:
+                await ctx.send(nudge, allowed_mentions=discord.AllowedMentions.none())
 
     # -- trade --------------------------------------------------------------
 
@@ -1697,8 +1743,16 @@ class CardCollect(commands.Cog):
                 if offer["coins"]:
                     await bank.deposit_credits(receiver, offer["coins"])
         await self._bump_stats(guild, trades=1)
-        tokens = [f"{receiver.display_name}'s **{card.name}** became a sell token (copy limit)"
+        tokens = [f"{receiver.display_name} already had 2 copies of **{card.name}**, so it became a duplicate token "
+                  "(for upgrades, or `.card sell`)"
                   for receiver, card, outcome in outcomes if outcome == "sell_token"]
+        seen = set()
+        for receiver, card, outcome in outcomes:
+            if outcome in ("duplicate", "sell_token") and (receiver.id, card.card_id) not in seen:
+                seen.add((receiver.id, card.card_id))
+                nudge = await self.upgrade_nudge(guild, states[receiver.id], card, who=receiver.display_name)
+                if nudge:
+                    tokens.append(nudge)
         return {"set_lines": set_lines, "token_lines": tokens}
 
     async def trade_up(self, guild: discord.Guild, member: discord.Member, token_ids: List[str]):
@@ -1708,7 +1762,7 @@ class CardCollect(commands.Cog):
             state = await self._member_state(member)
             chosen = [t for t in state.sell_tokens if t.token_id in set(token_ids)]
             if len(chosen) != TRADE_UP_COUNT or len(set(token_ids)) != TRADE_UP_COUNT:
-                return f"Pick exactly {TRADE_UP_COUNT} of your sell tokens."
+                return f"Pick exactly {TRADE_UP_COUNT} of your duplicate tokens."
             rarities = {t.rarity for t in chosen}
             if len(rarities) != 1:
                 return f"All {TRADE_UP_COUNT} tokens have to be the same rarity."
@@ -1729,13 +1783,17 @@ class CardCollect(commands.Cog):
         return card, outcome, set_done
 
     async def announce_trade_up(self, channel, member: discord.Member, card: Card, outcome: str, set_done):
-        lines = [f"\U0001f501 {member.mention} traded up {TRADE_UP_COUNT} sell tokens for "
+        lines = [f"\U0001f501 {member.mention} traded up {TRADE_UP_COUNT} duplicate tokens for "
                  f"{embeds.RARITY_EMOJI.get(card.rarity, '')} **{card.name}**"
                  + (f" ({card.display_series})" if card.display_series else "") + f" · {card.rarity} · `#{card.card_id}`"]
         if outcome == "duplicate":
             lines.append("It's a spare copy.")
         elif outcome == "sell_token":
-            lines.append("They were already at the copy limit, so it became a sell token.")
+            lines.append("They already had 2 copies, so it became a duplicate token (for upgrades, or `.card sell`).")
+        if outcome in ("duplicate", "sell_token"):
+            nudge = await self.upgrade_nudge(member.guild, await self._member_state(member), card)
+            if nudge:
+                lines.append(nudge)
         if set_done is not None:
             lines.append(f"\U0001f3c6 Set complete: **{set_done[0]}**! +{set_done[1]:,} wondercoin.")
         kwargs = {"content": "\n".join(lines), "allowed_mentions": discord.AllowedMentions.none()}
@@ -1747,18 +1805,30 @@ class CardCollect(commands.Cog):
     @card.command(name="sell", aliases=["tokens"])
     @commands.guild_only()
     async def card_sell(self, ctx: commands.Context):
-        """Your sell tokens (duplicates past the copy limit): sell them all at once
-        or one at a time, or trade 5 of one rarity up for a card one rarity higher.
-        Tokens are also what card upgrades use, so keep the ones you want."""
+        """Your duplicate tokens (copies past 2 of a card): sell them by rarity or
+        one by one, or trade 5 of one rarity up for a card one rarity higher.
+        Tokens are also what card upgrades use; selling by rarity keeps the ones
+        for upgrades you've started."""
         view = views.SellView(self, ctx.author)
         await view.start(ctx)
 
-    async def sell_tokens(self, guild: discord.Guild, member: discord.Member, token_ids=None) -> Tuple[int, int]:
-        """Sell the given sell tokens (all of them if `token_ids` is None) for
-        wondercoin. Returns (how many sold, total payout)."""
+    async def sell_tokens(
+        self, guild: discord.Guild, member: discord.Member, token_ids=None, rarity: Optional[str] = None,
+        keep_upgrades: bool = False,
+    ) -> Tuple[int, int]:
+        """Sell duplicate tokens for wondercoin: the given ones, or (token_ids
+        None) all of them -- only those of `rarity` if given, and without the ones
+        kept for a started upgrade if `keep_upgrades`. Returns (how many sold,
+        total payout)."""
         async with self._get_claim_lock(guild.id):
             state = await self._member_state(member)
-            chosen = [t for t in state.sell_tokens if token_ids is None or t.token_id in set(token_ids)]
+            kept = engine.kept_for_upgrades(state.sell_tokens, state.finishes, state.collection) if keep_upgrades else set()
+            chosen = [
+                t for t in state.sell_tokens
+                if (token_ids is None or t.token_id in set(token_ids))
+                and (rarity is None or t.rarity == rarity)
+                and t.token_id not in kept
+            ]
             if not chosen:
                 return 0, 0
             prices = await self.config.guild(guild).sell_prices()
