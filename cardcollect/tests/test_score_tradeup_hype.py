@@ -158,3 +158,25 @@ async def test_a_drop_without_a_legendary_is_unchanged(cog):
     await cog.card.commands["addcard"].callback(cog, ctx, "rare", name_and_series="Small | Show")
     assert await cog._post_drop(channel, guild, is_test=False) is None
     assert channel.sent[-1].content.startswith("\U0001f3b4 **A drop!**")
+
+
+@pytest.mark.asyncio
+async def test_every_rarity_gets_its_own_trade_up_list_even_with_lots_of_tokens(cog):
+    # live report: with 25+ rare tokens, the single trade-up list was all rares and commons couldn't be picked
+    guild, _ad, a, _b, channel, ids = await setup(cog, 807)
+    rares = [SellToken(f"r{i:02d}", ids["R1" if i % 2 else "R2"], "rare", 0.0) for i in range(30)]
+    commons = [SellToken(f"c{i}", ids["C1"], "common", 0.0) for i in range(6)]
+    await set_state(cog, a, sell_tokens=rares + commons)
+    view = views.SellView(cog, a)
+    await view.start(FakeCtx(a, guild, channel))
+    assert set(view.trade_ups) == {"common", "rare"}
+    common_list = view.trade_ups["common"]
+    assert sorted(o.value for o in common_list.options) == [f"c{i}" for i in range(6)]
+    assert "C1 (1)" in [o.label for o in common_list.options]  # same card twice: told apart
+    assert len(view.trade_ups["rare"].options) == 25
+    assert "first 25 rare" in view.message.embeds[0].fields[-1].value
+    common_list._values = [f"c{i}" for i in range(5)]
+    await common_list.callback(TradeInter(a, channel))
+    state = await cog._member_state(a)
+    assert ids["R2"] in state.collection or ids["R1"] in state.collection
+    assert [t.token_id for t in state.sell_tokens if t.rarity == "common"] == ["c5"]

@@ -1613,31 +1613,50 @@ class SellView(_InvokerView):
         )
         self.one.callback = self._on_sell_one
         self.add_item(self.one)
-        by_rarity = Counter(t.rarity for t in tokens)
-        eligible = [t for t in tokens if t.rarity != TIERS[-1] and by_rarity[t.rarity] >= TRADE_UP_COUNT][:25]
-        self.trade_up = None
-        if len(eligible) >= TRADE_UP_COUNT:
-            self.trade_up = discord.ui.Select(
-                placeholder=f"Trade up: pick {TRADE_UP_COUNT} tokens of one rarity…",
+        # One trade-up dropdown per rarity (common, rare, epic), each listing up to
+        # 25 of that rarity's tokens. A single shared dropdown could only show the
+        # first 25 tokens overall, so a member with lots of rares never saw their
+        # commons at all.
+        if any(t.token_id not in names for t in tokens):
+            pool = {c.card_id: c for c in await self.cog._pool_cards(guild)}
+            for t in tokens:
+                card = pool.get(t.card_id)
+                names.setdefault(t.token_id, card.name if card is not None else f"card #{t.card_id}")
+        self.trade_ups = {}
+        for row, rarity in enumerate(TIERS[:-1], start=2):  # legendary is the top: nothing to trade up to
+            of_rarity = sorted((t for t in tokens if t.rarity == rarity), key=lambda t: (names[t.token_id].casefold(), t.token_id))
+            if len(of_rarity) < TRADE_UP_COUNT:
+                continue
+            shown = of_rarity[:25]
+            seen = Counter()
+            options = []
+            for t in shown:
+                seen[t.card_id] += 1
+                copies = sum(1 for x in shown if x.card_id == t.card_id)
+                tail = f" ({seen[t.card_id]})" if copies > 1 else ""  # tell apart two tokens of the same card
+                options.append(discord.SelectOption(
+                    label=_clip(f"{names[t.token_id]}{tail}", 100), value=t.token_id, emoji=embeds.RARITY_EMOJI[rarity],
+                ))
+            target = engine.upgrade_tier(rarity)
+            select = discord.ui.Select(
+                placeholder=f"Trade up {TRADE_UP_COUNT} {rarity} tokens → 1 {target} card ({len(of_rarity)} {rarity})",
                 min_values=TRADE_UP_COUNT,
                 max_values=TRADE_UP_COUNT,
-                options=[
-                    discord.SelectOption(
-                        label=_clip(f"{t.rarity.title()} — {names.get(t.token_id, f'card #{t.card_id}')}", 100),
-                        value=t.token_id,
-                        description=f"→ a random {engine.upgrade_tier(t.rarity)} card",
-                        emoji=embeds.RARITY_EMOJI[t.rarity],
-                    )
-                    for t in eligible
-                ],
-                row=2,
+                options=options,
+                row=row,
             )
-            self.trade_up.callback = self._on_trade_up
-            self.add_item(self.trade_up)
+            select.callback = self._trade_up_callback(select)
+            self.trade_ups[rarity] = select
+            self.add_item(select)
+        self.trade_up = next(iter(self.trade_ups.values()), None)  # kept for older callers/tests
+        if self.trade_ups:
+            more = [r for r in self.trade_ups if sum(1 for t in tokens if t.rarity == r) > 25]
+            note = (f" Only the first 25 {', '.join(more)} tokens (A-Z) fit in a list; sell or trade some to see the rest."
+                    if more else "")
             embed.add_field(
                 name="Trade up",
                 value=(f"Swap {TRADE_UP_COUNT} tokens of one rarity for a random card one rarity up "
-                       "(one you don't own yet, when there is one). Keep tokens you want for upgrades."),
+                       f"(one you don't own yet, when there is one). Keep tokens you want for upgrades.{note}"),
                 inline=False,
             )
         return embed
@@ -1662,14 +1681,21 @@ class SellView(_InvokerView):
         finally:
             self._busy = False
 
-    async def _on_trade_up(self, interaction: discord.Interaction):
+    def _trade_up_callback(self, select):
+        async def callback(interaction: discord.Interaction):
+            await self._on_trade_up(interaction, select)
+
+        return callback
+
+    async def _on_trade_up(self, interaction: discord.Interaction, select=None):
+        select = select or self.trade_up
         if self._busy:
             await interaction.response.send_message("One moment.", ephemeral=True)
             return
         self._busy = True
         try:
             await interaction.response.defer()
-            result = await self.cog.trade_up(interaction.guild, self.member, list(self.trade_up.values))
+            result = await self.cog.trade_up(interaction.guild, self.member, list(select.values))
             embed = await self._build()
             if embed is None:
                 await interaction.edit_original_response(
