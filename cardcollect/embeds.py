@@ -10,7 +10,7 @@ from typing import Dict, List, Optional, Sequence, Tuple
 import discord
 
 from . import import_characters
-from .constants import ACTIVITY_TIMEZONE, SET_MIN_CARDS, TIERS, WISHLIST_MAX
+from .constants import ACTIVITY_TIMEZONE, SCORE_POINTS, SET_MIN_CARDS, TIERS, WISHLIST_MAX
 from .imagegen import RARITY_COLORS
 from .models import Card, SellToken, SeriesPreview
 
@@ -65,6 +65,28 @@ def leaderboard_embed(entries: Sequence[Tuple[discord.abc.User, int]], guild_nam
         prefix = medals[i] if i < len(medals) else f"`#{i + 1}`"
         lines.append(f"{prefix} {member.mention} — **{count}** cards")
     embed.description = "\n".join(lines)
+    return embed
+
+
+def ranking_embed(rows: Sequence[Tuple[discord.abc.User, int, int]], mode: str, guild_name: str) -> discord.Embed:
+    """The leaderboard by collection score ("score") or cards owned ("cards");
+    rows are (member, score, cards)."""
+    title = "Collection score" if mode == "score" else "Most cards"
+    embed = discord.Embed(title=f"{title} — {guild_name}", color=EMBED_COLOR)
+    if not rows:
+        embed.description = "Nobody has collected a card yet."
+        return embed
+    medals = ["\U0001f947", "\U0001f948", "\U0001f949"]
+    lines = []
+    for i, (member, score, cards) in enumerate(rows):
+        prefix = medals[i] if i < len(medals) else f"`#{i + 1}`"
+        if mode == "score":
+            lines.append(f"{prefix} {member.mention} — **{score:,}** points · {cards} cards")
+        else:
+            lines.append(f"{prefix} {member.mention} — **{cards}** cards · {score:,} points")
+    embed.description = "\n".join(lines)
+    points = " · ".join(f"{t} {SCORE_POINTS[t]}" for t in TIERS)
+    embed.set_footer(text=f"Points per different card: {points}. Holo x2, Prismatic x3.")
     return embed
 
 

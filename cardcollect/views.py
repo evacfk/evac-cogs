@@ -33,6 +33,7 @@ from .constants import (
     TIERS,
     TRADE_MAX_CARDS,
     TRADE_TIMEOUT_SECONDS,
+    TRADE_UP_COUNT,
     UPLOAD_CANCELLED,
 )
 
@@ -1240,6 +1241,45 @@ class UpgradeConfirmView(discord.ui.View):
 
 
 # ---------------------------------------------------------------------------
+# `.card leaderboard`
+# ---------------------------------------------------------------------------
+
+
+class LeaderboardView(_InvokerView):
+    """`.card leaderboard`: collection score by default, or most cards."""
+
+    reject_text = "Run `.card leaderboard` yourself to switch the view."
+
+    def __init__(self, cog, invoker_id: int, guild):
+        super().__init__(invoker_id, 180)
+        self.cog = cog
+        self.guild = guild
+        self.mode = "score"
+        self._rebuild()
+
+    def _rebuild(self):
+        self.clear_items()
+        for mode, label in (("score", "Collection score"), ("cards", "Most cards")):
+            button = discord.ui.Button(
+                label=label, style=discord.ButtonStyle.primary if mode == self.mode else discord.ButtonStyle.secondary
+            )
+            button.callback = self._switch(mode)
+            self.add_item(button)
+
+    async def build_embed(self) -> discord.Embed:
+        rows = await self.cog.leaderboard_rows(self.guild, self.mode)
+        return embeds.ranking_embed(rows, self.mode, self.guild.name)
+
+    def _switch(self, mode: str):
+        async def callback(interaction: discord.Interaction):
+            self.mode = mode
+            self._rebuild()
+            await interaction.response.edit_message(embed=await self.build_embed(), view=self)
+
+        return callback
+
+
+# ---------------------------------------------------------------------------
 # `.card trade @member`
 # ---------------------------------------------------------------------------
 
@@ -1561,6 +1601,33 @@ class SellView(_InvokerView):
         )
         self.one.callback = self._on_sell_one
         self.add_item(self.one)
+        by_rarity = Counter(t.rarity for t in tokens)
+        eligible = [t for t in tokens if t.rarity != TIERS[-1] and by_rarity[t.rarity] >= TRADE_UP_COUNT][:25]
+        self.trade_up = None
+        if len(eligible) >= TRADE_UP_COUNT:
+            self.trade_up = discord.ui.Select(
+                placeholder=f"Trade up: pick {TRADE_UP_COUNT} tokens of one rarity…",
+                min_values=TRADE_UP_COUNT,
+                max_values=TRADE_UP_COUNT,
+                options=[
+                    discord.SelectOption(
+                        label=_clip(f"{t.rarity.title()} — {names.get(t.token_id, f'card #{t.card_id}')}", 100),
+                        value=t.token_id,
+                        description=f"→ a random {engine.upgrade_tier(t.rarity)} card",
+                        emoji=embeds.RARITY_EMOJI[t.rarity],
+                    )
+                    for t in eligible
+                ],
+                row=2,
+            )
+            self.trade_up.callback = self._on_trade_up
+            self.add_item(self.trade_up)
+            embed.add_field(
+                name="Trade up",
+                value=(f"Swap {TRADE_UP_COUNT} tokens of one rarity for a random card one rarity up "
+                       "(one you don't own yet, when there is one). Keep tokens you want for upgrades."),
+                inline=False,
+            )
         return embed
 
     async def _sell(self, interaction: discord.Interaction, token_ids):
@@ -1580,6 +1647,31 @@ class SellView(_InvokerView):
             else:
                 await interaction.edit_original_response(embed=embed, view=self)
                 await interaction.followup.send(note, ephemeral=True)
+        finally:
+            self._busy = False
+
+    async def _on_trade_up(self, interaction: discord.Interaction):
+        if self._busy:
+            await interaction.response.send_message("One moment.", ephemeral=True)
+            return
+        self._busy = True
+        try:
+            await interaction.response.defer()
+            result = await self.cog.trade_up(interaction.guild, self.member, list(self.trade_up.values))
+            embed = await self._build()
+            if embed is None:
+                await interaction.edit_original_response(
+                    embed=discord.Embed(title="Your sell tokens", description="No tokens left.", color=embeds.EMBED_COLOR),
+                    view=None,
+                )
+                self.stop()
+            else:
+                await interaction.edit_original_response(embed=embed, view=self)
+            if isinstance(result, str):
+                await interaction.followup.send(result, ephemeral=True)
+                return
+            card, outcome, set_done = result
+            await self.cog.announce_trade_up(interaction.channel, self.member, card, outcome, set_done)
         finally:
             self._busy = False
 

@@ -64,6 +64,7 @@ from .constants import (
     MAX_DROP_SIZE,
     MAX_SHOWCASE_SLOTS,
     TRADE_MAX_CARDS,
+    TRADE_UP_COUNT,
     MIN_DRAW_WINDOW_SECONDS,
     PACK_PITY_AFTER,
     PACK_SIZE,
@@ -118,6 +119,7 @@ DEFAULT_GUILD = {
     "upgrade_costs": {k: dict(v) for k, v in DEFAULT_UPGRADE_COSTS.items()},
     "featured_enabled": True,
     "featured": {"week": "", "series": "", "history": []},
+    "legendary_ping_role_id": None,
     "events": {},  # event key (folded name) -> {"name", "start", "end"} (Pacific ISO dates, inclusive)
 }
 
@@ -441,8 +443,21 @@ class CardCollect(commands.Cog):
             f"{lead} Press the card you want. The draw closes <t:{closes_epoch}:R> — "
             "one card per person, and you can change your pick until then."
         )
+        mentions = discord.AllowedMentions.none()
+        legendaries = [card for card, _ in entries if card.rarity == "legendary"]
+        if legendaries:
+            names = ", ".join(f"**{discord.utils.escape_markdown(c.name)}**" for c in legendaries)
+            hype = f"\U0001f31f\U0001f31f **LEGENDARY DROP!** {names} {'is' if len(legendaries) == 1 else 'are'} up for grabs!"
+            role_id = await conf.legendary_ping_role_id()
+            role = guild.get_role(role_id) if role_id and not is_test and hasattr(guild, "get_role") else None
+            if role is not None:
+                hype += f" {role.mention}"
+                mentions = discord.AllowedMentions(everyone=False, users=False, roles=[role])
+            content = f"{hype}\n{content}"
         view = views.DrawView(self, [card for card, _ in entries], window)
-        sent = await channel.send(content=content, file=discord.File(composite, filename="drop.png"), view=view)
+        sent = await channel.send(
+            content=content, file=discord.File(composite, filename="drop.png"), view=view, allowed_mentions=mentions
+        )
 
         # registered synchronously right after the send returns, before any
         # further await, so a press of a button the instant the drop appears
@@ -1683,10 +1698,55 @@ class CardCollect(commands.Cog):
                   for receiver, card, outcome in outcomes if outcome == "sell_token"]
         return {"set_lines": set_lines, "token_lines": tokens}
 
+    async def trade_up(self, guild: discord.Guild, member: discord.Member, token_ids: List[str]):
+        """Turn TRADE_UP_COUNT sell tokens of one rarity into a random card one
+        rarity up. Returns an error string, or (card, outcome, set_done)."""
+        async with self._get_claim_lock(guild.id):
+            state = await self._member_state(member)
+            chosen = [t for t in state.sell_tokens if t.token_id in set(token_ids)]
+            if len(chosen) != TRADE_UP_COUNT or len(set(token_ids)) != TRADE_UP_COUNT:
+                return f"Pick exactly {TRADE_UP_COUNT} of your sell tokens."
+            rarities = {t.rarity for t in chosen}
+            if len(rarities) != 1:
+                return f"All {TRADE_UP_COUNT} tokens have to be the same rarity."
+            rarity = rarities.pop()
+            if rarity == TIERS[-1]:
+                return "Legendary is already the top rarity."
+            target = engine.upgrade_tier(rarity)
+            card = engine.pick_trade_up(
+                await self._rollable_pool_cards(guild), target, state.collection, MAX_COPIES_KEPT, rng=self._rng
+            )
+            if card is None:
+                return f"There are no {target} cards in the pool to trade up for right now."
+            state.sell_tokens = [t for t in state.sell_tokens if t not in chosen]
+            outcome, _price = self._grant_card(state, card, await self.config.guild(guild).sell_prices())
+            set_done = await self._complete_set(guild, member, state, card, outcome)
+            await self._save_member_state(member, state)
+        await self._bump_stats(guild, trade_ups=1)
+        return card, outcome, set_done
+
+    async def announce_trade_up(self, channel, member: discord.Member, card: Card, outcome: str, set_done):
+        lines = [f"\U0001f501 {member.mention} traded up {TRADE_UP_COUNT} sell tokens for "
+                 f"{embeds.RARITY_EMOJI.get(card.rarity, '')} **{card.name}**"
+                 + (f" ({card.display_series})" if card.display_series else "") + f" · {card.rarity} · `#{card.card_id}`"]
+        if outcome == "duplicate":
+            lines.append("It's a spare copy.")
+        elif outcome == "sell_token":
+            lines.append("They were already at the copy limit, so it became a sell token.")
+        if set_done is not None:
+            lines.append(f"\U0001f3c6 Set complete: **{set_done[0]}**! +{set_done[1]:,} wondercoin.")
+        kwargs = {"content": "\n".join(lines), "allowed_mentions": discord.AllowedMentions.none()}
+        image_bytes = self._read_card_image(member.guild, card.card_id)
+        if image_bytes is not None:
+            kwargs["file"] = await self.render_card_file(member.guild, card, image_bytes, name="trade_up")
+        await self._post_to_channel(channel, **kwargs)
+
     @card.command(name="sell", aliases=["tokens"])
     @commands.guild_only()
     async def card_sell(self, ctx: commands.Context):
-        """Your sell tokens (duplicates past the copy limit): sell them all at once, or one at a time."""
+        """Your sell tokens (duplicates past the copy limit): sell them all at once
+        or one at a time, or trade 5 of one rarity up for a card one rarity higher.
+        Tokens are also what card upgrades use, so keep the ones you want."""
         view = views.SellView(self, ctx.author)
         await view.start(ctx)
 
@@ -1708,18 +1768,27 @@ class CardCollect(commands.Cog):
     @card.command(name="leaderboard")
     @commands.guild_only()
     async def card_leaderboard(self, ctx: commands.Context):
-        """Top collectors by number of cards owned."""
-        all_members = await self.config.all_members(ctx.guild)
-        ranked = sorted(all_members.items(), key=lambda kv: len(kv[1].get("collection", [])), reverse=True)
-        entries = []
-        for member_id, data in ranked[:10]:
-            if not data.get("collection"):
+        """Top collectors by collection score (rarer cards and finishes count
+        more), with a button to see the most cards owned instead."""
+        view = views.LeaderboardView(self, ctx.author.id, ctx.guild)
+        view.message = await ctx.send(embed=await view.build_embed(), view=view)
+
+    async def leaderboard_rows(self, guild: discord.Guild, mode: str) -> List[Tuple[discord.Member, int, int]]:
+        """(member, score, cards owned) for the top 10, by "score" or "cards"."""
+        rarity_of = {c.card_id: c.rarity for c in await self._pool_cards(guild)}
+        rows = []
+        for member_id, data in (await self.config.all_members(guild)).items():
+            collection = data.get("collection", [])
+            if not collection:
                 continue
-            member = ctx.guild.get_member(member_id)
+            member = guild.get_member(member_id)
             if member is None:
                 continue
-            entries.append((member, len(data["collection"])))
-        await ctx.send(embed=embeds.leaderboard_embed(entries, ctx.guild.name))
+            finishes = {int(k): int(v) for k, v in (data.get("finishes") or {}).items()}
+            rows.append((member, engine.collection_score(collection, finishes, rarity_of), len(collection)))
+        index = 1 if mode == "score" else 2
+        rows.sort(key=lambda r: (-r[index], -r[3 - index], r[0].id))
+        return rows[:10]
 
     @card.command(name="settings")
     @commands.guild_only()
@@ -1910,6 +1979,14 @@ class CardCollect(commands.Cog):
                 raise KeyError(card_id)
             data["event"] = name
         return await self._card_by_id(guild, card_id)
+
+    async def _apply_legendary_role(self, guild, member, role) -> str:
+        conf = self.config.guild(guild)
+        if role is None:
+            await conf.legendary_ping_role_id.set(None)
+            return "Legendary drops are announced without a ping."
+        await conf.legendary_ping_role_id.set(role.id)
+        return f"Legendary drops will ping {role.mention}."
 
     async def _apply_daily_odds(self, guild, member, values) -> str:
         weights = {}

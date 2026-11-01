@@ -69,6 +69,15 @@ FEATURED_HISTORY = 6
 EVENT_PACK_BOOST = 3.0
 EVENT_NAME_MAX = 24
 
+# Collection score (`.card leaderboard`): each different card a member owns is
+# worth its rarity's points, times (1 + its finish level) -- a Holo counts
+# double, a Prismatic triple. Spares and sell tokens don't count.
+SCORE_POINTS = {"common": 1, "rare": 3, "epic": 8, "legendary": 20}
+
+# Trade-up (`.card sell`): this many sell tokens of one rarity become a random
+# card of the next rarity up.
+TRADE_UP_COUNT = 5
+
 DEFAULT_DROP_SIZE = 3
 
 DEFAULT_DROP_CHANCE = 0.02  # 2% per qualifying message, retune via .card diagnostics
@@ -148,7 +157,7 @@ GALLERY_PAGE_SIZE = GALLERY_COLUMNS * GALLERY_ROWS_PER_PAGE
 GALLERY_VIEW_TIMEOUT_SECONDS = 180  # a stale pager after this just stops responding
 
 # bumped on every deploy so `.card version` can confirm the new build is live
-COG_VERSION = "2.6.0"
+COG_VERSION = "2.7.0"
 
 UPLOAD_CANCELLED = "cancelled"  # what wait_for_upload returns when the admin backs out
 UPLOAD_CANCEL_WORDS = ("cancel", "stop", "nevermind", "never mind", "exit", "quit")

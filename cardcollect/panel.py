@@ -116,6 +116,10 @@ async def _event_remove(cog, guild, member, item_id):
     return await cog._apply_event_remove(guild, member, item_id)
 
 
+async def _legendary_role_get(cog, guild):
+    return await cog.config.guild(guild).legendary_ping_role_id()
+
+
 async def _test_mode_get(cog, guild):
     return await cog.config.guild(guild).test_mode()
 
@@ -130,6 +134,10 @@ def build_specs():
                      Field("cooldown", "Seconds between drops (0 = none)", value=lambda v: str(v["cooldown"]), max_length=7),
                      Field("window", "Seconds the draw stays open (30-600)", value=lambda v: str(v["window"]), max_length=4)),
              help="Takes effect on the next drop."),
+        Spec("legendrole", "Legendary drop ping", "Drops", "role", get=_legendary_role_get,
+             apply=_apply("_apply_legendary_role"), fmt=lambda v, g: f"<@&{v}>" if v else "no ping", clearable=True,
+             help="A drop with a legendary in it always gets a big announcement line. Pick a role to also ping it "
+                  "(an opt-in role works best); clear it for no ping."),
         Spec("odds", "Daily pull odds", "Drops", "modal", get=_odds_get, apply=_apply("_apply_daily_odds"),
              fmt=_odds_fmt, button="Edit…",
              fields=tuple(_odds_field(t) for t in ("common", "rare", "epic", "legendary")),

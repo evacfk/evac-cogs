@@ -16,7 +16,7 @@ from datetime import date, datetime, timedelta
 from typing import Dict, List, Optional, Sequence, Tuple
 from zoneinfo import ZoneInfo
 
-from .constants import FINISHES, PITY_CAP, PITY_STEP, SET_BONUS_BASE, SET_BONUS_PER_CARD, SET_MIN_CARDS, TIERS
+from .constants import FINISHES, SCORE_POINTS, PITY_CAP, PITY_STEP, SET_BONUS_BASE, SET_BONUS_PER_CARD, SET_MIN_CARDS, TIERS
 from .models import ActiveDrop, Card, SellToken
 
 
@@ -518,6 +518,34 @@ def roll_boosts(
         if weight != 1.0:
             boosts[card.card_id] = weight
     return boosts
+
+
+def collection_score(collection: Sequence[int], finishes: Dict[int, int], rarity_of: Dict[int, str]) -> int:
+    """Rarity points for every different card owned, times (1 + finish level)."""
+    total = 0
+    for cid in set(collection):
+        rarity = rarity_of.get(cid)
+        if rarity is None:
+            continue
+        total += SCORE_POINTS.get(rarity, 0) * (1 + max(0, int(finishes.get(cid, 0))))
+    return total
+
+
+def pick_trade_up(
+    pool: Sequence[Card], tier: str, collection: Sequence[int], max_copies: int, rng: Optional[random.Random] = None
+) -> Optional[Card]:
+    """A random card of `tier` for a trade-up, preferring ones the member
+    doesn't own, then ones they have room for, so the reward is rarely just a
+    sell token. None if the pool has nothing of that tier."""
+    rng = _rng(rng)
+    candidates = [c for c in pool if c.rarity == tier]
+    if not candidates:
+        return None
+    for rank in (0, 1, 2):
+        group = [c for c in candidates if owner_tier(collection, c.card_id, max_copies) == rank]
+        if group:
+            return rng.choice(group)
+    return None
 
 
 def gallery_sort_key(card: Card) -> Tuple[int, str, int]:
