@@ -120,6 +120,7 @@ DEFAULT_GUILD = {
     "featured_enabled": True,
     "featured": {"week": "", "series": "", "history": []},
     "legendary_ping_role_id": None,
+    "set_roles": {},  # sets completed (str) -> role id given on reaching that many
     "events": {},  # event key (folded name) -> {"name", "start", "end"} (Pacific ISO dates, inclusive)
 }
 
@@ -636,7 +637,32 @@ class CardCollect(commands.Cog):
                 log.exception("cardcollect: couldn't pay a set bonus to %s", getattr(member, "id", "?"))
                 return None
         state.sets_claimed.append(card.series)
+        if member is not None:
+            await self._award_set_roles(guild, member, len(state.sets_claimed))
         return card.display_series or card.series, bonus
+
+    async def _award_set_roles(self, guild: discord.Guild, member, sets_done: int) -> int:
+        """Give a member every set role they've reached and don't have yet.
+        Returns how many were added; failures (missing permission, role gone)
+        are logged and skipped, never raised."""
+        member = guild.get_member(getattr(member, "id", 0)) or member
+        if not hasattr(member, "add_roles"):
+            return 0
+        thresholds = await self.config.guild(guild).set_roles()
+        have = {r.id for r in getattr(member, "roles", [])}
+        due = []
+        for count, role_id in thresholds.items():
+            role = guild.get_role(int(role_id)) if hasattr(guild, "get_role") else None
+            if role is not None and int(count) <= sets_done and role.id not in have:
+                due.append(role)
+        if not due:
+            return 0
+        try:
+            await member.add_roles(*due, reason=f"cardcollect: completed {sets_done} card set(s)")
+        except discord.HTTPException:
+            log.warning("cardcollect: couldn't give set roles to %s", getattr(member, "id", "?"), exc_info=True)
+            return 0
+        return len(due)
 
     async def _bump_stats(self, guild: discord.Guild, daily_pull_date: Optional[str] = None, **counts):
         """Add to the diagnostics counters (`.card diagnostics`). Pass
@@ -2118,6 +2144,43 @@ class CardCollect(commands.Cog):
                 raise KeyError(card_id)
             data["event"] = name
         return await self._card_by_id(guild, card_id)
+
+    async def _apply_set_role_save(self, guild, member, item_id, values, picked) -> str:
+        count = self._whole(values, "sets", "Sets completed", 1)
+        if not picked:
+            raise PanelError("Pick the role to give.")
+        role_id = picked[0].id
+        async with self.config.guild(guild).set_roles() as roles:
+            if item_id is not None and item_id != str(count):
+                roles.pop(item_id, None)
+            roles[str(count)] = role_id
+        role = guild.get_role(role_id) if hasattr(guild, "get_role") else None
+        name = role.mention if role is not None else f"<@&{role_id}>"
+        return (f"Completing {count} set{'s' if count != 1 else ''} now gives {name}. Use **Give set roles now** "
+                "to hand it to members who already qualify. The bot needs Manage Roles, and the role must sit below its own.")
+
+    async def _apply_set_role_remove(self, guild, member, item_id) -> str:
+        async with self.config.guild(guild).set_roles() as roles:
+            if roles.pop(item_id, None) is None:
+                raise PanelError("That set role no longer exists.")
+        return "Removed. Members who already have the role keep it."
+
+    async def _apply_set_roles_sync(self, guild, member, value) -> str:
+        if not await self.config.guild(guild).set_roles():
+            raise PanelError("Add a set role first.")
+        given, people = 0, 0
+        for member_id, data in (await self.config.all_members(guild)).items():
+            done = len(data.get("sets_claimed", []))
+            target = guild.get_member(member_id)
+            if not done or target is None:
+                continue
+            added = await self._award_set_roles(guild, target, done)
+            if added:
+                given += added
+                people += 1
+        if not given:
+            return "Everyone who qualifies already has their set roles (or the bot can't give them: check Manage Roles)."
+        return f"Gave {given} role{'s' if given != 1 else ''} to {people} member{'s' if people != 1 else ''}."
 
     async def _apply_legendary_role(self, guild, member, role) -> str:
         conf = self.config.guild(guild)

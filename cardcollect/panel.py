@@ -4,7 +4,7 @@ the test tools.
 Specs only; every change goes through the cog's `_apply_*` methods. Managing the pool (`addcard`, `importseries`,
 `importpool`, `removecard`...) stays commands, because they take an image or run for a while.
 """
-from .settings_panel import Field, PanelError, Spec
+from .settings_panel import Field, PanelError, Pick, Spec
 
 INTRO = ("Pick a setting. Changes save as soon as you choose. Pool tools (`.card addcard`, `importseries`, `importpool`, "
          "`removecard`) stay as commands; open any card with `.card find` to change its rarity, swap its art or retire it. "
@@ -127,6 +127,31 @@ async def _event_remove(cog, guild, member, item_id):
     return await cog._apply_event_remove(guild, member, item_id)
 
 
+async def _set_roles_get(cog, guild):
+    roles = await cog.config.guild(guild).set_roles()
+    out = []
+    for count, role_id in sorted(roles.items(), key=lambda kv: int(kv[0])):
+        role = guild.get_role(int(role_id)) if hasattr(guild, "get_role") else None
+        label = f"{count} set{'s' if int(count) != 1 else ''} completed"
+        out.append((count, label, role.mention if role is not None else "role missing"))
+    return out
+
+
+async def _set_role_get(cog, guild, item_id):
+    roles = await cog.config.guild(guild).set_roles()
+    if item_id not in roles:
+        raise PanelError("That set role no longer exists.")
+    return {"sets": item_id, "role_id": roles[item_id]}
+
+
+async def _set_role_save(cog, guild, member, item_id, values, picked):
+    return await cog._apply_set_role_save(guild, member, item_id, values, picked)
+
+
+async def _set_role_remove(cog, guild, member, item_id):
+    return await cog._apply_set_role_remove(guild, member, item_id)
+
+
 async def _legendary_role_get(cog, guild):
     return await cog.config.guild(guild).legendary_ping_role_id()
 
@@ -200,6 +225,17 @@ def build_specs():
              help="Event cards only drop (and show up in packs, 3x as likely) between the start and last day. "
                   "Owners keep them afterwards. Tag a whole series here, or single cards from their `.card find` "
                   "page. Removing an event turns its cards back into regular cards."),
+        Spec("setroles", "Set roles", "Rewards", "collection", get=_set_roles_get, item_get=_set_role_get,
+             save=_set_role_save, remove=_set_role_remove,
+             fields=(Field("sets", "Sets completed to earn it", value=lambda r: str(r.get("sets", "")),
+                           new_default="1", max_length=3),),
+             pick=Pick("role", "Choose the role to give", defaults=lambda r: [r["role_id"]] if r.get("role_id") else []),
+             help="Cosmetic roles for finishing card sets, e.g. 1 set = Collector, 5 sets = Completionist. Given "
+                  "the moment someone reaches the count. The bot needs Manage Roles, and each role must sit below "
+                  "the bot's own role."),
+        Spec("setrolesync", "Give set roles now", "Rewards", "action", apply=_apply("_apply_set_roles_sync"),
+             button="Give roles",
+             help="Hands out set roles to everyone who already qualifies (for sets finished before a role existed)."),
         Spec("requests", "Request channel", "Requests", "channel", get=_request_channel_get,
              apply=_apply("_apply_request_channel"), fmt=lambda v, g: _channel_fmt(v, g) if v else "off", channel_types=("text",),
              clearable=True,

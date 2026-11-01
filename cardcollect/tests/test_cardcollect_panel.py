@@ -70,7 +70,7 @@ async def test_panel_renders_edits_and_saves_through_the_widgets(cog):
     guild = FakeGuild(500)
     admin = staff(FakeMember(5000, guild))
     p = await open_it(cog, guild, admin)
-    assert set(p.tabs) == {"Drops", "Economy", "Events", "Requests", "Testing"}
+    assert set(p.tabs) == {"Drops", "Economy", "Events", "Rewards", "Requests", "Testing"}
     for tab in p.tabs:
         await p._on_tab(Click(admin, [tab]))
         for spec in p.tab_specs():
