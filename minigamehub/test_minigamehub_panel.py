@@ -207,14 +207,14 @@ async def test_pacing_adaptive_and_tier_settings():
     ap = g.adaptive_pacing.data
     assert (ap["busy_threshold"], ap["quiet_threshold"], ap["quiet_multiplier"], ap["startup_grace_seconds"]) == (6, 2, 4.0, 300)
     assert ap["enabled"] is False  # untouched by the tuning form
-    tier = {"hp": "10-20", "reward": "5-9", "penalty": "1-2", "weight": "7"}
-    for bad in ({**tier, "hp": "20-10"}, {**tier, "reward": "abc"}, {**tier, "weight": "x"}, {**tier, "weight": "-1"}):
+    tier = {"hp": "10-20", "reward": "5-9", "penalty": "1-2", "weight": "7", "solo_cap": "50"}
+    for bad in ({**tier, "hp": "20-10"}, {**tier, "reward": "abc"}, {**tier, "weight": "x"}, {**tier, "weight": "-1"}, {**tier, "solo_cap": "0"}, {**tier, "solo_cap": "101"}, {**tier, "solo_cap": "x"}):
         with pytest.raises(PanelError):
             await cog._apply_tier_save(None, None, "weak", bad)
     with pytest.raises(PanelError):
         await cog._apply_tier_save(None, None, "bogus", tier)
     await cog._apply_tier_save(None, None, "weak", tier)
-    assert g.games.data["boss"]["tiers"]["weak"] == {"hp": [10, 20], "reward": [5, 9], "penalty": [1, 2], "weight": 7}
+    assert g.games.data["boss"]["tiers"]["weak"] == {"hp": [10, 20], "reward": [5, 9], "penalty": [1, 2], "weight": 7, "solo_cap_pct": 50.0}
 
 
 async def test_panel_lists_games_and_edits_one_through_the_form():
@@ -247,7 +247,7 @@ async def test_tiers_panel_and_gating():
     click = Click(a)
     await p._on_item_edit(click)
     modal = click.response.modal
-    assert modal.boxes["hp"].default == "150-300" and modal.boxes["weight"].default == "30"
+    assert modal.boxes["hp"].default == "400-600" and modal.boxes["weight"].default == "30" and modal.boxes["solo_cap"].default == "60"
     modal.boxes["weight"]._value = "40"
     await modal.on_submit(Click(a))
     assert g.games.data["boss"]["tiers"]["medium"]["weight"] == 40

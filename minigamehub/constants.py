@@ -27,4 +27,4 @@ GAME_KEYS = ["pet", "mathdrop", "hunt", "lootdrop", "reacttowin", "boss"]
 CONFIG_IDENTIFIER = 0xE7ACF3E5  # arbitrary, stable, evac/minigamehub
 
 # Bumped on every deploy so `.minigamehub version` can confirm the new build is live.
-COG_VERSION = "1.1.0"
+COG_VERSION = "1.2.0"

@@ -21,11 +21,12 @@ from discord.ext import tasks
 from redbot.core import Config, bank, commands
 from redbot.core.utils.chat_formatting import box, humanize_list, pagify
 
-from . import offerings, pacing, scenarios as scenario_data, stats
+from . import migrations, offerings, pacing, scenarios as scenario_data, stats
 from .activity import ActivityTracker, is_channel_active
 from .config_schema import DEFAULT_GUILD, DEFAULT_MEMBER
 from .constants import COG_VERSION, CONFIG_IDENTIFIER, GAME_KEYS, MOD_ROLE_ID, RESET_TIMEZONE, SCHEDULER_TICK_SECONDS
 from .games import GAME_REGISTRY
+from .games import boss as boss_game
 from . import panel as panel_specs
 from .settings_panel import PanelError, open_panel
 from .settings_ui import ConfigView, HuntAnimalsView
@@ -206,6 +207,10 @@ class MinigameHub(commands.Cog):
                 games["lootdrop"]["scenarios"] = copy.deepcopy(scenario_data.SEED_LOOTDROP_SCENARIOS)
             if not games["boss"]["scenarios"]:
                 games["boss"]["scenarios"] = copy.deepcopy(scenario_data.SEED_BOSS_SCENARIOS)
+            # one-time: move the old default boss numbers to the 2026-11 rebalance (edited tiers are left alone)
+            migrations.upgrade_boss(games["boss"], DEFAULT_GUILD["games"]["boss"])
+        async with self.config.guild(guild).payout_pacing() as pacing_conf:
+            migrations.upgrade_pacing(pacing_conf)
         self._seeded_guilds.add(guild.id)
 
     def _get_tracker(self, guild: discord.Guild) -> ActivityTracker:
@@ -532,11 +537,48 @@ class MinigameHub(commands.Cog):
             raise PanelError("The weight needs a whole number.")
         if weight < 0:
             raise PanelError("The weight can't be negative.")
+        try:
+            solo = float(str(values.get("solo_cap") or "").strip())
+        except ValueError:
+            raise PanelError("The solo limit needs a number from 1 to 100.")
+        if not 1 <= solo <= 100:
+            raise PanelError("The solo limit is a percentage from 1 to 100 (100 = no limit).")
         async with self.config.guild(guild).games() as games:
             if tier not in games["boss"]["tiers"]:
                 raise PanelError("Unknown tier.")
-            games["boss"]["tiers"][tier] = {"hp": list(hp), "reward": list(reward), "penalty": list(penalty), "weight": weight}
-        return f"Boss tier `{tier}` updated."
+            games["boss"]["tiers"][tier] = {"hp": list(hp), "reward": list(reward), "penalty": list(penalty),
+                                            "weight": weight, "solo_cap_pct": solo}
+        need = boss_game.min_fighters(solo)
+        return f"Boss tier `{tier}` updated" + (f": at least {need} fighters needed." if need > 1 else ".")
+
+    async def _apply_card_enabled(self, guild, member, on) -> str:
+        async with self.config.guild(guild).games() as games:
+            games["boss"]["card_drop"]["enabled"] = bool(on)
+        return "Boss card drops are " + ("on." if on else "off.")
+
+    async def _apply_card_min_hits(self, guild, member, values) -> str:
+        hits = self._number(values, "min_hits", "The hits needed", integer=True)
+        if not 1 <= hits <= 1000:
+            raise PanelError("Hits needed must be between 1 and 1000.")
+        async with self.config.guild(guild).games() as games:
+            games["boss"]["card_drop"]["min_hits"] = hits
+        return f"A member needs {hits} landed hits to get a card roll."
+
+    async def _apply_card_tier_save(self, guild, member, tier, values, picked=None) -> str:
+        try:
+            chance = float(str(values.get("chance") or "").strip())
+        except ValueError:
+            raise PanelError("The chance needs a number from 0 to 100.")
+        if not 0 <= chance <= 100:
+            raise PanelError("The chance is a percentage from 0 to 100.")
+        top = str(values.get("max_rarity") or "").strip().lower()
+        if top not in boss_game.CARD_RARITIES:
+            raise PanelError("The highest rarity must be common, rare or epic.")
+        async with self.config.guild(guild).games() as games:
+            if tier not in games["boss"]["tiers"]:
+                raise PanelError("Unknown tier.")
+            games["boss"]["card_drop"]["tiers"][tier] = {"chance": chance, "max_rarity": top}
+        return f"`{tier}` bosses: {chance:g}% chance of a card, up to {top}."
 
     @minigamehub.command(name="version")
     async def mgh_version(self, ctx: commands.Context):

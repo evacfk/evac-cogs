@@ -114,3 +114,36 @@ async def test_an_ordinary_day_pays_full_price(cog, monkeypatch):
     ctx = FakeCtx(a, guild, channel)
     await cog.card.commands["daily"].callback(cog, ctx)
     assert "30,000" in ctx.sent[-1].view.button.label and "half price" not in ctx.sent[-1].content
+
+
+@pytest.mark.asyncio
+async def test_reward_card_never_exceeds_the_cap_and_never_gives_legendary(cog):
+    guild, admin, a, _b, _c, channel, ids = await setup(cog, 1010)
+    for i, rarity in enumerate(("epic", "legendary")):
+        ctx = FakeCtx(admin, guild, channel, attachments=[FakeAttachment(fake_art_bytes())])
+        await cog.card.commands["addcard"].callback(cog, ctx, rarity, name_and_series=f"High{i} | Hero")
+    seen = set()
+    for _ in range(60):
+        got = await cog.reward_card(guild, a, "epic")
+        assert got is not None
+        seen.add(got["card"].rarity)
+    assert seen <= {"common", "rare", "epic"}
+    got = await cog.reward_card(guild, a, "rare")
+    assert got["card"].rarity in ("common", "rare")
+
+
+@pytest.mark.asyncio
+async def test_reward_card_saves_the_card_and_turns_the_third_copy_into_a_sell_token(cog):
+    guild, _ad, a, _b, _c, _ch, ids = await setup(cog, 1011, n=1)
+    outcomes = [(await cog.reward_card(guild, a, "epic"))["outcome"] for _ in range(3)]
+    state = await cog._member_state(a)
+    assert state.collection == [ids[0], ids[0]]
+    assert outcomes[2] == "sell_token" and len(state.sell_tokens) == 1
+
+
+@pytest.mark.asyncio
+async def test_reward_card_with_nothing_to_give_returns_none(cog):
+    guild = FakeGuild(1012)
+    m = FakeMember(12001, guild, display_name="M")
+    assert await cog.reward_card(guild, m, "epic") is None  # empty pool
+    assert await cog.reward_card(guild, m, "mythic") is None  # not a rarity

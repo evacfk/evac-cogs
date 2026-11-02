@@ -1,4 +1,4 @@
-"""The `.minigamehub` control panel: spawning, per-game timing, payout pacing, adaptive pacing and boss tiers.
+"""The `.minigamehub` control panel: spawning, per-game timing, payout pacing, adaptive pacing, boss tiers and boss card drops.
 
 Specs only; every change goes through the cog's `_apply_*` methods. Per-game details (messages, timeouts,
 rewards) stay in `.minigamehub settings`, hunt's animals in `.minigamehub huntanimals`.
@@ -97,7 +97,43 @@ async def _tiers_get(cog, guild):
     tiers = (await cog.config.guild(guild).games())["boss"]["tiers"]
     return [(name, name.title(),
              f"HP {t['hp'][0]}-{t['hp'][1]} · reward {t['reward'][0]}-{t['reward'][1]} · "
-             f"penalty {t['penalty'][0]}-{t['penalty'][1]} · weight {t['weight']}") for name, t in tiers.items()]
+             f"penalty {t['penalty'][0]}-{t['penalty'][1]} · weight {t['weight']} · "
+             f"{_solo_text(t.get('solo_cap_pct', 100))}") for name, t in tiers.items()]
+
+
+def _solo_text(pct) -> str:
+    from .games.boss import min_fighters
+    need = min_fighters(pct)
+    return f"{need}+ fighters (max {pct:g}% each)" if need > 1 else "can be solo'd"
+
+
+async def _card_drop(cog, guild):
+    return (await cog.config.guild(guild).games())["boss"]["card_drop"]
+
+
+async def _card_enabled_get(cog, guild):
+    return (await _card_drop(cog, guild))["enabled"]
+
+
+async def _card_hits_get(cog, guild):
+    return {"min_hits": (await _card_drop(cog, guild))["min_hits"]}
+
+
+async def _card_tiers_get(cog, guild):
+    drop = await _card_drop(cog, guild)
+    return [(name, name.title(), f"{v['chance']:g}% chance, up to {v['max_rarity']}") for name, v in drop["tiers"].items()]
+
+
+async def _card_tier_get(cog, guild, name):
+    drop = await _card_drop(cog, guild)
+    if name not in drop["tiers"]:
+        raise PanelError("That tier no longer exists.")
+    v = drop["tiers"][name]
+    return {"chance": f"{v['chance']:g}", "max_rarity": v["max_rarity"]}
+
+
+async def _card_tier_save(cog, guild, member, name, values, picked):
+    return await cog._apply_card_tier_save(guild, member, name, values, picked)
 
 
 async def _tier_get(cog, guild, name):
@@ -106,7 +142,8 @@ async def _tier_get(cog, guild, name):
         raise PanelError("That tier no longer exists.")
     t = tiers[name]
     return {"hp": f"{t['hp'][0]}-{t['hp'][1]}", "reward": f"{t['reward'][0]}-{t['reward'][1]}",
-            "penalty": f"{t['penalty'][0]}-{t['penalty'][1]}", "weight": str(t["weight"])}
+            "penalty": f"{t['penalty'][0]}-{t['penalty'][1]}", "weight": str(t["weight"]),
+            "solo_cap": f"{t.get('solo_cap_pct', 100):g}"}
 
 
 async def _tier_save(cog, guild, member, name, values, picked):
@@ -164,6 +201,21 @@ def build_specs():
              fields=(Field("hp", "HP range, like 50-100", value=lambda r: r.get("hp", ""), max_length=15),
                      Field("reward", "Reward range", value=lambda r: r.get("reward", ""), max_length=15),
                      Field("penalty", "Penalty range for a loss", value=lambda r: r.get("penalty", ""), max_length=15),
-                     Field("weight", "Spawn weight (higher = more often)", value=lambda r: r.get("weight", ""), max_length=4)),
-             help="Each boss fight picks a tier by weight."),
+                     Field("weight", "Spawn weight (higher = more often)", value=lambda r: r.get("weight", ""), max_length=4),
+                     Field("solo_cap", "Most one member can deal, % of HP (100 = no limit)",
+                           value=lambda r: r.get("solo_cap", "100"), max_length=5)),
+             help="Each boss fight picks a tier by weight. A solo limit of 40% means at least three fighters are needed."),
+        Spec("card_enabled", "Boss card drops", "Boss cards", "toggle", get=_card_enabled_get,
+             apply=_apply("_apply_card_enabled"),
+             help="A defeated boss can give its fighters a card from the card game (needs the cardcollect cog loaded)."),
+        Spec("card_hits", "Hits needed for a card roll", "Boss cards", "modal", get=_card_hits_get,
+             apply=_apply("_apply_card_min_hits"), fmt=lambda v, g: f"{v['min_hits']} landed hits" if v else "?",
+             button="Edit…", fields=(Field("min_hits", "Landed hits needed", value=lambda v: str(v["min_hits"]), max_length=4),),
+             help="Each member with at least this many hits on a defeated boss gets one roll."),
+        Spec("card_tiers", "Card chance by boss tier", "Boss cards", "collection", get=_card_tiers_get,
+             item_get=_card_tier_get, save=_card_tier_save, can_add=False,
+             fields=(Field("chance", "Chance per member, % (0-100)", value=lambda r: r.get("chance", ""), max_length=6),
+                     Field("max_rarity", "Highest rarity: common, rare or epic", value=lambda r: r.get("max_rarity", ""),
+                           max_length=6)),
+             help="The rarity inside a roll follows the card game's daily pull odds, capped at the highest rarity here."),
     ]

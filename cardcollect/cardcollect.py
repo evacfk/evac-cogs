@@ -1376,6 +1376,31 @@ class CardCollect(commands.Cog):
         await self._bump_stats(guild, daily_pull_date=today)
         return card, outcome, price, streak, bonus, set_done
 
+    async def reward_card(self, guild: discord.Guild, member: discord.Member, max_rarity: str = "epic"):
+        """A card given as a prize by another cog (a boss kill, say). Rolled with the daily pull odds but never
+        above `max_rarity`; goes through the same copy limit (a duplicate token), set bonuses and set roles as any
+        other card. Returns {"card", "outcome", "price", "set_done"}, or None when nothing could be given."""
+        if max_rarity not in TIERS or getattr(member, "bot", False):
+            return None
+        allowed = set(TIERS[:TIERS.index(max_rarity) + 1])
+        async with self._get_claim_lock(guild.id):
+            conf = self.config.guild(guild)
+            pool = [c for c in await self._rollable_pool_cards(guild) if c.rarity in allowed]
+            if not pool:
+                return None
+            weights = {t: w for t, w in (await conf.daily_weights()).items() if t in allowed}
+            if not any(weights.values()):
+                weights = {t: 1 for t in allowed}
+            card = engine.roll_daily(pool, weights, False, rng=self._rng, boosts=await self._roll_boosts(guild))
+            if card is None or card.rarity not in allowed:
+                return None
+            state = await self._member_state(member)
+            outcome, price = self._grant_card(state, card, await conf.sell_prices())
+            set_done = await self._complete_set(guild, member, state, card, outcome)
+            await self._save_member_state(member, state)
+        await self._bump_stats(guild, prize_cards=1)
+        return {"card": card, "outcome": outcome, "price": price, "set_done": set_done}
+
     # -- finishes and upgrades ------------------------------------------------
 
     async def render_card_file(

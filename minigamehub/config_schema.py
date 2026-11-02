@@ -133,17 +133,29 @@ DEFAULT_GUILD = {
             "attack_cooldown": 1.5,
             "hit_chance": 70,
             "damage_per_hit": [5, 15],
+            # reward is per landed hit; solo_cap_pct is the most of the boss's HP one member can deal
+            # (100 = no limit), which forces the harder bosses to be a team fight.
             "tiers": {
-                "weak":   {"hp": [50, 100],  "reward": [50, 200],   "penalty": [50, 150],  "weight": 60},
-                "medium": {"hp": [150, 300], "reward": [150, 500],  "penalty": [150, 400], "weight": 30},
-                "strong": {"hp": [400, 700], "reward": [400, 1200], "penalty": [400, 900], "weight": 10},
+                "weak":   {"hp": [50, 100],    "reward": [200, 800],  "penalty": [50, 150],  "weight": 60, "solo_cap_pct": 100},
+                "medium": {"hp": [400, 600],   "reward": [300, 900],  "penalty": [150, 400], "weight": 30, "solo_cap_pct": 60},
+                "strong": {"hp": [1200, 1800], "reward": [800, 1600], "penalty": [400, 900], "weight": 10, "solo_cap_pct": 40},
+            },
+            # A card for the fighters when the boss dies: one roll per member with at least min_hits landed hits.
+            "card_drop": {
+                "enabled": True,
+                "min_hits": 3,
+                "tiers": {
+                    "weak":   {"chance": 5,  "max_rarity": "rare"},
+                    "medium": {"chance": 10, "max_rarity": "epic"},
+                    "strong": {"chance": 20, "max_rarity": "epic"},
+                },
             },
             "scenarios": [],  # seeded from scenarios.SEED_BOSS_SCENARIOS on first load
         },
     },
 
     "payout_pacing": {
-        "daily_cap_per_user": 5000,
+        "daily_cap_per_user": 15000,
         "taper_start_pct": 70,
         "taper_floor_pct": 15,
         "reset_timezone": "America/Los_Angeles",

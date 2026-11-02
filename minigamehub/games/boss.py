@@ -1,5 +1,8 @@
 """boss -- new game type, replacing the earlier vague "steal" idea.
 
+Harder tiers are team fights: each tier has a solo_cap_pct, the most of the boss's HP one member can deal
+(strong: 40%, so at least three people), and a defeated boss can drop a cardcollect card to its fighters.
+
 Design doc: extends lootdrop's scenario shape (start/good/bad/button_text/
 button_emoji + hp) rather than being a separate mechanic. Tiered difficulty
 (weak/medium/strong, weighted), unlimited attacks per user for the fight
@@ -40,6 +43,29 @@ def _pick_tier(tiers: dict) -> tuple:
     return key, tiers[key]
 
 
+CARD_RARITIES = ["common", "rare", "epic"]  # a boss never drops legendary
+
+
+def min_fighters(solo_cap_pct) -> int:
+    """How many members it takes to kill a boss when nobody may deal more than solo_cap_pct of its HP."""
+    try:
+        pct = float(solo_cap_pct)
+    except (TypeError, ValueError):
+        return 1
+    if pct >= 100 or pct <= 0:
+        return 1
+    return int(100 // pct) + (0 if 100 % pct == 0 else 1)
+
+
+def roll_card_winners(hit_counts: dict, min_hits: int, chance_pct: float, rng=random) -> list:
+    """Member ids who earn a card: one roll each for everyone with at least min_hits landed hits.
+    Winners come back in a stable order (most hits first) so the announcement reads the same way every time."""
+    if chance_pct <= 0:
+        return []
+    eligible = sorted((uid for uid, hits in hit_counts.items() if hits >= min_hits), key=lambda u: (-hit_counts[u], u))
+    return [uid for uid in eligible if rng.random() * 100 < chance_pct]
+
+
 def _hp_bar(current: int, maximum: int, width: int = 10) -> str:
     """Colored square emoji instead of Unicode block-drawing characters --
     `█`/`░` render almost identically at embed-description size in Discord's
@@ -70,6 +96,10 @@ class _BossView(discord.ui.View):
         self.damage_dealt: dict = {}  # user_id -> total damage, for MVP (in-memory only, fine for test runs)
         self.reward_dealt: dict = {}  # user_id -> total currency earned (good hits only), for the public payout summary
         self.attackers: set = set()   # user_ids who landed >=1 good hit
+        self.hit_counts: dict = {}    # user_id -> landed hits, for the card roll
+        self.solo_cap = (
+            math.ceil(max_hp * tier.get("solo_cap_pct", 100) / 100) if tier.get("solo_cap_pct", 100) < 100 else None
+        )
         self.ended = False
         self._dirty = False
 
@@ -77,6 +107,13 @@ class _BossView(discord.ui.View):
     async def attack(self, interaction: discord.Interaction, button: discord.ui.Button):
         if self.ended:
             await interaction.response.send_message("The fight's already over!", ephemeral=True)
+            return
+
+        if self.solo_cap is not None and self.damage_dealt.get(interaction.user.id, 0) >= self.solo_cap:
+            await interaction.response.send_message(
+                "You've done all the damage you can alone to this boss. It needs other fighters to finish it!",
+                ephemeral=True,
+            )
             return
 
         now = time.time()
@@ -110,6 +147,7 @@ class _BossView(discord.ui.View):
             self.hp = max(0, self.hp - dmg)
             self.damage_dealt[member.id] = self.damage_dealt.get(member.id, 0) + dmg
             self.attackers.add(member.id)
+            self.hit_counts[member.id] = self.hit_counts.get(member.id, 0) + 1
             if not self.dry_run:
                 await stats.add_boss_damage(self.cog.config, member, dmg)
 
@@ -136,9 +174,12 @@ class _BossView(discord.ui.View):
         title = self.scenario["start"]
         if self.dry_run:
             title = "\U0001F9EA [TEST] " + title
+        team = min_fighters(self.tier.get("solo_cap_pct", 100))
+        team_note = (f"\n\U0001F465 Too strong alone: it takes at least **{team}** fighters "
+                     f"(nobody can deal more than {self.tier['solo_cap_pct']:g}% of its HP)." if team > 1 else "")
         embed = discord.Embed(
             title=title,
-            description=f"{_hp_bar(self.hp, self.max_hp)}\n{self.hp}/{self.max_hp} HP\n\n{status}",
+            description=f"{_hp_bar(self.hp, self.max_hp)}\n{self.hp}/{self.max_hp} HP{team_note}\n\n{status}",
             color=discord.Color.red() if self.hp > 0 else discord.Color.green(),
         )
         embed.set_footer(text=f"Tier: {self.tier_key} | Attackers: {len(self.attackers)}")
@@ -212,9 +253,55 @@ async def spawn(cog, channel: discord.TextChannel, game_conf: dict, dry_run: boo
             payouts_text = "\n".join(shown) + (f"\n...and {cut} more" if cut > 0 else "")
             final_embed.add_field(name="Payouts", value=payouts_text, inline=False)
 
+        if view.hp <= 0:
+            card_lines = await _roll_cards(cog, guild, game_conf, tier_key, view)
+            if card_lines:
+                shown, cut = card_lines[:5], len(card_lines) - 5
+                final_embed.add_field(name="\U0001F3B4 Card drops",
+                                      value="\n".join(shown) + (f"\n...and {cut} more" if cut > 0 else ""), inline=False)
+
         try:
             await message.edit(embed=final_embed, view=view)
         except discord.HTTPException:
             pass
     finally:
         cog.active_game.pop(guild.id, None)
+
+
+
+async def _roll_cards(cog, guild: discord.Guild, game_conf: dict, tier_key: str, view) -> list:
+    """The card drops for a defeated boss, as announcement lines. In a test run nobody is given anything."""
+    drop = game_conf.get("card_drop") or {}
+    tier_drop = (drop.get("tiers") or {}).get(tier_key)
+    if not drop.get("enabled") or not tier_drop:
+        return []
+    cards_cog = cog.bot.get_cog("CardCollect")
+    if cards_cog is None or not hasattr(cards_cog, "reward_card"):
+        return []
+    top = tier_drop.get("max_rarity", "epic")
+    if top not in CARD_RARITIES:
+        top = "epic"
+    winners = roll_card_winners(view.hit_counts, int(drop.get("min_hits", 3)), float(tier_drop.get("chance", 0)))
+    lines = []
+    for uid in winners:
+        member = guild.get_member(uid)
+        if member is None:
+            continue
+        if view.dry_run:
+            lines.append(f"\U0001F9EA [TEST] {member.mention} would have found a card (up to {top}).")
+            continue
+        try:
+            got = await cards_cog.reward_card(guild, member, top)
+        except Exception:
+            log.exception("boss: could not give a card to %s", uid)
+            continue
+        if not got:
+            continue
+        card = got["card"]
+        line = f"\U0001F3B4 {member.mention} found **{card.name}** · {card.rarity}"
+        if got["outcome"] == "sell_token":
+            line += " (a duplicate token: for upgrades, or `.card sell`)"
+        if got.get("set_done"):
+            line += f" · \U0001F3C6 completed **{got['set_done'][0]}**, +{got['set_done'][1]:,}"
+        lines.append(line)
+    return lines
