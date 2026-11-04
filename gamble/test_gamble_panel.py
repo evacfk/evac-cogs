@@ -182,7 +182,7 @@ async def test_group_opens_the_panel_for_admins_and_help_for_everyone_else():
 def test_removed_setters_are_gone_and_the_probe_exists():
     names = {c.name for c in GambleThreads.gambleset.commands}
     assert names == {"version", "settings"}
-    assert COG_VERSION == "1.2.2"
+    assert COG_VERSION == "1.3.0"
     assert {"setup", "listgames", "lockdown"} <= {c.name for c in GambleThreads.gamblehub.commands}
 
 
@@ -471,3 +471,99 @@ async def test_gambleset_settings_shows_both_channels():
     await cog._apply_post_channel(guild, None, guild.chans[11])
     await fn(cog, Ctx())
     assert "Hub channel: <#10>" in sent[-1] and "Command reply channel: <#11>" in sent[-1]
+
+
+# ---------------------------------------------------------------------------
+# Close table button (persistent, on the personal table's welcome message)
+# ---------------------------------------------------------------------------
+
+class _Map:
+    """Config group stand-in usable both as `await group()` and `async with group() as d`."""
+
+    def __init__(self, data):
+        self.data = data
+
+    def __call__(self):
+        return self
+
+    def __await__(self):
+        async def _get():
+            return copy.deepcopy(self.data)
+        return _get().__await__()
+
+    async def __aenter__(self):
+        return self.data
+
+    async def __aexit__(self, *exc):
+        return False
+
+
+class _Thread:
+    def __init__(self, tid, manage=False):
+        self.id, self.deleted, self.sent, self._manage = tid, [], [], manage
+
+    def permissions_for(self, user):
+        return SimpleNamespace(manage_threads=self._manage and getattr(user, "is_mod", False))
+
+    async def send(self, text, **kw):
+        self.sent.append(text)
+
+    async def delete(self, reason=None):
+        self.deleted.append(reason)
+
+
+class _CloseClick:
+    def __init__(self, user, channel, guild):
+        self.user, self.channel, self.guild = user, channel, guild
+        self.replies, self.deferred = [], False
+        self.response = SimpleNamespace(send_message=self._reply, defer=self._defer)
+
+    async def _reply(self, text, **kw):
+        self.replies.append(text)
+
+    async def _defer(self, **kw):
+        self.deferred = True
+
+
+def _close_world(owner_id=5, thread_id=70):
+    cog = object.__new__(GambleThreads)
+    active = _Map({str(owner_id): {"thread_id": thread_id, "last_activity": "x"}})
+    cog.config = SimpleNamespace(guild=lambda g: SimpleNamespace(active_threads=active))
+    return cog, active, _Thread(thread_id, manage=True), SimpleNamespace(id=1)
+
+
+async def test_close_button_lets_the_owner_close_their_own_table():
+    cog, active, thread, guild = _close_world()
+    click = _CloseClick(SimpleNamespace(id=5), thread, guild)
+    await cog.handle_close_click(click)
+    assert click.deferred and thread.deleted and active.data == {}
+
+
+async def test_close_button_refuses_other_members_and_keeps_the_table():
+    cog, active, thread, guild = _close_world()
+    click = _CloseClick(SimpleNamespace(id=6), thread, guild)
+    await cog.handle_close_click(click)
+    assert click.replies == ["Only the table's owner can close it."]
+    assert not thread.deleted and "5" in active.data
+
+
+async def test_close_button_lets_a_mod_with_manage_threads_close_it():
+    cog, active, thread, guild = _close_world()
+    click = _CloseClick(SimpleNamespace(id=9, is_mod=True), thread, guild)
+    await cog.handle_close_click(click)
+    assert thread.deleted and active.data == {}
+
+
+async def test_close_button_on_an_already_closed_table_just_says_so():
+    cog, active, thread, guild = _close_world()
+    active.data.clear()
+    click = _CloseClick(SimpleNamespace(id=5), thread, guild)
+    await cog.handle_close_click(click)
+    assert "already closed" in click.replies[0] and not thread.deleted
+
+
+def test_close_view_is_persistent_with_a_fixed_custom_id():
+    from gamble.gamblethreads import CloseTableView
+    view = CloseTableView(object())
+    assert view.timeout is None
+    assert [c.custom_id for c in view.children] == ["gamblehub:close"]

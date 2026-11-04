@@ -12,7 +12,7 @@ from redbot.core.bot import Red
 from . import panel as panel_specs
 from .settings_panel import PanelError, open_panel
 
-COG_VERSION = "1.2.2"
+COG_VERSION = "1.3.0"
 
 # ---------------------------------------------------------------------------
 # Wondercasino hub — how a "game" entry works
@@ -200,6 +200,27 @@ class HubView(discord.ui.View):
             )
             return
         await self.cog.handle_hub_click(interaction, value, from_select=True)
+
+
+class CloseTableView(discord.ui.View):
+    """Persistent "Close table" button attached to a personal table's
+    welcome message. One fixed custom_id, registered once in cog_load, so
+    it keeps working on every live table after a bot restart. The owner
+    (or anyone with Manage Threads) can press it; it does the same thing
+    as `.endgambling`."""
+
+    def __init__(self, cog: "GambleThreads"):
+        super().__init__(timeout=None)
+        self.cog = cog
+
+    @discord.ui.button(
+        label="Close table",
+        emoji="\U0001F6AA",
+        style=discord.ButtonStyle.red,
+        custom_id="gamblehub:close",
+    )
+    async def close_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.cog.handle_close_click(interaction)
 
 
 class _ArgModal(discord.ui.Modal):
@@ -412,6 +433,7 @@ class GambleThreads(commands.Cog):
         # startup — Discord will route interactions on any live hub
         # message back to this same view even after a restart.
         self.bot.add_view(HubView(self))
+        self.bot.add_view(CloseTableView(self))
         self._seed_task = self.bot.loop.create_task(self._seed_flagship_games())
 
     def cog_unload(self):
@@ -613,15 +635,73 @@ class GambleThreads(commands.Cog):
                 delete_after=10,
             )
             return
-        timeout_minutes = await self.config.guild(guild).timeout_minutes()
-        await thread.send(
-            f"🎰 {ctx.author.mention} this is your table. Run your usual game commands right "
-            f"here. Closes automatically after {timeout_minutes} min of inactivity, or type "
-            f"`.endgambling` to close it now."
-        )
+        await self._send_table_welcome(thread, ctx.author)
         await ctx.send(
             f"{ctx.author.mention} your table is ready: {thread.mention}", delete_after=10
         )
+
+    async def _send_table_welcome(self, thread: discord.Thread, member: discord.Member) -> discord.Message:
+        """The welcome message for a new personal table, with the persistent
+        Close table button. Pinned so the button stays one click away even
+        after a long game has pushed it up the thread; pinning needs Manage
+        Messages, so a refusal is ignored (the button still works)."""
+        timeout_minutes = await self.config.guild(thread.guild).timeout_minutes()
+        message = await thread.send(
+            f"🎰 {member.mention} this is your table. Run your usual game commands right "
+            f"here. Closes automatically after {timeout_minutes} min of inactivity, or press "
+            f"**Close table** (pinned) / type `.endgambling` to close it now.",
+            view=CloseTableView(self),
+        )
+        try:
+            await message.pin()
+        except discord.HTTPException:
+            pass
+        return message
+
+    async def _close_table(self, channel, guild: discord.Guild, owner_id: str, closer, send) -> None:
+        """Shared by `.endgambling` and the Close table button: forget the
+        table, say goodbye, delete the thread. `send` posts a message in
+        the thread (ctx.send or interaction.channel.send)."""
+        async with self.config.guild(guild).active_threads() as a:
+            a.pop(owner_id, None)
+        try:
+            await send("Closing this table. Thanks for playing! 🎲")
+        except discord.HTTPException:
+            pass
+        try:
+            await channel.delete(reason=f"Gambling session ended by {closer}")
+        except discord.Forbidden:
+            await send(
+                "⚠️ I couldn't delete this thread — I'm missing the **Manage Threads** "
+                "permission in this channel/category. Please grant that to Hana."
+            )
+        except discord.HTTPException as e:
+            await send(f"⚠️ Discord rejected the delete request: `{e}`")
+
+    async def handle_close_click(self, interaction: discord.Interaction) -> None:
+        guild = interaction.guild
+        channel = interaction.channel
+        if guild is None or channel is None:
+            return
+        active = await self.config.guild(guild).active_threads()
+        owner_id = next(
+            (uid for uid, info in active.items() if info.get("thread_id") == channel.id), None
+        )
+        if owner_id is None:
+            await interaction.response.send_message(
+                "This table is already closed (or isn't a personal table).", ephemeral=True
+            )
+            return
+        is_owner = str(interaction.user.id) == owner_id
+        can_manage = channel.permissions_for(interaction.user).manage_threads
+        if not (is_owner or can_manage):
+            await interaction.response.send_message(
+                "Only the table's owner can close it.", ephemeral=True
+            )
+            return
+        # Acknowledge first: the thread (and this message) is about to be deleted.
+        await interaction.response.defer()
+        await self._close_table(channel, guild, owner_id, interaction.user, channel.send)
 
     @commands.command(name="endgambling")
     async def endgambling(self, ctx: commands.Context):
@@ -635,21 +715,7 @@ class GambleThreads(commands.Cog):
                 "You don't have an open gambling table in this thread.", delete_after=10
             )
             return
-        async with self.config.guild(guild).active_threads() as a:
-            a.pop(user_id, None)
-        try:
-            await ctx.send("Closing this table. Thanks for playing! 🎲")
-        except discord.HTTPException:
-            pass
-        try:
-            await ctx.channel.delete(reason=f"Gambling session ended by {ctx.author}")
-        except discord.Forbidden:
-            await ctx.send(
-                "⚠️ I couldn't delete this thread — I'm missing the **Manage Threads** "
-                "permission in this channel/category. Please grant that to Hana."
-            )
-        except discord.HTTPException as e:
-            await ctx.send(f"⚠️ Discord rejected the delete request: `{e}`")
+        await self._close_table(ctx.channel, guild, user_id, ctx.author, ctx.send)
 
     # ---------- activity tracking ----------
 
@@ -784,12 +850,7 @@ class GambleThreads(commands.Cog):
         # prior activity, so history is safe to fall back on.
         anchor_message = None
         if entry["mode"] == "personal" and created:
-            timeout_minutes = await self.config.guild(guild).timeout_minutes()
-            anchor_message = await thread.send(
-                f"🎰 {member.mention} this is your table. Run your usual game commands right "
-                f"here. Closes automatically after {timeout_minutes} min of inactivity, or type "
-                f"`.endgambling` to close it now."
-            )
+            anchor_message = await self._send_table_welcome(thread, member)
         elif entry["mode"] == "shared" and created:
             anchor_message = await thread.send(f"🎲 Starting **{entry['label']}**…")
         # `gamble` itself IS the thread-provisioning step above — nothing
