@@ -82,7 +82,7 @@ Links: called by wonderland
 Needs: no extra pip packages · Config scopes: guild, member
 
 ### gamble
-v1.2.2 · GambleThreads · 1630 lines · 13 tests
+v1.2.2 · GambleThreads · 1630 lines · 16 tests
 Commands:
 - `.gamblehub`: addgame, addmodalgame, listgames, lockdown, notifyrecipient, removegame, setup
 - `.gambleset`: settings, version
