@@ -1538,12 +1538,16 @@ class PackView(_InvokerView):
 
     reject_text = "That's someone else's pack. Run `.card daily` for your own."
 
-    def __init__(self, cog, member, price: int):
+    def __init__(self, cog, member, price: int, reveal_channel=None):
         super().__init__(member.id, 600)
         self.cog = cog
         self.member = member
         self.price = price
         self.opened = False
+        # Where the pack reveal is posted. None means "the channel the confirm button was pressed in" (a typed
+        # `.card daily`). Set when this view sits on a private message (the hub's Daily Cards entry), so the
+        # reveal still goes to the public channel instead of the hub.
+        self.reveal_channel = reveal_channel
         self.button = discord.ui.Button(
             label=f"Open today's pack · {price:,}" if price else "Open today's pack · free",
             emoji="\U0001f381",
@@ -1626,6 +1630,7 @@ class GiftPackView(discord.ui.View):
             return
         self._busy = True
         cog, buyer = self.pack_view.cog, self.pack_view.member
+        target = self.pack_view.reveal_channel or interaction.channel
         await interaction.response.defer()
         recipient = buyer.guild.get_member(self.recipient.id) or self.recipient
         result = await cog.gift_pack(buyer.guild, buyer, recipient)
@@ -1635,17 +1640,18 @@ class GiftPackView(discord.ui.View):
             if "already used" in result:
                 await self.pack_view.mark_opened()
             return
-        await interaction.edit_original_response(content=f"Sent! {recipient.mention}'s cards are in the channel.", view=None)
+        where = "the channel" if target.id == getattr(interaction.channel, "id", None) else target.mention
+        await interaction.edit_original_response(content=f"Sent! {recipient.mention}'s cards are in {where}.", view=None)
         await self.pack_view.mark_opened("Pack gifted")
         text, file = await cog.pack_result_message(buyer.guild, recipient, result)
         kwargs = {"content": text, "allowed_mentions": discord.AllowedMentions(users=[recipient], roles=False, everyone=False)}
         if file is not None:
             kwargs["file"] = file
         try:
-            await interaction.channel.send(**kwargs)
+            await target.send(**kwargs)
         except discord.HTTPException:
             log.exception("cardcollect: couldn't post a gifted pack")
-        await cog.announce_pack_hits(buyer.guild, recipient, result, interaction.channel.id)
+        await cog.announce_pack_hits(buyer.guild, recipient, result, target.id)
 
 
 class PackConfirmView(discord.ui.View):
@@ -1663,6 +1669,7 @@ class PackConfirmView(discord.ui.View):
             return
         self._busy = True
         cog, member = self.pack_view.cog, self.pack_view.member
+        target = self.pack_view.reveal_channel or interaction.channel
         await interaction.response.defer()
         result = await cog.open_pack(member.guild, member)
         self.stop()
@@ -1671,18 +1678,19 @@ class PackConfirmView(discord.ui.View):
             if "already used" in result:
                 await self.pack_view.mark_opened()
             return
-        await interaction.edit_original_response(content="Pack opened! The cards are in the channel.", view=None)
+        where = "the channel" if target.id == getattr(interaction.channel, "id", None) else target.mention
+        await interaction.edit_original_response(content=f"Pack opened! The cards are in {where}.", view=None)
         await self.pack_view.mark_opened()
         text, file = await cog.pack_result_message(member.guild, member, result)
         kwargs = {"content": text, "allowed_mentions": discord.AllowedMentions.none()}
         if file is not None:
             kwargs["file"] = file
         try:
-            await interaction.channel.send(**kwargs)
+            await target.send(**kwargs)
         except discord.HTTPException:
             log.exception("cardcollect: couldn't post a pack reveal")
             await interaction.followup.send(text, ephemeral=True)
-        await cog.announce_pack_hits(member.guild, member, result, interaction.channel.id)
+        await cog.announce_pack_hits(member.guild, member, result, target.id)
 
     @discord.ui.button(label="Not now", style=discord.ButtonStyle.secondary)
     async def cancel(self, interaction: discord.Interaction, button: discord.ui.Button):

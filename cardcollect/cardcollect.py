@@ -1305,12 +1305,19 @@ class CardCollect(commands.Cog):
         The reply also has a button to buy today's pack."""
         result = await self.daily_pull(ctx.guild, ctx.author)
         pack_price = await self.pack_offer(ctx.guild, ctx.author)  # after the pull: a streak bonus day halves it
-        pack_view = views.PackView(self, ctx.author, pack_price) if pack_price is not None else None
+        # When another cog runs this command on someone's behalf (the Wondercasino hub's Daily Cards entry runs it
+        # in #bot-commands) it can hand us `ctx.reply_privately`: a way to answer just the person who clicked. A
+        # real pull is still posted publicly in ctx.channel, like a typed `.card daily`, but "already pulled" and
+        # the pack offer that follows it are private, and the pack reveal later goes to ctx.channel, not wherever
+        # the private message happens to be.
+        private = getattr(ctx, "reply_privately", None)
+        pack_view = (views.PackView(self, ctx.author, pack_price, reveal_channel=ctx.channel if private else None)
+                     if pack_price is not None else None)
         extra = {"view": pack_view} if pack_view is not None else {}
         if isinstance(result, str):
             if pack_view is not None:
                 result += f"\nToday's pack is still waiting: {PACK_SIZE} cards, one guaranteed rare or better."
-            sent = await ctx.send(result, **extra)
+            sent = await (private or ctx.send)(result, **extra)
             if pack_view is not None:
                 pack_view.message = sent
             return

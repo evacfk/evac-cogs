@@ -182,7 +182,7 @@ async def test_group_opens_the_panel_for_admins_and_help_for_everyone_else():
 def test_removed_setters_are_gone_and_the_probe_exists():
     names = {c.name for c in GambleThreads.gambleset.commands}
     assert names == {"version", "settings"}
-    assert COG_VERSION == "1.2.0"
+    assert COG_VERSION == "1.2.1"
     assert {"setup", "listgames", "lockdown"} <= {c.name for c in GambleThreads.gamblehub.commands}
 
 
@@ -278,7 +278,7 @@ def make_post(post_channel=POST_CHANNEL_ID, ctx_valid=True):
     games = {"dailycard": {"emoji": "\U0001f3b4", "label": "Daily Cards", "command": "card daily", "mode": "post"}}
     group = SimpleNamespace(bot_channel_id=Val(10), post_channel_id=Val(post_channel), games=GamesVal(games))
     cog.config = SimpleNamespace(guild=lambda g: group)
-    calls = SimpleNamespace(invoked=[], contexts=[])
+    calls = SimpleNamespace(invoked=[], contexts=[], while_running=None)  # while_running: what the command "does"
     command = SimpleNamespace(qualified_name="card daily")
 
     async def get_prefix(_channel):
@@ -291,6 +291,8 @@ def make_post(post_channel=POST_CHANNEL_ID, ctx_valid=True):
 
     async def invoke(ctx):
         calls.invoked.append(ctx)
+        if calls.while_running is not None:
+            await calls.while_running(ctx)
 
     cog.bot = SimpleNamespace(get_prefix=get_prefix, get_context=get_context, invoke=invoke,
                               get_command=lambda name: command if name == "card daily" else None)
@@ -320,6 +322,35 @@ async def test_post_mode_runs_the_command_in_the_reply_channel_as_the_clicker():
     assert interaction.response.deferred == [{"thinking": False}]
     (text, kw), = interaction.followup.sent
     assert "<#11>" in text and kw == {"ephemeral": True}
+
+
+async def test_a_command_can_answer_just_the_clicker_and_then_no_pointer_note_is_sent():
+    cog, group, calls, command = make_post()
+    guild = PostGuild()
+    member, _hub, interaction = hub_click(guild)
+    view = object()
+
+    async def command_body(ctx):
+        # what cardcollect does for "already pulled today": a private reply carrying the pack button
+        sent = await ctx.reply_privately("Already pulled.", view=view, delete_after=5, reference=object())
+        assert sent is None  # the fake followup returns nothing; the real one returns the message
+
+    calls.while_running = command_body
+    await cog._invoke_post(interaction, member, command)
+    (text, kw), = interaction.followup.sent  # exactly one thing was said, and it was private
+    assert text == "Already pulled." and kw == {"view": view, "ephemeral": True}  # unsupported kwargs dropped
+    assert not any("head to" in t for t, _k in interaction.followup.sent)
+
+
+async def test_when_the_command_posts_publicly_the_clicker_still_gets_the_pointer_note():
+    cog, group, calls, command = make_post()
+    guild = PostGuild()
+    member, _hub, interaction = hub_click(guild)
+    calls.while_running = None  # the command just ctx.send()s to the channel; it never calls reply_privately
+    await cog._invoke_post(interaction, member, command)
+    (text, kw), = interaction.followup.sent
+    assert "<#11>" in text and kw == {"ephemeral": True}
+    assert callable(calls.invoked[0].reply_privately)  # offered to every post-mode command
 
 
 async def test_post_mode_refuses_cleanly_without_running_anything():

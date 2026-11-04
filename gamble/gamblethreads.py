@@ -12,7 +12,7 @@ from redbot.core.bot import Red
 from . import panel as panel_specs
 from .settings_panel import PanelError, open_panel
 
-COG_VERSION = "1.2.0"
+COG_VERSION = "1.2.1"
 
 # ---------------------------------------------------------------------------
 # Wondercasino hub — how a "game" entry works
@@ -52,9 +52,12 @@ COG_VERSION = "1.2.0"
 #             player had typed it there, so everything it posts (and any
 #             buttons on it, and anything those buttons post later) lands
 #             in that channel for everyone to see. The player only gets a
-#             private "see #channel" note back. Built for `.card daily`,
-#             whose pack button posts its reveal to whatever channel the
-#             click came from — keeping that out of the read-only hub.
+#             private "see #channel" note back. A command can also answer
+#             just the clicker by calling `ctx.reply_privately(...)` (an
+#             ephemeral reply in the hub, no pointer note afterwards).
+#             Built for `.card daily`: a real pull is public in the reply
+#             channel, "already pulled" stays private, and the pack
+#             reveal is posted in the reply channel, never the hub.
 #
 # Session liveness for "shared" games is tracked purely off Discord's own
 # thread state (does the stored thread ID still resolve, is it archived) —
@@ -1013,8 +1016,23 @@ class GambleThreads(commands.Cog):
                 ephemeral=True,
             )
             return
+        # A command that wants to answer only the clicker (cardcollect's "already pulled today") calls
+        # ctx.reply_privately(...) instead of ctx.send(...). That reply lands in the hub as an ephemeral
+        # followup, and is then the whole answer: nothing is posted in the reply channel for it, so there is
+        # no "head to #channel" pointer either.
+        private = {"used": False}
+
+        async def reply_privately(content=None, **kwargs):
+            private["used"] = True
+            for key in ("delete_after", "reference", "mention_author"):
+                kwargs.pop(key, None)
+            kwargs["ephemeral"] = True
+            return await interaction.followup.send(content, **kwargs)
+
+        ctx.reply_privately = reply_privately
         await self.bot.invoke(ctx)
-        await interaction.followup.send(f"Done — head to {channel.mention}.", ephemeral=True)
+        if not private["used"]:
+            await interaction.followup.send(f"Done — head to {channel.mention}.", ephemeral=True)
 
     async def _invoke_in_thread(
         self,

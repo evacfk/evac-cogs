@@ -3,6 +3,7 @@ the button on `.card daily` (views)."""
 
 import random
 from collections import Counter
+from types import SimpleNamespace
 
 import pytest
 from redbot.core import bank
@@ -229,6 +230,123 @@ async def test_daily_reply_carries_the_pack_button_and_opening_posts_the_cards(c
     ctx2 = FakeCtx(member, guild, channel)
     await cog.card.commands["daily"].callback(cog, ctx2)
     assert ctx2.sent[-1].view is None
+
+
+# --- the Wondercasino hub's Daily Cards entry (2.13.1) ---------------------------------
+# The hub runs `.card daily` in the public reply channel and hands the command `ctx.reply_privately`, which answers
+# only the person who clicked. A real pull is still public; "already pulled" and the pack offer after it are
+# private; and the pack reveal always goes to the public channel, never to where the private message sits (the hub).
+
+
+class PrivateReplies:
+    """Stand-in for the hub's ctx.reply_privately: records what the clicker was told privately."""
+
+    def __init__(self):
+        self.replies = []
+
+    async def __call__(self, content=None, **kwargs):
+        message = SimpleNamespace(content=content, edits=[])
+
+        async def edit(**kw):
+            message.edits.append(kw)
+        message.edit = edit
+        self.replies.append((content, kwargs, message))
+        return message
+
+
+@pytest.mark.asyncio
+async def test_hub_already_pulled_is_private_and_a_confirmed_pack_reveals_in_the_public_channel(cog):
+    guild, _a, member, channel = await setup(cog, 413)
+    hub = FakeChannel(41399, guild)
+    await cog.card.commands["daily"].callback(cog, FakeCtx(member, guild, channel))  # today's free pull
+    public_before = len(channel.sent)
+
+    ctx = FakeCtx(member, guild, channel)
+    ctx.reply_privately = private = PrivateReplies()
+    await cog.card.commands["daily"].callback(cog, ctx)
+    assert ctx.sent == [] and len(channel.sent) == public_before  # nothing public for "already pulled"
+    (text, kwargs, private_msg), = private.replies
+    assert "already pulled" in text and "pack is still waiting" in text
+    pack_view = kwargs["view"]
+    assert isinstance(pack_view, views.PackView) and pack_view.reveal_channel is channel
+    assert pack_view.message is private_msg
+
+    press = Inter(member, hub, message=private_msg)  # the clicker presses it on the private message, in the hub
+    await pack_view.button.callback(press)
+    confirm = press.sent_views[-1]
+    assert isinstance(confirm, views.PackConfirmView) and press.response.messages[-1][1] is True
+    yes = Inter(member, hub)
+    await confirm.confirm.callback(yes)
+    reveal = channel.sent[-1]
+    assert "opened today's pack" in reveal.content and member.mention in reveal.content and reveal.files
+    assert hub.sent == []  # nothing is ever posted in the hub
+    assert channel.mention in yes.original_edit["content"]  # the clicker is told where to look
+    assert pack_view.button.disabled and private_msg.edits  # the private message's button got disabled
+    assert bank.balances[(guild.id, member.id)] == 70000
+
+
+@pytest.mark.asyncio
+async def test_hub_fresh_pull_is_public_with_the_pack_button_and_the_reveal_stays_there(cog):
+    guild, _a, member, channel = await setup(cog, 414)
+    hub = FakeChannel(41499, guild)
+    ctx = FakeCtx(member, guild, channel)
+    ctx.reply_privately = private = PrivateReplies()
+    await cog.card.commands["daily"].callback(cog, ctx)
+    assert private.replies == []  # a real pull isn't private
+    pulled = ctx.sent[-1]
+    assert "pulled" in pulled.content and isinstance(pulled.view, views.PackView)
+    assert pulled.view.reveal_channel is channel
+    press = Inter(member, channel, message=pulled)
+    await pulled.view.button.callback(press)
+    yes = Inter(member, channel)
+    await press.sent_views[-1].confirm.callback(yes)
+    assert "opened today's pack" in channel.sent[-1].content and hub.sent == []
+    assert yes.original_edit["content"] == "Pack opened! The cards are in the channel."  # same channel: no mention
+
+
+@pytest.mark.asyncio
+async def test_hub_gifting_a_pack_from_the_private_offer_posts_in_the_public_channel(cog):
+    guild, _a, member, channel = await setup(cog, 415)
+    hub = FakeChannel(41599, guild)
+    friend = FakeMember(4159, guild)
+    guild.members[friend.id] = friend
+    await cog.card.commands["daily"].callback(cog, FakeCtx(member, guild, channel))
+    ctx = FakeCtx(member, guild, channel)
+    ctx.reply_privately = private = PrivateReplies()
+    await cog.card.commands["daily"].callback(cog, ctx)
+    pack_view = private.replies[0][1]["view"]
+    press = Inter(member, hub)
+    await pack_view.gift_button.callback(press)
+    gift = press.sent_views[-1]
+    gift.picker._values = [friend]
+    await gift.picker.callback(Inter(member, hub))
+    yes = Inter(member, hub)
+    await gift.send.callback(yes)
+    assert "gifted" in channel.sent[-1].content and friend.mention in channel.sent[-1].content
+    assert hub.sent == [] and channel.mention in yes.original_edit["content"]
+
+
+@pytest.mark.asyncio
+async def test_hub_already_pulled_with_no_pack_left_is_a_plain_private_note(cog):
+    guild, _a, member, channel = await setup(cog, 416)
+    await cog.card.commands["daily"].callback(cog, FakeCtx(member, guild, channel))
+    assert isinstance(await cog.open_pack(guild, member), dict)  # today's pack is used up
+    ctx = FakeCtx(member, guild, channel)
+    ctx.reply_privately = private = PrivateReplies()
+    await cog.card.commands["daily"].callback(cog, ctx)
+    (text, kwargs, _msg), = private.replies
+    assert "already pulled" in text and "pack" not in text and kwargs == {}
+    assert ctx.sent == []
+
+
+@pytest.mark.asyncio
+async def test_a_typed_daily_is_unchanged_without_the_private_hook(cog):
+    guild, _a, member, channel = await setup(cog, 417)
+    await cog.card.commands["daily"].callback(cog, FakeCtx(member, guild, channel))
+    ctx = FakeCtx(member, guild, channel)  # no reply_privately: someone typed `.card daily` twice
+    await cog.card.commands["daily"].callback(cog, ctx)
+    assert "already pulled" in ctx.sent[-1].content and isinstance(ctx.sent[-1].view, views.PackView)
+    assert ctx.sent[-1].view.reveal_channel is None
 
 
 @pytest.mark.asyncio

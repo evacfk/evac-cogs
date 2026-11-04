@@ -11,10 +11,10 @@ Use it to answer "does a cog already cover this?" and "what depends on this cog?
 - **afterdark** 1.8.2: Gated Rabbit Hole access: button + invitations, interest opt-ins, inactivity cleanup, exclude list.
 - **blackjacktable** 1.1.0: Multiplayer blackjack table (.wonderjack)
 - **bumpreward** 1.1.0: Currency rewards, streaks, auto reminders and a daily board for Disboard bumps.
-- **cardcollect** 2.13.0: Ambient anime-character card collecting: pick the card you want from each drop and the draw decides.
+- **cardcollect** 2.13.1: Ambient anime-character card collecting: pick the card you want from each drop and the draw decides.
 - **celebrations** 1.2.1: Birthdays (hoisted role, wondercoin gift, posts), join-anniversary shout-outs and year club roles.
 - **duel** 1.1.0: 1v1 best-of-3 wagered duels
-- **gamble** 1.2.0: Per-user gambling threads plus the Wondercasino hub menu.
+- **gamble** 1.2.1: Per-user gambling threads plus the Wondercasino hub menu.
 - **lurker** 2.7.0: Auto-hide inactive members behind a Lurker role.
 - **minigamehub** 1.2.0: Unified, config-driven minigame spawner (pet/mathdrop/hunt/lootdrop/reacttowin/boss).
 - **puzzle** 1.8.1: Image-reveal puzzle game with an auto-rotating image pool.
@@ -57,7 +57,7 @@ Needs: no extra pip packages · Config scopes: guild, member
 Data: Stores per-member bump counts, streak and last bump date.
 
 ### cardcollect
-v2.13.0 · CardCollect · 8339 lines · 349 tests
+v2.13.1 · CardCollect · 8354 lines · 354 tests
 Commands:
 - `.card|cards`: addcard, daily, diagnostics, find, give, importpool, importseries, leaderboard, removecard, resetpool, sell, settings, showcase{add, remove}, trade, tradepost, viewpool
 Links: called by minigamehub, wonderland
@@ -83,7 +83,7 @@ Links: called by wonderland
 Needs: no extra pip packages · Config scopes: guild, member
 
 ### gamble
-v1.2.0 · GambleThreads · 1607 lines · 10 tests
+v1.2.1 · GambleThreads · 1625 lines · 12 tests
 Commands:
 - `.gamblehub`: addgame, addmodalgame, listgames, lockdown, notifyrecipient, removegame, setup
 - `.gambleset`: settings, version
