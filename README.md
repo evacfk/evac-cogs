@@ -2,6 +2,7 @@
 
 Custom Red-DiscordBot cogs for the Wonderland server, running on **Hana** (Red 3.5, prefix `.`).
 20 cogs, each a folder with its own `info.json`. Install name = folder name.
+Versions, full command lists and cross-cog links are in [`INDEX.md`](INDEX.md), generated from the code on every push (`python build_index.py`).
 
 Most cogs are set up through an interactive **settings panel**: dropdowns for channels and roles, buttons for on/off,
 and pop-up forms for numbers and text. Open it with the command in the *Settings* column (needs Manage Server;
@@ -11,36 +12,36 @@ reports, previews, testing, member commands) stay typed.
 ## Cogs
 
 ### Community & access
-| Cog | Ver | What it does | Settings panel | Version probe |
-|---|---|---|---|---|
-| `afterdark` | 1.8.1 | Gated Rabbit Hole access: rules panel with interest buttons, mod-approved invitations, random drops, inactivity cleanup, exclude list. | `.afterdark` | `.afterdark version` |
-| `secrethunt` | 1.14.1 | WoW-style secret hunts: personalised puzzles in forum posts, Hall of Secrets, tier badge roles. Members use `.secrets`. | `.secrethunt` | `.secrethunt version` |
-| `lurker` | 2.7.0 | Auto-hides inactive members behind a Lurker role; mod reports; year-club roles moved to `celebrations`. | `.lurkerset` | `.lurkerversion` |
-| `rejoinwatch` | 1.1.0 | Tracks voluntary leaves, warns rejoiners, flags repeat leavers to mods with a ban button. | `.rejoinwatch` | `.rejoinwatch settings` |
-| `celebrations` | 1.2.1 | Birthdays (role, coin gift, posts), join-anniversary shout-outs and the year club roles (`.yearclub`). Members use `.birthday`. | `.celebrations` | `.celebrations version` |
-| `wonderevents` | 1.4.0 | Movie and game nights: RSVP buttons, scheduled events, votes, reminders, attendance. | `.event settings` | `.event version` |
-| `verdict` | 1.4.0 | Daily crowd question: pick an answer, then guess what everyone else picks. | `.verdict settings` | `.verdict version` |
-| `bumpreward` | 1.1.0 | Coin rewards, streaks, reminders and a daily board for Disboard bumps. | `.bumpreward settings` | `.bumpreward version` |
-| `wonderkb` | 1.1.1 | Keeps the Assistant cog's knowledge current from the server's own channels and the bot's commands. | `.kb` | `.kb version` |
-| `wonderland` | 1.5.2 | The `.wld` guidebook (command guide, server map, mod cheat sheet) plus IntroForm, IntroCleanup and MyStats. | `.introform`, `.introcleanup` | `.wld version` |
+| Cog | What it does | Settings panel | Version probe |
+|---|---|---|---|
+| `afterdark` | Gated Rabbit Hole access: rules panel with interest buttons, mod-approved invitations, random drops, inactivity cleanup, exclude list. | `.afterdark` | `.afterdark version` |
+| `secrethunt` | WoW-style secret hunts: personalised puzzles in forum posts, Hall of Secrets, tier badge roles. Members use `.secrets`. | `.secrethunt` | `.secrethunt version` |
+| `lurker` | Auto-hides inactive members behind a Lurker role; mod reports; year-club roles moved to `celebrations`. | `.lurkerset` | `.lurkerversion` |
+| `rejoinwatch` | Tracks voluntary leaves, warns rejoiners, flags repeat leavers to mods with a ban button. | `.rejoinwatch` | `.rejoinwatch settings` |
+| `celebrations` | Birthdays (role, coin gift, posts), join-anniversary shout-outs and the year club roles (`.yearclub`). Members use `.birthday`. | `.celebrations` | `.celebrations version` |
+| `wonderevents` | Movie and game nights: RSVP buttons, scheduled events, votes, reminders, attendance. | `.event settings` | `.event version` |
+| `verdict` | Daily crowd question: pick an answer, then guess what everyone else picks. | `.verdict settings` | `.verdict version` |
+| `bumpreward` | Coin rewards, streaks, reminders and a daily board for Disboard bumps. | `.bumpreward settings` | `.bumpreward version` |
+| `wonderkb` | Keeps the Assistant cog's knowledge current from the server's own channels and the bot's commands. | `.kb` | `.kb version` |
+| `wonderland` | The `.wld` guidebook (command guide, server map, mod cheat sheet) plus IntroForm, IntroCleanup and MyStats. | `.introform`, `.introcleanup` | `.wld version` |
 
 ### Feeds & analytics
-| Cog | Ver | What it does | Settings panel | Version probe |
-|---|---|---|---|---|
-| `redditfeed` | source-v9 | Subreddit-to-channel image feed (Arctic Shift), manual approval queue, RedGifs upload, discovery. `.rf` is an alias. | `.redditfeed` | `.redditfeed version` |
-| `tgfeed` | tg-v4 | Telegram forum group photos/videos to Discord channels (media only, throttled). Needs `telethon`. | `.tgfeed` | `.tgfeed version` |
-| `serverpulse` | 1.8.0 | Activity analytics: busy/quiet hours, reports, heatmap, live board, digests, approval-gated weekly recap. Needs `Pillow`. | `.pulse settings` | `.pulse version` |
+| Cog | What it does | Settings panel | Version probe |
+|---|---|---|---|
+| `redditfeed` | Subreddit-to-channel image feed (Arctic Shift), manual approval queue, RedGifs upload, discovery. `.rf` is an alias. | `.redditfeed` | `.redditfeed version` |
+| `tgfeed` | Telegram forum group photos/videos to Discord channels (media only, throttled). Needs `telethon`. | `.tgfeed` | `.tgfeed version` |
+| `serverpulse` | Activity analytics: busy/quiet hours, reports, heatmap, live board, digests, approval-gated weekly recap. Needs `Pillow`. | `.pulse settings` | `.pulse version` |
 
 ### Games & economy
-| Cog | Ver | What it does | Settings panel | Version probe |
-|---|---|---|---|---|
-| `gamble` | 1.2.0 | Per-user gambling threads plus the Wondercasino hub menu (`.gamblehub`); hub games can run a command in a reply channel such as #bot-commands (`post` mode). | `.gambleset` | `.gambleset version` |
-| `blackjacktable` | 1.1.0 | Multiplayer blackjack table with a persistent shoe and card counting. | `.wonderjackset` | `.wonderjackset version` |
-| `duel` | 1.1.0 | Best-of-3 wagered duels between members. | `.duelset` | `.duelset version` |
-| `minigamehub` | 1.2.0 | Config-driven minigame spawner: pet, mathdrop, hunt, lootdrop, reacttowin, boss (pays per hit, bigger bosses need teamwork, a kill can drop a card). `.mgh` is an alias. | `.minigamehub` | `.mgh version` |
-| `puzzle` | 1.8.1 | Image-reveal puzzle game with an auto-rotating image pool. | `.puzzle` | `.puzzle version` |
-| `cardcollect` | 2.13.0 | Ambient anime-character card collecting: pick the card you want from a drop, the draw picks winners. Wishlist, series sets, card requests. Needs `Pillow`. | `.card settings` | `.card settings` (version in the panel title) |
-| `wonderpet` | 1.3.0 | One server pet raised together: daily care, coin treats, weekly top carers, evolution. Needs `Pillow`. | `.wonderpet settings` | `.wonderpet version` |
+| Cog | What it does | Settings panel | Version probe |
+|---|---|---|---|
+| `gamble` | Per-user gambling threads plus the Wondercasino hub menu (`.gamblehub`); hub games can run a command in a reply channel such as #bot-commands (`post` mode). | `.gambleset` | `.gambleset version` |
+| `blackjacktable` | Multiplayer blackjack table with a persistent shoe and card counting. | `.wonderjackset` | `.wonderjackset version` |
+| `duel` | Best-of-3 wagered duels between members. | `.duelset` | `.duelset version` |
+| `minigamehub` | Config-driven minigame spawner: pet, mathdrop, hunt, lootdrop, reacttowin, boss (pays per hit, bigger bosses need teamwork, a kill can drop a card). `.mgh` is an alias. | `.minigamehub` | `.mgh version` |
+| `puzzle` | Image-reveal puzzle game with an auto-rotating image pool. | `.puzzle` | `.puzzle version` |
+| `cardcollect` | Ambient anime-character card collecting: pick the card you want from a drop, the draw picks winners. Wishlist, series sets, card requests. Needs `Pillow`. | `.card settings` | `.card settings` (version in the panel title) |
+| `wonderpet` | One server pet raised together: daily care, coin treats, weekly top carers, evolution. Needs `Pillow`. | `.wonderpet settings` | `.wonderpet version` |
 
 ## Installing
 
