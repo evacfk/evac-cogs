@@ -93,3 +93,21 @@ def test_change_since_the_last_snapshot():
     assert d["holders"] == 2
     assert d["median"] == 40 and d["median_pct"] is None      # no percentage from a zero start
     assert round(d["top10_share"], 2) == 0.10
+
+
+def test_snapshot_adds_active_numbers_only_when_given():
+    stats = economy.summarize(BALANCES)
+    assert "active_total" not in economy.snapshot(stats, "2026-11-04")
+    snap = economy.snapshot(stats, "2026-11-04", economy.summarize([100, 300]))
+    assert (snap["active_total"], snap["active_holders"], snap["active_median"]) == (400, 2, 100)
+    assert snap["active_top10_share"] == 1.0
+
+
+def test_change_includes_active_numbers_only_when_both_snapshots_have_them():
+    base = {"date": "2026-10-01", "total": 10, "holders": 1, "median": 10, "top10_share": 1.0}
+    with_active = dict(base, active_total=100, active_median=50, active_top10_share=0.5)
+    newer = dict(base, date="2026-10-08", active_total=150, active_median=60, active_top10_share=0.4)
+    assert "active_total" not in economy.change(base, newer)          # older snapshot predates the lurker split
+    d = economy.change(with_active, newer)
+    assert d["active_total"] == 50 and d["active_total_pct"] == 50.0
+    assert d["active_median"] == 10 and round(d["active_top10_share"], 2) == -0.10

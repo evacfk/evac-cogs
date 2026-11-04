@@ -95,7 +95,7 @@ v2.7.0 · Lurker · 1924 lines · 58 tests
 Commands:
 - `.lurkerset`: postinfo, settings
 - Standalone: `.lurker`, `.lurkerbackfill`, `.lurkerbackfillconfirm`, `.lurkerbackfillstatus`, `.lurkerexemptaudit`, `.lurkerreport`, `.lurkerreportsend`, `.lurkerstatus`, `.lurkersweeppreview`, `.lurkersweeprun`, `.lurkerundoall`, `.lurkerundoallconfirm`, `.lurkerunflag`, `.lurkerversion`
-Links: calls celebrations; called by afterdark, celebrations
+Links: calls celebrations; called by afterdark, celebrations, wonderland
 Needs: no extra pip packages · Config scopes: guild, member
 Data: This cog stores member IDs, role IDs, last-activity timestamps, and display names of members flagged or restored since the last mod report.
 
@@ -172,13 +172,13 @@ Needs: no extra pip packages · Config scopes: guild, member
 Data: This cog stores, per event, the user IDs of members who RSVP'd and how many minutes each member spent in voice while the event ran, plus a staff member's chosen timezone…
 
 ### wonderland
-v1.6.1 · IntroCleanup, IntroForm, MyStats, Wonderland · 2836 lines · 217 tests
+v1.6.1 · IntroCleanup, IntroForm, MyStats, Wonderland · 2892 lines · 222 tests
 Commands:
 - `.introcleanup|ic`: settings, sweep
 - `.introform`: panel, prune, settings
 - `.mystats`: version
 - `.wonderland|wld`: economy, map, mod, page, publish, roomperms, search, stats, version
-Links: calls bumpreward, cardcollect, duel, minigamehub, puzzle, verdict, wonderpet; optional/external AutoRoom, Casino, Lottery
+Links: calls bumpreward, cardcollect, duel, lurker, minigamehub, puzzle, verdict, wonderpet; optional/external AutoRoom, Casino, Lottery
 Needs: no extra pip packages · Config scopes: guild
 Data: The guide stores only the channel and message IDs of any published copy.
 

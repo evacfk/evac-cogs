@@ -69,8 +69,9 @@ def top_holders(balances: Dict[int, int], n: int = TOP_N) -> List[Tuple[int, int
 
 # ---- snapshots: aggregate numbers only, so a run can show the change since the last one ----
 
-def snapshot(stats: Dict, day: str) -> Dict:
-    return {
+def snapshot(stats: Dict, day: str, active: Optional[Dict] = None) -> Dict:
+    """`active` is summarize() of the members without the Lurker role (None when that is unknown)."""
+    snap = {
         "date": day,
         "total": stats["total"],
         "holders": stats["holders"],
@@ -78,6 +79,14 @@ def snapshot(stats: Dict, day: str) -> Dict:
         "p90": stats["p90"],
         "top10_share": round(stats["top10_share"], 4),
     }
+    if active is not None:
+        snap.update(
+            active_total=active["total"],
+            active_holders=active["holders"],
+            active_median=active["median"],
+            active_top10_share=round(active["top10_share"], 4),
+        )
+    return snap
 
 
 def add_snapshot(history: Sequence[Dict], entry: Dict) -> List[Dict]:
@@ -99,7 +108,7 @@ def _pct(before: int, after: int) -> Optional[float]:
 
 
 def change(prev: Dict, cur: Dict) -> Dict:
-    return {
+    delta = {
         "since": prev["date"],
         "total": cur["total"] - prev["total"],
         "total_pct": _pct(prev["total"], cur["total"]),
@@ -108,3 +117,12 @@ def change(prev: Dict, cur: Dict) -> Dict:
         "median_pct": _pct(prev["median"], cur["median"]),
         "top10_share": cur["top10_share"] - prev["top10_share"],
     }
+    if "active_total" in prev and "active_total" in cur:    # older snapshots have no active-only numbers
+        delta.update(
+            active_total=cur["active_total"] - prev["active_total"],
+            active_total_pct=_pct(prev["active_total"], cur["active_total"]),
+            active_median=cur["active_median"] - prev["active_median"],
+            active_median_pct=_pct(prev["active_median"], cur["active_median"]),
+            active_top10_share=cur["active_top10_share"] - prev["active_top10_share"],
+        )
+    return delta

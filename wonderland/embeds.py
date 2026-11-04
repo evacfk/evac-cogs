@@ -66,8 +66,11 @@ def _signed_pct(p) -> str:
     return "" if p is None else f" ({p:+.1f}%)"
 
 
-def economy_embed(currency: str, stats: dict, top, gone_n: int, gone_total: int, delta) -> discord.Embed:
-    """The mod-only coin report. `top` is [(name, balance)], `delta` is economy.change() or None."""
+def economy_embed(currency: str, stats: dict, top, gone_n: int, gone_total: int, delta, active=None) -> discord.Embed:
+    """The mod-only coin report. `top` is [(name, balance)], `delta` is economy.change() or None.
+
+    `active` is {"stats", "lurker_holders", "lurker_total"} for members without the Lurker role,
+    or None when the Lurker role can't be found (then everyone is counted together)."""
     unit = currency or "coins"
     if not stats["holders"]:
         return _base(f"💰 {unit} report", f"Nobody holds any {unit} yet.", "Mods only")
@@ -90,6 +93,19 @@ def economy_embed(currency: str, stats: dict, top, gone_n: int, gone_total: int,
                f"The top 1% ({stats['top1_n']:,} members) hold **{stats['top1pct_share']:.0%}**"),
         inline=False,
     )
+    if active is None:
+        e.add_field(name="Active members only", value="Lurker role not found, so everyone is counted together above.", inline=False)
+    else:
+        a = active["stats"]
+        lurk_share = active["lurker_total"] / (stats["total"] or 1)
+        e.add_field(
+            name="Active members only (no Lurker role)",
+            value=(f"**{a['holders']:,}** holders · **{a['total']:,}** {unit}\n"
+                   f"Median **{a['median']:,}** · top 10 hold **{a['top10_share']:.0%}**\n"
+                   f"Lurkers holding {unit}: {active['lurker_holders']:,} members, "
+                   f"{active['lurker_total']:,} ({lurk_share:.0%} of the total)"),
+            inline=False,
+        )
     total = stats["total"] or 1
     band_lines = [
         f"{b['label']}: {b['count']:,} members, {b['coins'] / total:.0%} of {unit}"
@@ -100,13 +116,14 @@ def economy_embed(currency: str, stats: dict, top, gone_n: int, gone_total: int,
         medals = [f"{i}. {discord.utils.escape_markdown(name)}: {balance:,}" for i, (name, balance) in enumerate(top, 1)]
         e.add_field(name="Top holders", value="\n".join(medals), inline=False)
     if delta:
-        e.add_field(
-            name=f"Since {delta['since']}",
-            value=(f"Total {_signed(delta['total'])}{_signed_pct(delta['total_pct'])}\n"
-                   f"Holders {_signed(delta['holders'])} · median {_signed(delta['median'])}{_signed_pct(delta['median_pct'])}\n"
-                   f"Top 10 share {delta['top10_share'] * 100:+.1f} points"),
-            inline=False,
-        )
+        lines = [f"Total {_signed(delta['total'])}{_signed_pct(delta['total_pct'])}",
+                 f"Holders {_signed(delta['holders'])} · median {_signed(delta['median'])}{_signed_pct(delta['median_pct'])}",
+                 f"Top 10 share {delta['top10_share'] * 100:+.1f} points"]
+        if "active_total" in delta:
+            lines.append(f"Active only: total {_signed(delta['active_total'])}{_signed_pct(delta['active_total_pct'])} · "
+                         f"median {_signed(delta['active_median'])}{_signed_pct(delta['active_median_pct'])} · "
+                         f"top 10 share {delta['active_top10_share'] * 100:+.1f} points")
+        e.add_field(name=f"Since {delta['since']}", value="\n".join(lines), inline=False)
     else:
         e.add_field(name="Change over time", value="First snapshot saved. Run this again later to see the change.", inline=False)
     if gone_n:

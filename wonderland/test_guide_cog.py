@@ -541,8 +541,16 @@ class EcoGuild(FakeGuild):
         return self.members.get(user_id)
 
 
-def eco_member(user_id, name, bot=False):
-    return types.SimpleNamespace(id=user_id, display_name=name, bot=bot)
+def eco_member(user_id, name, bot=False, roles=()):
+    return types.SimpleNamespace(id=user_id, display_name=name, bot=bot,
+                                 roles=[types.SimpleNamespace(id=r) for r in roles])
+
+
+def lurker_cog(role_id):
+    async def lurker_role_id():
+        return role_id
+    return types.SimpleNamespace(config=types.SimpleNamespace(
+        guild=lambda guild: types.SimpleNamespace(lurker_role_id=lurker_role_id)))
 
 
 def install_bank(monkeypatch, accounts, is_global=False, currency="wondercoin"):
@@ -591,6 +599,41 @@ async def test_economy_report_counts_members_only_and_saves_one_snapshot(mod, mo
     assert seen == {"positions": None, "guild": guild}                    # local bank: ask for this guild
     saved = cog.config.data[guild.id]["economy"]["snapshots"]
     assert len(saved) == 1 and saved[0]["total"] == 2_000_300
+
+
+async def test_economy_report_splits_out_members_with_the_lurker_role(mod, monkeypatch):
+    guild = EcoGuild([eco_member(1, "Ann", roles=(5,)), eco_member(2, "Bo", roles=(5, 77)),
+                      eco_member(3, "Cy", roles=(77,)), eco_member(4, "Di")])
+    install_bank(monkeypatch, [(1, {"balance": 1_000}), (2, {"balance": 3_000}),
+                               (3, {"balance": 6_000}), (4, {"balance": 0})])
+    cog = make(mod, cogs={"Lurker": lurker_cog(77)})
+    ctx = await run_economy(cog, guild)
+    f = fields(ctx.sent[0].kw["embed"])
+    active = f["Active members only (no Lurker role)"]
+    assert "**1** holders · **1,000** wondercoin" in active                 # only Ann is active and holds coin
+    assert "Lurkers holding wondercoin: 2 members, 9,000 (90% of the total)" in active
+    snap = cog.config.data[guild.id]["economy"]["snapshots"][0]
+    assert (snap["active_total"], snap["active_holders"], snap["total"]) == (1_000, 1, 10_000)
+
+
+async def test_economy_report_says_so_when_the_lurker_role_cannot_be_found(mod, monkeypatch):
+    guild = EcoGuild([eco_member(1, "Ann")])
+    install_bank(monkeypatch, [(1, {"balance": 10})])
+    cog = make(mod)                                                         # no Lurker cog loaded
+    ctx = await run_economy(cog, guild)
+    assert "Lurker role not found" in fields(ctx.sent[0].kw["embed"])["Active members only"]
+    assert "active_total" not in cog.config.data[guild.id]["economy"]["snapshots"][0]
+
+
+async def test_economy_change_shows_active_numbers_when_the_old_snapshot_has_them(mod, monkeypatch):
+    guild = EcoGuild([eco_member(1, "Ann")])
+    install_bank(monkeypatch, [(1, {"balance": 1_500})])
+    cog = make(mod, cogs={"Lurker": lurker_cog(77)})
+    cog.config.data[guild.id] = {"economy": {"snapshots": [
+        {"date": "2000-01-01", "total": 1_000, "holders": 1, "median": 1_000, "p90": 1_000, "top10_share": 1.0,
+         "active_total": 1_000, "active_holders": 1, "active_median": 1_000, "active_top10_share": 1.0}]}}
+    ctx = await run_economy(cog, guild)
+    assert "Active only: total +500 (+50.0%)" in fields(ctx.sent[0].kw["embed"])["Since 2000-01-01"]
 
 
 async def test_a_second_run_the_same_day_does_not_add_a_second_snapshot(mod, monkeypatch):
