@@ -56,7 +56,7 @@ Needs: no extra pip packages · Config scopes: guild, member
 Data: Stores per-member bump counts, streak and last bump date.
 
 ### cardcollect
-v2.14.0 · CardCollect · 7465 lines · 326 tests
+v2.14.0 · CardCollect · 7461 lines · 326 tests
 Commands:
 - `.card|cards`: addcard, daily, diagnostics, find, give, importseries, leaderboard, sell, settings, showcase, trade
 Links: called by minigamehub, wonderland

@@ -5,7 +5,7 @@ from cardcollect.constants import DEFAULT_TIER_CUTOFFS
 
 
 async def instant_sleep(seconds):
-    """Drop-in for asyncio.sleep in tests -- fetch_top_female_characters and
+    """Drop-in for asyncio.sleep in tests -- the series fetch functions and
     _post_with_rate_limit_retry both space out/back off real requests with
     real delays by default; tests inject this instead so they run instantly
     rather than actually waiting out request_delay/backoff seconds."""

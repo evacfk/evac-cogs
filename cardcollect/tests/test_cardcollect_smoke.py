@@ -789,7 +789,7 @@ async def test_daily_pull_empty_pool(cog):
 
 
 # ===========================================================================
-# 1.7.0: importpool gender + failed-art reporting + hand-added linking,
+# 1.7.0: failed-art reporting + hand-added linking,
 # `.card importseries` (search -> pick -> preview -> confirm), and the admin
 # "Change rarity" dropdown on `.card info`
 # ===========================================================================
@@ -946,9 +946,6 @@ class AdminInteraction:
     async def edit_original_response(self, **kwargs):
         self.original_edits.append(kwargs)
         return self.message
-
-
-# --- importpool -------------------------------------------------------------
 
 
 # --- importseries -----------------------------------------------------------

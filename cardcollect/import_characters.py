@@ -4,10 +4,10 @@ Split the same way this project splits everything else: the parts that can
 be pure functions (building the query, parsing AniList's response shape,
 the female-only filter, rarity bucketing) have zero network/discord
 dependency and are fully unit-testable with synthetic JSON that matches
-AniList's real schema. The one network-touching function
-(`fetch_top_female_characters`) is a thin async wrapper around those pure
-functions plus an injected aiohttp session, so the cog can call it without
-duplicating the query/parse/filter logic, and tests can call everything
+AniList's real schema. The network-touching functions
+(the series search and character fetch) are thin async wrappers around those
+pure functions plus an injected aiohttp session, so the cog can call them
+without duplicating the query/parse logic, and tests can call everything
 else without a session at all.
 
 AniList itself is unreachable from this build sandbox (outbound access is
@@ -161,7 +161,7 @@ SERIES_PAGE_SIZE = 50  # AniList's maximum per page
 def parse_media_search(response_json: dict) -> List[dict]:
     """The pick-list for `.card importseries`: one dict per AniList match
     (id, title, title_english, format, year). Raises KeyError/TypeError on an
-    unexpected shape, same loud-not-silent policy as parse_characters."""
+    unexpected shape, same loud-not-silent policy as the other parsers here."""
     results = []
     for media in response_json["data"]["Page"]["media"] or []:
         title = media.get("title") or {}

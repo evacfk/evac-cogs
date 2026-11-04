@@ -1720,8 +1720,6 @@ class CardCollect(commands.Cog):
             allowed_mentions=discord.AllowedMentions(users=[member], roles=False, everyone=False),
         )
 
-    # -- trade board -------------------------------------------------------
-
     async def resolve_offer(self, guild: discord.Guild, member: discord.Member, text: str) -> Tuple[List[int], Optional[str]]:
         """Turn what a member typed into an offer ("12, Rem, #40") into card ids
         from their own collection. Returns (card ids, problem or None)."""
@@ -1978,8 +1976,6 @@ class CardCollect(commands.Cog):
         guild_config = await self.config.guild(ctx.guild).all()
         await ctx.send(embed=embeds.settings_embed(guild_config, ctx.guild.name))
 
-    # -- admin commands --------------------------------------------------
-
     # -- settings (the panel calls these; each returns the message to show or raises PanelError) --
 
     @staticmethod
@@ -2179,7 +2175,7 @@ class CardCollect(commands.Cog):
         await ctx.send(embed=embeds.card_added_embed(card))
         await self._fulfil_requests(ctx.guild, [(card.card_id, card.name)])
 
-    # -- pool import ---------------------------------------------------------
+    # -- series import helpers -----------------------------------------------
 
     async def _pool_card_dicts(self, guild: discord.Guild) -> List[dict]:
         """Every pool card INCLUDING retired ones, as plain dicts for the import
