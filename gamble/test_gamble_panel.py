@@ -182,7 +182,7 @@ async def test_group_opens_the_panel_for_admins_and_help_for_everyone_else():
 def test_removed_setters_are_gone_and_the_probe_exists():
     names = {c.name for c in GambleThreads.gambleset.commands}
     assert names == {"version", "settings"}
-    assert COG_VERSION == "1.2.1"
+    assert COG_VERSION == "1.2.2"
     assert {"setup", "listgames", "lockdown"} <= {c.name for c in GambleThreads.gamblehub.commands}
 
 
@@ -200,13 +200,14 @@ class Perms(SimpleNamespace):
 class PostChannel(Chan):
     """A reply channel; `can_send` / `can_view` flip what permissions_for says."""
 
-    can_send = True
-    can_view = True
+    can_send = True  # the bot
+    can_view = True  # a member
+    member_can_send = True  # a member (False = muted or timed out: sees the channel, can't post)
 
     def permissions_for(self, who):
         if who is ME:
             return Perms(send_messages=self.can_send, view_channel=True)
-        return Perms(send_messages=True, view_channel=self.can_view)
+        return Perms(send_messages=self.member_can_send, view_channel=self.can_view)
 
 
 ME = SimpleNamespace(id=999)
@@ -378,7 +379,15 @@ async def test_post_mode_refuses_cleanly_without_running_anything():
     guild.chans[POST_CHANNEL_ID].can_view = False
     member, _hub, interaction = hub_click(guild)
     await cog._invoke_post(interaction, member, command)
-    assert not calls.invoked and "can't see" in interaction.followup.sent[0][0]
+    assert not calls.invoked and "can't post" in interaction.followup.sent[0][0]
+    # clicker can see it but is muted / timed out: the bot must not post for them
+    cog, group, calls, command = make_post()
+    guild = PostGuild()
+    guild.chans[POST_CHANNEL_ID].member_can_send = False
+    member, _hub, interaction = hub_click(guild)
+    await cog._invoke_post(interaction, member, command)
+    assert not calls.invoked and "can't post" in interaction.followup.sent[0][0]
+    assert interaction.followup.sent[0][1] == {"ephemeral": True}
     # the command doesn't resolve to a valid invocation
     cog, group, calls, command = make_post(ctx_valid=False)
     guild = PostGuild()
@@ -443,3 +452,22 @@ async def test_reply_channel_setting_is_validated_and_shown_in_the_panel():
     assert g.post_channel_id.data == 11
     keys = [s.key for s in panel_mod.build_specs()]
     assert keys.count("post_channel") == 1 and keys.index("channel") < keys.index("hub_menu")
+
+
+async def test_gambleset_settings_shows_both_channels():
+    cog, g, guild = make()
+    sent = []
+
+    class Ctx:
+        def __init__(self):
+            self.guild = guild
+
+        async def send(self, content=None, **kw):
+            sent.append(content)
+    fn = GambleThreads.gambleset_settings.callback
+    await fn(cog, Ctx())
+    assert "Hub channel: not set" in sent[-1] and "Command reply channel: not set" in sent[-1]
+    await cog._apply_channel(guild, None, guild.chans[10])
+    await cog._apply_post_channel(guild, None, guild.chans[11])
+    await fn(cog, Ctx())
+    assert "Hub channel: <#10>" in sent[-1] and "Command reply channel: <#11>" in sent[-1]

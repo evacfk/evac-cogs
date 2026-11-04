@@ -14,7 +14,7 @@ Use it to answer "does a cog already cover this?" and "what depends on this cog?
 - **cardcollect** 2.13.1: Ambient anime-character card collecting: pick the card you want from each drop and the draw decides.
 - **celebrations** 1.2.1: Birthdays (hoisted role, wondercoin gift, posts), join-anniversary shout-outs and year club roles.
 - **duel** 1.1.0: 1v1 best-of-3 wagered duels
-- **gamble** 1.2.1: Per-user gambling threads plus the Wondercasino hub menu.
+- **gamble** 1.2.2: Per-user gambling threads plus the Wondercasino hub menu.
 - **lurker** 2.7.0: Auto-hide inactive members behind a Lurker role.
 - **minigamehub** 1.2.0: Unified, config-driven minigame spawner (pet/mathdrop/hunt/lootdrop/reacttowin/boss).
 - **puzzle** 1.8.1: Image-reveal puzzle game with an auto-rotating image pool.
@@ -82,7 +82,7 @@ Links: called by wonderland
 Needs: no extra pip packages · Config scopes: guild, member
 
 ### gamble
-v1.2.1 · GambleThreads · 1625 lines · 12 tests
+v1.2.2 · GambleThreads · 1630 lines · 13 tests
 Commands:
 - `.gamblehub`: addgame, addmodalgame, listgames, lockdown, notifyrecipient, removegame, setup
 - `.gambleset`: settings, version

@@ -12,7 +12,7 @@ from redbot.core.bot import Red
 from . import panel as panel_specs
 from .settings_panel import PanelError, open_panel
 
-COG_VERSION = "1.2.1"
+COG_VERSION = "1.2.2"
 
 # ---------------------------------------------------------------------------
 # Wondercasino hub — how a "game" entry works
@@ -987,9 +987,14 @@ class GambleThreads(commands.Cog):
                 f"I can't post in {channel.mention} right now — let a mod know.", ephemeral=True
             )
             return
-        if not channel.permissions_for(member).view_channel:
+        # "As if they typed it there" has to mean they COULD type there: a muted or timed-out member can see the
+        # channel but can't post in it (discord.py's permissions_for strips send_messages for a timed-out member
+        # and applies a mute role's channel overwrites), and the hub must not let them get the bot to post for them.
+        member_perms = channel.permissions_for(member)
+        if not (member_perms.view_channel and member_perms.send_messages):
             await interaction.followup.send(
-                f"You can't see {channel.mention}, so I can't run that for you there.", ephemeral=True
+                f"You can't post in {channel.mention} right now, so I can't run that for you there.",
+                ephemeral=True,
             )
             return
         prefixes = await self.bot.get_prefix(channel)
