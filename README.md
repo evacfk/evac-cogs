@@ -1,7 +1,7 @@
 # evac-cogs
 
 Custom Red-DiscordBot cogs for the Wonderland server, running on **Hana** (Red 3.5, prefix `.`).
-20 cogs, each a folder with its own `info.json`. Install name = folder name.
+19 cogs, each a folder with its own `info.json`. Install name = folder name.
 Versions, full command lists and cross-cog links are in [`INDEX.md`](INDEX.md), generated from the code on every push (`python build_index.py`).
 
 Most cogs are set up through an interactive **settings panel**: dropdowns for channels and roles, buttons for on/off,
@@ -22,7 +22,6 @@ reports, previews, testing, member commands) stay typed.
 | `wonderevents` | Movie and game nights: RSVP buttons, scheduled events, votes, reminders, attendance. | `.event settings` | `.event version` |
 | `verdict` | Daily crowd question: pick an answer, then guess what everyone else picks. | `.verdict settings` | `.verdict version` |
 | `bumpreward` | Coin rewards, streaks, reminders and a daily board for Disboard bumps. | `.bumpreward settings` | `.bumpreward version` |
-| `wonderkb` | Keeps the Assistant cog's knowledge current from the server's own channels and the bot's commands. | `.kb` | `.kb version` |
 | `wonderland` | The `.wld` guidebook (command guide, server map, mod cheat sheet) plus IntroForm, IntroCleanup and MyStats. | `.introform`, `.introcleanup` | `.wld version` |
 
 ### Feeds & analytics
