@@ -1,6 +1,6 @@
 """Fixed values for the Wonderland guide. No discord/redbot imports here."""
 
-COG_VERSION = "1.5.2"
+COG_VERSION = "1.6.0"
 CONFIG_ID = 0x574C44  # "WLD"
 
 VIEW_TIMEOUT = 120          # seconds the topic buttons stay alive
@@ -8,6 +8,9 @@ STUB_TTL = 60               # seconds the one-line "tap to open" stub stays in t
 STATS_COOLDOWN = 15
 SEARCH_MAX_RESULTS = 15
 SEARCH_MIN_CHARS = 2
+SEARCH_TTL = 120            # seconds a prefix `.wld search` result stays in the channel
+ECONOMY_COOLDOWN = 30
+ECONOMY_TZ = "America/Los_Angeles"   # the coin report keeps one snapshot per Los Angeles day
 
 EMBED_COLOR = 0xB388FF
 FOOTER = "Wonderland Guide · .wld"

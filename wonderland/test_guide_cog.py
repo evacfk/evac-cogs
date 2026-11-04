@@ -6,6 +6,7 @@ import types
 import discord
 import pytest
 
+from wonderland.constants import SEARCH_TTL
 from wonderland.content import HOME_KEY, MAP_KEY
 
 
@@ -62,6 +63,19 @@ class FakeConfig:
                 store = outer.data.setdefault(guild.id, {})
                 store.setdefault("publish", outer.defaults["publish"])
                 return FakeConfigValue(store, "publish")
+
+            @property
+            def economy(self_inner):
+                store = outer.data.setdefault(guild.id, {})
+                store.setdefault("economy", {"snapshots": []})
+
+                class _Saved:
+                    async def __aenter__(s):
+                        return store["economy"]
+
+                    async def __aexit__(s, *a):
+                        return False
+                return _Saved
         return _G()
 
 
@@ -80,11 +94,11 @@ def mod(monkeypatch):
     root.core = core
     for name, m in (("redbot", root), ("redbot.core", core), ("redbot.core.commands", commands_ns)):
         monkeypatch.setitem(sys.modules, name, m)
-    for name in ("wonderland.guide", "wonderland.embeds"):
+    for name in ("wonderland.guide", "wonderland.embeds", "wonderland.economy_cog"):
         monkeypatch.delitem(sys.modules, name, raising=False)
     m = importlib.import_module("wonderland.guide")
     yield m
-    for name in ("wonderland.guide", "wonderland.embeds"):
+    for name in ("wonderland.guide", "wonderland.embeds", "wonderland.economy_cog"):
         sys.modules.pop(name, None)
 
 
@@ -446,14 +460,180 @@ async def test_button_map_is_filtered_for_the_person_who_picked_it(mod):
     assert edits[0]["view"].author_id == 5
 
 
-async def test_search_reports_hits_and_misses(mod):
+async def search(cog, ctx, word):
+    await cog.wonderland.subs["search"].callback(cog, ctx, word=word)
+
+
+async def test_slash_search_reports_hits_and_misses_privately(mod):
+    cog = make(mod, commands={"fish", "fishinfo"})
+    ctx = FakeCtx(interaction=object())
+    await search(cog, ctx, "fish")
+    assert "`.fish`" in (await shown(ctx))["embed"].description
+    ctx2 = FakeCtx(interaction=object())
+    await search(cog, ctx2, "zzzz")
+    assert "Nothing found" in (await shown(ctx2))["embed"].description
+
+
+async def test_prefix_search_answers_at_once_with_no_tap_to_open_stub(mod):
     cog = make(mod, commands={"fish", "fishinfo"})
     ctx = FakeCtx()
-    await cog.wonderland.subs["search"].callback(cog, ctx, word="fish")
-    assert "`.fish`" in (await shown(ctx))["embed"].description
-    ctx2 = FakeCtx()
-    await cog.wonderland.subs["search"].callback(cog, ctx2, word="zzzz")
-    assert "Nothing found" in (await shown(ctx2))["embed"].description
+    await search(cog, ctx, "fish")
+    assert len(ctx.sent) == 1
+    sent = ctx.sent[0].kw
+    assert "view" not in sent                      # no button to tap
+    assert "`.fish`" in sent["embed"].description
+    assert sent["delete_after"] == SEARCH_TTL      # it still cleans itself up
+    assert ctx.message.deleted
+
+
+async def test_prefix_search_with_no_match_also_answers_at_once(mod):
+    cog = make(mod, commands={"fish"})
+    ctx = FakeCtx()
+    await search(cog, ctx, "zzzz")
+    assert "view" not in ctx.sent[0].kw
+    assert "Nothing found" in ctx.sent[0].kw["embed"].description
+
+
+async def test_prefix_search_survives_missing_manage_messages(mod):
+    cog = make(mod, commands={"fish"})
+    ctx = FakeCtx()
+
+    async def refuse():
+        raise discord.Forbidden(types.SimpleNamespace(status=403, reason="x"), "no")
+    ctx.message.delete = refuse
+    await search(cog, ctx, "fish")
+    assert "`.fish`" in ctx.sent[0].kw["embed"].description
+
+
+async def test_prefix_search_never_lists_mod_only_matches_in_the_channel_but_tells_a_mod(mod):
+    cog = make(mod, mods={5})
+    ctx = FakeCtx(author_id=5)
+    await search(cog, ctx, "roomperms")
+    text = ctx.sent[0].kw["embed"].description
+    assert "Nothing found" in text                 # the channel copy is the member-level answer
+    assert "Mod-only matches are hidden" in text and "/wonderland search" in text
+
+
+async def test_prefix_search_gives_a_member_no_mod_note(mod):
+    cog = make(mod, mods={5})
+    ctx = FakeCtx(author_id=6)
+    await search(cog, ctx, "roomperms")
+    text = ctx.sent[0].kw["embed"].description
+    assert "Nothing found" in text and "Mod-only" not in text
+
+
+async def test_slash_search_still_shows_a_mod_the_mod_only_matches_privately(mod):
+    cog = make(mod, mods={5})
+    ctx = FakeCtx(author_id=5, interaction=object())
+    await search(cog, ctx, "roomperms")
+    sent = (await shown(ctx))
+    assert sent["ephemeral"] is True and "roomperms" in sent["embed"].description
+
+
+# ---------------------------------------------------------------- .wld economy (mods)
+
+class EcoGuild(FakeGuild):
+    def __init__(self, members):
+        super().__init__([])
+        self.members = {m.id: m for m in members}
+
+    def get_member(self, user_id):
+        return self.members.get(user_id)
+
+
+def eco_member(user_id, name, bot=False):
+    return types.SimpleNamespace(id=user_id, display_name=name, bot=bot)
+
+
+def install_bank(monkeypatch, accounts, is_global=False, currency="wondercoin"):
+    """A fake redbot bank. Returns a dict recording the guild the report asked the bank for."""
+    seen = {}
+
+    async def get_currency_name(guild=None):
+        return currency
+
+    async def is_global_():
+        return is_global
+
+    async def get_leaderboard(positions=None, guild=None):
+        seen["positions"], seen["guild"] = positions, guild
+        return accounts
+    bank = types.SimpleNamespace(get_currency_name=get_currency_name, is_global=is_global_,
+                                 get_leaderboard=get_leaderboard)
+    monkeypatch.setattr(sys.modules["redbot.core"], "bank", bank, raising=False)
+    return seen
+
+
+def fields(embed):
+    return {f.name: f.value for f in embed.fields}
+
+
+async def run_economy(cog, guild):
+    ctx = FakeCtx(guild=guild)
+    await cog.wonderland.subs["economy"].callback(cog, ctx)
+    return ctx
+
+
+async def test_economy_report_counts_members_only_and_saves_one_snapshot(mod, monkeypatch):
+    guild = EcoGuild([eco_member(1, "Ann"), eco_member(2, "Bo"), eco_member(3, "BotBob", bot=True)])
+    seen = install_bank(monkeypatch, [(1, {"balance": 2_000_000}), ("2", {"balance": 300}),
+                                      (3, {"balance": 999_999}), (4, {"balance": 50_000})])
+    cog = make(mod)
+    ctx = await run_economy(cog, guild)
+    sent = ctx.sent[0].kw
+    assert sent["ephemeral"] is True
+    embed = sent["embed"]
+    assert "**2,000,300** wondercoin" in embed.description and "**2** members" in embed.description
+    f = fields(embed)
+    assert f["Top holders"] == "1. Ann: 2,000,000\n2. Bo: 300"          # the bot is not a holder
+    assert "1 accounts of members who left (50,000" in f["Not counted"]
+    assert "First snapshot saved" in f["Change over time"]
+    assert seen == {"positions": None, "guild": guild}                    # local bank: ask for this guild
+    saved = cog.config.data[guild.id]["economy"]["snapshots"]
+    assert len(saved) == 1 and saved[0]["total"] == 2_000_300
+
+
+async def test_a_second_run_the_same_day_does_not_add_a_second_snapshot(mod, monkeypatch):
+    guild = EcoGuild([eco_member(1, "Ann")])
+    install_bank(monkeypatch, [(1, {"balance": 10})])
+    cog = make(mod)
+    await run_economy(cog, guild)
+    await run_economy(cog, guild)
+    assert len(cog.config.data[guild.id]["economy"]["snapshots"]) == 1
+
+
+async def test_economy_report_shows_the_change_since_an_earlier_snapshot(mod, monkeypatch):
+    guild = EcoGuild([eco_member(1, "Ann")])
+    install_bank(monkeypatch, [(1, {"balance": 1_500})])
+    cog = make(mod)
+    cog.config.data[guild.id] = {"economy": {"snapshots": [
+        {"date": "2000-01-01", "total": 1_000, "holders": 1, "median": 1_000, "p90": 1_000, "top10_share": 1.0}]}}
+    ctx = await run_economy(cog, guild)
+    since = fields(ctx.sent[0].kw["embed"])["Since 2000-01-01"]
+    assert "Total +500 (+50.0%)" in since
+    assert len(cog.config.data[guild.id]["economy"]["snapshots"]) == 2     # the old one is kept
+
+
+async def test_global_bank_asks_for_everyone_and_filters_members_here(mod, monkeypatch):
+    guild = EcoGuild([eco_member(1, "Ann")])
+    seen = install_bank(monkeypatch, [(1, {"balance": 10}), (99, {"balance": 5})], is_global=True)
+    ctx = await run_economy(make(mod), guild)
+    assert seen["guild"] is None
+    assert "1 accounts of members who left (5" in fields(ctx.sent[0].kw["embed"])["Not counted"]
+
+
+async def test_economy_report_when_nobody_holds_anything(mod, monkeypatch):
+    guild = EcoGuild([eco_member(1, "Ann")])
+    install_bank(monkeypatch, [(1, {"balance": 0})])
+    ctx = await run_economy(make(mod), guild)
+    assert "Nobody holds any wondercoin" in ctx.sent[0].kw["embed"].description
+
+
+async def test_the_economy_report_is_on_the_mod_page_only(mod):
+    cog = make(mod, mods={5})
+    mod_text = cog.render("mod", FakeGuild([]), True).description
+    member_text = cog.render("start", FakeGuild([]), False).description
+    assert ".wld economy" in mod_text and ".wld economy" not in member_text
 
 
 async def test_stats_uses_the_mystats_cog_and_replies_privately(mod):

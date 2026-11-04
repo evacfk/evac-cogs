@@ -14,9 +14,11 @@ from redbot.core import Config, commands
 
 from . import embeds, engine
 from .constants import (
-    COG_VERSION, CONFIG_ID, FOOTER, PUBLISH_FOOTER, STATS_COOLDOWN, STUB_TTL, VIEW_TIMEOUT,
+    COG_VERSION, CONFIG_ID, ECONOMY_COOLDOWN, FOOTER, PUBLISH_FOOTER, SEARCH_TTL, STATS_COOLDOWN, STUB_TTL,
+    VIEW_TIMEOUT,
 )
 from .content import HOME_KEY, MAP_KEY, PAGES
+from .economy_cog import EconomyMixin
 from .roomperms_cog import RoomPermsMixin
 
 log = logging.getLogger("red.evac-cogs.wonderland")
@@ -113,13 +115,14 @@ class OpenView(discord.ui.View):
                 pass
 
 
-class Wonderland(RoomPermsMixin, commands.Cog):
+class Wonderland(EconomyMixin, RoomPermsMixin, commands.Cog):
     """A compact guidebook to everything Wonderland's bots can do."""
 
     def __init__(self, bot):
         self.bot = bot
         self.config = Config.get_conf(self, identifier=CONFIG_ID, force_registration=True)
-        self.config.register_guild(publish={"channel_id": None, "messages": {}}, roomperms={"enabled": True})
+        self.config.register_guild(publish={"channel_id": None, "messages": {}}, roomperms={"enabled": True},
+                                   economy={"snapshots": []})
         self._rp_setup()
 
     async def red_delete_data_for_user(self, **kwargs):
@@ -247,10 +250,24 @@ class Wonderland(RoomPermsMixin, commands.Cog):
     @wonderland.command(name="search")
     async def wonderland_search(self, ctx: commands.Context, *, word: str):
         """Find a command by what it does, e.g. `.wld search card`."""
-        async def make(user):
-            hits = engine.search(word, self._exists, await self._is_mod(user))
-            return embeds.search_embed(word, hits), None
-        await self._deliver(ctx, make)
+        if ctx.interaction is not None:
+            async def make(user):
+                hits = engine.search(word, self._exists, await self._is_mod(user))
+                return embeds.search_embed(word, hits), None
+            return await self._deliver(ctx, make)
+        # Prefix: the answer is just command names and what they do, so show it straight away (no "tap to
+        # open" stub, which cost every search an extra click). It is the member-level answer, since the
+        # channel can see it; a mod is told when mod-only matches were left out. It cleans itself up.
+        hits = engine.search(word, self._exists, False)
+        hidden = False
+        if await self._is_mod(ctx.author):
+            hidden = len(engine.search(word, self._exists, True)) > len(hits)
+        await ctx.send(embed=embeds.search_embed(word, hits, mod_hidden=hidden), delete_after=SEARCH_TTL,
+                       allowed_mentions=discord.AllowedMentions.none())
+        try:
+            await ctx.message.delete()
+        except Exception:
+            pass  # no Manage Messages here; the reply still cleans itself up
 
     @wonderland.command(name="stats")
     @commands.cooldown(1, STATS_COOLDOWN, commands.BucketType.user)
@@ -279,6 +296,15 @@ class Wonderland(RoomPermsMixin, commands.Cog):
         if state is not None:
             text += "\nThis only affects rooms created (or claimed) from now on; rooms that already exist keep what they have."
         await ctx.send(text, allowed_mentions=discord.AllowedMentions.none())
+
+    @wonderland.command(name="economy")
+    @commands.mod_or_permissions(manage_guild=True)
+    @commands.cooldown(1, ECONOMY_COOLDOWN, commands.BucketType.user)
+    async def wonderland_economy(self, ctx: commands.Context):
+        """Mods: wondercoin in circulation, who holds it, and the change since the last run."""
+        async with ctx.typing():
+            embed = await self._eco_report(ctx.guild)
+        await ctx.send(embed=embed, ephemeral=True, allowed_mentions=discord.AllowedMentions.none())
 
     @wonderland.command(name="publish")
     @commands.mod_or_permissions(manage_guild=True)

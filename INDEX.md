@@ -25,7 +25,7 @@ Use it to answer "does a cog already cover this?" and "what depends on this cog?
 - **tgfeed** tg-v4: Telegram forum group photos/videos -> Discord channels, media only, read-only and throttled.
 - **verdict** 1.4.0: A daily crowd question: pick your answer, then guess what everyone else picks.
 - **wonderevents** 1.4.0: Movie and game nights: RSVP buttons, Discord scheduled events, votes, reminders and attendance.
-- **wonderland** 1.5.2: The Wonderland guidebook: .wld command guide, server map and mod cheat sheet, plus the intro form and member stats.
+- **wonderland** 1.6.0: The Wonderland guidebook: .wld command guide, server map and mod cheat sheet, plus the intro form and member stats.
 - **wonderpet** 1.3.0: One server pet raised together in #cuddle: daily free care, coin treats, weekly top carers, evolution.
 
 ## Cogs
@@ -172,12 +172,12 @@ Needs: no extra pip packages · Config scopes: guild, member
 Data: This cog stores, per event, the user IDs of members who RSVP'd and how many minutes each member spent in voice while the event ran, plus a staff member's chosen timezone…
 
 ### wonderland
-v1.5.2 · IntroCleanup, IntroForm, MyStats, Wonderland · 2581 lines · 193 tests
+v1.6.0 · IntroCleanup, IntroForm, MyStats, Wonderland · 2837 lines · 217 tests
 Commands:
 - `.introcleanup|ic`: settings, sweep
 - `.introform`: panel, prune, settings
 - `.mystats`: version
-- `.wonderland|wld`: map, mod, page, publish, roomperms, search, stats, version
+- `.wonderland|wld`: economy, map, mod, page, publish, roomperms, search, stats, version
 Links: calls bumpreward, cardcollect, duel, minigamehub, puzzle, verdict, wonderpet; optional/external AutoRoom, Casino, Lottery
 Needs: no extra pip packages · Config scopes: guild
 Data: The guide stores only the channel and message IDs of any published copy.

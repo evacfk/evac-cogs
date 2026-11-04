@@ -22,7 +22,7 @@ reports, previews, testing, member commands) stay typed.
 | `wonderevents` | Movie and game nights: RSVP buttons, scheduled events, votes, reminders, attendance. | `.event settings` | `.event version` |
 | `verdict` | Daily crowd question: pick an answer, then guess what everyone else picks. | `.verdict settings` | `.verdict version` |
 | `bumpreward` | Coin rewards, streaks, reminders and a daily board for Disboard bumps. | `.bumpreward settings` | `.bumpreward version` |
-| `wonderland` | The `.wld` guidebook (command guide, server map, mod cheat sheet) plus IntroForm, IntroCleanup and MyStats. | `.introform`, `.introcleanup` | `.wld version` |
+| `wonderland` | The `.wld` guidebook (command guide, server map, mod cheat sheet) plus IntroForm, IntroCleanup and MyStats. Mods also get `.wld economy`, a wondercoin distribution report. | `.introform`, `.introcleanup` | `.wld version` |
 
 ### Feeds & analytics
 | Cog | What it does | Settings panel | Version probe |
