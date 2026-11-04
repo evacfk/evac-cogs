@@ -56,7 +56,8 @@ class Guild:
 
 def make():
     cog = object.__new__(GambleThreads)
-    group = SimpleNamespace(bot_channel_id=Val(None), timeout_minutes=Val(10), shared_timeout_minutes=Val(15))
+    group = SimpleNamespace(bot_channel_id=Val(None), post_channel_id=Val(None), timeout_minutes=Val(10),
+                            shared_timeout_minutes=Val(15))
     cog.config = SimpleNamespace(guild=lambda g: group)
     return cog, group, Guild()
 
@@ -181,5 +182,233 @@ async def test_group_opens_the_panel_for_admins_and_help_for_everyone_else():
 def test_removed_setters_are_gone_and_the_probe_exists():
     names = {c.name for c in GambleThreads.gambleset.commands}
     assert names == {"version", "settings"}
-    assert COG_VERSION == "1.1.1"
+    assert COG_VERSION == "1.2.0"
     assert {"setup", "listgames", "lockdown"} <= {c.name for c in GambleThreads.gamblehub.commands}
+
+
+# ---------------------------------------------------------------------------
+# "post" mode: run a hub game's command in the configured reply channel
+# ---------------------------------------------------------------------------
+
+POST_CHANNEL_ID = 11
+
+
+class Perms(SimpleNamespace):
+    pass
+
+
+class PostChannel(Chan):
+    """A reply channel; `can_send` / `can_view` flip what permissions_for says."""
+
+    can_send = True
+    can_view = True
+
+    def permissions_for(self, who):
+        if who is ME:
+            return Perms(send_messages=self.can_send, view_channel=True)
+        return Perms(send_messages=True, view_channel=self.can_view)
+
+
+ME = SimpleNamespace(id=999)
+
+
+class PostGuild:
+    id, name, me = 1, "Wonderland", ME
+
+    def __init__(self):
+        self.chans = {10: Chan(id=10), POST_CHANNEL_ID: PostChannel(id=POST_CHANNEL_ID)}
+
+    def get_channel(self, cid):
+        return self.chans.get(cid)
+
+
+class Followup:
+    def __init__(self):
+        self.sent = []
+
+    async def send(self, content=None, **kw):
+        self.sent.append((content, kw))
+
+
+class PostResponse:
+    def __init__(self):
+        self.deferred = []
+
+    def is_done(self):
+        return bool(self.deferred)
+
+    async def defer(self, **kw):
+        self.deferred.append(kw)
+
+    async def send_message(self, *a, **k):
+        raise AssertionError("post mode must not answer the interaction directly")
+
+
+class PostInteraction:
+    def __init__(self, guild, user, message):
+        self.guild, self.user, self.message = guild, user, message
+        self.response, self.followup = PostResponse(), Followup()
+        self.channel = guild.get_channel(10)
+        self.channel_id = 10
+
+
+class GamesVal:
+    """A Config-like value that supports both `await x()` and `async with x() as d`."""
+
+    def __init__(self, data):
+        self.data = data
+
+    def __call__(self):
+        return self
+
+    def __await__(self):
+        async def _get():
+            return copy.deepcopy(self.data)
+        return _get().__await__()
+
+    async def __aenter__(self):
+        return self.data
+
+    async def __aexit__(self, *exc):
+        return False
+
+
+def make_post(post_channel=POST_CHANNEL_ID, ctx_valid=True):
+    cog = object.__new__(GambleThreads)
+    games = {"dailycard": {"emoji": "\U0001f3b4", "label": "Daily Cards", "command": "card daily", "mode": "post"}}
+    group = SimpleNamespace(bot_channel_id=Val(10), post_channel_id=Val(post_channel), games=GamesVal(games))
+    cog.config = SimpleNamespace(guild=lambda g: group)
+    calls = SimpleNamespace(invoked=[], contexts=[])
+    command = SimpleNamespace(qualified_name="card daily")
+
+    async def get_prefix(_channel):
+        return ["."]
+
+    async def get_context(message):
+        ctx = SimpleNamespace(message=message, valid=ctx_valid)
+        calls.contexts.append(ctx)
+        return ctx
+
+    async def invoke(ctx):
+        calls.invoked.append(ctx)
+
+    cog.bot = SimpleNamespace(get_prefix=get_prefix, get_context=get_context, invoke=invoke,
+                              get_command=lambda name: command if name == "card daily" else None)
+    cog._bg_tasks = set()
+    return cog, group, calls, command
+
+
+def hub_click(guild):
+    member = SimpleNamespace(id=42, display_name="Clicker")
+    hub_message = SimpleNamespace(id=1, author=ME, channel=guild.get_channel(10), guild=guild, content="", reference=None)
+    return member, hub_message, PostInteraction(guild, member, hub_message)
+
+
+async def test_post_mode_runs_the_command_in_the_reply_channel_as_the_clicker():
+    cog, group, calls, command = make_post()
+    guild = PostGuild()
+    member, hub_message, interaction = hub_click(guild)
+    await cog._invoke_post(interaction, member, command)
+    assert len(calls.invoked) == 1
+    fake = calls.invoked[0].message
+    assert fake.channel is guild.chans[POST_CHANNEL_ID]
+    assert fake.author is member
+    assert fake.content == ".card daily"
+    assert fake.id != hub_message.id  # a fresh snowflake, so created_at is "now"
+    # the hub message used as a template is untouched
+    assert hub_message.author is ME and hub_message.channel is guild.chans[10] and hub_message.content == ""
+    assert interaction.response.deferred == [{"thinking": False}]
+    (text, kw), = interaction.followup.sent
+    assert "<#11>" in text and kw == {"ephemeral": True}
+
+
+async def test_post_mode_refuses_cleanly_without_running_anything():
+    guild = PostGuild()
+    # no reply channel set
+    cog, group, calls, command = make_post(post_channel=None)
+    member, _hub, interaction = hub_click(guild)
+    await cog._invoke_post(interaction, member, command)
+    assert not calls.invoked and "No reply channel" in interaction.followup.sent[0][0]
+    # channel was deleted
+    cog, group, calls, command = make_post(post_channel=555)
+    member, _hub, interaction = hub_click(guild)
+    await cog._invoke_post(interaction, member, command)
+    assert not calls.invoked and "No reply channel" in interaction.followup.sent[0][0]
+    # bot can't send there
+    cog, group, calls, command = make_post()
+    guild = PostGuild()
+    guild.chans[POST_CHANNEL_ID].can_send = False
+    member, _hub, interaction = hub_click(guild)
+    await cog._invoke_post(interaction, member, command)
+    assert not calls.invoked and "can't post" in interaction.followup.sent[0][0]
+    # clicker can't see it
+    cog, group, calls, command = make_post()
+    guild = PostGuild()
+    guild.chans[POST_CHANNEL_ID].can_view = False
+    member, _hub, interaction = hub_click(guild)
+    await cog._invoke_post(interaction, member, command)
+    assert not calls.invoked and "can't see" in interaction.followup.sent[0][0]
+    # the command doesn't resolve to a valid invocation
+    cog, group, calls, command = make_post(ctx_valid=False)
+    guild = PostGuild()
+    member, _hub, interaction = hub_click(guild)
+    await cog._invoke_post(interaction, member, command)
+    assert not calls.invoked and "Couldn't run" in interaction.followup.sent[0][0]
+
+
+async def test_hub_click_routes_post_entries_to_post_mode_only():
+    cog, group, calls, command = make_post()
+    guild = PostGuild()
+    member, _hub, interaction = hub_click(guild)
+    routed, reset = [], []
+
+    async def fake_post(i, m, c):
+        routed.append((i, m, c))
+
+    async def no_thread(*a, **k):
+        raise AssertionError("post mode must never create a thread")
+    cog._invoke_post = fake_post
+    cog._get_or_create_personal_thread = no_thread
+    cog._get_or_create_shared_thread = no_thread
+    cog._schedule_select_reset = lambda g: reset.append(g)
+    await cog.handle_hub_click(interaction, "dailycard", from_select=True)
+    assert routed == [(interaction, member, command)] and reset == [guild]
+    assert interaction.response.deferred == []  # _invoke_post owns the defer
+
+
+async def test_addgame_accepts_post_only_once_a_reply_channel_is_set():
+    sent = []
+
+    class Ctx:
+        def __init__(self, guild):
+            self.guild = guild
+
+        async def send(self, content=None, **kw):
+            sent.append(content)
+
+    async def refresh(_guild):
+        return None
+    fn = GambleThreads.gamblehub_addgame.callback
+    guild = PostGuild()
+    cog, group, calls, command = make_post(post_channel=None)
+    cog._refresh_hub_message = refresh
+    group.games.data.clear()
+    await fn(cog, Ctx(guild), "dailycard", "\U0001f3b4", "post", "card daily", label="Daily Cards")
+    assert "none is set" in sent[-1] and group.games.data == {}
+    await group.post_channel_id.set(POST_CHANNEL_ID)
+    await fn(cog, Ctx(guild), "dailycard", "\U0001f3b4", "post", "card daily", label="Daily Cards")
+    assert group.games.data["dailycard"] == {"emoji": "\U0001f3b4", "label": "Daily Cards", "command": "card daily",
+                                             "mode": "post"}
+    assert "Added" in sent[-1] and "post mode" in sent[-1]
+    await fn(cog, Ctx(guild), "x", "\U0001f3b4", "bogus", "card daily", label="X")
+    assert "`post`" in sent[-1] and "x" not in group.games.data
+
+
+async def test_reply_channel_setting_is_validated_and_shown_in_the_panel():
+    cog, g, guild = make()
+    with pytest.raises(PanelError):
+        await cog._apply_post_channel(guild, None, None)
+    assert "<#11>" in await cog._apply_post_channel(guild, None, guild.chans[11])
+    assert g.post_channel_id.data == 11
+    keys = [s.key for s in panel_mod.build_specs()]
+    assert keys.count("post_channel") == 1 and keys.index("channel") < keys.index("hub_menu")

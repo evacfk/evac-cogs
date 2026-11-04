@@ -34,7 +34,7 @@ reports, previews, testing, member commands) stay typed.
 ### Games & economy
 | Cog | Ver | What it does | Settings panel | Version probe |
 |---|---|---|---|---|
-| `gamble` | 1.1.1 | Per-user gambling threads plus the Wondercasino hub menu (`.gamblehub`). | `.gambleset` | `.gambleset version` |
+| `gamble` | 1.2.0 | Per-user gambling threads plus the Wondercasino hub menu (`.gamblehub`); hub games can run a command in a reply channel such as #bot-commands (`post` mode). | `.gambleset` | `.gambleset version` |
 | `blackjacktable` | 1.1.0 | Multiplayer blackjack table with a persistent shoe and card counting. | `.wonderjackset` | `.wonderjackset version` |
 | `duel` | 1.1.0 | Best-of-3 wagered duels between members. | `.duelset` | `.duelset version` |
 | `minigamehub` | 1.2.0 | Config-driven minigame spawner: pet, mathdrop, hunt, lootdrop, reacttowin, boss (pays per hit, bigger bosses need teamwork, a kill can drop a card). `.mgh` is an alias. | `.minigamehub` | `.mgh version` |

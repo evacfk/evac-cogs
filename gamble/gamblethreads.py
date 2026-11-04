@@ -12,7 +12,7 @@ from redbot.core.bot import Red
 from . import panel as panel_specs
 from .settings_panel import PanelError, open_panel
 
-COG_VERSION = "1.1.1"
+COG_VERSION = "1.2.0"
 
 # ---------------------------------------------------------------------------
 # Wondercasino hub — how a "game" entry works
@@ -22,7 +22,7 @@ COG_VERSION = "1.1.1"
 #       "emoji": "🃏",
 #       "label": "Wonderjack",
 #       "command": "wonderjack table",   # resolved via bot.get_command() at click time
-#       "mode": "personal" | "shared" | "direct" | "modal",   # routing model, see below
+#       "mode": "personal" | "shared" | "direct" | "modal" | "post",   # routing model, see below
 #       "args": [{"label": "Amount"}, {"label": "Heads or Tails"}],  # modal mode only, 1-2 entries
 #   }
 #
@@ -46,6 +46,15 @@ COG_VERSION = "1.1.1"
 #             invocation exactly as if typed (e.g. `.bank transfer @user
 #             100`), so Red's normal converters do the actual parsing —
 #             see _ArgModal and `.gamblehub addmodalgame`.
+# "post":     no thread and no ephemeral relay: the command runs in the
+#             configured reply channel (`post_channel_id`, set in
+#             `.gambleset`, normally #bot-commands) exactly as if the
+#             player had typed it there, so everything it posts (and any
+#             buttons on it, and anything those buttons post later) lands
+#             in that channel for everyone to see. The player only gets a
+#             private "see #channel" note back. Built for `.card daily`,
+#             whose pack button posts its reveal to whatever channel the
+#             click came from — keeping that out of the read-only hub.
 #
 # Session liveness for "shared" games is tracked purely off Discord's own
 # thread state (does the stored thread ID still resolve, is it archived) —
@@ -379,6 +388,8 @@ class GambleThreads(commands.Cog):
         self.config = Config.get_conf(self, identifier=845201937123, force_registration=True)
         default_guild = {
             "bot_channel_id": None,
+            # where "post" mode hub games run their command (see header comment)
+            "post_channel_id": None,
             "timeout_minutes": 10,
             # user_id (str) -> {"thread_id": int, "last_activity": iso8601 str}
             "active_threads": {},
@@ -719,6 +730,13 @@ class GambleThreads(commands.Cog):
             )
             return
         member = interaction.user
+        if entry["mode"] == "post":
+            # Like direct mode, no defer here: _invoke_post does its own
+            # silent defer as the very first thing.
+            await self._invoke_post(interaction, member, command)
+            if from_select:
+                self._schedule_select_reset(guild)
+            return
         if entry["mode"] == "direct":
             # No defer here: direct-mode commands reply near-instantly, and
             # _invoke_direct makes the command's own first reply BE the
@@ -935,6 +953,69 @@ class GambleThreads(commands.Cog):
                 except discord.HTTPException:
                     pass  # DMs closed — no other notification channel to fall back to yet
 
+    async def _invoke_post(
+        self,
+        interaction: discord.Interaction,
+        member: discord.Member,
+        command: commands.Command,
+    ):
+        """Run `command` in the configured reply channel as if `member` had
+        typed it there (see "post" mode above). Same fake-invocation recipe
+        as _invoke_in_thread: the hub message is the template Message, with
+        author/channel/id/content swapped, and the whole thing goes through
+        bot.invoke() so checks, cooldowns and converters apply exactly as
+        for a typed command. Unlike direct mode ctx.send is NOT redirected:
+        the channel is a real one, so the command's reply (and any view on
+        it) is a normal public message there. The clicker only gets a
+        private pointer to that channel."""
+        await interaction.response.defer(thinking=False)
+        guild = interaction.guild
+        channel_id = await self.config.guild(guild).post_channel_id()
+        channel = guild.get_channel(channel_id) if channel_id else None
+        if channel is None:
+            await interaction.followup.send(
+                "No reply channel is set for this game yet — ask a mod to pick one in `.gambleset`.",
+                ephemeral=True,
+            )
+            return
+        me = getattr(guild, "me", None)
+        if me is not None and not channel.permissions_for(me).send_messages:
+            await interaction.followup.send(
+                f"I can't post in {channel.mention} right now — let a mod know.", ephemeral=True
+            )
+            return
+        if not channel.permissions_for(member).view_channel:
+            await interaction.followup.send(
+                f"You can't see {channel.mention}, so I can't run that for you there.", ephemeral=True
+            )
+            return
+        prefixes = await self.bot.get_prefix(channel)
+        prefix = prefixes[0] if isinstance(prefixes, list) else prefixes
+        reference_message = interaction.message
+        if reference_message is None:
+            await interaction.followup.send(
+                f"Couldn't run that here — try `{prefix}{command.qualified_name}` in {channel.mention}.",
+                ephemeral=True,
+            )
+            return
+        fake_message = copy.copy(reference_message)
+        fake_message.author = member
+        fake_message.channel = channel
+        fake_message.guild = guild
+        # Same fix as _invoke_direct / _invoke_in_thread: created_at comes
+        # from the snowflake id, and the hub message's id can be days old.
+        fake_message.id = discord.utils.time_snowflake(datetime.now(timezone.utc))
+        fake_message.content = f"{prefix}{command.qualified_name}"
+        ctx = await self.bot.get_context(fake_message)
+        if not ctx.valid:
+            await interaction.followup.send(
+                f"Couldn't run that here — try `{prefix}{command.qualified_name}` in {channel.mention}.",
+                ephemeral=True,
+            )
+            return
+        await self.bot.invoke(ctx)
+        await interaction.followup.send(f"Done — head to {channel.mention}.", ephemeral=True)
+
     async def _invoke_in_thread(
         self,
         thread: discord.Thread,
@@ -1125,6 +1206,13 @@ class GambleThreads(commands.Cog):
         return (f"Gambling threads will now be created in {channel.mention}. "
                 "Press Post / refresh hub menu to put the menu there.")
 
+    async def _apply_post_channel(self, guild, member, channel) -> str:
+        if channel is None:
+            raise PanelError("Pick the reply channel.")
+        await self.config.guild(guild).post_channel_id.set(channel.id)
+        return (f"Hub games in `post` mode (like Daily Cards) will now run in {channel.mention}, "
+                "as if the player typed the command there.")
+
     async def _apply_timeouts(self, guild, member, values) -> str:
         numbers = {}
         for key, label in (("personal", "Personal threads"), ("shared", "Shared tables")):
@@ -1154,8 +1242,11 @@ class GambleThreads(commands.Cog):
         timeout_minutes = await self.config.guild(ctx.guild).timeout_minutes()
         shared_timeout = await self.config.guild(ctx.guild).shared_timeout_minutes()
         channel = ctx.guild.get_channel(channel_id) if channel_id else None
+        post_id = await self.config.guild(ctx.guild).post_channel_id()
+        post_channel = ctx.guild.get_channel(post_id) if post_id else None
         await ctx.send(
             f"Hub channel: {channel.mention if channel else 'not set (falls back to invoking channel for `.gamble`)'}\n"
+            f"Command reply channel: {post_channel.mention if post_channel else 'not set (needed for `post` mode games)'}\n"
             f"Personal timeout: {timeout_minutes} minute(s)\n"
             f"Shared timeout: {shared_timeout} minute(s)"
         )
@@ -1194,8 +1285,11 @@ class GambleThreads(commands.Cog):
         `key` — short internal id, e.g. `casino-slots`
         `emoji` — shown on the button/dropdown entry
         `mode` — `personal` (own thread every time), `shared` (one table, others join in),
-                 or `direct` (no thread — just runs the command and relays its reply to
-                 the clicking user; only safe for commands that take no arguments)
+                 `direct` (no thread — just runs the command and relays its reply to
+                 the clicking user; only safe for commands that take no arguments),
+                 or `post` (runs the command in the reply channel set in `.gambleset`,
+                 as if the player typed it there; their reply and any buttons are public
+                 in that channel — only safe for commands that take no arguments)
         `command` — the exact bot command to run, quoted if it has a space, e.g. "wonderjack table"
         `label` — display name, can have spaces, goes last
 
@@ -1203,8 +1297,14 @@ class GambleThreads(commands.Cog):
         """
         key = key.lower()
         mode = mode.lower()
-        if mode not in ("personal", "shared", "direct"):
-            await ctx.send("`mode` must be `personal`, `shared`, or `direct`.")
+        if mode not in ("personal", "shared", "direct", "post"):
+            await ctx.send("`mode` must be `personal`, `shared`, `direct`, or `post`.")
+            return
+        if mode == "post" and not await self.config.guild(ctx.guild).post_channel_id():
+            await ctx.send(
+                "`post` games run in a reply channel, and none is set yet — pick one in `.gambleset` "
+                "(Command reply channel) first. Nothing was saved."
+            )
             return
         resolved = self.bot.get_command(command)
         if resolved is None:

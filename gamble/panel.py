@@ -6,7 +6,8 @@ Specs only; every change goes through the cog's `_apply_*` methods. The owner-on
 from .settings_panel import Field, Spec
 
 INTRO = ("Pick a setting. Changes save as soon as you choose. After changing the hub channel, press "
-         "Post / refresh hub menu. The game registry (`.gamblehub addgame`, `removegame`, `listgames`) stays as commands.")
+         "Post / refresh hub menu. The command reply channel is where hub games in `post` mode run (set it before "
+         "adding one). The game registry (`.gamblehub addgame`, `removegame`, `listgames`) stays as commands.")
 
 
 def _apply(name):
@@ -26,6 +27,17 @@ def _channel_fmt(value, guild):
     return channel.mention if channel is not None else f"MISSING (id {value})"
 
 
+async def _post_channel_get(cog, guild):
+    return await cog.config.guild(guild).post_channel_id()
+
+
+def _post_channel_fmt(value, guild):
+    if not value:
+        return "not set (`post` mode games can't run until you pick one)"
+    channel = guild.get_channel(value)
+    return channel.mention if channel is not None else f"MISSING (id {value})"
+
+
 async def _timeouts_get(cog, guild):
     conf = cog.config.guild(guild)
     return {"personal": await conf.timeout_minutes(), "shared": await conf.shared_timeout_minutes()}
@@ -35,6 +47,10 @@ def build_specs():
     return [
         Spec("channel", "Hub channel", "Hub", "channel", get=_channel_get, apply=_apply("_apply_channel"), fmt=_channel_fmt,
              channel_types=("text",), help="Where personal and shared threads spawn from."),
+        Spec("post_channel", "Command reply channel", "Hub", "channel", get=_post_channel_get,
+             apply=_apply("_apply_post_channel"), fmt=_post_channel_fmt, channel_types=("text",),
+             help="Where hub games in `post` mode (like Daily Cards) run, as if the player typed the command there. "
+                  "Normally #bot-commands."),
         Spec("hub_menu", "Post / refresh hub menu", "Hub", "action", apply=_apply("_apply_post_hub"),
              button="Post / refresh hub menu", help="Posts the button menu in the hub channel, or updates the existing one."),
         Spec("timeouts", "Thread timeouts", "Hub", "modal", get=_timeouts_get, apply=_apply("_apply_timeouts"),
