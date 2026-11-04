@@ -1,13 +1,13 @@
 """The `.card settings` control panel: the drop channel, drop rules, the request channel, the daily pull odds, and
 the test tools.
 
-Specs only; every change goes through the cog's `_apply_*` methods. Managing the pool (`addcard`, `importseries`,
-`importpool`, `removecard`...) stays commands, because they take an image or run for a while.
+Specs only; every change goes through the cog's `_apply_*` methods. Managing the pool (`addcard`, `importseries`)
+stays commands, because they take an image or run for a while.
 """
 from .settings_panel import Field, PanelError, Pick, Spec
 
-INTRO = ("Pick a setting. Changes save as soon as you choose. Pool tools (`.card addcard`, `importseries`, `importpool`, "
-         "`removecard`) stay as commands; open any card with `.card find` to change its rarity, swap its art or retire it. "
+INTRO = ("Pick a setting. Changes save as soon as you choose. Pool tools (`.card addcard`, `importseries`) stay "
+         "commands; open any card with `.card find` to change its rarity, swap its art or retire it. "
          "Members who aren't admins see a read-only summary.")
 
 
@@ -99,34 +99,6 @@ async def _featured_fmt_get(cog, guild):
     return await cog.config.guild(guild).featured()
 
 
-async def _events_get(cog, guild):
-    import datetime
-    from zoneinfo import ZoneInfo
-    from . import engine
-    today = datetime.datetime.now(ZoneInfo("America/Los_Angeles")).date().isoformat()
-    counts = await cog.event_cards_count(guild)
-    out = []
-    for key, event in sorted((await cog.config.guild(guild).events()).items(), key=lambda kv: kv[1]["start"]):
-        status = engine.event_status(event, today)
-        out.append((key, event["name"], f"{event['start']} to {event['end']} · {counts.get(key, 0)} cards · {status}"))
-    return out
-
-
-async def _event_get(cog, guild, item_id):
-    event = (await cog.config.guild(guild).events()).get(item_id)
-    if event is None:
-        raise PanelError("That event no longer exists.")
-    return {"name": event["name"], "start": event["start"], "end": event["end"], "series": ""}
-
-
-async def _event_save(cog, guild, member, item_id, values, picked):
-    return await cog._apply_event_save(guild, member, item_id, values, picked)
-
-
-async def _event_remove(cog, guild, member, item_id):
-    return await cog._apply_event_remove(guild, member, item_id)
-
-
 async def _set_roles_get(cog, guild):
     roles = await cog.config.guild(guild).set_roles()
     out = []
@@ -150,10 +122,6 @@ async def _set_role_save(cog, guild, member, item_id, values, picked):
 
 async def _set_role_remove(cog, guild, member, item_id):
     return await cog._apply_set_role_remove(guild, member, item_id)
-
-
-async def _trade_channel_get(cog, guild):
-    return await cog.config.guild(guild).trade_channel_id()
 
 
 async def _legendary_role_get(cog, guild):
@@ -208,27 +176,15 @@ def build_specs():
                            max_length=9)),
              help="What it takes to upgrade a card from `.card find`: duplicates of that card (its sell tokens, "
                   "then the spare copy) plus wondercoin. Prismatic is the second upgrade, on top of Holo."),
-        Spec("featured", "Weekly featured series", "Events", "toggle", get=_featured_get,
+        Spec("featured", "Weekly featured series", "Featured", "toggle", get=_featured_get,
              apply=_apply("_apply_featured_enabled"),
              help="Every Monday (Pacific) a random series is featured and announced in the drop channel; its cards "
                   "are 3x as likely in drops, daily pulls and packs that week. Fully automatic."),
-        Spec("featurednow", "Pick a new featured series now", "Events", "action", get=_featured_fmt_get,
+        Spec("featurednow", "Pick a new featured series now", "Featured", "action", get=_featured_fmt_get,
              apply=_apply("_apply_featured_reroll"), button="Re-roll",
              fmt=lambda v, g: f"this week: {v.get('series') or 'none yet'}" if v else "",
              confirm="Replace this week's featured series with a new random one (and announce it)?",
              help="Only if you want a different one this week; otherwise it changes by itself on Monday."),
-        Spec("events", "Events", "Events", "collection", get=_events_get, item_get=_event_get,
-             save=_event_save, remove=_event_remove,
-             fields=(Field("name", "Event name", new_only=True, max_length=24, placeholder="Wonderween 2026"),
-                     Field("start", "Start date (YYYY-MM-DD, Pacific)", value=lambda r: r.get("start", ""),
-                           max_length=10, placeholder="2026-12-01"),
-                     Field("end", "Last day (YYYY-MM-DD, inclusive)", value=lambda r: r.get("end", ""),
-                           max_length=10, placeholder="2026-12-31"),
-                     Field("series", "Tag a whole series (optional)", required=False,
-                           max_length=100, placeholder="Exact series name: all its cards become event cards")),
-             help="Event cards only drop (and show up in packs, 3x as likely) between the start and last day. "
-                  "Owners keep them afterwards. Tag a whole series here, or single cards from their `.card find` "
-                  "page. Removing an event turns its cards back into regular cards."),
         Spec("setroles", "Set roles", "Rewards", "collection", get=_set_roles_get, item_get=_set_role_get,
              save=_set_role_save, remove=_set_role_remove,
              fields=(Field("sets", "Sets completed to earn it", value=lambda r: str(r.get("sets", "")),
@@ -240,10 +196,6 @@ def build_specs():
         Spec("setrolesync", "Give set roles now", "Rewards", "action", apply=_apply("_apply_set_roles_sync"),
              button="Give roles",
              help="Hands out set roles to everyone who already qualifies (for sets finished before a role existed)."),
-        Spec("tradechannel", "Trade board channel", "Rewards", "channel", get=_trade_channel_get,
-             apply=_apply("_apply_trade_channel"), fmt=lambda v, g: _channel_fmt(v, g) if v else "wherever it's run",
-             channel_types=("text",), clearable=True,
-             help="Where `.card tradepost` listings go. Clear it to post them in whatever channel the command is run."),
         Spec("requests", "Request channel", "Requests", "channel", get=_request_channel_get,
              apply=_apply("_apply_request_channel"), fmt=lambda v, g: _channel_fmt(v, g) if v else "off", channel_types=("text",),
              clearable=True,

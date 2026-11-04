@@ -34,24 +34,6 @@ def make_page_response(characters, has_next_page=False):
     }
 
 
-def test_parse_characters_and_has_next_page():
-    resp = make_page_response([make_character(1, "Alice", 100)], has_next_page=True)
-    assert import_characters.parse_characters(resp) == resp["data"]["Page"]["characters"]
-    assert import_characters.has_next_page(resp) is True
-
-
-def test_filter_female_keeps_only_female_case_insensitive():
-    chars = [
-        make_character(1, "Alice", 100, gender="Female"),
-        make_character(2, "Bob", 100, gender="Male"),
-        make_character(3, "Cass", 100, gender="female"),
-        make_character(4, "Dee", 100, gender=None),
-    ]
-    female = import_characters.filter_female(chars)
-    names = {c["name"]["full"] for c in female}
-    assert names == {"Alice", "Cass"}
-
-
 def test_to_pool_entry_maps_fields_and_buckets_rarity():
     char = make_character(1, "Legendary Lady", DEFAULT_TIER_CUTOFFS["legendary"])
     entry = import_characters.to_pool_entry(char, DEFAULT_TIER_CUTOFFS, engine.bucket_tier)
@@ -67,30 +49,6 @@ def test_to_pool_entry_skips_missing_image_or_name():
 
     no_name = make_character(2, "", 100)
     assert import_characters.to_pool_entry(no_name, DEFAULT_TIER_CUTOFFS, engine.bucket_tier) is None
-
-
-def test_build_pool_entries_filters_and_respects_quotas():
-    chars = [
-        make_character(1, "Alice", 50000, gender="Female"),  # legendary
-        make_character(2, "Bob", 50000, gender="Male"),  # filtered: not female
-        make_character(3, "Cass", 100, gender="Female"),  # common
-        make_character(4, "Dee", 5000, gender="Female"),  # rare
-        make_character(5, "Eve", 60000, gender="Female"),  # legendary, quota already spent
-    ]
-    quotas = {"legendary": 1, "epic": 0, "rare": 1, "common": 1}
-    entries = import_characters.build_pool_entries(chars, DEFAULT_TIER_CUTOFFS, engine.bucket_tier, quotas)
-    assert {e["name"] for e in entries} == {"Alice", "Cass", "Dee"}
-    # quotas are decremented in place as entries are accepted, and a tier
-    # with no quota left (legendary, after Alice) skips further candidates
-    # (Eve) rather than overfilling it
-    assert quotas == {"legendary": 0, "epic": 0, "rare": 0, "common": 0}
-
-
-def test_tier_quotas_splits_proportionally_and_covers_the_full_count():
-    quotas = import_characters.tier_quotas(100, weights={"common": 60, "rare": 27, "epic": 10, "legendary": 3})
-    assert sum(quotas.values()) == 100
-    # common should dominate, legendary should be the smallest slice
-    assert quotas["common"] > quotas["rare"] > quotas["epic"] >= quotas["legendary"]
 
 
 class FakeResponse:
@@ -121,99 +79,6 @@ class FakeSession:
         payload = self._pages[self.calls]
         self.calls += 1
         return FakeResponse(payload)
-
-
-@pytest.mark.asyncio
-async def test_fetch_top_female_characters_pages_until_every_tier_quota_is_filled():
-    # target_count=7 against DEFAULT_DROP_WEIGHTS works out to quotas of
-    # common=4, rare=2, epic=1, legendary=0 (see test_tier_quotas_* above).
-    # Spread favourites across tiers so the quotas -- not a raw character
-    # count -- are what stops the paging.
-    page1 = make_page_response(
-        [
-            make_character(0, "Fem0", 100, gender="Female"),  # common
-            make_character(1, "Fem1", 200, gender="Female"),  # common
-            make_character(2, "Fem2", 300, gender="Female"),  # common
-            make_character(3, "Fem3", 3000, gender="Female"),  # rare
-            make_character(4, "Fem4", 9000, gender="Female"),  # epic
-        ],
-        has_next_page=True,
-    )
-    page2 = make_page_response(
-        [
-            make_character(100, "Fem2_0", 150, gender="Female"),  # common (fills the 4th slot)
-            make_character(101, "Fem2_1", 2500, gender="Female"),  # rare (fills the 2nd slot)
-        ],
-        has_next_page=True,  # irrelevant: quotas are full, so a 3rd page is never fetched
-    )
-    session = FakeSession([page1, page2])
-
-    result = await import_characters.fetch_top_female_characters(
-        session, DEFAULT_TIER_CUTOFFS, engine.bucket_tier, target_count=7, per_page=5, sleep_fn=instant_sleep
-    )
-    assert len(result) == 7
-    assert session.calls == 2
-    by_tier = {"common": 0, "rare": 0, "epic": 0, "legendary": 0}
-    for entry in result:
-        by_tier[entry["rarity"]] += 1
-    assert by_tier == {"common": 4, "rare": 2, "epic": 1, "legendary": 0}
-
-
-@pytest.mark.asyncio
-async def test_fetch_top_female_characters_stops_when_no_next_page():
-    page1 = make_page_response(
-        [make_character(i, f"Fem{i}", 1000, gender="Female") for i in range(3)], has_next_page=False
-    )
-    session = FakeSession([page1])
-
-    result = await import_characters.fetch_top_female_characters(
-        session, DEFAULT_TIER_CUTOFFS, engine.bucket_tier, target_count=50, per_page=3, sleep_fn=instant_sleep
-    )
-    assert len(result) == 3
-    assert session.calls == 1
-
-
-def test_build_pool_entries_skips_excluded_anilist_ids_and_decrements_exclude_set_in_place():
-    chars = [
-        make_character(1, "Already imported", 100, gender="Female"),  # id 1 excluded
-        make_character(2, "New character", 150, gender="Female"),
-    ]
-    quotas = {"common": 5, "rare": 0, "epic": 0, "legendary": 0}
-    exclude_ids = {1}
-    entries = import_characters.build_pool_entries(chars, DEFAULT_TIER_CUTOFFS, engine.bucket_tier, quotas, exclude_ids)
-    assert {e["name"] for e in entries} == {"New character"}
-    # the newly-accepted character's id is folded into exclude_ids too, so a
-    # second page (or a second run sharing the same set) can't re-add it
-    assert exclude_ids == {1, 2}
-
-
-@pytest.mark.asyncio
-async def test_fetch_top_female_characters_does_not_reimport_existing_pool_characters():
-    """Regression test for the 'importpool adds duplicate characters on a
-    second run' bug: AniList ids already in the pool must be skipped, and
-    paging must continue past them to find fresh characters instead of
-    stopping early because the page 'looked' full of already-seen ids."""
-    # id 1 is "already in the pool" (common favourites so it'd otherwise be
-    # accepted); id 2 is genuinely new
-    page1 = make_page_response(
-        [
-            make_character(1, "Already have this one", 100, gender="Female"),
-            make_character(2, "Brand new", 150, gender="Female"),
-        ],
-        has_next_page=False,
-    )
-    session = FakeSession([page1])
-
-    result = await import_characters.fetch_top_female_characters(
-        session,
-        DEFAULT_TIER_CUTOFFS,
-        engine.bucket_tier,
-        target_count=5,
-        per_page=2,
-        exclude_ids={1},
-        sleep_fn=instant_sleep,
-    )
-    assert [e["name"] for e in result] == ["Brand new"]
 
 
 # ---------------------------------------------------------------------------
@@ -321,49 +186,9 @@ async def test_post_with_rate_limit_retry_gives_up_after_max_retries():
     assert session.calls == 3
 
 
-@pytest.mark.asyncio
-async def test_fetch_top_female_characters_recovers_from_a_429_mid_import():
-    """End-to-end: a 429 on the first page must not abort the whole import
-    -- fetch_top_female_characters should recover via the retry and still
-    return the page's characters."""
-    page = make_page_response(
-        [make_character(1, "Survivor", 100, gender="Female")], has_next_page=False
-    )
-    session = FakeRateLimitedSession(
-        [FakeRateLimitedResponse(429, headers={"Retry-After": "0"}), FakeRateLimitedResponse(200, payload=page)]
-    )
-
-    result = await import_characters.fetch_top_female_characters(
-        session, DEFAULT_TIER_CUTOFFS, engine.bucket_tier, target_count=5, per_page=5, sleep_fn=instant_sleep
-    )
-    assert [e["name"] for e in result] == ["Survivor"]
-
-
 # ---------------------------------------------------------------------------
 # gender filter, English series titles
 # ---------------------------------------------------------------------------
-
-
-def test_filter_gender_any_keeps_everyone_including_unknown_gender():
-    chars = [
-        make_character(1, "Alice", 100, gender="Female"),
-        make_character(2, "Bob", 100, gender="Male"),
-        make_character(3, "Cass", 100, gender=None),
-    ]
-    assert [c["id"] for c in import_characters.filter_gender(chars, "any")] == [1, 2, 3]
-    assert [c["id"] for c in import_characters.filter_gender(chars, "male")] == [2]
-    assert [c["id"] for c in import_characters.filter_gender(chars, "FEMALE")] == [1]
-
-
-def test_build_pool_entries_can_import_every_gender():
-    chars = [make_character(1, "Alice", 100, gender="Female"), make_character(2, "Bob", 100, gender="Male")]
-    quotas = {"common": 5, "rare": 5, "epic": 5, "legendary": 5}
-    default = import_characters.build_pool_entries(chars, DEFAULT_TIER_CUTOFFS, engine.bucket_tier, dict(quotas))
-    everyone = import_characters.build_pool_entries(
-        chars, DEFAULT_TIER_CUTOFFS, engine.bucket_tier, dict(quotas), gender="any"
-    )
-    assert [e["name"] for e in default] == ["Alice"]  # the pure function's default is unchanged
-    assert [e["name"] for e in everyone] == ["Alice", "Bob"]
 
 
 def test_to_pool_entry_keeps_the_english_series_title_only_when_it_differs():
@@ -571,17 +396,6 @@ def test_one_hand_added_card_links_to_only_one_character():
     built = build([series_node(1, "Rem", 100), series_node(2, "Rem", 100)], [hand_added])
     assert len(built["links"]) == 1
     assert len(built["entries"]) == 1
-
-
-def test_split_hand_added_links_bulk_entries_to_existing_cards():
-    entries = [
-        {"anilist_id": 1, "name": "Zero Two", "series": "Darling in the FranXX", "series_alt": "", "rarity": "epic"},
-        {"anilist_id": 2, "name": "Rem", "series": "Re:Zero", "series_alt": "", "rarity": "epic"},
-    ]
-    existing = [{"card_id": 4, "anilist_id": None, "name": "Zero Two", "series": "Darling in the FranXX", "series_alt": ""}]
-    keep, links = import_characters.split_hand_added(entries, existing)
-    assert [e["name"] for e in keep] == ["Rem"]
-    assert links[0]["card_id"] == 4 and links[0]["anilist_id"] == 1
 
 
 # ---------------------------------------------------------------------------

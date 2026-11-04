@@ -47,7 +47,6 @@ CARD_BG = (30, 30, 34)
 PLATE_BG = (0, 0, 0, 175)
 TEXT_WHITE = (240, 240, 240)
 SERIES_GREY = (190, 190, 196)
-EVENT_COLOR = (230, 126, 34)
 FEATURED_COLOR = (241, 196, 15)
 SERIES_MIN_CARD_WIDTH = 200  # cards narrower than this (gallery grid tiles) leave the series off
 BORDER_WIDTH = 8
@@ -173,7 +172,7 @@ def render_card(
 
     `show_id` draws a small "#<card_id>" badge in the top-right corner --
     used by the gallery so a member has something to actually type into
-    `.card showcase add <card>` (live bug report: card names get truncated
+    adding a card to the showcase (live bug report: card names get truncated
     by the name-plate width, e.g. "Isuzu Sento..." for "Isuzu Sento(mi)ya",
     and the gallery previously showed neither the full name nor the ID, so
     there was nothing usable to type). Drop tiles never pass this -- the
@@ -220,8 +219,6 @@ def _decorate(
     _draw_name_plate(canvas, card, color, tag=finish_name(finish))
     if w >= SERIES_MIN_CARD_WIDTH:
         y = 76
-        if card.event:
-            y += _draw_tag(canvas, f"★ {card.event.upper()}", EVENT_COLOR, y) + 6
         if featured:
             _draw_tag(canvas, "★ FEATURED", FEATURED_COLOR, y, text_color=(40, 30, 0))
 

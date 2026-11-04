@@ -487,46 +487,12 @@ def pick_featured(sets: Dict[str, List[Card]], history: Sequence[str], rng: Opti
     return rng.choice(fresh or sorted(sets))
 
 
-def event_key(name: str) -> str:
-    return _fold(name)
-
-
-def event_status(event: Optional[dict], today: str) -> str:
-    """"live", "upcoming" or "ended" for an event {"start", "end"} (ISO
-    dates, inclusive); "ended" also covers an event that no longer exists."""
-    if not event:
-        return "ended"
-    if today < event.get("start", ""):
-        return "upcoming"
-    if today > event.get("end", ""):
-        return "ended"
-    return "live"
-
-
-def can_roll(card: Card, events: dict, today: str) -> bool:
-    """Whether a card can come out of a drop, daily pull or pack right now:
-    not retired, and if it's an event card, its event is live."""
-    if card.retired:
-        return False
-    if not card.event:
-        return True
-    return event_status(events.get(event_key(card.event)), today) == "live"
-
-
-def roll_boosts(
-    pool: Sequence[Card], featured: Optional[str], featured_boost: float, event_boost: float = 1.0
-) -> Dict[int, float]:
-    """Per-card weights for a roll: this week's featured series, and (for packs)
-    event cards. A card that is both gets both."""
+def roll_boosts(pool: Sequence[Card], featured: Optional[str], featured_boost: float) -> Dict[int, float]:
+    """Per-card weights for a roll: this week's featured series gets `featured_boost`."""
     boosts: Dict[int, float] = {}
     for card in pool:
-        weight = 1.0
         if featured and card.series == featured:
-            weight *= featured_boost
-        if card.event:
-            weight *= event_boost
-        if weight != 1.0:
-            boosts[card.card_id] = weight
+            boosts[card.card_id] = featured_boost
     return boosts
 
 

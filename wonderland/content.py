@@ -82,7 +82,6 @@ PAGES = (
               requires=("card find",)),
         Entry(".card sell", "sell duplicate tokens, or trade 5 up a rarity", requires=("card sell",)),
         Entry(".card trade @user", "swap cards and wondercoin; you both accept", requires=("card trade",)),
-        Entry(".card tradepost", "post a have/want listing on the trade board", requires=("card tradepost",)),
         Entry(".card give @user <card>", "give a card to someone", requires=("card give",)),
         Entry(".card leaderboard", "top collectors by collection score", requires=("card leaderboard",)),
         Entry(".puzzle status", "progress on the current puzzle", requires=("puzzle status",)),

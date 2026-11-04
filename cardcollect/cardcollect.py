@@ -52,20 +52,15 @@ from .constants import (
     DEFAULT_SELL_PRICES,
     DEFAULT_TIER_CUTOFFS,
     DEFAULT_UPGRADE_COSTS,
-    EVENT_NAME_MAX,
-    EVENT_PACK_BOOST,
     FEATURED_BOOST,
     FEATURED_HISTORY,
     FINISHES,
     GALLERY_PAGE_SIZE,
-    IMPORT_GENDERS,
     MAX_COPIES_KEPT,
     MAX_DRAW_WINDOW_SECONDS,
     MAX_DROP_SIZE,
     MAX_SHOWCASE_SLOTS,
     TRADE_MAX_CARDS,
-    LISTING_DAYS,
-    LISTING_WANT_MAX,
     TRADE_UP_COUNT,
     MIN_DRAW_WINDOW_SECONDS,
     PACK_PITY_AFTER,
@@ -123,10 +118,6 @@ DEFAULT_GUILD = {
     "featured": {"week": "", "series": "", "history": []},
     "legendary_ping_role_id": None,
     "set_roles": {},  # sets completed (str) -> role id given on reaching that many
-    "trade_channel_id": None,  # where `.card tradepost` listings go (None = wherever it's run)
-    "listings": {},  # listing id (str) -> {"user_id", "have", "want", "channel_id", "message_id", "created", "open"}
-    "next_listing_id": 1,
-    "events": {},  # event key (folded name) -> {"name", "start", "end"} (Pacific ISO dates, inclusive)
 }
 
 DEFAULT_MEMBER = {
@@ -168,13 +159,10 @@ class CardCollect(commands.Cog):
         # never read the same member state and overwrite each other.
         self._claim_locks: Dict[int, asyncio.Lock] = {}  # guild_id -> lock
         self._persistent_views: List[discord.ui.View] = []
-        # AniList's public API rate-limits aggressively; without this, two
-        # `.card importpool` runs fired close together each start their own
-        # up-to-200-page loop and multiply the request rate against the same
-        # limit, tripping 429s that neither run alone would have hit. This
-        # lock is process-wide (not per-guild) since it's AniList's own
-        # global limit being protected, not anything guild-scoped.
-        self._importpool_lock = asyncio.Lock()
+        # AniList's public API rate-limits aggressively; without this, two imports or searches fired close
+        # together multiply the request rate against the same limit and trip 429s. This lock is process-wide
+        # (not per-guild) since it's AniList's own global limit being protected, not anything guild-scoped.
+        self._anilist_lock = asyncio.Lock()
         self._rng: Optional[random.Random] = None  # tests inject a seeded one for the draw
 
         self._session: Optional[aiohttp.ClientSession] = None
@@ -189,20 +177,19 @@ class CardCollect(commands.Cog):
         self._activity_task: Optional[asyncio.Task] = None
         self._featured_locks: Dict[int, asyncio.Lock] = {}  # guild_id -> lock around picking the week's series
         self._featured_week: Dict[int, str] = {}  # guild_id -> week already checked (skip Config per message)
-        self._listing_lock = asyncio.Lock()  # trade board listing ids and replacements
 
     async def cog_load(self):
         # Shared, persistent views: a press of a button on a drop (or a request)
         # that predates a restart still lands here, and is answered ("this drop
         # is over") instead of Discord showing "This interaction failed".
         self._persistent_views = [
-            views.DrawView(self, None), views.RequestReviewView(self), views.RequestFollowView(self), views.ListingView(self),
+            views.DrawView(self, None), views.RequestReviewView(self), views.RequestFollowView(self),
         ]
         for view in self._persistent_views:
             self.bot.add_view(view)
 
         # a hung AniList request or a slow image host would otherwise leave
-        # .card importpool waiting forever -- give every request on this
+        # an import waiting forever -- give every request on this
         # session a ceiling
         self._session = aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=30))
         self._activity_task = asyncio.create_task(self._activity_flush_loop())
@@ -233,13 +220,10 @@ class CardCollect(commands.Cog):
         return [Card.from_dict(int(cid), data) for cid, data in pool.items()]
 
     async def _rollable_pool_cards(self, guild: discord.Guild) -> List[Card]:
-        """Cards eligible to actually drop -- excludes retired characters, and
-        event cards outside their event's dates. Retired cards stay in the pool dict (and their art stays on disk) so
-        members who already own one still get a working gallery entry; see
-        card_removecard."""
-        events = await self.config.guild(guild).events()
-        today = engine.today_str(ACTIVITY_TIMEZONE)
-        return [c for c in await self._pool_cards(guild) if engine.can_roll(c, events, today)]
+        """Cards eligible to actually drop: everything except retired characters. Retired cards stay in the
+        pool dict (and their art stays on disk) so members who already own one still get a working gallery
+        entry; retire or restore a card from `.card find`."""
+        return [c for c in await self._pool_cards(guild) if not c.retired]
 
     async def _card_by_id(self, guild: discord.Guild, card_id: int) -> Optional[Card]:
         pool = await self.config.guild(guild).pool()
@@ -649,6 +633,7 @@ class CardCollect(commands.Cog):
             except Exception:
                 log.exception("cardcollect: couldn't pay a set bonus to %s", getattr(member, "id", "?"))
                 return None
+            await self._bump_stats(guild, coin_set_bonus=bonus)
         state.sets_claimed.append(card.series)
         if member is not None:
             await self._award_set_roles(guild, member, len(state.sets_claimed))
@@ -683,6 +668,8 @@ class CardCollect(commands.Cog):
         async with self.config.guild(guild).stats() as stats:
             if not stats.get("since"):
                 stats["since"] = time.time()
+            if any(key.startswith("coin_") for key in counts) and not stats.get("coin_since"):
+                stats["coin_since"] = time.time()  # when the wondercoin counters started
             for key, value in counts.items():
                 stats[key] = stats.get(key, 0) + value
             if daily_pull_date:
@@ -1132,7 +1119,7 @@ class CardCollect(commands.Cog):
     async def card_showcase(self, ctx: commands.Context, member: Optional[discord.Member] = None):
         """View your showcase slots (shown larger, up top, in your gallery),
         or another member's with `.card showcase @member`.
-        Use `.card showcase add/remove <card>` to manage your own."""
+        Add or remove a card with the showcase button on its `.card find` page."""
         target = member or ctx.author
         state = await self._member_state(target)
         whose = "Your" if target.id == ctx.author.id else f"{target.display_name}'s"
@@ -1140,7 +1127,7 @@ class CardCollect(commands.Cog):
 
         if not state.showcase_card_ids:
             if target.id == ctx.author.id:
-                msg = f"No showcase cards set yet. Add up to {MAX_SHOWCASE_SLOTS} with `.card showcase add <card>`."
+                msg = f"No showcase cards set yet. Add up to {MAX_SHOWCASE_SLOTS} with the showcase button on a card's `.card find` page."
             else:
                 msg = f"{whose} showcase is empty."
             if tier_line:
@@ -1179,34 +1166,6 @@ class CardCollect(commands.Cog):
         )
         name = "showcase.gif" if imagegen.is_gif(showcase_img) else "showcase.png"
         await ctx.send(content=caption, file=discord.File(showcase_img, filename=name))
-
-    @card_showcase.command(name="add")
-    @commands.guild_only()
-    async def card_showcase_add(self, ctx: commands.Context, *, card_arg: str):
-        """Add a card you own to your showcase (shown larger, up top, in your gallery)."""
-        card = await self._resolve_card_arg(ctx.guild, card_arg)
-        if card is None:
-            await ctx.send("No card matches that.")
-            return
-        state = await self._member_state(ctx.author)
-        if card.card_id in state.showcase_card_ids:
-            await ctx.send(f"**{card.name}** is already in your showcase.")
-            return
-        await ctx.send(await self.toggle_showcase(ctx.guild, ctx.author, card.card_id))
-
-    @card_showcase.command(name="remove")
-    @commands.guild_only()
-    async def card_showcase_remove(self, ctx: commands.Context, *, card_arg: str):
-        """Remove a card from your showcase."""
-        card = await self._resolve_card_arg(ctx.guild, card_arg)
-        if card is None:
-            await ctx.send("No card matches that.")
-            return
-        state = await self._member_state(ctx.author)
-        if card.card_id not in state.showcase_card_ids:
-            await ctx.send(f"**{card.name}** isn't in your showcase.")
-            return
-        await ctx.send(await self.toggle_showcase(ctx.guild, ctx.author, card.card_id))
 
     # -- find: search the pool, open a card -------------------------------
 
@@ -1263,12 +1222,6 @@ class CardCollect(commands.Cog):
         quantity = state.collection.count(card.card_id)
         finish = state.finish_of(card.card_id)
         embed = embeds.card_info_embed(card, len(owner_ids), mentions)
-        if card.event:
-            event = (await self.config.guild(guild).events()).get(engine.event_key(card.event))
-            status = engine.event_status(event, engine.today_str(ACTIVITY_TIMEZONE))
-            when = f" ({event['start']} to {event['end']})" if event else ""
-            note = {"live": "dropping now", "upcoming": "drops when it starts", "ended": "no longer drops"}[status]
-            embed.add_field(name="Event card", value=f"**{card.event}**{when}: {note}", inline=False)
         image_bytes = self._read_card_image(guild, card.card_id)
         file = None
         if image_bytes is not None:
@@ -1420,7 +1373,7 @@ class CardCollect(commands.Cog):
             return discord.File(buf, filename=f"{name}.png")
         art_key = storage.art_fingerprint(image_bytes)
         # everything drawn on the card besides the art: change any of it and the render is redone
-        plate = engine.fold_text(f"{card.name}|{card.display_series}|{card.rarity}|{card.event}")
+        plate = engine.fold_text(f"{card.name}|{card.display_series}|{card.rarity}")
         variant = f"f{finish}-q{quantity}-{storage.art_fingerprint(plate.encode())[:6]}-{COG_VERSION}"
         data = storage.read_render_cache(self.data_path, guild.id, card.card_id, art_key, variant)
         if data is None:
@@ -1472,7 +1425,7 @@ class CardCollect(commands.Cog):
                 if coins:
                     await bank.deposit_credits(member, coins)
                 return "Something went wrong with that upgrade. You were refunded."
-        await self._bump_stats(guild, upgrades=1)
+        await self._bump_stats(guild, upgrades=1, coin_upgrades=plan["coins"])
         return plan
 
     async def announce_upgrade(self, channel, member: discord.Member, card: Card, level: int):
@@ -1489,14 +1442,11 @@ class CardCollect(commands.Cog):
 
     # -- daily pack -------------------------------------------------------
 
-    async def _roll_boosts(self, guild: discord.Guild, for_pack: bool = False) -> Dict[int, float]:
-        """Per-card weight multipliers for the next roll (card_id -> weight):
-        this week's featured series everywhere, and live event cards in packs.
+    async def _roll_boosts(self, guild: discord.Guild) -> Dict[int, float]:
+        """Per-card weight multipliers for the next roll (card_id -> weight): this week's featured series.
         Empty means every card in a tier is equally likely."""
         featured = await self.featured_series(guild)
-        return engine.roll_boosts(
-            await self._rollable_pool_cards(guild), featured, FEATURED_BOOST, EVENT_PACK_BOOST if for_pack else 1.0
-        )
+        return engine.roll_boosts(await self._rollable_pool_cards(guild), featured, FEATURED_BOOST)
 
     # -- weekly featured series ------------------------------------------------
 
@@ -1516,7 +1466,7 @@ class CardCollect(commands.Cog):
             if featured.get("week") == week and not force_new:
                 self._featured_week[guild.id] = week
                 return featured.get("series") or None
-            sets = engine.build_sets(await self._rollable_pool_cards_plain(guild))
+            sets = engine.build_sets(await self._rollable_pool_cards(guild))
             history = list(featured.get("history", []))
             series = engine.pick_featured(sets, history, rng=self._rng)
             if series:
@@ -1527,10 +1477,6 @@ class CardCollect(commands.Cog):
         if announce is not None:
             await self._announce_featured(guild, *announce)
         return announce[0] if announce else None
-
-    async def _rollable_pool_cards_plain(self, guild: discord.Guild) -> List[Card]:
-        """Rollable cards minus event cards: the series a week can feature."""
-        return [c for c in await self._rollable_pool_cards(guild) if not c.event]
 
     async def _announce_featured(self, guild: discord.Guild, series: str, cards: List[Card]):
         channel_id = await self.config.guild(guild).channel_id()
@@ -1619,7 +1565,7 @@ class CardCollect(commands.Cog):
                 floor = "rare" if gift else engine.pack_floor(state.pack_pity, PACK_PITY_AFTER)
                 cards = engine.roll_pack(
                     pool, await conf.daily_weights(), PACK_SIZE, floor, rng=self._rng,
-                    boosts=await self._roll_boosts(guild, for_pack=True),
+                    boosts=await self._roll_boosts(guild),
                 )
                 sell_prices = await conf.sell_prices()
                 entries, set_lines = [], []
@@ -1642,7 +1588,7 @@ class CardCollect(commands.Cog):
                 if price > 0:
                     await bank.deposit_credits(buyer, price)
                 return "Something went wrong opening that pack. You were refunded."
-        await self._bump_stats(guild, packs=1, **({"gift_packs": 1} if gift else {}))
+        await self._bump_stats(guild, packs=1, coin_packs=price, **({"gift_packs": 1} if gift else {}))
         return {
             "price": price, "entries": entries, "set_lines": set_lines,
             "pity_used": floor == "epic", "pity": 0 if gift else state.pack_pity,
@@ -1775,164 +1721,6 @@ class CardCollect(commands.Cog):
         )
 
     # -- trade board -------------------------------------------------------
-
-    @card.command(name="tradepost", aliases=["listing", "tradeboard"])
-    @commands.guild_only()
-    async def card_tradepost(self, ctx: commands.Context):
-        """Post a "have / want" listing on the trade board so anyone can offer
-        you a trade, even while you're offline. One open listing at a time; it
-        lasts a few days."""
-        view = views.ListingStartView(self, ctx.author)
-        view.message = await ctx.send(
-            "List the cards you'd trade away and what you're after. Anyone can then press "
-            "**Offer a trade** on your listing to start a trade with you.",
-            view=view,
-        )
-
-    async def post_listing(self, guild: discord.Guild, member: discord.Member, have_text: str, want_text: str,
-                           fallback_channel) -> str:
-        """Create (or replace) a member's listing and post it. Returns the reply for them."""
-        have, problem = await self.resolve_offer(guild, member, have_text)
-        if problem:
-            return problem
-        want = " ".join(str(want_text or "").split())[:LISTING_WANT_MAX]
-        if not have and not want:
-            return "Put at least one card you have, or something you want."
-        conf = self.config.guild(guild)
-        channel_id = await conf.trade_channel_id()
-        channel = guild.get_channel(channel_id) if channel_id else None
-        channel = channel or fallback_channel
-        old = None
-        async with self._listing_lock:  # one listing write at a time; only the listings are rewritten
-            listing_id = str(await conf.next_listing_id())
-            await conf.next_listing_id.set(int(listing_id) + 1)
-            record = {"user_id": member.id, "have": have, "want": want, "channel_id": channel.id,
-                      "message_id": None, "created": time.time(), "open": True}
-            async with conf.listings() as listings:
-                for lid, listing in listings.items():
-                    if listing["user_id"] == member.id and listing.get("open"):
-                        listing["open"] = False
-                        old = (lid, dict(listing))
-                listings[listing_id] = record
-                # keep the store small: forget closed listings beyond the newest 200
-                closed = sorted((k for k, v in listings.items() if not v.get("open")), key=int)
-                for k in closed[:-200]:
-                    listings.pop(k, None)
-        if old is not None:
-            await self._close_listing_message(guild, old[1], "Replaced by a newer listing.")
-        embed = await self.listing_embed(guild, member, record, listing_id)
-        try:
-            sent = await channel.send(embed=embed, view=views.ListingView(self),
-                                      allowed_mentions=discord.AllowedMentions.none())
-        except discord.HTTPException:
-            log.exception("cardcollect: couldn't post a trade listing")
-            async with conf.listings() as listings:
-                listings.pop(listing_id, None)
-            return "I couldn't post your listing. Ask an admin to check the trade board channel."
-        async with conf.listings() as listings:
-            if listing_id in listings:
-                listings[listing_id]["message_id"] = sent.id
-        where = channel.mention if hasattr(channel, "mention") else "the channel"
-        return f"Your listing is up in {where}." + (" Your old one was closed." if old else "")
-
-    async def listing_embed(self, guild: discord.Guild, member, listing: dict, listing_id: str) -> discord.Embed:
-        embed = discord.Embed(title=f"Trade board: {getattr(member, 'display_name', 'a member')}", color=embeds.EMBED_COLOR)
-        lines = []
-        for cid in listing["have"]:
-            card = await self._card_by_id(guild, cid)
-            if card is not None:
-                series = f" ({card.display_series})" if card.display_series else ""
-                lines.append(f"{embeds.RARITY_EMOJI.get(card.rarity, '')} **{discord.utils.escape_markdown(card.name)}**"
-                             f"{discord.utils.escape_markdown(series)} `#{cid}`")
-        embed.add_field(name="Has", value="\n".join(lines)[:1024] or "—", inline=True)
-        embed.add_field(name="Wants", value=discord.utils.escape_markdown(listing["want"]) or "Offers welcome", inline=True)
-        expires = int(listing["created"] + LISTING_DAYS * 86400)
-        embed.description = (f"<@{listing['user_id']}> is trading. Press **Offer a trade** to start one with them; "
-                             f"listing ends <t:{expires}:R>.")
-        embed.set_footer(text=f"Listing #{listing_id} · post your own with .card tradepost")
-        return embed
-
-    async def _close_listing_message(self, guild: discord.Guild, listing: dict, note: str):
-        channel = guild.get_channel(listing.get("channel_id") or 0)
-        if channel is None or not listing.get("message_id"):
-            return
-        try:
-            message = await channel.fetch_message(listing["message_id"])
-            embed = discord.Embed(title="Trade board", description=f"This listing is closed. {note}", color=embeds.EMBED_COLOR)
-            await message.edit(embed=embed, view=None)
-        except (discord.HTTPException, AttributeError):
-            pass
-
-    async def _listing_for_message(self, guild: discord.Guild, message_id: int):
-        listings = await self.config.guild(guild).listings()
-        return next(((lid, l) for lid, l in listings.items() if l.get("message_id") == message_id), (None, None))
-
-    async def _end_listing(self, guild: discord.Guild, listing_id: str):
-        async with self.config.guild(guild).listings() as listings:
-            if listing_id in listings:
-                listings[listing_id]["open"] = False
-
-    async def listing_offer(self, interaction: discord.Interaction):
-        """Someone pressed "Offer a trade" on a listing: open a trade with the poster,
-        the poster's side filled in with the listed cards they still have."""
-        guild = interaction.guild
-        listing_id, listing = await self._listing_for_message(guild, interaction.message.id)
-        if listing is None or not listing.get("open"):
-            await interaction.response.send_message("This listing is closed.", ephemeral=True)
-            return
-        if time.time() > listing["created"] + LISTING_DAYS * 86400:
-            await self._end_listing(guild, listing_id)
-            await interaction.response.send_message("This listing has expired.", ephemeral=True)
-            await self._close_listing_message(guild, listing, "It expired.")
-            return
-        poster = guild.get_member(listing["user_id"])
-        if poster is None:
-            await self._end_listing(guild, listing_id)
-            await interaction.response.send_message("That member isn't on the server any more.", ephemeral=True)
-            await self._close_listing_message(guild, listing, "They left the server.")
-            return
-        if interaction.user.id == poster.id:
-            await interaction.response.send_message("That's your own listing. Close it with the other button.", ephemeral=True)
-            return
-        state = await self._member_state(poster)
-        left = list(state.collection)
-        still = []
-        for cid in listing["have"]:
-            if cid in left:
-                left.remove(cid)
-                still.append(cid)
-        await interaction.response.send_message("Trade started below.", ephemeral=True)
-        view = views.TradeView(self, interaction.user, poster)
-        view.offers[poster.id] = {"cards": still, "coins": 0}
-        try:
-            view.message = await interaction.channel.send(
-                content=f"{poster.mention}, {interaction.user.mention} wants to trade for your listing.",
-                embed=await view.build_embed(), view=view,
-                allowed_mentions=discord.AllowedMentions(users=[poster], roles=False, everyone=False),
-            )
-        except discord.HTTPException:
-            log.exception("cardcollect: couldn't open a trade from a listing")
-
-    async def listing_close(self, interaction: discord.Interaction):
-        guild = interaction.guild
-        listing_id, listing = await self._listing_for_message(guild, interaction.message.id)
-        if listing is None or not listing.get("open"):
-            await interaction.response.send_message("This listing is already closed.", ephemeral=True)
-            return
-        if interaction.user.id != listing["user_id"] and not await self._is_pool_admin(interaction.user):
-            await interaction.response.send_message("Only the person who posted it (or an admin) can close it.", ephemeral=True)
-            return
-        await self._end_listing(guild, listing_id)
-        embed = discord.Embed(title="Trade board", description="This listing is closed.", color=embeds.EMBED_COLOR)
-        await interaction.response.edit_message(embed=embed, view=None)
-
-    async def _apply_trade_channel(self, guild, member, channel) -> str:
-        conf = self.config.guild(guild)
-        if channel is None:
-            await conf.trade_channel_id.set(None)
-            return "Listings will post wherever `.card tradepost` is run."
-        await conf.trade_channel_id.set(channel.id)
-        return f"Listings will post in {channel.mention}."
 
     async def resolve_offer(self, guild: discord.Guild, member: discord.Member, text: str) -> Tuple[List[int], Optional[str]]:
         """Turn what a member typed into an offer ("12, Rem, #40") into card ids
@@ -2141,6 +1929,7 @@ class CardCollect(commands.Cog):
                 state.sell_tokens = before
                 await self._save_member_state(member, state)
                 raise
+        await self._bump_stats(guild, coin_token_sales=total)
         return len(chosen), total
 
     @card.command(name="leaderboard")
@@ -2276,7 +2065,7 @@ class CardCollect(commands.Cog):
         return (f"Holo now costs {costs['holo']['dupes']} duplicate(s) + {costs['holo']['coins']:,}; Prismatic "
                 f"{costs['prismatic']['dupes']} duplicate(s) + {costs['prismatic']['coins']:,}.")
 
-    # -- featured series and events (panel) ----------------------------------
+    # -- featured series (panel) ----------------------------------
 
     async def _apply_featured_enabled(self, guild, member, value) -> str:
         await self.config.guild(guild).featured_enabled.set(bool(value))
@@ -2292,86 +2081,6 @@ class CardCollect(commands.Cog):
         if not series:
             raise PanelError(f"No series has {SET_MIN_CARDS}+ cards to feature yet.")
         return f"This week's featured series is now **{series}** (announced in the drop channel)."
-
-    @staticmethod
-    def _parse_day(text, label) -> str:
-        text = str(text or "").strip()
-        try:
-            return datetime.strptime(text, "%Y-%m-%d").date().isoformat()
-        except ValueError:
-            raise PanelError(f"{label} must be a date like 2026-12-01.")
-
-    async def _apply_event_save(self, guild, member, item_id, values, picked) -> str:
-        conf = self.config.guild(guild)
-        name = " ".join(str((values or {}).get("name", "")).split()) if item_id is None else None
-        start = self._parse_day((values or {}).get("start"), "Start")
-        end = self._parse_day((values or {}).get("end"), "End")
-        if end < start:
-            raise PanelError("The event can't end before it starts.")
-        series_text = str((values or {}).get("series", "") or "").strip()
-        async with conf.events() as events:
-            if item_id is None:
-                if not name or len(name) > EVENT_NAME_MAX:
-                    raise PanelError(f"Give the event a name of 1-{EVENT_NAME_MAX} characters.")
-                key = engine.event_key(name)
-                if key in events:
-                    raise PanelError("There's already an event with that name.")
-                events[key] = {"name": name, "start": start, "end": end}
-            else:
-                if item_id not in events:
-                    raise PanelError("That event no longer exists.")
-                key = item_id
-                events[key].update(start=start, end=end)
-            event_name = events[key]["name"]
-        tagged = 0
-        if series_text:
-            wanted = engine.fold_text(series_text)
-            async with conf.pool() as pool:
-                for data in pool.values():
-                    if wanted in (engine.fold_text(data.get("series", "")), engine.fold_text(data.get("series_alt", ""))):
-                        data["event"] = event_name
-                        tagged += 1
-            if not tagged:
-                raise PanelError(f"Saved the event, but no card has the series “{series_text[:60]}”. "
-                                 "Check the spelling, or tag cards one by one from `.card find`.")
-        status = engine.event_status({"start": start, "end": end}, engine.today_str(ACTIVITY_TIMEZONE))
-        note = f" Tagged {tagged} card{'s' if tagged != 1 else ''} from that series." if tagged else ""
-        return (f"**{event_name}** runs {start} to {end} (Pacific), {status} now.{note} "
-                "Add single cards from their `.card find` page.")
-
-    async def _apply_event_remove(self, guild, member, item_id) -> str:
-        conf = self.config.guild(guild)
-        async with conf.events() as events:
-            event = events.pop(item_id, None)
-        if event is None:
-            raise PanelError("That event no longer exists.")
-        freed = 0
-        async with conf.pool() as pool:
-            for data in pool.values():
-                if engine.event_key(data.get("event", "")) == item_id:
-                    data["event"] = ""
-                    freed += 1
-        return f"Removed **{event['name']}**. Its {freed} card{'s' if freed != 1 else ''} are regular cards again."
-
-    async def event_cards_count(self, guild) -> Dict[str, int]:
-        counts: Dict[str, int] = {}
-        for card in await self._pool_cards(guild):
-            if card.event:
-                key = engine.event_key(card.event)
-                counts[key] = counts.get(key, 0) + 1
-        return counts
-
-    async def apply_card_event(self, guild: discord.Guild, card_id: int, event_key: str) -> Card:
-        """Make a pool card part of an event ("" = a regular card again). KeyError if it's gone."""
-        conf = self.config.guild(guild)
-        events = await conf.events()
-        name = events[event_key]["name"] if event_key else ""
-        async with conf.pool() as pool:
-            data = pool.get(str(card_id))
-            if data is None:
-                raise KeyError(card_id)
-            data["event"] = name
-        return await self._card_by_id(guild, card_id)
 
     async def _apply_set_role_save(self, guild, member, item_id, values, picked) -> str:
         count = self._whole(values, "sets", "Sets completed", 1)
@@ -2470,113 +2179,6 @@ class CardCollect(commands.Cog):
         await ctx.send(embed=embeds.card_added_embed(card))
         await self._fulfil_requests(ctx.guild, [(card.card_id, card.name)])
 
-    @card.command(name="removecard")
-    @commands.guild_only()
-    @commands.admin_or_permissions(manage_guild=True)
-    async def card_removecard(self, ctx: commands.Context, *, card_ids: str):
-        """Remove one or more characters from future drops. Members keep
-        copies they already have. Accepts multiple space-separated IDs, e.g.
-        `.card removecard 4 17 32` -- pair with `.card viewpool` to look up
-        which IDs to remove.
-
-        This retires each card rather than deleting it outright: the pool
-        entry and its art stay on disk so anyone who already owns a copy
-        still gets a working gallery tile. Only future drop rolls skip it."""
-        ids: List[int] = []
-        invalid: List[str] = []
-        for token in card_ids.split():
-            if token.lstrip("-").isdigit():
-                ids.append(int(token))
-            else:
-                invalid.append(token)
-        if invalid:
-            await ctx.send(f"Not valid card IDs, ignored: {', '.join(invalid)}")
-        if not ids:
-            await ctx.send("No valid card IDs given.")
-            return
-
-        retired: List[Tuple[int, str]] = []
-        not_found: List[int] = []
-        async with self.config.guild(ctx.guild).pool() as pool:
-            for card_id in ids:
-                entry = pool.get(str(card_id))
-                if entry is None:
-                    not_found.append(card_id)
-                    continue
-                entry["retired"] = True
-                retired.append((card_id, entry["name"]))
-
-        await ctx.send(embed=embeds.cards_removed_embed(retired, not_found))
-
-    @card.command(name="resetpool")
-    @commands.guild_only()
-    @commands.admin_or_permissions(manage_guild=True)
-    async def card_resetpool(self, ctx: commands.Context, confirm: Optional[str] = None):
-        """Retire every active character in the pool at once (admin). Same
-        soft-delete `.card removecard` uses -- members who already own a
-        card keep it, but nothing in the pool will drop again until you
-        re-import or re-add characters. Destructive-feeling enough that it
-        requires literally typing `.card resetpool confirm`."""
-        rollable = await self._rollable_pool_cards(ctx.guild)
-        if not rollable:
-            await ctx.send("The pool has no active (non-retired) cards to reset.")
-            return
-        if confirm != "confirm":
-            await ctx.send(
-                f"This retires all **{len(rollable)}** active characters in the pool -- "
-                f"no more drops until you re-import (`.card importpool`) or re-add "
-                f"(`.card addcard`). Members who already own a card keep it either way. "
-                f"Run `.card resetpool confirm` to actually do this."
-            )
-            return
-
-        count = 0
-        async with self.config.guild(ctx.guild).pool() as pool:
-            for entry in pool.values():
-                if not entry.get("retired", False):
-                    entry["retired"] = True
-                    count += 1
-
-        await ctx.send(embed=embeds.pool_reset_embed(count))
-
-    @card.command(name="viewpool")
-    @commands.guild_only()
-    @commands.admin_or_permissions(manage_guild=True)
-    async def card_viewpool(self, ctx: commands.Context):
-        """List every character in the pool -- ID, rarity, name, series,
-        favourites, and retired status -- as a text file, sorted by ID.
-        Meant to be paired with `.card removecard <id> <id> ...`: skim the
-        file, then remove whatever you don't want in one command. Retired
-        characters are included (marked) since their IDs are still useful
-        for reference even though they no longer drop."""
-        pool_cards = await self._pool_cards(ctx.guild)
-        if not pool_cards:
-            await ctx.send("The pool is empty.")
-            return
-
-        pool_cards.sort(key=lambda c: c.card_id)
-        by_tier: Dict[str, int] = {}
-        retired_count = 0
-        lines = []
-        for card in pool_cards:
-            by_tier[card.rarity] = by_tier.get(card.rarity, 0) + 1
-            if card.retired:
-                retired_count += 1
-            flag = " [retired]" if card.retired else ""
-            series = f" ({card.series})" if card.series else ""
-            lines.append(
-                f"{card.card_id}\t{card.rarity}\t{card.name}{series}\tfavs={card.favourites}{flag}"
-            )
-
-        tier_summary = ", ".join(f"{by_tier.get(t, 0)} {t}" for t in ("common", "rare", "epic", "legendary"))
-        summary = (
-            f"**{len(pool_cards)}** characters in the pool ({tier_summary}; "
-            f"{retired_count} retired). Full list attached."
-        )
-        text = "\n".join(lines)
-        buf = io.BytesIO(text.encode("utf-8"))
-        await ctx.send(content=summary, file=discord.File(buf, filename="cardcollect_pool.txt"))
-
     # -- pool import ---------------------------------------------------------
 
     async def _pool_card_dicts(self, guild: discord.Guild) -> List[dict]:
@@ -2605,7 +2207,7 @@ class CardCollect(commands.Cog):
 
     async def _download_images(self, entries: List[dict]) -> Tuple[List[Tuple[dict, bytes]], List[str]]:
         """Download each entry's art. Returns (downloaded, names_that_failed).
-        Done before any Config write, never inside one -- see card_importpool."""
+        Done before any Config write, never inside one: a long download must not hold the guild's config open."""
         downloaded: List[Tuple[dict, bytes]] = []
         failed: List[str] = []
         for entry in entries:
@@ -2688,90 +2290,11 @@ class CardCollect(commands.Cog):
                 entry.pop("retired", None)
         return await self._card_by_id(guild, card_id)
 
-    @card.command(name="importpool")
-    @commands.guild_only()
-    @commands.admin_or_permissions(manage_guild=True)
-    async def card_importpool(self, ctx: commands.Context, count: int = 30, gender: str = "any"):
-        """Bulk-import `count` AniList characters, spread across rarity tiers to
-        match drop_weights (not just the top `count` by favourites -- see
-        import_characters.tier_quotas for why that matters). `gender` is any
-        (the default), female or male. To add one whole series instead, use
-        `.card importseries <name>`."""
-        gender = gender.strip().lower()
-        if gender not in IMPORT_GENDERS:
-            await ctx.send(f"Gender must be one of: {', '.join(IMPORT_GENDERS)}.")
-            return
-        if count < 1 or count > 200:
-            await ctx.send("Pick a count between 1 and 200.")
-            return
-
-        # AniList rate-limits aggressively -- a second import started while one
-        # is already running would multiply the request rate against the same
-        # limit and trip 429s that neither run alone would hit (see the comment
-        # on self._importpool_lock). Queue rather than run concurrently, and
-        # say so, so a second run doesn't just look like it's doing nothing.
-        if self._importpool_lock.locked():
-            await ctx.send("Another AniList import is already running -- this one will start once it finishes.")
-
-        async with self._importpool_lock:
-            label = "" if gender == "any" else f"{gender} "
-            await ctx.send(f"Fetching {count} {label}characters from AniList, spread across rarity tiers…")
-            tier_cutoffs = await self.config.guild(ctx.guild).tier_cutoffs()
-            drop_weights = await self.config.guild(ctx.guild).drop_weights()
-            existing_cards = await self._pool_card_dicts(ctx.guild)
-            # skip characters already in the pool (by AniList id, retired ones
-            # included) so re-running the import doesn't add the same character
-            # twice under a new local card_id
-            existing_anilist_ids = {c["anilist_id"] for c in existing_cards if c["anilist_id"] is not None}
-
-            try:
-                raw_entries = await import_characters.fetch_top_characters(
-                    self._session,
-                    tier_cutoffs,
-                    engine.bucket_tier,
-                    count,
-                    weights=drop_weights,
-                    exclude_ids=existing_anilist_ids,
-                    gender=gender,
-                )
-            except (aiohttp.ClientError, asyncio.TimeoutError) as e:
-                await ctx.send(self._anilist_error_text(e))
-                return
-
-            if not raw_entries:
-                await ctx.send("No characters came back -- AniList may be unreachable, or the filter matched nothing.")
-                return
-
-            # a fetched character that is really a hand-added card already in the
-            # pool (same name and series) isn't imported again; that card just
-            # learns its AniList id so the next import recognises it
-            raw_entries, links = import_characters.split_hand_added(raw_entries, existing_cards)
-
-            # Download every image *before* touching Config, not inside the
-            # "async with ... .all()" write: that block used to wrap the whole
-            # network loop (up to 200 downloads), holding a mutable handle on
-            # the guild's entire config open the whole time -- any other command
-            # writing the same guild's config in that window (e.g. a concurrent
-            # .card addcard) would have its change silently overwritten.
-            downloaded, failed = await self._download_images(raw_entries)
-            added = await self._write_pool_entries(ctx.guild, downloaded, links)
-
-            message = (
-                f"Imported {len(added)} characters (characters already in the pool were skipped automatically). "
-                f"Prune unwanted ones with `.card removecard <id>`."
-            )
-            if links:
-                message += f"\n{len(links)} hand-added card{'s' if len(links) != 1 else ''} matched and were linked instead of duplicated."
-            if failed:
-                shown = ", ".join(failed[:5]) + (f", +{len(failed) - 5} more" if len(failed) > 5 else "")
-                message += f"\n{len(failed)} image download(s) failed and were not added ({shown}); run the import again to retry them."
-            await ctx.send(message)
-
     async def build_series_preview(self, guild: discord.Guild, media: dict):
         """Fetch one AniList series' characters and work out what importing
         them would do. Returns a SeriesPreview, or a message string if it can't."""
         try:
-            async with self._importpool_lock:
+            async with self._anilist_lock:
                 info = await import_characters.fetch_series_characters(self._session, media["id"], SERIES_IMPORT_MAX)
         except (aiohttp.ClientError, asyncio.TimeoutError) as e:
             return self._anilist_error_text(e)
@@ -2903,7 +2426,7 @@ class CardCollect(commands.Cog):
         # art already on hand (downloaded for the contact sheet, or uploaded by
         # the admin) is reused; only the rest is downloaded now
         need = [e for e in selected["entries"] if e["rank"] not in preview.art and e["rank"] not in preview.images]
-        async with self._importpool_lock:
+        async with self._anilist_lock:
             fetched, failed = await self._download_images(need)
             by_rank = {entry["rank"]: image_bytes for entry, image_bytes in fetched}
             downloaded = []
@@ -2927,7 +2450,7 @@ class CardCollect(commands.Cog):
             await ctx.send("Give a series name, like `.card importseries Frieren`.")
             return
         try:
-            async with self._importpool_lock:
+            async with self._anilist_lock:
                 results = await import_characters.search_media(self._session, query)
         except (aiohttp.ClientError, asyncio.TimeoutError) as e:
             await ctx.send(self._anilist_error_text(e))
@@ -2955,7 +2478,9 @@ class CardCollect(commands.Cog):
     @commands.guild_only()
     @commands.mod_or_permissions(manage_messages=True)
     async def card_diagnostics(self, ctx: commands.Context):
-        """Activity-based sizing report for drop_chance/drop_cooldown_seconds."""
+        """Admin report: drop sizing suggestions, how the features are used, wondercoin paid out and taken in,
+        card request counts, and the whole pool (attached as a text file: ID, rarity, name, series, favourites,
+        retired)."""
         await self._flush_activity()  # include counts still buffered in memory
         tracking = await self.config.guild(ctx.guild).activity_tracking()
         buckets = tracking.get("hourly_buckets", {})
@@ -2975,8 +2500,27 @@ class CardCollect(commands.Cog):
             suggested_cooldown = max(180, int(3600 / max(target_drops_per_peak_hour, 1) / 2))
 
         stats = await self.config.guild(ctx.guild).stats()
+
+        pool_cards = sorted(await self._pool_cards(ctx.guild), key=lambda c: c.card_id)
+        by_tier = {t: sum(1 for c in pool_cards if c.rarity == t) for t in TIERS}
+        retired = sum(1 for c in pool_cards if c.retired)
+        pool_line = (f"**{len(pool_cards)}** characters ({', '.join(f'{n} {t}' for t, n in by_tier.items())}; "
+                     f"{retired} retired). Full list attached.")
+        pool_text = "\n".join(
+            f"{c.card_id}\t{c.rarity}\t{c.name}" + (f" ({c.series})" if c.series else "")
+            + f"\tfavs={c.favourites}" + (" [retired]" if c.retired else "")
+            for c in pool_cards
+        )
+        request_counts: Dict[str, int] = {}
+        for request in (await self.config.guild(ctx.guild).requests()).values():
+            request_counts[request["status"]] = request_counts.get(request["status"], 0) + 1
+        requests_line = None
+        if request_counts:
+            requests_line = (f"**{sum(request_counts.values())}** on record: "
+                             + " · ".join(f"{n} {status}" for status, n in sorted(request_counts.items())))
         embed = embeds.diagnostics_embed(
-            buckets, suggested_chance, suggested_cooldown, sampling_since, ctx.guild.name, stats=stats
+            buckets, suggested_chance, suggested_cooldown, sampling_since, ctx.guild.name, stats=stats,
+            pool_line=pool_line if pool_cards else None, requests_line=requests_line,
         )
 
         payload = {
@@ -2987,5 +2531,7 @@ class CardCollect(commands.Cog):
             "suggested_drop_cooldown_seconds": suggested_cooldown,
             "timezone": ACTIVITY_TIMEZONE,
         }
-        file_obj = io.BytesIO(json.dumps(payload, indent=2).encode("utf-8"))
-        await ctx.send(embed=embed, file=discord.File(file_obj, filename="cardcollect_diagnostics.json"))
+        files = [discord.File(io.BytesIO(json.dumps(payload, indent=2).encode("utf-8")), filename="cardcollect_diagnostics.json")]
+        if pool_cards:
+            files.append(discord.File(io.BytesIO(pool_text.encode("utf-8")), filename="cardcollect_pool.txt"))
+        await ctx.send(embed=embed, files=files)

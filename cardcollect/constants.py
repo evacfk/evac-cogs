@@ -63,12 +63,6 @@ DEFAULT_UPGRADE_COSTS = {
 FEATURED_BOOST = 3.0
 FEATURED_HISTORY = 6
 
-# Event cards drop (and appear in packs) only between their event's start and
-# end dates, Pacific, inclusive; in packs they're EVENT_PACK_BOOST times as
-# likely as others of their rarity. Owners keep them after the event.
-EVENT_PACK_BOOST = 3.0
-EVENT_NAME_MAX = 24
-
 # Collection score (`.card leaderboard`): each different card a member owns is
 # worth its rarity's points, times (1 + its finish level) -- a Holo counts
 # double, a Prismatic triple. Spares and sell tokens don't count.
@@ -122,14 +116,6 @@ REQUEST_ADD_ID = "cardcollect:request:add"
 TRADE_MAX_CARDS = 10
 TRADE_TIMEOUT_SECONDS = 600
 
-# Trade board (`.card tradepost`): a "have / want" listing posted to the trade
-# channel, with persistent buttons. One open listing per member; listings
-# expire after LISTING_DAYS.
-LISTING_DAYS = 3
-LISTING_WANT_MAX = 200
-LISTING_OFFER_ID = "cardcollect:listing:offer"
-LISTING_CLOSE_ID = "cardcollect:listing:close"
-
 MAX_SHOWCASE_SLOTS = 3  # how many cards a member can pin in their gallery header
 
 # 1 "original" copy + 1 tradeable spare; a 3rd+ win of the same character
@@ -146,12 +132,10 @@ SERIES_IMPORT_MAX = 100
 SERIES_SEARCH_RESULTS = 5
 SERIES_VIEW_TIMEOUT_SECONDS = 600
 
-# `.card importpool <count> [gender]`
 ART_MIN_SIDE = 150  # AniList art with a shorter side than this is flagged as probably too small
 ART_MAX_UPLOAD_BYTES = 8 * 1024 * 1024  # largest replacement image an admin can upload
 ART_UPLOAD_WAIT_SECONDS = 90  # how long the bot waits for each uploaded image
 SHEET_COLUMNS = 5
-IMPORT_GENDERS = ("any", "female", "male")
 
 # hour-of-day activity tracking, mirrors minigamehub's diagnostics shape
 ACTIVITY_TIMEZONE = "America/Los_Angeles"
@@ -165,7 +149,7 @@ GALLERY_PAGE_SIZE = GALLERY_COLUMNS * GALLERY_ROWS_PER_PAGE
 GALLERY_VIEW_TIMEOUT_SECONDS = 180  # a stale pager after this just stops responding
 
 # bumped on every deploy so `.card version` can confirm the new build is live
-COG_VERSION = "2.13.1"
+COG_VERSION = "2.14.0"
 
 UPLOAD_CANCELLED = "cancelled"  # what wait_for_upload returns when the admin backs out
 UPLOAD_CANCEL_WORDS = ("cancel", "stop", "nevermind", "never mind", "exit", "quit")

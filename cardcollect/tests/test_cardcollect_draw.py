@@ -748,11 +748,13 @@ async def test_sell_buttons_refuse_other_members(cog):
 
 def test_the_retired_commands_are_gone_and_the_new_aliases_exist(cog):
     commands = cog.card.commands
-    for gone in ("quota", "version", "testmode", "testdrop", "setimage", "poolsearch_old", "info", "show", "pool"):
+    for gone in ("quota", "version", "testmode", "testdrop", "setimage", "poolsearch_old", "info", "show", "pool",
+                 "importpool", "removecard", "resetpool", "viewpool", "tradepost", "listing", "tradeboard"):
         assert gone not in commands, gone
-    for kept in ("find", "sell", "daily", "give", "leaderboard", "showcase", "settings", "addcard", "importseries", "importpool",
-                 "removecard", "resetpool", "viewpool", "diagnostics"):
+    for kept in ("find", "sell", "daily", "give", "trade", "leaderboard", "showcase", "settings", "addcard",
+                 "importseries", "diagnostics"):
         assert kept in commands, kept
+    assert not set(commands["showcase"].commands) & {"add", "remove"}  # the showcase button on `.card find` does this
     assert set(commands["find"].aliases) >= {"search", "info", "show", "pool", "poolsearch"}
 
 

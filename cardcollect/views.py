@@ -31,9 +31,6 @@ from .constants import (
     SERIES_IMPORT_DEFAULT,
     SERIES_VIEW_TIMEOUT_SECONDS,
     TIERS,
-    LISTING_CLOSE_ID,
-    LISTING_OFFER_ID,
-    LISTING_WANT_MAX,
     TRADE_MAX_CARDS,
     TRADE_TIMEOUT_SECONDS,
     TRADE_UP_COUNT,
@@ -42,7 +39,6 @@ from .constants import (
 
 log = logging.getLogger("red.evac-cogs.cardcollect")
 
-NO_EVENT = "__none__"  # the event dropdown's "regular card" choice
 FIND_PAGE_SIZE = 20  # results per page in `.card find` (a dropdown holds 25 at most)
 DRAW_OVER_TEXT = "This drop is over — its draw has already closed."
 
@@ -240,7 +236,7 @@ class SeriesPreviewView(_InvokerView):
             log.exception("cardcollect: series import crashed")
             await interaction.edit_original_response(
                 content="Something went wrong during the import. Some characters may have been added; "
-                "check `.card viewpool` before running it again.",
+                "check `.card diagnostics` (it lists the whole pool) before running it again.",
                 embed=None,
                 view=None,
             )
@@ -879,7 +875,6 @@ class FindView(_InvokerView):
         if self.card is not None:
             embed, file, quantity, _owners, state = await self.cog.card_detail(guild, self.member, self.card)
             self.plan = await self.cog.upgrade_preview(guild, self.member, self.card.card_id) if quantity else None
-            self.events = await self.cog.config.guild(guild).events() if self.admin else {}
             self._build_detail(quantity, state)
             return {"embed": embed, "file": file}
         embed = await self._list_embed()
@@ -1015,19 +1010,6 @@ class FindView(_InvokerView):
             )
             self.retire.callback = self._on_retire
             self.add_item(self.retire)
-            events = getattr(self, "events", {}) or {}
-            if events:
-                current = engine.event_key(card.event) if card.event else ""
-                # Discord rejects an empty option value, so "no event" has a placeholder one
-                options = [discord.SelectOption(label="Regular card (no event)", value=NO_EVENT, default=not current)]
-                for key, event in list(events.items())[:24]:
-                    options.append(discord.SelectOption(
-                        label=_clip(event["name"], 100), value=key, default=key == current,
-                        description=f"{event['start']} to {event['end']}",
-                    ))
-                self.event_select = discord.ui.Select(placeholder="Event card…", options=options, row=4)
-                self.event_select.callback = self._on_event
-                self.add_item(self.event_select)
 
     # -- shared refresh ------------------------------------------------------------
 
@@ -1144,20 +1126,6 @@ class FindView(_InvokerView):
             f"**{card.name}** is now **{tier}**. This changes how it drops from now on and how it looks in "
             "everyone's collection; duplicate tokens already issued keep the rarity they were made with.",
         )
-
-    async def _on_event(self, interaction: discord.Interaction):
-        key = self.event_select.values[0]
-        key = "" if key == NO_EVENT else key
-        try:
-            card = await self.cog.apply_card_event(interaction.guild, self.card.card_id, key)
-        except KeyError:
-            await interaction.response.send_message("That card or event no longer exists.", ephemeral=True)
-            return
-        self.card = card
-        await interaction.response.defer()
-        note = (f"**{card.name}** is now a **{card.event}** event card: it only drops during the event."
-                if card.event else f"**{card.name}** is a regular card again.")
-        await self._refresh(interaction, note)
 
     async def _on_retire(self, interaction: discord.Interaction):
         retire = not self.card.retired
@@ -1461,70 +1429,6 @@ class TradeView(discord.ui.View):
             )
         except discord.HTTPException:
             pass
-
-
-# ---------------------------------------------------------------------------
-# the trade board: `.card tradepost`
-# ---------------------------------------------------------------------------
-
-
-class ListingModal(discord.ui.Modal):
-    have = discord.ui.TextInput(
-        label="Cards you'd trade away", style=discord.TextStyle.paragraph, required=False, max_length=400,
-        placeholder="Names or #numbers, comma-separated, e.g. 12, Rem, #40",
-    )
-    want = discord.ui.TextInput(
-        label="What you're looking for", style=discord.TextStyle.paragraph, required=False, max_length=LISTING_WANT_MAX,
-        placeholder="e.g. any Re:Zero epic, or wondercoin",
-    )
-
-    def __init__(self, cog, member):
-        super().__init__(title="Trade board listing", timeout=300)
-        self.cog = cog
-        self.member = member
-
-    async def on_submit(self, interaction: discord.Interaction):
-        await interaction.response.defer(ephemeral=True)
-        reply = await self.cog.post_listing(
-            interaction.guild, self.member, str(self.have.value or ""), str(self.want.value or ""), interaction.channel
-        )
-        await interaction.followup.send(reply, ephemeral=True)
-
-    async def on_error(self, interaction: discord.Interaction, error: Exception):
-        log.error("cardcollect: listing modal error", exc_info=error)
-
-
-class ListingStartView(_InvokerView):
-    """The button under `.card tradepost` that opens the listing form."""
-
-    reject_text = "Run `.card tradepost` yourself to post a listing."
-
-    def __init__(self, cog, member):
-        super().__init__(member.id, 300)
-        self.cog = cog
-        self.member = member
-
-    @discord.ui.button(label="Write my listing", emoji="\U0001f4dd", style=discord.ButtonStyle.primary)
-    async def write(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await interaction.response.send_modal(ListingModal(self.cog, self.member))
-
-
-class ListingView(discord.ui.View):
-    """The buttons on a trade board listing. Persistent (fixed custom ids, one
-    instance registered in cog_load) so a listing keeps working for days,
-    across restarts."""
-
-    def __init__(self, cog):
-        super().__init__(timeout=None)
-        self.cog = cog
-
-    @discord.ui.button(label="Offer a trade", emoji="\U0001f91d", style=discord.ButtonStyle.success, custom_id=LISTING_OFFER_ID)
-    async def offer(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await self.cog.listing_offer(interaction)
-
-    @discord.ui.button(label="Close listing", style=discord.ButtonStyle.secondary, custom_id=LISTING_CLOSE_ID)
-    async def close(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await self.cog.listing_close(interaction)
 
 
 # ---------------------------------------------------------------------------

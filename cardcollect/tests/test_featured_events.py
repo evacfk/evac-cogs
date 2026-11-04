@@ -36,25 +36,6 @@ def test_the_featured_pick_avoids_recent_series_while_others_are_left():
     assert engine.pick_featured({}, [], random.Random(1)) is None
 
 
-def test_event_cards_only_roll_while_their_event_is_live():
-    events = {"wonderween": {"name": "Wonderween", "start": "2026-10-20", "end": "2026-10-31"}}
-    card = Card(1, "Witch", "S", "rare", "", event="Wonderween")
-    assert engine.event_status(events["wonderween"], "2026-10-19") == "upcoming"
-    assert engine.can_roll(card, events, "2026-10-20") and engine.can_roll(card, events, "2026-10-31")
-    assert not engine.can_roll(card, events, "2026-11-01")
-    assert not engine.can_roll(card, {}, "2026-10-25")  # its event was removed
-    assert not engine.can_roll(Card(2, "Old", "S", "rare", "", retired=True), events, "2026-10-25")
-    assert engine.can_roll(Card(3, "Plain", "S", "rare", ""), events, "2026-11-01")
-
-
-def test_boosts_cover_the_featured_series_and_event_cards():
-    pool = [Card(1, "a", "Hero", "rare", ""), Card(2, "b", "Other", "rare", ""),
-            Card(3, "c", "Hero", "rare", "", event="E")]
-    assert engine.roll_boosts(pool, "Hero", 3.0) == {1: 3.0, 3: 3.0}
-    assert engine.roll_boosts(pool, "Hero", 3.0, 3.0) == {1: 3.0, 3: 9.0}
-    assert engine.roll_boosts(pool, None, 3.0) == {}
-
-
 # --- the cog ---------------------------------------------------------------------
 
 
@@ -113,94 +94,6 @@ async def test_chat_in_a_new_week_triggers_the_pick_only_once(cog, monkeypatch):
     await cog._maybe_roll_featured(guild)
     await cog._maybe_roll_featured(guild)
     assert sum("featured series" in (m.content or "") for m in channel.sent) == 1
-
-
-@pytest.mark.asyncio
-async def test_an_event_tags_a_series_and_its_cards_only_roll_during_it(cog, monkeypatch):
-    guild, admin, _channel = await setup(cog, 704)
-    msg = await cog._apply_event_save(guild, admin, None, {"name": "Wonderween", "start": "2026-10-20",
-                                                           "end": "2026-10-31", "series": "villain"}, None)
-    assert "Tagged 3 cards" in msg
-    at(monkeypatch, "2026-11-05")
-    assert {c.series for c in await cog._rollable_pool_cards(guild)} == {"Hero"}
-    at(monkeypatch, "2026-10-25")
-    assert {c.series for c in await cog._rollable_pool_cards(guild)} == {"Hero", "Villain"}
-    # in packs event cards weigh 3x; in drops they don't
-    await cog._apply_featured_enabled(guild, admin, False)  # isolate the event boost
-    pack = await cog._roll_boosts(guild, for_pack=True)
-    pool = {c.card_id: c for c in await cog._pool_cards(guild)}
-    assert pack and all(pool[cid].event == "Wonderween" and w == 3.0 for cid, w in pack.items())
-    assert await cog._roll_boosts(guild) == {}  # drops and dailies: no event boost
-    # removing the event makes them regular cards again
-    await cog._apply_event_remove(guild, admin, "wonderween")
-    at(monkeypatch, "2026-11-05")
-    assert {c.series for c in await cog._rollable_pool_cards(guild)} == {"Hero", "Villain"}
-
-
-@pytest.mark.asyncio
-async def test_event_input_is_checked(cog):
-    guild, admin, _channel = await setup(cog, 705)
-    with pytest.raises(PanelError, match="date"):
-        await cog._apply_event_save(guild, admin, None, {"name": "X", "start": "soon", "end": "2026-01-01"}, None)
-    with pytest.raises(PanelError, match="before it starts"):
-        await cog._apply_event_save(guild, admin, None, {"name": "X", "start": "2026-02-01", "end": "2026-01-01"}, None)
-    await cog._apply_event_save(guild, admin, None, {"name": "X", "start": "2026-01-01", "end": "2026-01-02"}, None)
-    with pytest.raises(PanelError, match="already"):
-        await cog._apply_event_save(guild, admin, None, {"name": "x", "start": "2026-01-01", "end": "2026-01-02"}, None)
-    with pytest.raises(PanelError, match="no card has"):
-        await cog._apply_event_save(guild, admin, None, {"name": "Y", "start": "2026-01-01", "end": "2026-01-02",
-                                                         "series": "Nope"}, None)
-    edited = await cog._apply_event_save(guild, admin, "x", {"start": "2026-03-01", "end": "2026-03-05"}, None)
-    assert "2026-03-01 to 2026-03-05" in edited
-
-
-@pytest.mark.asyncio
-async def test_a_single_card_can_be_made_an_event_card(cog, monkeypatch):
-    guild, admin, _channel = await setup(cog, 706)
-    await cog._apply_event_save(guild, admin, None, {"name": "Winter", "start": "2026-12-01", "end": "2026-12-31"}, None)
-    card = (await cog._pool_cards(guild))[0]
-    tagged = await cog.apply_card_event(guild, card.card_id, "winter")
-    assert tagged.event == "Winter"
-    at(monkeypatch, "2026-11-05")
-    assert card.card_id not in {c.card_id for c in await cog._rollable_pool_cards(guild)}
-    member = FakeMember(7061, guild)
-    embed, *_ = await cog.card_detail(guild, member, tagged)
-    assert any(f.name == "Event card" and "drops when it starts" in f.value for f in embed.fields)
-    assert (await cog.apply_card_event(guild, card.card_id, "")).event == ""
-
-
-@pytest.mark.asyncio
-async def test_the_admin_event_dropdown_has_no_empty_values(cog, monkeypatch):
-    from cardcollect import views
-    guild, admin, channel = await setup(cog, 707)
-    await cog._apply_event_save(guild, admin, None, {"name": "Winter", "start": "2026-12-01", "end": "2026-12-31"}, None)
-    card = (await cog._pool_cards(guild))[0]
-    view = views.FindView(cog, admin, str(card.card_id))
-    await view.start(FakeCtx(admin, guild, channel))
-    values = [o.value for o in view.event_select.options]
-    assert all(values) and len(values) == 2  # Discord rejects an empty option value
-    view.event_select._values = [values[1]]
-    await view._on_event(_Inter(admin, channel))
-    assert (await cog._card_by_id(guild, card.card_id)).event == "Winter"
-    view.event_select._values = [values[0]]
-    await view._on_event(_Inter(admin, channel))
-    assert (await cog._card_by_id(guild, card.card_id)).event == ""
-
-
-@pytest.mark.asyncio
-async def test_tagging_an_event_redraws_a_cached_animated_card(cog, monkeypatch):
-    from cardcollect import imagegen
-    guild, admin, _channel = await setup(cog, 708)
-    await cog._apply_event_save(guild, admin, None, {"name": "Winter", "start": "2026-12-01", "end": "2026-12-31"}, None)
-    card = (await cog._pool_cards(guild))[0]
-    calls = []
-    real = imagegen.render_single
-    monkeypatch.setattr(imagegen, "render_single", lambda *a, **k: calls.append(1) or real(*a, **k))
-    art = cog._read_card_image(guild, card.card_id)
-    await cog.render_card_file(guild, card, art, 1, 2)
-    tagged = await cog.apply_card_event(guild, card.card_id, "winter")
-    await cog.render_card_file(guild, tagged, art, 1, 2)
-    assert len(calls) == 2  # the event badge is part of the picture, so the cached GIF can't be reused
 
 
 def test_diagnostics_show_the_legendary_rate_and_economy():

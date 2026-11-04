@@ -138,6 +138,9 @@ def _legendary_rate_line(stats: dict) -> str:
     return f"\nLegendaries offered: **{found}** in {tracked} drops ({rate})"
 
 
+COIN_STAT_KEYS = ("coin_set_bonus", "coin_token_sales", "coin_packs", "coin_upgrades")
+
+
 def diagnostics_embed(
     hourly_buckets: Dict[str, int],
     suggested_drop_chance: float,
@@ -145,6 +148,8 @@ def diagnostics_embed(
     sampling_since: float,
     guild_name: str,
     stats: Optional[dict] = None,
+    pool_line: Optional[str] = None,
+    requests_line: Optional[str] = None,
 ) -> discord.Embed:
     embed = discord.Embed(title=f"cardcollect diagnostics — {guild_name}", color=EMBED_COLOR)
     since = datetime.datetime.fromtimestamp(sampling_since, tz=datetime.timezone.utc)
@@ -192,6 +197,22 @@ def diagnostics_embed(
                    f"Trades: **{stats.get('trades', 0)}** · Trade-ups: **{stats.get('trade_ups', 0)}**"),
             inline=False,
         )
+    if stats and any(stats.get(k) for k in COIN_STAT_KEYS):
+        sets, tokens = stats.get("coin_set_bonus", 0), stats.get("coin_token_sales", 0)
+        packs, upgrades = stats.get("coin_packs", 0), stats.get("coin_upgrades", 0)
+        paid, spent = sets + tokens, packs + upgrades
+        since = datetime.datetime.fromtimestamp(stats.get("coin_since") or sampling_since, tz=datetime.timezone.utc)
+        embed.add_field(
+            name=f"Wondercoin since {since.strftime('%Y-%m-%d')}",
+            value=(f"Paid out: **{paid:,}** (set bonuses {sets:,} · duplicate-token sales {tokens:,})\n"
+                   f"Taken in: **{spent:,}** (packs {packs:,} · upgrades {upgrades:,})\n"
+                   f"Net created: **{paid - spent:+,}** (positive means this cog added coin to the economy)"),
+            inline=False,
+        )
+    if requests_line:
+        embed.add_field(name="Card requests", value=requests_line, inline=False)
+    if pool_line:
+        embed.add_field(name="Pool", value=pool_line, inline=False)
     if stats and stats.get("daily_pulls"):
         days = sorted(stats["daily_pulls"])[-7:]
         embed.add_field(
@@ -225,36 +246,6 @@ def card_image_updated_embed(card: Card) -> discord.Embed:
     return embed
 
 
-def card_removed_embed(card_id: int, name: str) -> discord.Embed:
-    embed = discord.Embed(title="Character removed from pool", color=EMBED_COLOR)
-    embed.description = f"**{name}** (ID {card_id}) will no longer drop. Members who already own it keep their copy."
-    return embed
-
-
-def cards_removed_embed(retired: Sequence[Tuple[int, str]], not_found: Sequence[int]) -> discord.Embed:
-    """Bulk version of card_removed_embed, for `.card removecard <id> <id> ...`."""
-    embed = discord.Embed(title="Characters removed from pool", color=EMBED_COLOR)
-    if retired:
-        lines = [f"**{name}** (ID {cid})" for cid, name in retired]
-        text = "\n".join(lines)
-        if len(text) > 1024:
-            text = text[:1000] + f"\n… and {len(lines) - 1} more"
-        embed.add_field(
-            name=f"Retired ({len(retired)})",
-            value=text + "\n\nMembers who already own any of these keep their copy.",
-            inline=False,
-        )
-    if not_found:
-        embed.add_field(
-            name=f"Not found ({len(not_found)})",
-            value=", ".join(str(cid) for cid in not_found),
-            inline=False,
-        )
-    if not retired and not not_found:
-        embed.description = "Nothing to remove."
-    return embed
-
-
 def card_info_embed(card: Card, owner_count: int, owner_mentions: Sequence[str]) -> discord.Embed:
     embed = discord.Embed(title=card.name, color=EMBED_COLOR)
     series = card.series or "—"
@@ -276,16 +267,6 @@ def card_info_embed(card: Card, owner_count: int, owner_mentions: Sequence[str])
         if owner_count > len(owner_mentions):
             text += f", +{owner_count - len(owner_mentions)} more"
         embed.add_field(name="Owners", value=text, inline=False)
-    return embed
-
-
-def pool_reset_embed(count: int) -> discord.Embed:
-    embed = discord.Embed(title="Pool reset", color=EMBED_COLOR)
-    embed.description = (
-        f"Retired all {count} active characters. Nothing will drop until you re-import "
-        f"(`.card importpool`) or re-add (`.card addcard`). Members who already own a "
-        f"retired card keep their copy."
-    )
     return embed
 
 
