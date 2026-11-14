@@ -14,10 +14,10 @@ async def give(cog, guild, a, b, channel, arg):
 
 
 @pytest.mark.asyncio
-async def test_several_cards_move_in_one_command_by_number_and_name(cog):
+async def test_several_cards_move_in_one_command_by_number(cog):
     guild, a, b, channel, ids = await setup(cog, 701)
     await set_state(cog, a, collection=[ids["Rem"], ids["Ram"], ids["Emilia"]], finishes={ids["Emilia"]: 2})
-    ctx = await give(cog, guild, a, b, channel, f"{ids['Rem']},{ids['Emilia']}, ram")
+    ctx = await give(cog, guild, a, b, channel, f"{ids['Rem']},#{ids['Emilia']}, {ids['Ram']}")
     assert (await cog._member_state(a)).collection == []
     receiver = await cog._member_state(b)
     assert sorted(receiver.collection) == sorted(ids.values()) and receiver.finish_of(ids["Emilia"]) == 2
@@ -29,7 +29,7 @@ async def test_one_bad_entry_moves_nothing(cog):
     guild, a, b, channel, ids = await setup(cog, 702)
     await set_state(cog, a, collection=[ids["Rem"]])
     ctx = await give(cog, guild, a, b, channel, f"{ids['Rem']},{ids['Emilia']}")  # doesn't own Emilia
-    assert "don't have" in ctx.sent[-1].content
+    assert "enough copies" in ctx.sent[-1].content
     assert (await cog._member_state(a)).collection == [ids["Rem"]]
     assert (await cog._member_state(b)).collection == []
 
@@ -39,7 +39,7 @@ async def test_the_same_card_twice_needs_two_copies(cog):
     guild, a, b, channel, ids = await setup(cog, 703)
     await set_state(cog, a, collection=[ids["Rem"]])
     ctx = await give(cog, guild, a, b, channel, f"{ids['Rem']},{ids['Rem']}")
-    assert "copies" in ctx.sent[-1].content or "so many" in ctx.sent[-1].content
+    assert "enough copies" in ctx.sent[-1].content
     assert (await cog._member_state(a)).collection == [ids["Rem"]]
     await set_state(cog, a, collection=[ids["Rem"], ids["Rem"]])
     await give(cog, guild, a, b, channel, f"{ids['Rem']},{ids['Rem']}")
@@ -77,3 +77,14 @@ async def test_a_card_name_with_a_comma_is_still_one_card(cog):
     await set_state(cog, a, collection=[cid])
     await give(cog, guild, a, b, channel, "Rem, Oni")
     assert (await cog._member_state(b)).collection == [cid]
+
+
+@pytest.mark.asyncio
+async def test_several_cards_by_name_are_refused_with_the_number_hint(cog):
+    guild, a, b, channel, ids = await setup(cog, 707)
+    await set_state(cog, a, collection=[ids["Rem"], ids["Ram"]])
+    ctx = await give(cog, guild, a, b, channel, f"{ids['Rem']}, Ram")
+    assert "numbers" in ctx.sent[-1].content
+    assert (await cog._member_state(a)).collection == [ids["Rem"], ids["Ram"]]
+    ctx = await give(cog, guild, a, b, channel, ",".join(["1"] * 11))
+    assert "At most" in ctx.sent[-1].content

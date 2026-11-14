@@ -1658,7 +1658,7 @@ class CardCollect(commands.Cog):
     @commands.guild_only()
     async def card_give(self, ctx: commands.Context, member: discord.Member, *, card_arg: str):
         """Give one of your cards to another member, or several at once:
-        `.card give @member 810,780,Rem` (up to 10). One-way, no confirmation.
+        `.card give @member 810,780,819` (card numbers, up to 10). One-way, no confirmation.
         If you hold a tradeable spare (see MAX_COPIES_KEPT), giving it away
         doesn't touch your showcase as long as you still keep one copy."""
         if member.id == ctx.author.id:
@@ -1703,17 +1703,22 @@ class CardCollect(commands.Cog):
                 await ctx.send(nudge, allowed_mentions=discord.AllowedMentions.none())
 
     async def _give_many(self, ctx: commands.Context, member: discord.Member, card_arg: str) -> None:
-        """`.card give @member 810,780,Rem`: several cards in one go. All or
-        nothing: if any entry is unclear or not yours, nothing moves."""
+        """`.card give @member 810,780,819`: several cards by number in one go.
+        All or nothing: if any isn't yours, nothing moves."""
         async with self._get_claim_lock(ctx.guild.id):
-            ids, problem = await self.resolve_offer(ctx.guild, ctx.author, card_arg)
-            if problem:
-                await ctx.send(problem)
+            parts = [p.strip().lstrip("#").strip() for p in card_arg.split(",") if p.strip()]
+            if not parts or not all(p.isdigit() for p in parts):
+                await ctx.send("To give several cards, use their numbers: `.card give @member 810,780,819`.")
                 return
-            if not ids:
-                await ctx.send("No card matches that.")
+            ids = [int(p) for p in parts]
+            if len(ids) > TRADE_MAX_CARDS:
+                await ctx.send(f"At most {TRADE_MAX_CARDS} cards at a time.")
                 return
             giver_state = await self._member_state(ctx.author)
+            missing = engine.missing_for_offer(giver_state.collection, ids)
+            if missing:
+                await ctx.send(f"You don't have enough copies of #{missing[0]}. Nothing was given.")
+                return
             receiver_state = await self._member_state(member)
             sell_prices = await self.config.guild(ctx.guild).sell_prices()
             rows, set_lines, nudge = [], [], None
