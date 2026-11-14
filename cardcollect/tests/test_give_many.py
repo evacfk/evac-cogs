@@ -57,3 +57,23 @@ async def test_a_card_over_the_copy_limit_becomes_a_token_and_a_set_still_pays(c
     assert len(receiver.sell_tokens) == 1  # Rem was past the limit
     assert bank.balances[(guild.id, b.id)] > before  # Re:Zero set completed
     assert any("completed" in m.content for m in ctx.sent if getattr(m, "content", None))
+
+
+@pytest.mark.asyncio
+async def test_a_trailing_comma_gifts_one_card_with_a_singular_title(cog):
+    guild, a, b, channel, ids = await setup(cog, 705)
+    await set_state(cog, a, collection=[ids["Rem"]])
+    ctx = await give(cog, guild, a, b, channel, f"{ids['Rem']},")
+    assert any((e.title or "") == "1 card gifted" for m in ctx.sent for e in m.embeds)
+
+
+@pytest.mark.asyncio
+async def test_a_card_name_with_a_comma_is_still_one_card(cog):
+    guild, a, b, channel, ids = await setup(cog, 706)
+    cid = ids["Rem"]
+    pool = await cog.config.guild(guild).pool()
+    pool[str(cid)]["name"] = "Rem, Oni"
+    await cog.config.guild(guild).pool.set(pool)
+    await set_state(cog, a, collection=[cid])
+    await give(cog, guild, a, b, channel, "Rem, Oni")
+    assert (await cog._member_state(b)).collection == [cid]

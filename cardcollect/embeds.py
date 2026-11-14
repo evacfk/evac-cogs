@@ -61,7 +61,7 @@ def give_result_embed(card: Card, giver: discord.abc.User, receiver: discord.abc
 
 def give_many_embed(rows, giver: discord.abc.User, receiver: discord.abc.User) -> discord.Embed:
     """`rows` is [(card, outcome)]: outcome is what the receiver got from it."""
-    embed = discord.Embed(title=f"{len(rows)} cards gifted", color=EMBED_COLOR)
+    embed = discord.Embed(title=f"{len(rows)} card{'' if len(rows) == 1 else 's'} gifted", color=EMBED_COLOR)
     notes = {"sell_token": " · became a duplicate token (they already had 2)", "duplicate": " · a spare"}
     lines = [f"{RARITY_EMOJI.get(c.rarity, '')} **{discord.utils.escape_markdown(c.name)}** `#{c.card_id}`{notes.get(o, '')}"
              for c, o in rows]

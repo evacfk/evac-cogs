@@ -1667,10 +1667,10 @@ class CardCollect(commands.Cog):
         if member.bot:
             await ctx.send("Bots don't collect cards.")
             return
-        if "," in card_arg:
+        card = await self._resolve_card_arg(ctx.guild, card_arg)
+        if card is None and "," in card_arg:  # a card name with a comma in it still counts as one card
             await self._give_many(ctx, member, card_arg)
             return
-        card = await self._resolve_card_arg(ctx.guild, card_arg)
         if card is None:
             await ctx.send("No card matches that.")
             return
@@ -1784,7 +1784,7 @@ class CardCollect(commands.Cog):
                 return [], f"“{raw[:60]}” could be several of your cards: {names}. Use the number."
             ids.append(match[0].card_id)
         if len(ids) > TRADE_MAX_CARDS:
-            return [], f"Put in at most {TRADE_MAX_CARDS} cards."
+            return [], f"At most {TRADE_MAX_CARDS} cards at a time."
         missing = engine.missing_for_offer(state.collection, ids)
         if missing:
             return [], f"You only have so many copies of #{missing[0]}."
