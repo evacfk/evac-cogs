@@ -1657,7 +1657,8 @@ class CardCollect(commands.Cog):
     @card.command(name="give")
     @commands.guild_only()
     async def card_give(self, ctx: commands.Context, member: discord.Member, *, card_arg: str):
-        """Give one of your cards to another member. One-way, no confirmation.
+        """Give one of your cards to another member, or several at once:
+        `.card give @member 810,780,Rem` (up to 10). One-way, no confirmation.
         If you hold a tradeable spare (see MAX_COPIES_KEPT), giving it away
         doesn't touch your showcase as long as you still keep one copy."""
         if member.id == ctx.author.id:
@@ -1665,6 +1666,9 @@ class CardCollect(commands.Cog):
             return
         if member.bot:
             await ctx.send("Bots don't collect cards.")
+            return
+        if "," in card_arg:
+            await self._give_many(ctx, member, card_arg)
             return
         card = await self._resolve_card_arg(ctx.guild, card_arg)
         if card is None:
@@ -1697,6 +1701,43 @@ class CardCollect(commands.Cog):
             nudge = await self.upgrade_nudge(ctx.guild, receiver_state, card, who=member.mention)
             if nudge:
                 await ctx.send(nudge, allowed_mentions=discord.AllowedMentions.none())
+
+    async def _give_many(self, ctx: commands.Context, member: discord.Member, card_arg: str) -> None:
+        """`.card give @member 810,780,Rem`: several cards in one go. All or
+        nothing: if any entry is unclear or not yours, nothing moves."""
+        async with self._get_claim_lock(ctx.guild.id):
+            ids, problem = await self.resolve_offer(ctx.guild, ctx.author, card_arg)
+            if problem:
+                await ctx.send(problem)
+                return
+            if not ids:
+                await ctx.send("No card matches that.")
+                return
+            giver_state = await self._member_state(ctx.author)
+            receiver_state = await self._member_state(member)
+            sell_prices = await self.config.guild(ctx.guild).sell_prices()
+            rows, set_lines, nudge = [], [], None
+            for cid in ids:
+                card = await self._card_by_id(ctx.guild, cid)
+                if card is None:
+                    continue
+                outcome, _finish = self._move_copy(giver_state, receiver_state, card, sell_prices)
+                rows.append((card, outcome))
+                set_done = await self._complete_set(ctx.guild, member, receiver_state, card, outcome)
+                if set_done is not None:
+                    set_lines.append(f"\U0001f3c6 {member.mention} completed the **{set_done[0]}** set: +{set_done[1]:,} wondercoin!")
+            await self._save_member_state(ctx.author, giver_state)
+            await self._save_member_state(member, receiver_state)
+            for card, outcome in rows:
+                if outcome in ("duplicate", "sell_token"):
+                    nudge = await self.upgrade_nudge(ctx.guild, receiver_state, card, who=member.mention)
+                    if nudge:
+                        break
+        await ctx.send(embed=embeds.give_many_embed(rows, ctx.author, member))
+        for line in set_lines:
+            await ctx.send(line)
+        if nudge:
+            await ctx.send(nudge, allowed_mentions=discord.AllowedMentions.none())
 
     # -- trade --------------------------------------------------------------
 

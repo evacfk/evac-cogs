@@ -59,6 +59,17 @@ def give_result_embed(card: Card, giver: discord.abc.User, receiver: discord.abc
     return embed
 
 
+def give_many_embed(rows, giver: discord.abc.User, receiver: discord.abc.User) -> discord.Embed:
+    """`rows` is [(card, outcome)]: outcome is what the receiver got from it."""
+    embed = discord.Embed(title=f"{len(rows)} cards gifted", color=EMBED_COLOR)
+    notes = {"sell_token": " · became a duplicate token (they already had 2)", "duplicate": " · a spare"}
+    lines = [f"{RARITY_EMOJI.get(c.rarity, '')} **{discord.utils.escape_markdown(c.name)}** `#{c.card_id}`{notes.get(o, '')}"
+             for c, o in rows]
+    embed.description = "\n".join(lines)[:4000]
+    embed.add_field(name="From → To", value=f"{giver.mention} → {receiver.mention}", inline=False)
+    return embed
+
+
 def leaderboard_embed(entries: Sequence[Tuple[discord.abc.User, int]], guild_name: str) -> discord.Embed:
     embed = discord.Embed(title=f"Card Collection Leaderboard — {guild_name}", color=EMBED_COLOR)
     if not entries:
