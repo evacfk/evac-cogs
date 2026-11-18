@@ -398,7 +398,7 @@ def install(monkeypatch, bank=None):
             return lambda f: f
 
     commands_ns = types.SimpleNamespace(
-        Cog=_Cog, group=_deco, command=_deco, Context=object, guild_only=_passthrough,
+        Cog=_Cog, group=_deco, hybrid_group=_deco, command=_deco, Context=object, guild_only=_passthrough,
         mod_or_permissions=_passthrough, admin_or_permissions=_passthrough, has_permissions=_passthrough,
     )
     core = types.ModuleType("redbot.core")

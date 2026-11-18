@@ -679,3 +679,33 @@ async def test_removed_setter_commands_are_gone(env):
         assert not hasattr(env.mod.Verdict, f"verdict_{gone}")
     for kept in ("add", "queue", "remove", "post", "settings", "top", "results", "suggest", "version"):
         assert hasattr(env.mod.Verdict, f"verdict_{kept}")
+
+
+class _EphCtx(Ctx):
+    async def send(self, content=None, **kw):
+        self.sent.append(content)
+        self.kws = getattr(self, "kws", []) + [kw]
+
+
+async def test_suggest_replies_are_ephemeral_so_slash_users_keep_it_private(env):
+    ctx = _EphCtx(env, Member(env.g, 51))
+    await cmd(env, "verdict_suggest")(env.cog, ctx, text="just words")           # invalid
+    await cmd(env, "verdict_suggest")(env.cog, ctx, text="Q? | a | b")           # accepted
+    await cmd(env, "verdict_suggest")(env.cog, ctx, text="Q2? | a | b")          # cooldown
+    assert len(ctx.kws) == 3 and all(k.get("ephemeral") is True for k in ctx.kws)
+
+
+def test_only_suggest_is_a_slash_command():
+    """Real discord.py: the group exposes one app command, `suggest`; the staff and info commands stay prefix-only."""
+    import pathlib, re
+    src = (pathlib.Path(__file__).parent / "verdict.py").read_text()
+    assert '@commands.hybrid_group(name="verdict"' in src
+    slash = re.findall(r'@verdict\.command\(name="(\w+)"(?!, with_app_command=False)\)', src)
+    assert slash == ["suggest"]
+    assert len(re.findall(r'with_app_command=False', src)) == 8
+
+
+def test_daily_post_points_to_private_suggest():
+    from verdict import embeds
+    e = embeds.question_embed({"seq": 1, "question": "Q?", "options": ["a", "b"]})
+    assert "/verdict suggest" in e.footer.text

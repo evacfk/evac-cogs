@@ -18,6 +18,7 @@ import re
 import time
 
 import discord
+from discord import app_commands
 from redbot.core import Config, commands
 
 from . import embeds, engine
@@ -521,7 +522,7 @@ class Verdict(commands.Cog):
 
     # -- commands ---------------------------------------------------------
 
-    @commands.group(name="verdict", invoke_without_command=True)
+    @commands.hybrid_group(name="verdict", invoke_without_command=True)
     @commands.guild_only()
     async def verdict(self, ctx: commands.Context, member: discord.Member = None):
         """Your Daily Verdict record. Answer in the daily post; `.verdict suggest` to send a question."""
@@ -535,12 +536,12 @@ class Verdict(commands.Cog):
             f"\N{BRAIN} Crowd guesses right: {correct}/{played} ({acc})",
             allowed_mentions=discord.AllowedMentions.none())
 
-    @verdict.command(name="version")
+    @verdict.command(name="version", with_app_command=False)
     async def verdict_version(self, ctx: commands.Context):
         """Show the running build (deploy probe)."""
         await ctx.send(f"Verdict v{COG_VERSION}")
 
-    @verdict.command(name="top")
+    @verdict.command(name="top", with_app_command=False)
     async def verdict_top(self, ctx: commands.Context):
         """This month's best crowd-readers."""
         key = engine.month_key(time.time())
@@ -552,7 +553,7 @@ class Verdict(commands.Cog):
         await ctx.send("\N{BRAIN} **Mind Readers this month**\n" + "\n".join(lines),
                        allowed_mentions=discord.AllowedMentions.none())
 
-    @verdict.command(name="results")
+    @verdict.command(name="results", with_app_command=False)
     async def verdict_results(self, ctx: commands.Context, number: int = 0):
         """Staff: everyone who played a closed question (default: the latest). Not who picked what."""
         if not await self._require_staff(ctx):
@@ -569,28 +570,29 @@ class Verdict(commands.Cog):
             await ctx.send(page, allowed_mentions=discord.AllowedMentions.none())
 
     @verdict.command(name="suggest")
+    @app_commands.describe(text="Your question, then 2 to 4 options, split with | (e.g. Best snack? | Chips | Candy)")
     async def verdict_suggest(self, ctx: commands.Context, *, text: str):
-        """Suggest a question: `.verdict suggest Best snack? | Chips | Candy | Fruit` (2-4 options)."""
+        """Suggest a daily question. /verdict suggest keeps it private; .verdict suggest Q | A | B also works."""
         conf = self.config.guild(ctx.guild)
         review = ctx.guild.get_channel(await conf.review_channel_id() or 0)
         if review is None:
-            await ctx.send("Suggestions aren't open yet.")
+            await ctx.send("Suggestions aren't open yet.", ephemeral=True)
             return
         try:
             question, options = engine.parse_question(text)
         except engine.QuestionError as exc:
-            await ctx.send(str(exc))
+            await ctx.send(str(exc), ephemeral=True)
             return
         mconf = self.config.member(ctx.author)
         wait = SUGGEST_COOLDOWN_SECONDS - (time.time() - await mconf.last_suggest_ts())
         if wait > 0:
-            await ctx.send(f"Slow down a little: try again in {int(wait // 60) + 1} min.")
+            await ctx.send(f"Slow down a little: try again in {int(wait // 60) + 1} min.", ephemeral=True)
             return
         async with self._lock(ctx.guild.id):
             pending = await conf.pending()
             mine = sum(1 for q in pending.values() if q.get("submitter_id") == ctx.author.id)
             if mine >= MAX_PENDING_PER_USER:
-                await ctx.send(f"You already have {mine} waiting for approval. Let those clear first.")
+                await ctx.send(f"You already have {mine} waiting for approval. Let those clear first.", ephemeral=True)
                 return
             data = {"question": question, "options": options, "submitter_id": ctx.author.id}
             try:
@@ -599,16 +601,16 @@ class Verdict(commands.Cog):
                 await msg.add_reaction(TICK)
                 await msg.add_reaction(CROSS)
             except _DISCORD_ERRORS:
-                await ctx.send("I couldn't send that for review. Tell a mod.")
+                await ctx.send("I couldn't send that for review. Tell a mod.", ephemeral=True)
                 return
             pending[str(msg.id)] = data
             await conf.pending.set(pending)
         await mconf.last_suggest_ts.set(time.time())
-        await ctx.send("\N{INBOX TRAY} Sent for approval. If it's picked, it goes out with your name on it.")
+        await ctx.send("\N{INBOX TRAY} Sent for approval. If it's picked, it goes out with your name on it.", ephemeral=True)
 
     # staff
 
-    @verdict.command(name="add")
+    @verdict.command(name="add", with_app_command=False)
     async def verdict_add(self, ctx: commands.Context, *, text: str):
         """Queue a question straight away: `.verdict add Question | A | B`."""
         if not await self._require_staff(ctx):
@@ -623,7 +625,7 @@ class Verdict(commands.Cog):
             n = len(queue)
         await ctx.send(f"Queued (#{n} in line).")
 
-    @verdict.command(name="queue")
+    @verdict.command(name="queue", with_app_command=False)
     async def verdict_queue(self, ctx: commands.Context):
         """Questions waiting their turn."""
         if not await self._require_staff(ctx):
@@ -635,7 +637,7 @@ class Verdict(commands.Cog):
         lines = [f"`{i}.` {q['question']} — {' / '.join(q['options'])}" for i, q in enumerate(queue[:15], 1)]
         await ctx.send("\n".join(lines), allowed_mentions=discord.AllowedMentions.none())
 
-    @verdict.command(name="remove")
+    @verdict.command(name="remove", with_app_command=False)
     async def verdict_remove(self, ctx: commands.Context, number: int):
         """Remove a queued question by its number in `.verdict queue`."""
         if not await self._require_staff(ctx):
@@ -647,7 +649,7 @@ class Verdict(commands.Cog):
             gone = queue.pop(number - 1)
         await ctx.send(f"Removed: {gone['question']}", allowed_mentions=discord.AllowedMentions.none())
 
-    @verdict.command(name="post")
+    @verdict.command(name="post", with_app_command=False)
     async def verdict_post(self, ctx: commands.Context):
         """Close the current question and post the next one now."""
         if not await self._require_staff(ctx):
@@ -718,7 +720,7 @@ class Verdict(commands.Cog):
         return (f"Discussion threads {'on' if on else 'off'} from the next question. "
                 "An open thread still locks at the next post.")
 
-    @verdict.command(name="settings")
+    @verdict.command(name="settings", with_app_command=False)
     async def verdict_settings(self, ctx: commands.Context):
         """Admins: open the settings panel. Mods: print the current settings."""
         if not await self._require_staff(ctx):

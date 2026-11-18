@@ -23,7 +23,7 @@ Use it to answer "does a cog already cover this?" and "what depends on this cog?
 - **secrethunt** 1.14.1: WoW-style secret hunts: hidden, personalised puzzles in forum posts, a Medium logic trial, a Hall of Secrets, and badge roles for Hard and Expert.
 - **serverpulse** 1.8.0: Server activity analytics: busy/quiet hours, reports, heatmap, live board, digests, and an approval-gated weekly recap.
 - **tgfeed** tg-v4: Telegram forum group photos/videos -> Discord channels, media only, read-only and throttled.
-- **verdict** 1.4.1: A daily crowd question: pick your answer, then guess what everyone else picks.
+- **verdict** 1.5.0: A daily crowd question: pick your answer, then guess what everyone else picks.
 - **wonderevents** 1.4.0: Movie and game nights: RSVP buttons, Discord scheduled events, votes, reminders and attendance.
 - **wonderland** 1.6.2: The Wonderland guidebook: .wld command guide, server map and mod cheat sheet, plus the intro form and member stats.
 - **wonderpet** 1.3.0: One server pet raised together in #cuddle: daily free care, coin treats, weekly top carers, evolution.
@@ -156,7 +156,7 @@ Needs: telethon · Config scopes: global
 Data: This cog stores no end-user data.
 
 ### verdict
-v1.4.1 · Verdict · 3235 lines · 67 tests
+v1.5.0 · Verdict · 3238 lines · 70 tests
 Commands:
 - `.verdict`: add, post, queue, remove, results, settings, suggest, top, version
 Links: called by wonderland

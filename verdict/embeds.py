@@ -43,6 +43,7 @@ def question_embed(cur: dict, *, yesterday: str | None = None, award: str | None
         e.add_field(name="\N{CALENDAR} Yesterday", value=_clip(yesterday, 1024 - len(link)) + link, inline=False)
     if award:
         e.add_field(name="\N{CROWN} Mind Reader", value=_clip(award, 1024), inline=False)
+    e.set_footer(text="Got a question for the crowd? /verdict suggest (only you see it)")
     return e
 
 
