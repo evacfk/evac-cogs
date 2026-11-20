@@ -1,6 +1,6 @@
 """Fixed values for the Wonderland guide. No discord/redbot imports here."""
 
-COG_VERSION = "1.6.4"
+COG_VERSION = "1.6.5"
 CONFIG_ID = 0x574C44  # "WLD"
 
 VIEW_TIMEOUT = 120          # seconds the topic buttons stay alive

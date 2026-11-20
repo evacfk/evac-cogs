@@ -49,10 +49,10 @@ class Section:
 PAGES = (
     Page("start", "🌱", "Start here", "New here? Do these first. Nothing is required.", (
         Entry(".birthday set <date>", "add your birthday", requires=("birthday set",)),
-        Entry(".card daily", "a free card, once a day", requires=("card daily",)),
+        Entry(".card daily", "a free card, once a day (or tap Daily Cards in #wondercasino)", requires=("card daily",)),
         Entry(".wld search <word>", "find any command by what it does"),
     ), body="**1.** Introduce yourself in {#intro}\n**2.** Pick your roles in {#role-select}\n"
-            "**3.** Say hi in {#cuddle}\n**4.** Tap **Payday** in {#wondercasino} for free coins\n\n**When you have a minute**"),
+            "**3.** Say hi in {#cuddle}\n**4.** Tap **Payday** and **Daily Cards** in {#wondercasino} for free coins and a free card\n\n**When you have a minute**"),
     Page("economy", "💰", "Economy & Shop", "Earn, spend and send wondercoin.", (
         Entry(".bank balance", "check your coins", requires=("bank balance",)),
         Entry(".bank transfer @user <amount>", "send coins to someone", requires=("bank transfer",)),
@@ -74,7 +74,7 @@ PAGES = (
     Page("games", "🎮", "Games & Activities", "Things to do when you want to play.", (
         Entry(".fish", "go fishing", requires=("fish",)),
         Entry(".fishinfo [@user]", "your catches and fishing stats", requires=("fishinfo",)),
-        Entry(".card daily", "your free card for today, plus today's pack to open or gift", requires=("card daily",)),
+        Entry(".card daily", "your free card for today, plus today's pack to open or gift (also the Daily Cards button in #wondercasino)", requires=("card daily",)),
         Entry(".card", "your collection, score, series sets and wishlist. Want a ping when a card drops? Press the 🔔 button under any drop",
               requires=("card",)),
         Entry(".card find <name>", "open a card: wishlist it, upgrade it to Holo/Prismatic, see who has a spare",
