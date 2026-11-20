@@ -70,6 +70,26 @@ def reaping_embed(ed: dict, *, closed: bool = False, now: float | None = None) -
     return e
 
 
+def signup_embed(reaping_ts: float) -> "discord.Embed":
+    """The pinned sign-up post: what the game is, when it starts, and the two opt buttons under it."""
+    desc = (
+        "A weekly arena game. Volunteer as a tribute, train, sponsor your favorites with Wondercoin and watch the "
+        "live broadcasts. One Victor is crowned every Saturday.\n\n"
+        f"🗓️ **Next Reaping:** {ts(reaping_ts, 'F')} ({ts(reaping_ts)})\n"
+        "🙋 Sun: the Reaping (volunteer or get drafted)\n"
+        "🏋️ Mon: training challenges\n"
+        "💰 Tue: scores and sponsorship open\n"
+        "📺 Tue-Fri, 7 PM PT: live arena broadcasts\n"
+        "👑 Sat, 7 PM PT: the Finale and the Crowning\n\n"
+        "🔔 **Hunger Games pings** gets you a ping for the Reaping, the broadcasts and the Crowning. Press it again to turn them off.\n"
+        "🚫 Hana drafts a few active members each week. Press **Never draft me** to opt out of the draft (you can still "
+        "volunteer). Press it again to opt back in."
+    )
+    e = _embed("🎯 The Hunger Games", desc)
+    e.set_footer(text="May the odds be ever in your favor! Full guide: .wld")
+    return e
+
+
 def roster_embed(ed: dict, title: str, desc: str = "") -> "discord.Embed":
     e = _embed(title, desc)
     e.add_field(name=f"Tributes ({len(ed['roster'])})", value="\n".join(roster_lines(ed)) or "—", inline=False)

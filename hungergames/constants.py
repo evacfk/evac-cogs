@@ -1,7 +1,7 @@
 """Config defaults and lookup tables for hungergames. No discord/redbot imports here."""
 from zoneinfo import ZoneInfo
 
-COG_VERSION = "1.0.2"
+COG_VERSION = "1.0.3"
 CONFIG_IDENTIFIER = 0x48474D31
 HOME_TZ = ZoneInfo("America/Los_Angeles")
 
@@ -144,6 +144,7 @@ DEFAULT_GUILD = {
     "prize_share": PRIZE_SHARE,
     "prize_floor": PRIZE_FLOOR,
     "prices": {k: v[2] for k, v in ITEMS.items()},
+    "signup_message_id": None,        # the pinned sign-up post (pings / never draft me)
     "edition_number": 0,              # the last real edition that ran
     "current": {},                    # the live edition, {} when none (Red can't merge a dict over a None default)
     "last_tributes": [],              # previous edition's tributes: never drafted twice in a row

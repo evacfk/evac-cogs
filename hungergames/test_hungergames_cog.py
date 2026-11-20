@@ -383,6 +383,23 @@ async def test_crowning_shows_the_victors_avatar_and_total_wins(mod):
     assert fields["Total wins"] == "3"                           # 2 before + this one
 
 
+async def test_signup_message_posts_pins_and_refreshes_in_place(mod):
+    cog, guild, people, _ = world(mod, members=5)
+    cog._now = lambda: SUNDAY - 2 * 24 * H                       # the Friday before
+    msg = await cog._act_signup(guild, people[0], None)
+    assert "Posted and pinned" in msg
+    posted = [m for m in ch(guild).sent if m.embed is not None]
+    assert len(posted) == 1 and posted[0].pinned
+    assert {c.custom_id for c in posted[0].view.children} == {"hg:pings", "hg:optout"}
+    assert "Next Reaping" in posted[0].embed.description
+    again = await cog._act_signup(guild, people[0], None)        # pressing again edits, never double-posts
+    assert "Refreshed" in again and len([m for m in ch(guild).sent if m.embed is not None]) == 1
+    assert posted[0].edits
+    await cog.config.guild(guild).channel_id.set(0)
+    with pytest.raises(mod.PanelError):
+        await cog._act_signup(guild, people[0], None)
+
+
 async def test_restart_mid_broadcast_resumes_without_rerolling(mod):
     cog, guild, people, _ = world(mod, members=20)
     await enable(cog, guild)

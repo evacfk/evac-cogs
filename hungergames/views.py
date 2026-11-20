@@ -70,6 +70,23 @@ class ReapingView(discord.ui.View):
         await self.cog.on_pings(interaction)
 
 
+class OptInView(discord.ui.View):
+    """The pinned sign-up post: the same two buttons as the Reaping post (same ids, same handlers), so
+    people can opt in to pings or out of the draft before and between editions."""
+
+    def __init__(self, cog):
+        super().__init__(timeout=None)
+        self.cog = cog
+
+    @discord.ui.button(label="Hunger Games pings", emoji="🔔", style=discord.ButtonStyle.success, custom_id=BTN["pings"])
+    async def pings(self, interaction, button):
+        await self.cog.on_pings(interaction)
+
+    @discord.ui.button(label="Never draft me / Draft me again", style=discord.ButtonStyle.secondary, custom_id=BTN["optout"])
+    async def optout(self, interaction, button):
+        await self.cog.on_optout(interaction)
+
+
 class SwapView(discord.ui.View):
     def __init__(self, cog):
         super().__init__(timeout=None)
@@ -145,7 +162,7 @@ class AllyView(discord.ui.View):
 
 
 def persistent_views(cog) -> list:
-    return [ReapingView(cog), SwapView(cog), TrainingView(cog), CheerView(cog), ArenaView(cog), AllyView(cog)]
+    return [ReapingView(cog), OptInView(cog), SwapView(cog), TrainingView(cog), CheerView(cog), ArenaView(cog), AllyView(cog)]
 
 
 # =====================================================================================================

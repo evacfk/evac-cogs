@@ -1281,6 +1281,31 @@ class HungerGames(commands.Cog):
                              + (f" Sponsors were refunded ({refunded:,} in total)." if refunded else ""))
         return f"Cancelled {engine.edition_title(ed)}." + (f" Refunded {refunded:,} to sponsors." if refunded else "")
 
+    async def _act_signup(self, guild, member, _value) -> str:
+        s = await self.config.guild(guild).all()
+        channel = guild.get_channel(s["channel_id"]) if s["channel_id"] else None
+        if channel is None:
+            raise PanelError("Set the Hunger Games channel first (Setup tab).")
+        _, sched = engine.next_reaping(self._now())
+        embed, view = embeds.signup_embed(engine.step_ts(sched, "reaping")), ui.OptInView(self)
+        if s["signup_message_id"]:
+            try:
+                await channel.get_partial_message(s["signup_message_id"]).edit(embed=embed, view=view)
+                return f"Refreshed the sign-up message in {channel.mention}."
+            except discord.NotFound:
+                pass                                            # deleted by hand: post a fresh one
+            except _DISCORD_ERRORS as exc:
+                raise PanelError(f"I couldn't edit the sign-up message ({exc.__class__.__name__}).")
+        msg = await self._send(channel, embed=embed, view=view)
+        if msg is None:
+            raise PanelError(f"I couldn't post in {channel.mention}. Check my Send Messages and Embed Links permissions.")
+        await self.config.guild(guild).signup_message_id.set(msg.id)
+        try:
+            await msg.pin()
+        except _DISCORD_ERRORS:
+            return f"Posted in {channel.mention}, but I couldn't pin it (needs Manage Messages). Pin it by hand."
+        return f"Posted and pinned in {channel.mention}."
+
     async def _act_test(self, guild, member, _value) -> str:
         async with self._lock(guild.id):
             s = await self.config.guild(guild).all()
