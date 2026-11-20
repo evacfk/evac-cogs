@@ -113,6 +113,8 @@ PAGES = (
     Page("community", "🎉", "Community & Events", "What's happening in the server.", (
         Entry(".event list", "upcoming and live events", requires=("event list",)),
         Entry(".event mytz", "set your timezone for event times", requires=("event mytz",)),
+        Entry(".hg", "The Hunger Games: volunteer, sponsor a tribute, your stats and the Hall of Victors",
+              requires=("hg",)),
         Entry(".verdict top", "this month's best crowd-readers", requires=("verdict top",)),
         Entry("/verdict suggest <question> | <a> | <b>", "suggest a daily question, privately (2-4 options)", requires=("verdict suggest",)),
         Entry(".secrets [@user]", "the secrets someone has found", requires=("secrets",)),
@@ -141,7 +143,8 @@ PAGES = (
               expand=("lurkerset", "minigamehub", "rejoinwatch", "celebrations", "puzzle", "introform", "introcleanup",
                       "gambleset", "duelset", "wonderjackset", "redditfeed", "tgfeed")),
         Entry("{cmds}", "settings panels that sit beside the member command",
-              expand=("event settings", "verdict settings", "bumpreward settings", "wonderpet settings", "card settings")),
+              expand=("event settings", "verdict settings", "bumpreward settings", "wonderpet settings", "card settings",
+                      "hg admin")),
         Entry(".wld publish #channel", "post or refresh the guide in a channel"),
         Entry(".wld roomperms [on|off]", "voice room owners' Manage Permissions: status, or switch it"),
         Entry(".wld economy", "wondercoin report: total in circulation, who holds it, change since the last run"),
@@ -167,6 +170,7 @@ MAP = (
                 public_link=False, unlock="pick the role in role-select"),
         Channel("verified-chat", "✅", "for verified members", public_link=False, unlock="verify first"),
         Channel("bump-us", "🚀", "bump the server and earn rewards"),
+        Channel("hunger-games", "🏹", "the weekly Hunger Games: volunteer, train, sponsor, watch"),
         Channel("chat-topics", "🧵", "specific conversation topics"),
     )),
     Section("other", (

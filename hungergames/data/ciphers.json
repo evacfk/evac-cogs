@@ -1,0 +1,200 @@
+{
+ "words": [
+  "CORNUCOPIA",
+  "TRACKER JACKER",
+  "PARACHUTE",
+  "NIGHTLOCK",
+  "HOVERCRAFT",
+  "MOCKINGJAY",
+  "BLOODBATH",
+  "FORCEFIELD",
+  "SPONSOR",
+  "TRIBUTE",
+  "DISTRICT",
+  "CAPITOL",
+  "GAMEMAKER",
+  "ARENA",
+  "REAPING",
+  "VICTOR",
+  "CANNON",
+  "ANTHEM",
+  "CAMOUFLAGE",
+  "TRIDENT",
+  "MACHETE",
+  "SLINGSHOT",
+  "SNARE",
+  "SHELTER",
+  "CAMPFIRE",
+  "CANTEEN",
+  "RATIONS",
+  "SURVIVAL",
+  "ALLIANCE",
+  "FEAST",
+  "WILDFIRE",
+  "MUTTATION",
+  "THUNDERSTORM",
+  "WATERFALL",
+  "QUICKSAND",
+  "BACKPACK",
+  "FIRST AID",
+  "SILVER",
+  "HOLOGRAM",
+  "SPOTLIGHT",
+  "INTERVIEW",
+  "CHARIOT",
+  "TRAINING",
+  "QUARTER QUELL",
+  "WONDERLAND",
+  "COMPASS",
+  "LANTERN",
+  "ARROWHEAD",
+  "BANDAGE",
+  "RIVERBANK"
+ ],
+ "riddles": [
+  {
+   "q": "I have rivers without water, forests without trees, and mountains without stone. What am I?",
+   "a": [
+    "map"
+   ]
+  },
+  {
+   "q": "The more you take of me, the more you leave behind in the mud. What am I?",
+   "a": [
+    "footsteps",
+    "footprints"
+   ]
+  },
+  {
+   "q": "Feed me dry wood and I live; give me clean water and I die. What am I?",
+   "a": [
+    "fire"
+   ]
+  },
+  {
+   "q": "I have a needle but I never sew, and I always know which way to go. What am I?",
+   "a": [
+    "compass"
+   ]
+  },
+  {
+   "q": "I go up but never come down, no matter how many days the Games last. What am I?",
+   "a": [
+    "age",
+    "your age"
+   ]
+  },
+  {
+   "q": "The more of me there is, the less you see. Tributes love to hide in me. What am I?",
+   "a": [
+    "darkness",
+    "dark",
+    "fog"
+   ]
+  },
+  {
+   "q": "I'm light as a feather, but even the strongest tribute can't hold me for more than a few minutes. What am I?",
+   "a": [
+    "breath",
+    "your breath"
+   ]
+  },
+  {
+   "q": "I have hands but cannot clap, and I tell you how long until the next cannon. What am I?",
+   "a": [
+    "clock",
+    "watch"
+   ]
+  },
+  {
+   "q": "I can be cracked, made, told and played. What am I?",
+   "a": [
+    "joke",
+    "a joke"
+   ]
+  },
+  {
+   "q": "What has one eye but cannot see, and helps you fix a torn tent?",
+   "a": [
+    "needle"
+   ]
+  },
+  {
+   "q": "I'm full of holes but I still hold water. What am I?",
+   "a": [
+    "sponge"
+   ]
+  },
+  {
+   "q": "What can run but never walks, has a mouth but never talks, and has a bed but never sleeps?",
+   "a": [
+    "river"
+   ]
+  },
+  {
+   "q": "I follow you all day in the arena but vanish at night. What am I?",
+   "a": [
+    "shadow",
+    "your shadow"
+   ]
+  },
+  {
+   "q": "What gets wetter the more it dries?",
+   "a": [
+    "towel"
+   ]
+  },
+  {
+   "q": "I am always in front of you in the arena but can never be seen. What am I?",
+   "a": [
+    "future",
+    "the future"
+   ]
+  },
+  {
+   "q": "What has a neck but no head, and keeps your water safe?",
+   "a": [
+    "bottle",
+    "canteen",
+    "flask"
+   ]
+  },
+  {
+   "q": "What breaks the moment you say its name? Tributes hiding in bushes need lots of it.",
+   "a": [
+    "silence"
+   ]
+  },
+  {
+   "q": "I have keys but open no locks, and the Capitol plays the anthem on me. What am I?",
+   "a": [
+    "piano"
+   ]
+  },
+  {
+   "q": "What has many teeth but can't bite, and keeps a tribute's hair camera-ready?",
+   "a": [
+    "comb"
+   ]
+  },
+  {
+   "q": "What can you catch but never throw?",
+   "a": [
+    "cold",
+    "a cold"
+   ]
+  },
+  {
+   "q": "What has roots nobody sees, is taller than trees, yet never grows?",
+   "a": [
+    "mountain"
+   ]
+  },
+  {
+   "q": "What comes down but never goes up, and fills every tribute's canteen?",
+   "a": [
+    "rain"
+   ]
+  }
+ ]
+}

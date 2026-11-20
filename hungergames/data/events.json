@@ -1,0 +1,5384 @@
+{
+ "version": 1,
+ "templates": [
+  {
+   "id": "L001",
+   "text": "{tribute} sprints straight into the Cornucopia, grabs a gleaming backpack, and escapes into the treeline unscathed.",
+   "phases": [
+    "bloodbath"
+   ],
+   "size": 1,
+   "killers": [],
+   "victims": [],
+   "type": "neutral",
+   "tags": []
+  },
+  {
+   "id": "L002",
+   "text": "{tribute_a} and {tribute_b} wrestle over a tempered machete at the edge of the Cornucopia; {tribute_a} overpowers {tribute_b} and strikes a fatal blow.",
+   "phases": [
+    "bloodbath"
+   ],
+   "size": 2,
+   "killers": [
+    0
+   ],
+   "victims": [
+    1
+   ],
+   "type": "combat",
+   "tags": [
+    "weapon"
+   ],
+   "stat": "strength"
+  },
+  {
+   "id": "L003",
+   "text": "{tribute} trips over their own untied shoelaces during the countdown, faceplants into the dirt, and decides to just lie there pretending to be a rock until everyone leaves.",
+   "phases": [
+    "bloodbath"
+   ],
+   "size": 1,
+   "killers": [],
+   "victims": [],
+   "type": "neutral",
+   "tags": []
+  },
+  {
+   "id": "L004",
+   "text": "{tribute_a} hurls a throwing knife across the clearing, catching {tribute_b} mid-sprint before they reach cover.",
+   "phases": [
+    "bloodbath"
+   ],
+   "size": 2,
+   "killers": [
+    0
+   ],
+   "victims": [
+    1
+   ],
+   "type": "combat",
+   "tags": [
+    "hide"
+   ],
+   "stat": "agility"
+  },
+  {
+   "id": "L005",
+   "text": "{tribute} ignores the Cornucopia entirely, bolting into the dense pine forest to secure a hidden water source.",
+   "phases": [
+    "bloodbath"
+   ],
+   "size": 1,
+   "killers": [],
+   "victims": [],
+   "type": "neutral",
+   "tags": [
+    "hide"
+   ]
+  },
+  {
+   "id": "L006",
+   "text": "{tribute_a}, {tribute_b}, and {tribute_c} clash in a chaotic three-way brawl over a crate of rations; {tribute_a} emerges victorious while {tribute_b} and {tribute_c} fall.",
+   "phases": [
+    "bloodbath"
+   ],
+   "size": 3,
+   "killers": [
+    0
+   ],
+   "victims": [
+    1,
+    2
+   ],
+   "type": "combat",
+   "tags": [],
+   "stat": "strength"
+  },
+  {
+   "id": "L007",
+   "text": "{tribute} snatches a coil of rope and a canteen from the pedestal just as arrows whiz past their ear.",
+   "phases": [
+    "bloodbath"
+   ],
+   "size": 1,
+   "killers": [],
+   "victims": [],
+   "type": "neutral",
+   "tags": []
+  },
+  {
+   "id": "L008",
+   "text": "{tribute} steps off their metal launch plate a fraction of a second too early—the perimeter mines detonate instantly.",
+   "phases": [
+    "bloodbath"
+   ],
+   "size": 1,
+   "killers": [],
+   "victims": [
+    0
+   ],
+   "type": "hazard",
+   "tags": [],
+   "stat": "endurance",
+   "hazard": "trap"
+  },
+  {
+   "id": "L009",
+   "text": "{tribute_a} corners {tribute_b} against a supply crate and eliminates them in the opening minutes of the Games.",
+   "phases": [
+    "bloodbath"
+   ],
+   "size": 2,
+   "killers": [
+    0
+   ],
+   "victims": [
+    1
+   ],
+   "type": "combat",
+   "tags": [],
+   "stat": "strength"
+  },
+  {
+   "id": "L010",
+   "text": "{tribute} grabs a bright neon backpack, sprints into the woods, and unzips it only to find 47 rubber ducks and a note from the Gamemakers saying \"Good luck lol.\"",
+   "phases": [
+    "bloodbath"
+   ],
+   "size": 1,
+   "killers": [],
+   "victims": [],
+   "type": "neutral",
+   "tags": []
+  },
+  {
+   "id": "L011",
+   "text": "{tribute_a} shoves {tribute_b} into the Cornucopia moat. {tribute_b} makes a very dramatic splash and an even more dramatic exit. 💥",
+   "phases": [
+    "bloodbath"
+   ],
+   "size": 2,
+   "killers": [
+    0
+   ],
+   "victims": [
+    1
+   ],
+   "type": "combat",
+   "tags": [],
+   "stat": "strength"
+  },
+  {
+   "id": "L012",
+   "text": "{tribute} finds a hidden compartment under the Cornucopia steps containing a thermal cloak and dried jerky.",
+   "phases": [
+    "bloodbath"
+   ],
+   "size": 1,
+   "killers": [],
+   "victims": [],
+   "type": "neutral",
+   "tags": [
+    "hide"
+   ]
+  },
+  {
+   "id": "L013",
+   "text": "{tribute_a} swings a heavy spear at {tribute_b}, driving them back into the brush with a deep gash.",
+   "phases": [
+    "bloodbath"
+   ],
+   "size": 2,
+   "killers": [],
+   "victims": [],
+   "type": "neutral",
+   "tags": []
+  },
+  {
+   "id": "L014",
+   "text": "{tribute} freezes in panic at the sound of the gong, narrowly ducking a stray arrow before scrambling into a hollow log.",
+   "phases": [
+    "bloodbath"
+   ],
+   "size": 1,
+   "killers": [],
+   "victims": [],
+   "type": "neutral",
+   "tags": [
+    "hide"
+   ]
+  },
+  {
+   "id": "L015",
+   "text": "{tribute_a} ambushes {tribute_b} while {tribute_b} is rummaging through a medical crate, ending their run early.",
+   "phases": [
+    "bloodbath"
+   ],
+   "size": 2,
+   "killers": [
+    0
+   ],
+   "victims": [
+    1
+   ],
+   "type": "combat",
+   "tags": [
+    "hunt"
+   ],
+   "stat": "strength"
+  },
+  {
+   "id": "L016",
+   "text": "{tribute} manages to snag a sleek trident from the weapon rack and retreats to high ground.",
+   "phases": [
+    "bloodbath"
+   ],
+   "size": 1,
+   "killers": [],
+   "victims": [],
+   "type": "neutral",
+   "tags": []
+  },
+  {
+   "id": "L017",
+   "text": "{tribute_a} and {tribute_b} lock eyes over the last remaining first-aid kit, play a frantic round of Rock-Paper-Scissors, and honor the outcome before running opposite ways.",
+   "phases": [
+    "bloodbath"
+   ],
+   "size": 2,
+   "killers": [],
+   "victims": [],
+   "type": "neutral",
+   "tags": []
+  },
+  {
+   "id": "L018",
+   "text": "{tribute} gets trampled in the initial stampede toward the center, escaping with bruised ribs and no supplies.",
+   "phases": [
+    "bloodbath"
+   ],
+   "size": 1,
+   "killers": [],
+   "victims": [],
+   "type": "neutral",
+   "tags": []
+  },
+  {
+   "id": "L019",
+   "text": "{tribute_a} uses a wooden shield to bash {tribute_b} unconscious, finishing them off before the first cannon even echoes.",
+   "phases": [
+    "bloodbath"
+   ],
+   "size": 2,
+   "killers": [
+    0
+   ],
+   "victims": [
+    1
+   ],
+   "type": "combat",
+   "tags": [],
+   "stat": "strength"
+  },
+  {
+   "id": "L020",
+   "text": "{tribute} scoops up a box of waterproof matches and a bundle of dried meat before vanishing into the fog.",
+   "phases": [
+    "bloodbath"
+   ],
+   "size": 1,
+   "killers": [],
+   "victims": [],
+   "type": "neutral",
+   "tags": []
+  },
+  {
+   "id": "L021",
+   "text": "{tribute_a} fires a bow from atop the Cornucopia horn, picking off {tribute_b} as they flee toward the river.",
+   "phases": [
+    "bloodbath"
+   ],
+   "size": 2,
+   "killers": [
+    0
+   ],
+   "victims": [
+    1
+   ],
+   "type": "combat",
+   "tags": [],
+   "stat": "agility"
+  },
+  {
+   "id": "L022",
+   "text": "{tribute} discovers a camouflage tarp near the edge of the clearing and wraps themselves in it to blend into the moss.",
+   "phases": [
+    "bloodbath"
+   ],
+   "size": 1,
+   "killers": [],
+   "victims": [],
+   "type": "neutral",
+   "tags": [
+    "hide"
+   ]
+  },
+  {
+   "id": "L023",
+   "text": "{tribute_a} and {tribute_b} engage in a brutal fistfight in the mud; {tribute_a} lands a decisive blow, eliminating {tribute_b}.",
+   "phases": [
+    "bloodbath"
+   ],
+   "size": 2,
+   "killers": [
+    0
+   ],
+   "victims": [
+    1
+   ],
+   "type": "combat",
+   "tags": [],
+   "stat": "strength"
+  },
+  {
+   "id": "L024",
+   "text": "{tribute} grabs a bright orange backpack that turns out to be packed with nothing but empty flasks and tangled wire.",
+   "phases": [
+    "bloodbath"
+   ],
+   "size": 1,
+   "killers": [],
+   "victims": [],
+   "type": "neutral",
+   "tags": []
+  },
+  {
+   "id": "L025",
+   "text": "{tribute_a} throws a heavy axe across the field, striking {tribute_b} squarely between the shoulders.",
+   "phases": [
+    "bloodbath"
+   ],
+   "size": 2,
+   "killers": [
+    0
+   ],
+   "victims": [
+    1
+   ],
+   "type": "combat",
+   "tags": [],
+   "stat": "agility"
+  },
+  {
+   "id": "L026",
+   "text": "{tribute} slips through the chaos unnoticed, securing a small pocketknife and a flask of clean water.",
+   "phases": [
+    "bloodbath"
+   ],
+   "size": 1,
+   "killers": [],
+   "victims": [],
+   "type": "neutral",
+   "tags": []
+  },
+  {
+   "id": "L027",
+   "text": "{tribute_a} and {tribute_b} collide at full speed near a supply pile; {tribute_a} recovers faster and eliminates {tribute_b}.",
+   "phases": [
+    "bloodbath"
+   ],
+   "size": 2,
+   "killers": [
+    0
+   ],
+   "victims": [
+    1
+   ],
+   "type": "combat",
+   "tags": [
+    "hide"
+   ],
+   "stat": "strength"
+  },
+  {
+   "id": "L028",
+   "text": "{tribute} grabs a shiny frying pan from the Cornucopia, bonks a charging rival on the helmet with a loud CLANG, and sprints into the bushes.",
+   "phases": [
+    "bloodbath"
+   ],
+   "size": 1,
+   "killers": [],
+   "victims": [],
+   "type": "neutral",
+   "tags": []
+  },
+  {
+   "id": "L029",
+   "text": "{tribute_a} chases {tribute_b} into a thorn thicket, cornering and eliminating them.",
+   "phases": [
+    "bloodbath"
+   ],
+   "size": 2,
+   "killers": [
+    0
+   ],
+   "victims": [
+    1
+   ],
+   "type": "combat",
+   "tags": [
+    "hunt"
+   ],
+   "stat": "strength"
+  },
+  {
+   "id": "L030",
+   "text": "{tribute} escapes the bloodbath completely untouched, finding a quiet cave overlooking the valley.",
+   "phases": [
+    "bloodbath"
+   ],
+   "size": 1,
+   "killers": [],
+   "victims": [],
+   "type": "neutral",
+   "tags": [
+    "hide"
+   ]
+  },
+  {
+   "id": "L031",
+   "text": "A wall of Gamemaker-engineered wildfire sweeps through the eastern woods; {tribute} barely outruns the flames, singeing their boots.",
+   "phases": [
+    "day",
+    "night"
+   ],
+   "size": 1,
+   "killers": [],
+   "victims": [],
+   "type": "hazard",
+   "tags": [],
+   "stat": "endurance",
+   "hazard": "fire"
+  },
+  {
+   "id": "L032",
+   "text": "Thick, acidic fog rolls into the canyon overnight; {tribute} inhales the toxic fumes before reaching high ground, succumbing to the poison.",
+   "phases": [
+    "day",
+    "finale",
+    "night"
+   ],
+   "size": 1,
+   "killers": [],
+   "victims": [
+    0
+   ],
+   "type": "hazard",
+   "tags": [],
+   "stat": "endurance",
+   "hazard": "night"
+  },
+  {
+   "id": "L033",
+   "text": "{tribute} accidentally disturbs a humming nest of Tracker Jackers; stung repeatedly, they hallucinate and wander off a steep cliff.",
+   "phases": [
+    "day",
+    "finale",
+    "night"
+   ],
+   "size": 1,
+   "killers": [],
+   "victims": [
+    0
+   ],
+   "type": "hazard",
+   "tags": [
+    "hunt"
+   ],
+   "stat": "endurance",
+   "hazard": "night"
+  },
+  {
+   "id": "L034",
+   "text": "A sudden flash flood surges down the riverbed, washing away {tribute}'s makeshift camp and soaking their supplies.",
+   "phases": [
+    "day",
+    "night"
+   ],
+   "size": 1,
+   "killers": [],
+   "victims": [],
+   "type": "hazard",
+   "tags": [],
+   "stat": "endurance",
+   "hazard": "flood"
+  },
+  {
+   "id": "L035",
+   "text": "{tribute} mistakes a bush of deadly Nightlock berries for wild blueberries and eats a handful—a cannon fires moments later.",
+   "phases": [
+    "day",
+    "finale",
+    "night"
+   ],
+   "size": 1,
+   "killers": [],
+   "victims": [
+    0
+   ],
+   "type": "hazard",
+   "tags": [
+    "forage"
+   ],
+   "stat": "intellect",
+   "hazard": "fire"
+  },
+  {
+   "id": "L036",
+   "text": "Freezing hail pelts the arena for six straight hours; {tribute} huddles beneath an overhanging boulder, shivering violently through the night.",
+   "phases": [
+    "night"
+   ],
+   "size": 1,
+   "killers": [],
+   "victims": [],
+   "type": "hazard",
+   "tags": [],
+   "stat": "agility",
+   "hazard": "cold"
+  },
+  {
+   "id": "L037",
+   "text": "A pack of engineered wolf mutts emerges from the mist, hunting {tribute} down before they can climb a tree.",
+   "phases": [
+    "day",
+    "finale",
+    "night"
+   ],
+   "size": 1,
+   "killers": [],
+   "victims": [
+    0
+   ],
+   "type": "hazard",
+   "tags": [
+    "hunt"
+   ],
+   "stat": "endurance",
+   "hazard": "night"
+  },
+  {
+   "id": "L038",
+   "text": "{tribute} steps onto a disguised pressure plate, triggering a volley of wooden darts; they dodge all but one, taking a grazing wound to the shoulder.",
+   "phases": [
+    "day",
+    "night"
+   ],
+   "size": 1,
+   "killers": [],
+   "victims": [],
+   "type": "hazard",
+   "tags": [],
+   "stat": "intellect",
+   "hazard": "trap"
+  },
+  {
+   "id": "L039",
+   "text": "Lightning strikes a towering dead oak directly above {tribute}'s shelter; the crashing timber crushes them instantly.",
+   "phases": [
+    "day",
+    "finale",
+    "night"
+   ],
+   "size": 1,
+   "killers": [],
+   "victims": [
+    0
+   ],
+   "type": "hazard",
+   "tags": [
+    "hide"
+   ],
+   "stat": "endurance",
+   "hazard": "fire"
+  },
+  {
+   "id": "L040",
+   "text": "{tribute} tries to look cool while doing parkour over a fallen log, slips on wet moss, and aggressively argues with a squirrel for twenty minutes out of sheer embarrassment.",
+   "phases": [
+    "day",
+    "night"
+   ],
+   "size": 1,
+   "killers": [],
+   "victims": [],
+   "type": "hazard",
+   "tags": [],
+   "stat": "agility",
+   "hazard": "other"
+  },
+  {
+   "id": "L041",
+   "text": "The Gamemakers trigger a localized earthquake, opening a deep fissure in the valley floor that swallows {tribute} whole.",
+   "phases": [
+    "day",
+    "finale",
+    "night"
+   ],
+   "size": 1,
+   "killers": [],
+   "victims": [
+    0
+   ],
+   "type": "hazard",
+   "tags": [],
+   "stat": "agility",
+   "hazard": "fall"
+  },
+  {
+   "id": "L042",
+   "text": "Swarming monkey mutts descend from the canopy, screeching furiously; {tribute} fends them off with a burning branch.",
+   "phases": [
+    "day",
+    "night"
+   ],
+   "size": 1,
+   "killers": [],
+   "victims": [],
+   "type": "hazard",
+   "tags": [],
+   "stat": "endurance",
+   "hazard": "fire"
+  },
+  {
+   "id": "L043",
+   "text": "{tribute} gets caught in a thick patch of quicksand near the marsh, barely pulling themselves free using a low-hanging vine.",
+   "phases": [
+    "day",
+    "night"
+   ],
+   "size": 1,
+   "killers": [],
+   "victims": [],
+   "type": "hazard",
+   "tags": [],
+   "stat": "endurance",
+   "hazard": "flood"
+  },
+  {
+   "id": "L044",
+   "text": "Temperatures plummet below freezing overnight; {tribute} fails to start a fire and succumbs to severe hypothermia before dawn.",
+   "phases": [
+    "day",
+    "finale",
+    "night"
+   ],
+   "size": 1,
+   "killers": [],
+   "victims": [
+    0
+   ],
+   "type": "hazard",
+   "tags": [],
+   "stat": "endurance",
+   "hazard": "fire"
+  },
+  {
+   "id": "L045",
+   "text": "A sudden flock of razor-beaked jabberjays mimics {tribute}'s most embarrassing middle school memories on loop, dealing devastating emotional damage.",
+   "phases": [
+    "day",
+    "night"
+   ],
+   "size": 1,
+   "killers": [],
+   "victims": [],
+   "type": "hazard",
+   "tags": [],
+   "stat": "endurance",
+   "hazard": "night"
+  },
+  {
+   "id": "L046",
+   "text": "{tribute} wanders too close to the arena's invisible forcefield, getting violently flung backward into a pile of rocks.",
+   "phases": [
+    "day",
+    "night"
+   ],
+   "size": 1,
+   "killers": [],
+   "victims": [],
+   "type": "hazard",
+   "tags": [],
+   "stat": "intellect",
+   "hazard": "trap"
+  },
+  {
+   "id": "L047",
+   "text": "A landslide of loose scree tumbles down the mountain pass; {tribute} is buried beneath tons of rock.",
+   "phases": [
+    "day",
+    "finale",
+    "night"
+   ],
+   "size": 1,
+   "killers": [],
+   "victims": [
+    0
+   ],
+   "type": "hazard",
+   "tags": [],
+   "stat": "agility",
+   "hazard": "fall"
+  },
+  {
+   "id": "L048",
+   "text": "{tribute} taps a maple tree with a makeshift spile, discovering a refreshing source of clean sap and water.",
+   "phases": [
+    "day",
+    "night"
+   ],
+   "size": 1,
+   "killers": [],
+   "victims": [],
+   "type": "hazard",
+   "tags": [
+    "forage",
+    "hide"
+   ],
+   "stat": "endurance",
+   "hazard": "other"
+  },
+  {
+   "id": "L049",
+   "text": "Toxic spores erupt from giant puffball mushrooms in the swamp; {tribute} holds their breath and sprints to clear air just in time.",
+   "phases": [
+    "day",
+    "night"
+   ],
+   "size": 1,
+   "killers": [],
+   "victims": [],
+   "type": "hazard",
+   "tags": [],
+   "stat": "endurance",
+   "hazard": "poison"
+  },
+  {
+   "id": "L050",
+   "text": "{tribute} is bitten by a camouflaged viper while gathering firewood; without antivenom, the venom proves fatal within an hour.",
+   "phases": [
+    "day",
+    "finale",
+    "night"
+   ],
+   "size": 1,
+   "killers": [],
+   "victims": [
+    0
+   ],
+   "type": "hazard",
+   "tags": [
+    "hide"
+   ],
+   "stat": "endurance",
+   "hazard": "fire"
+  },
+  {
+   "id": "L051",
+   "text": "Blistering heatwaves bake the open plains; {tribute} suffers severe heatstroke and collapses in the tall grass.",
+   "phases": [
+    "day"
+   ],
+   "size": 1,
+   "killers": [],
+   "victims": [],
+   "type": "hazard",
+   "tags": [],
+   "stat": "endurance",
+   "hazard": "heat"
+  },
+  {
+   "id": "L052",
+   "text": "A Gamemaker fireball explodes fifty yards from {tribute}'s camp, scorching their backpack and forcing them to relocate.",
+   "phases": [
+    "day",
+    "night"
+   ],
+   "size": 1,
+   "killers": [],
+   "victims": [],
+   "type": "hazard",
+   "tags": [
+    "hide"
+   ],
+   "stat": "endurance",
+   "hazard": "fire"
+  },
+  {
+   "id": "L053",
+   "text": "{tribute} slips on wet moss along a waterfall ledge, plummeting into the jagged rocks below.",
+   "phases": [
+    "day",
+    "finale",
+    "night"
+   ],
+   "size": 1,
+   "killers": [],
+   "victims": [
+    0
+   ],
+   "type": "hazard",
+   "tags": [],
+   "stat": "agility",
+   "hazard": "flood"
+  },
+  {
+   "id": "L054",
+   "text": "Heavy jungle mist blinds the arena for an entire day; {tribute} uses the cover to quietly relocate without being spotted.",
+   "phases": [
+    "day",
+    "night"
+   ],
+   "size": 1,
+   "killers": [],
+   "victims": [],
+   "type": "hazard",
+   "tags": [
+    "hide"
+   ],
+   "stat": "endurance",
+   "hazard": "night"
+  },
+  {
+   "id": "L055",
+   "text": "A mechanical snare snaps around {tribute}'s ankle, hoisting them upside down like a piñata until they awkwardly saw through the rope three hours later.",
+   "phases": [
+    "day",
+    "night"
+   ],
+   "size": 1,
+   "killers": [],
+   "victims": [],
+   "type": "hazard",
+   "tags": [],
+   "stat": "intellect",
+   "hazard": "trap"
+  },
+  {
+   "id": "L056",
+   "text": "{tribute} eats spoiled meat salvaged from an old camp, suffering severe food poisoning through the night.",
+   "phases": [
+    "night"
+   ],
+   "size": 1,
+   "killers": [],
+   "victims": [],
+   "type": "hazard",
+   "tags": [],
+   "stat": "intellect",
+   "hazard": "poison"
+  },
+  {
+   "id": "L057",
+   "text": "Razor-sharp steel wire strung between two birch trees catches {tribute} mid-sprint in the dark.",
+   "phases": [
+    "day",
+    "finale",
+    "night"
+   ],
+   "size": 1,
+   "killers": [],
+   "victims": [
+    0
+   ],
+   "type": "hazard",
+   "tags": [],
+   "stat": "intellect",
+   "hazard": "trap"
+  },
+  {
+   "id": "L058",
+   "text": "{tribute} finds a cluster of edible wild tubers and roasts them over a carefully concealed smokeless fire.",
+   "phases": [
+    "day",
+    "night"
+   ],
+   "size": 1,
+   "killers": [],
+   "victims": [],
+   "type": "hazard",
+   "tags": [
+    "forage"
+   ],
+   "stat": "endurance",
+   "hazard": "fire"
+  },
+  {
+   "id": "L059",
+   "text": "A pack of jackal mutts corners {tribute} against a cliff face; {tribute} fights valiantly before being overwhelmed.",
+   "phases": [
+    "day",
+    "finale",
+    "night"
+   ],
+   "size": 1,
+   "killers": [],
+   "victims": [
+    0
+   ],
+   "type": "hazard",
+   "tags": [],
+   "stat": "endurance",
+   "hazard": "mutt"
+  },
+  {
+   "id": "L060",
+   "text": "Torrential monsoon rains flood {tribute}'s dugout shelter, forcing them to spend the night perched in a swaying tree fork.",
+   "phases": [
+    "night"
+   ],
+   "size": 1,
+   "killers": [],
+   "victims": [],
+   "type": "hazard",
+   "tags": [
+    "hide"
+   ],
+   "stat": "endurance",
+   "hazard": "flood"
+  },
+  {
+   "id": "L061",
+   "text": "{tribute} spends four hours painstakingly building a luxury pine-needle bed, lies down, and immediately realizes they built it directly on top of a fire ant hill.",
+   "phases": [
+    "day",
+    "night"
+   ],
+   "size": 1,
+   "killers": [],
+   "victims": [],
+   "type": "hazard",
+   "tags": [],
+   "stat": "endurance",
+   "hazard": "fire"
+  },
+  {
+   "id": "L062",
+   "text": "A cloud of hallucinogenic pollen drifts across the meadow; {tribute} becomes convinced they are a majestic swan and aggressively hisses at passing trees.",
+   "phases": [
+    "day",
+    "night"
+   ],
+   "size": 1,
+   "killers": [],
+   "victims": [],
+   "type": "hazard",
+   "tags": [],
+   "stat": "endurance",
+   "hazard": "night"
+  },
+  {
+   "id": "L063",
+   "text": "{tribute} falls through thin ice on a high-altitude tarn, freezing before they can haul themselves back onto the bank.",
+   "phases": [
+    "day",
+    "finale",
+    "night"
+   ],
+   "size": 1,
+   "killers": [],
+   "victims": [
+    0
+   ],
+   "type": "hazard",
+   "tags": [],
+   "stat": "agility",
+   "hazard": "cold"
+  },
+  {
+   "id": "L064",
+   "text": "{tribute} weaves a sturdy basket out of willow reeds and catches three plump trout in a shallow stream.",
+   "phases": [
+    "day",
+    "night"
+   ],
+   "size": 1,
+   "killers": [],
+   "victims": [],
+   "type": "hazard",
+   "tags": [
+    "forage"
+   ],
+   "stat": "endurance",
+   "hazard": "other"
+  },
+  {
+   "id": "L065",
+   "text": "Swarming flesh-eating beetles erupt from a rotting log {tribute} sat upon; {tribute} bolts into the river to wash them off.",
+   "phases": [
+    "day",
+    "night"
+   ],
+   "size": 1,
+   "killers": [],
+   "victims": [],
+   "type": "hazard",
+   "tags": [],
+   "stat": "endurance",
+   "hazard": "poison"
+  },
+  {
+   "id": "L066",
+   "text": "A Gamemaker lightning storm targets the tallest trees in the sector; {tribute} stays low in a ditch and survives unscathed.",
+   "phases": [
+    "day",
+    "night"
+   ],
+   "size": 1,
+   "killers": [],
+   "victims": [],
+   "type": "hazard",
+   "tags": [],
+   "stat": "endurance",
+   "hazard": "fire"
+  },
+  {
+   "id": "L067",
+   "text": "{tribute} inhales thick smoke while trying to escape a brushfire, collapsing from asphyxiation.",
+   "phases": [
+    "day",
+    "finale",
+    "night"
+   ],
+   "size": 1,
+   "killers": [],
+   "victims": [
+    0
+   ],
+   "type": "hazard",
+   "tags": [],
+   "stat": "endurance",
+   "hazard": "fire"
+  },
+  {
+   "id": "L068",
+   "text": "{tribute} constructs a camouflaged tree blind high in the pines, sleeping safely through the night completely undetected.",
+   "phases": [
+    "night"
+   ],
+   "size": 1,
+   "killers": [],
+   "victims": [],
+   "type": "hazard",
+   "tags": [
+    "hide"
+   ],
+   "stat": "endurance",
+   "hazard": "other"
+  },
+  {
+   "id": "L069",
+   "text": "Giant mutated hornets chase {tribute} for two miles until {tribute} dives beneath a waterfall to break their trail.",
+   "phases": [
+    "day",
+    "night"
+   ],
+   "size": 1,
+   "killers": [],
+   "victims": [],
+   "type": "hazard",
+   "tags": [
+    "hunt"
+   ],
+   "stat": "agility",
+   "hazard": "poison"
+  },
+  {
+   "id": "L070",
+   "text": "{tribute} steps on a rusted bear trap hidden beneath autumn leaves, severing their mobility and leaving them stranded.",
+   "phases": [
+    "day",
+    "finale",
+    "night"
+   ],
+   "size": 1,
+   "killers": [],
+   "victims": [
+    0
+   ],
+   "type": "hazard",
+   "tags": [
+    "hide"
+   ],
+   "stat": "intellect",
+   "hazard": "trap"
+  },
+  {
+   "id": "L071",
+   "text": "{tribute} discovers a hidden natural hot spring, washing off days of grime and soothing sore muscles.",
+   "phases": [
+    "day",
+    "night"
+   ],
+   "size": 1,
+   "killers": [],
+   "victims": [],
+   "type": "hazard",
+   "tags": [
+    "hide"
+   ],
+   "stat": "endurance",
+   "hazard": "other"
+  },
+  {
+   "id": "L072",
+   "text": "Acid rain begins to drizzle over the northern sector; {tribute} shelters beneath a thick slate overhang until the clouds pass.",
+   "phases": [
+    "day",
+    "night"
+   ],
+   "size": 1,
+   "killers": [],
+   "victims": [],
+   "type": "hazard",
+   "tags": [
+    "hide"
+   ],
+   "stat": "endurance",
+   "hazard": "poison"
+  },
+  {
+   "id": "L073",
+   "text": "{tribute} misjudges a leap across a narrow gorge, losing their footing and falling into the abyss.",
+   "phases": [
+    "day",
+    "finale",
+    "night"
+   ],
+   "size": 1,
+   "killers": [],
+   "victims": [
+    0
+   ],
+   "type": "hazard",
+   "tags": [],
+   "stat": "agility",
+   "hazard": "fall"
+  },
+  {
+   "id": "L074",
+   "text": "{tribute} successfully snares a wild rabbit, enjoying a hearty meal that restores their strength.",
+   "phases": [
+    "day",
+    "night"
+   ],
+   "size": 1,
+   "killers": [],
+   "victims": [],
+   "type": "hazard",
+   "tags": [
+    "forage"
+   ],
+   "stat": "intellect",
+   "hazard": "trap"
+  },
+  {
+   "id": "L075",
+   "text": "A sudden sinkhole opens beneath {tribute}'s sleeping bag; they scramble out just as the earth swallows their gear.",
+   "phases": [
+    "night"
+   ],
+   "size": 1,
+   "killers": [],
+   "victims": [],
+   "type": "hazard",
+   "tags": [],
+   "stat": "agility",
+   "hazard": "fall"
+  },
+  {
+   "id": "L076",
+   "text": "{tribute_a} stalks {tribute_b} through the dense ferns for hours before striking silently from behind.",
+   "phases": [
+    "day",
+    "finale",
+    "night"
+   ],
+   "size": 2,
+   "killers": [
+    0
+   ],
+   "victims": [
+    1
+   ],
+   "type": "combat",
+   "tags": [
+    "hunt"
+   ],
+   "stat": "strength"
+  },
+  {
+   "id": "L077",
+   "text": "{tribute_a} and {tribute_b} clash in a fierce sword duel by the river; {tribute_a} disarms {tribute_b} and lands the finishing blow.",
+   "phases": [
+    "day",
+    "finale",
+    "night"
+   ],
+   "size": 2,
+   "killers": [
+    0
+   ],
+   "victims": [
+    1
+   ],
+   "type": "combat",
+   "tags": [
+    "weapon"
+   ],
+   "stat": "strength"
+  },
+  {
+   "id": "L078",
+   "text": "{tribute_a} ambushes {tribute_b} at dusk, but {tribute_b} fights back ferociously and escapes into the shadows.",
+   "phases": [
+    "night"
+   ],
+   "size": 2,
+   "killers": [],
+   "victims": [],
+   "type": "skirmish",
+   "tags": [
+    "hunt"
+   ]
+  },
+  {
+   "id": "L079",
+   "text": "{tribute_a} drops out of a tree onto {tribute_b} like a very serious squirrel. {tribute_b} never sees it coming, or going. 💥",
+   "phases": [
+    "day",
+    "finale",
+    "night"
+   ],
+   "size": 2,
+   "killers": [
+    0
+   ],
+   "victims": [
+    1
+   ],
+   "type": "combat",
+   "tags": [],
+   "stat": "agility"
+  },
+  {
+   "id": "L080",
+   "text": "{tribute_a} spots {tribute_b}'s campfire from a ridge and looses a single, deadly arrow into the camp.",
+   "phases": [
+    "day",
+    "finale",
+    "night"
+   ],
+   "size": 2,
+   "killers": [
+    0
+   ],
+   "victims": [
+    1
+   ],
+   "type": "combat",
+   "tags": [],
+   "stat": "agility"
+  },
+  {
+   "id": "L081",
+   "text": "{tribute_a} and {tribute_b} trade heavy blows in a rocky ravine before {tribute_a} pins {tribute_b} and ends the fight.",
+   "phases": [
+    "day",
+    "finale",
+    "night"
+   ],
+   "size": 2,
+   "killers": [
+    0
+   ],
+   "victims": [
+    1
+   ],
+   "type": "combat",
+   "tags": [],
+   "stat": "strength"
+  },
+  {
+   "id": "L082",
+   "text": "{tribute_a} sets a deadfall log trap along a game trail; {tribute_b} walks right beneath it.",
+   "phases": [
+    "day",
+    "finale",
+    "night"
+   ],
+   "size": 2,
+   "killers": [
+    0
+   ],
+   "victims": [
+    1
+   ],
+   "type": "combat",
+   "tags": [],
+   "stat": "intellect"
+  },
+  {
+   "id": "L083",
+   "text": "{tribute_a} chases {tribute_b} across a boulder field, throwing a spear that grazes {tribute_b}'s leg before {tribute_b} vanishes into a cave.",
+   "phases": [
+    "day",
+    "night"
+   ],
+   "size": 2,
+   "killers": [],
+   "victims": [],
+   "type": "skirmish",
+   "tags": [
+    "hide",
+    "hunt"
+   ]
+  },
+  {
+   "id": "L084",
+   "text": "{tribute_a} sneaks into {tribute_b}'s camp while {tribute_b} is asleep, eliminating them quietly before dawn.",
+   "phases": [
+    "finale",
+    "night"
+   ],
+   "size": 2,
+   "killers": [
+    0
+   ],
+   "victims": [
+    1
+   ],
+   "type": "combat",
+   "tags": [],
+   "stat": "strength"
+  },
+  {
+   "id": "L085",
+   "text": "{tribute_a} and {tribute_b} battle furiously in waist-deep water; {tribute_a} forces {tribute_b} under until the bubbles stop.",
+   "phases": [
+    "day",
+    "finale",
+    "night"
+   ],
+   "size": 2,
+   "killers": [
+    0
+   ],
+   "victims": [
+    1
+   ],
+   "type": "combat",
+   "tags": [],
+   "stat": "strength"
+  },
+  {
+   "id": "L086",
+   "text": "{tribute_a} lures {tribute_b} into a narrow canyon ambush with fake footprints, striking them down with a heavy club.",
+   "phases": [
+    "day",
+    "finale",
+    "night"
+   ],
+   "size": 2,
+   "killers": [
+    0
+   ],
+   "victims": [
+    1
+   ],
+   "type": "combat",
+   "tags": [
+    "hunt"
+   ],
+   "stat": "intellect"
+  },
+  {
+   "id": "L087",
+   "text": "{tribute_a} throws pocket sand into {tribute_b}'s eyes during a dramatic standoff, shouts \"SHA-SHAW!\", and sprints away with {tribute_b}'s snacks.",
+   "phases": [
+    "day",
+    "night"
+   ],
+   "size": 2,
+   "killers": [],
+   "victims": [],
+   "type": "skirmish",
+   "tags": [
+    "hunt"
+   ]
+  },
+  {
+   "id": "L088",
+   "text": "{tribute_a} catches {tribute_b} off-guard while {tribute_b} is tending to a wound, delivering a swift final strike.",
+   "phases": [
+    "day",
+    "finale",
+    "night"
+   ],
+   "size": 2,
+   "killers": [
+    0
+   ],
+   "victims": [
+    1
+   ],
+   "type": "combat",
+   "tags": [],
+   "stat": "strength"
+  },
+  {
+   "id": "L089",
+   "text": "{tribute_a} and {tribute_b} cross blades in a clearing; {tribute_b} parries a fatal thrust and sprints away into the mist.",
+   "phases": [
+    "day",
+    "night"
+   ],
+   "size": 2,
+   "killers": [],
+   "victims": [],
+   "type": "skirmish",
+   "tags": [
+    "hunt"
+   ]
+  },
+  {
+   "id": "L090",
+   "text": "{tribute_a} pushes a massive boulder off a cliff edge, crushing {tribute_b}'s camp below.",
+   "phases": [
+    "day",
+    "finale",
+    "night"
+   ],
+   "size": 2,
+   "killers": [
+    0
+   ],
+   "victims": [
+    1
+   ],
+   "type": "combat",
+   "tags": [],
+   "stat": "strength"
+  },
+  {
+   "id": "L091",
+   "text": "{tribute_a} tracks {tribute_b}'s bloody footprints through the mud, cornering and eliminating them near a waterfall.",
+   "phases": [
+    "day",
+    "finale",
+    "night"
+   ],
+   "size": 2,
+   "killers": [
+    0
+   ],
+   "victims": [
+    1
+   ],
+   "type": "combat",
+   "tags": [
+    "hunt"
+   ],
+   "stat": "strength"
+  },
+  {
+   "id": "L092",
+   "text": "{tribute_a} and {tribute_b} engage in a brutal close-quarters struggle; {tribute_a}'s superior training prevails.",
+   "phases": [
+    "day",
+    "finale",
+    "night"
+   ],
+   "size": 2,
+   "killers": [
+    0
+   ],
+   "victims": [
+    1
+   ],
+   "type": "combat",
+   "tags": [],
+   "stat": "strength"
+  },
+  {
+   "id": "L093",
+   "text": "{tribute_a} attempts to assassinate {tribute_b}, only for {tribute_b} to turn the tables and eliminate {tribute_a} instead!",
+   "phases": [
+    "day",
+    "finale",
+    "night"
+   ],
+   "size": 2,
+   "killers": [
+    1
+   ],
+   "victims": [
+    0
+   ],
+   "type": "combat",
+   "tags": [],
+   "stat": "strength"
+  },
+  {
+   "id": "L094",
+   "text": "{tribute_a} hurls a jagged stone at {tribute_b}'s temple, knocking them unconscious before finishing the job.",
+   "phases": [
+    "day",
+    "finale",
+    "night"
+   ],
+   "size": 2,
+   "killers": [
+    0
+   ],
+   "victims": [
+    1
+   ],
+   "type": "combat",
+   "tags": [],
+   "stat": "agility"
+  },
+  {
+   "id": "L095",
+   "text": "{tribute_a} and {tribute_b} lock eyes across a clearing, engage in an intense staring contest for four straight minutes, blink at the exact same time, and awkwardly walk away.",
+   "phases": [
+    "day",
+    "night"
+   ],
+   "size": 2,
+   "killers": [],
+   "victims": [],
+   "type": "skirmish",
+   "tags": [
+    "hunt"
+   ]
+  },
+  {
+   "id": "L096",
+   "text": "{tribute_a} poisons an unattended canteen left near a stream; {tribute_b} finds it, drinks deeply, and collapses.",
+   "phases": [
+    "day",
+    "finale",
+    "night"
+   ],
+   "size": 2,
+   "killers": [
+    0
+   ],
+   "victims": [
+    1
+   ],
+   "type": "combat",
+   "tags": [],
+   "stat": "intellect"
+  },
+  {
+   "id": "L097",
+   "text": "{tribute_a} leaps across two boulders to tackle {tribute_b} off a narrow mountain trail.",
+   "phases": [
+    "day",
+    "finale",
+    "night"
+   ],
+   "size": 2,
+   "killers": [
+    0
+   ],
+   "victims": [
+    1
+   ],
+   "type": "combat",
+   "tags": [],
+   "stat": "agility"
+  },
+  {
+   "id": "L098",
+   "text": "{tribute_a} and {tribute_b} clash during a heavy downpour; {tribute_a} slips in the mud, allowing {tribute_b} to strike a fatal blow.",
+   "phases": [
+    "day",
+    "finale",
+    "night"
+   ],
+   "size": 2,
+   "killers": [
+    1
+   ],
+   "victims": [
+    0
+   ],
+   "type": "combat",
+   "tags": [],
+   "stat": "strength"
+  },
+  {
+   "id": "L099",
+   "text": "{tribute_a} uses a slingshot to pelter {tribute_b} from the treetops, driving {tribute_b} out of the sector without a scratch.",
+   "phases": [
+    "day",
+    "night"
+   ],
+   "size": 2,
+   "killers": [],
+   "victims": [],
+   "type": "skirmish",
+   "tags": [
+    "hunt"
+   ]
+  },
+  {
+   "id": "L100",
+   "text": "{tribute_a} corners {tribute_b} inside a dead-end cavern; a single cannon echoes seconds later.",
+   "phases": [
+    "day",
+    "finale",
+    "night"
+   ],
+   "size": 2,
+   "killers": [
+    0
+   ],
+   "victims": [
+    1
+   ],
+   "type": "combat",
+   "tags": [
+    "hide"
+   ],
+   "stat": "strength"
+  },
+  {
+   "id": "L101",
+   "text": "{tribute_a} lassos {tribute_b} at the watering hole with a coil of paracord and drags them off to the cannon. Rodeo rules apply. 💥",
+   "phases": [
+    "day",
+    "finale",
+    "night"
+   ],
+   "size": 2,
+   "killers": [
+    0
+   ],
+   "victims": [
+    1
+   ],
+   "type": "combat",
+   "tags": [],
+   "stat": "strength"
+  },
+  {
+   "id": "L102",
+   "text": "{tribute_a} and {tribute_b} fight over a dropped supply crate; {tribute_a} slashes {tribute_b}'s arm and claims the crate while {tribute_b} retreats.",
+   "phases": [
+    "day",
+    "night"
+   ],
+   "size": 2,
+   "killers": [],
+   "victims": [],
+   "type": "skirmish",
+   "tags": [
+    "hunt"
+   ]
+  },
+  {
+   "id": "L103",
+   "text": "{tribute_a} lights {tribute_b}'s dry brush shelter ablaze in the dead of night, eliminating {tribute_b} in the smoke and flames.",
+   "phases": [
+    "finale",
+    "night"
+   ],
+   "size": 2,
+   "killers": [
+    0
+   ],
+   "victims": [
+    1
+   ],
+   "type": "combat",
+   "tags": [
+    "hide"
+   ],
+   "stat": "strength"
+  },
+  {
+   "id": "L104",
+   "text": "{tribute_a} jumps out from behind a hedge with a sharpened pike. {tribute_b}, who was admiring the hedge, is sent home. 💥",
+   "phases": [
+    "day",
+    "finale",
+    "night"
+   ],
+   "size": 2,
+   "killers": [
+    0
+   ],
+   "victims": [
+    1
+   ],
+   "type": "combat",
+   "tags": [],
+   "stat": "strength"
+  },
+  {
+   "id": "L105",
+   "text": "{tribute_a} and {tribute_b} trade arrows from opposite sides of a gorge until both run out of ammunition and retreat.",
+   "phases": [
+    "day",
+    "night"
+   ],
+   "size": 2,
+   "killers": [],
+   "victims": [],
+   "type": "skirmish",
+   "tags": [
+    "hunt"
+   ]
+  },
+  {
+   "id": "L106",
+   "text": "{tribute_a} catches {tribute_b} climbing a cliff face and cuts {tribute_b}'s climbing rope.",
+   "phases": [
+    "day",
+    "finale",
+    "night"
+   ],
+   "size": 2,
+   "killers": [
+    0
+   ],
+   "victims": [
+    1
+   ],
+   "type": "combat",
+   "tags": [],
+   "stat": "strength"
+  },
+  {
+   "id": "L107",
+   "text": "{tribute_a} overpowers {tribute_b} in a frantic grapple, seizing {tribute_b}'s own knife to eliminate them.",
+   "phases": [
+    "day",
+    "finale",
+    "night"
+   ],
+   "size": 2,
+   "killers": [
+    0
+   ],
+   "victims": [
+    1
+   ],
+   "type": "combat",
+   "tags": [
+    "forage"
+   ],
+   "stat": "strength"
+  },
+  {
+   "id": "L108",
+   "text": "{tribute_a} stalks {tribute_b} to the edge of a Tracker Jacker nest and intentionally drops a branch onto the hive, causing the swarm to swarm {tribute_b}.",
+   "phases": [
+    "day",
+    "finale",
+    "night"
+   ],
+   "size": 2,
+   "killers": [
+    0
+   ],
+   "victims": [
+    1
+   ],
+   "type": "combat",
+   "tags": [
+    "hunt"
+   ],
+   "stat": "agility"
+  },
+  {
+   "id": "L109",
+   "text": "{tribute_a} and {tribute_b} collide in the fog; startled, both scream like banshees and bolt in opposite directions.",
+   "phases": [
+    "day",
+    "night"
+   ],
+   "size": 2,
+   "killers": [],
+   "victims": [],
+   "type": "skirmish",
+   "tags": [
+    "hunt"
+   ]
+  },
+  {
+   "id": "L110",
+   "text": "{tribute_a} executes a clean, ruthless ambush on {tribute_b} as {tribute_b} bends down to tie their boots.",
+   "phases": [
+    "day",
+    "finale",
+    "night"
+   ],
+   "size": 2,
+   "killers": [
+    0
+   ],
+   "victims": [
+    1
+   ],
+   "type": "combat",
+   "tags": [
+    "hunt"
+   ],
+   "stat": "strength"
+  },
+  {
+   "id": "L111",
+   "text": "{tribute_a} and {tribute_b} team up briefly to corner {tribute_c} in a gully, jointly eliminating {tribute_c} before splitting the loot.",
+   "phases": [
+    "day",
+    "finale",
+    "night"
+   ],
+   "size": 3,
+   "killers": [
+    0,
+    1
+   ],
+   "victims": [
+    2
+   ],
+   "type": "combat",
+   "tags": [],
+   "stat": "strength"
+  },
+  {
+   "id": "L112",
+   "text": "{tribute_a} fends off a coordinated ambush by {tribute_b} and {tribute_c}, slaying {tribute_b} in the process while {tribute_c} flees!",
+   "phases": [
+    "day",
+    "finale",
+    "night"
+   ],
+   "size": 3,
+   "killers": [
+    0
+   ],
+   "victims": [
+    1
+   ],
+   "type": "combat",
+   "tags": [
+    "hunt"
+   ],
+   "stat": "strength"
+  },
+  {
+   "id": "L113",
+   "text": "{tribute_a} throws a net woven from vines over {tribute_b}, immobilizing and eliminating them with ease.",
+   "phases": [
+    "day",
+    "finale",
+    "night"
+   ],
+   "size": 2,
+   "killers": [
+    0
+   ],
+   "victims": [
+    1
+   ],
+   "type": "combat",
+   "tags": [],
+   "stat": "intellect"
+  },
+  {
+   "id": "L114",
+   "text": "{tribute_a} and {tribute_b} duel atop a fallen redwood trunk spanning a chasm; {tribute_b} loses balance and plunges below.",
+   "phases": [
+    "day",
+    "finale",
+    "night"
+   ],
+   "size": 2,
+   "killers": [
+    0
+   ],
+   "victims": [
+    1
+   ],
+   "type": "combat",
+   "tags": [],
+   "stat": "strength"
+  },
+  {
+   "id": "L115",
+   "text": "{tribute_a} shoots a flaming arrow into {tribute_b}'s camp, forcing {tribute_b} to abandon all their food and gear.",
+   "phases": [
+    "day",
+    "night"
+   ],
+   "size": 2,
+   "killers": [],
+   "victims": [],
+   "type": "skirmish",
+   "tags": [
+    "hunt"
+   ]
+  },
+  {
+   "id": "L116",
+   "text": "{tribute_a} tries to dramatically monologue about their inevitable victory before attacking {tribute_b}, only to realize {tribute_b} quietly walked away twenty minutes ago.",
+   "phases": [
+    "day",
+    "night"
+   ],
+   "size": 2,
+   "killers": [],
+   "victims": [],
+   "type": "skirmish",
+   "tags": [
+    "hunt"
+   ]
+  },
+  {
+   "id": "L117",
+   "text": "{tribute_a} and {tribute_b} wrestle by a rock outcrop until {tribute_b} slips on a patch of moss and bonks into the stone. {tribute_a} wins on a technicality. 💥",
+   "phases": [
+    "day",
+    "finale",
+    "night"
+   ],
+   "size": 2,
+   "killers": [
+    0
+   ],
+   "victims": [
+    1
+   ],
+   "type": "combat",
+   "tags": [],
+   "stat": "strength"
+  },
+  {
+   "id": "L118",
+   "text": "{tribute_a} ambushes {tribute_b} from beneath a pile of fallen leaves, eliminating them in seconds.",
+   "phases": [
+    "day",
+    "finale",
+    "night"
+   ],
+   "size": 2,
+   "killers": [
+    0
+   ],
+   "victims": [
+    1
+   ],
+   "type": "combat",
+   "tags": [
+    "hunt"
+   ],
+   "stat": "strength"
+  },
+  {
+   "id": "L119",
+   "text": "{tribute_a} attempts to snipe {tribute_b} from a ridge, missing by inches and giving away their own hiding spot.",
+   "phases": [
+    "day",
+    "night"
+   ],
+   "size": 2,
+   "killers": [],
+   "victims": [],
+   "type": "skirmish",
+   "tags": [
+    "hide",
+    "hunt"
+   ]
+  },
+  {
+   "id": "L120",
+   "text": "{tribute_a} corners {tribute_b} against the arena forcefield; {tribute_b}'s own weapon bounces back off the field, allowing {tribute_a} to finish them.",
+   "phases": [
+    "day",
+    "finale",
+    "night"
+   ],
+   "size": 2,
+   "killers": [
+    0
+   ],
+   "victims": [
+    1
+   ],
+   "type": "combat",
+   "tags": [],
+   "stat": "strength"
+  },
+  {
+   "id": "L121",
+   "text": "{tribute_a} and {tribute_b} clash in a furious hand-to-hand brawl; {tribute_a} breaks {tribute_b}'s guard and lands a lethal blow.",
+   "phases": [
+    "day",
+    "finale",
+    "night"
+   ],
+   "size": 2,
+   "killers": [
+    0
+   ],
+   "victims": [
+    1
+   ],
+   "type": "combat",
+   "tags": [],
+   "stat": "strength"
+  },
+  {
+   "id": "L122",
+   "text": "{tribute_a} lays a tripwire linked to a sharpened sapling; {tribute_b} triggers it while sprinting through the woods.",
+   "phases": [
+    "day",
+    "finale",
+    "night"
+   ],
+   "size": 2,
+   "killers": [
+    0
+   ],
+   "victims": [
+    1
+   ],
+   "type": "combat",
+   "tags": [
+    "forage"
+   ],
+   "stat": "intellect"
+  },
+  {
+   "id": "L123",
+   "text": "{tribute_a} steals {tribute_b}'s boots while {tribute_b} is bathing in a creek, leaving {tribute_b} barefoot on rocky terrain.",
+   "phases": [
+    "day",
+    "night"
+   ],
+   "size": 2,
+   "killers": [],
+   "victims": [],
+   "type": "skirmish",
+   "tags": [
+    "hunt"
+   ]
+  },
+  {
+   "id": "L124",
+   "text": "{tribute_a} hunts {tribute_b} relentlessly across three sectors before finally catching up and eliminating them.",
+   "phases": [
+    "day",
+    "finale",
+    "night"
+   ],
+   "size": 2,
+   "killers": [
+    0
+   ],
+   "victims": [
+    1
+   ],
+   "type": "combat",
+   "tags": [
+    "hunt"
+   ],
+   "stat": "strength"
+  },
+  {
+   "id": "L125",
+   "text": "{tribute_a} and {tribute_b} fight to an exhausting stalemate, both limping away with minor cuts and bruises.",
+   "phases": [
+    "day",
+    "night"
+   ],
+   "size": 2,
+   "killers": [],
+   "victims": [],
+   "type": "skirmish",
+   "tags": [
+    "hunt"
+   ]
+  },
+  {
+   "id": "L126",
+   "text": "{tribute_a} drops heavy stones from a cliff ledge onto {tribute_b} below, knocking {tribute_b} out cold before descending to finish them.",
+   "phases": [
+    "day",
+    "finale",
+    "night"
+   ],
+   "size": 2,
+   "killers": [
+    0
+   ],
+   "victims": [
+    1
+   ],
+   "type": "combat",
+   "tags": [],
+   "stat": "agility"
+  },
+  {
+   "id": "L127",
+   "text": "{tribute_a} ambushes {tribute_b} at a river crossing, sweeping {tribute_b} off their feet and eliminating them in the rapids.",
+   "phases": [
+    "day",
+    "finale",
+    "night"
+   ],
+   "size": 2,
+   "killers": [
+    0
+   ],
+   "victims": [
+    1
+   ],
+   "type": "combat",
+   "tags": [
+    "hunt"
+   ],
+   "stat": "strength"
+  },
+  {
+   "id": "L128",
+   "text": "{tribute_a} uses a camouflage cloak to let {tribute_b} walk right past them before striking {tribute_b} from behind.",
+   "phases": [
+    "day",
+    "finale",
+    "night"
+   ],
+   "size": 2,
+   "killers": [
+    0
+   ],
+   "victims": [
+    1
+   ],
+   "type": "combat",
+   "tags": [
+    "hide"
+   ],
+   "stat": "strength"
+  },
+  {
+   "id": "L129",
+   "text": "{tribute_a} and {tribute_b} accidentally wear matching moss camouflage outfits, pause mid-battle to compliment each other's style, and agree to call it a draw.",
+   "phases": [
+    "day",
+    "night"
+   ],
+   "size": 2,
+   "killers": [],
+   "victims": [],
+   "type": "skirmish",
+   "tags": [
+    "hide",
+    "hunt"
+   ]
+  },
+  {
+   "id": "L130",
+   "text": "{tribute_a} catches {tribute_b} unarmed while gathering berries, ending {tribute_b}'s Games swiftly.",
+   "phases": [
+    "day",
+    "finale",
+    "night"
+   ],
+   "size": 2,
+   "killers": [
+    0
+   ],
+   "victims": [
+    1
+   ],
+   "type": "combat",
+   "tags": [
+    "forage"
+   ],
+   "stat": "intellect"
+  },
+  {
+   "id": "L131",
+   "text": "{tribute_a} and {tribute_b} cross paths near the river, lower their weapons, and form an official alliance for mutual survival.",
+   "phases": [
+    "day",
+    "night"
+   ],
+   "size": 2,
+   "killers": [],
+   "victims": [],
+   "type": "social",
+   "tags": [],
+   "alliance": "form"
+  },
+  {
+   "id": "L132",
+   "text": "{tribute_a}, {tribute_b}, and {tribute_c} band together into a three-person pack, establishing a fortified camp on high ground.",
+   "phases": [
+    "day",
+    "night"
+   ],
+   "size": 3,
+   "killers": [],
+   "victims": [],
+   "type": "social",
+   "tags": [],
+   "alliance": "form"
+  },
+  {
+   "id": "L133",
+   "text": "{tribute_a} and {tribute_b} split their rations evenly around a hidden fire, taking turns keeping watch through the night.",
+   "phases": [
+    "night"
+   ],
+   "size": 2,
+   "killers": [],
+   "victims": [],
+   "type": "social",
+   "tags": [
+    "hide"
+   ]
+  },
+  {
+   "id": "L134",
+   "text": "{tribute_a} treats {tribute_b}'s infected wound with medicinal herbs, cementing a loyal partnership between the two.",
+   "phases": [
+    "day",
+    "night"
+   ],
+   "size": 2,
+   "killers": [],
+   "victims": [],
+   "type": "social",
+   "tags": [
+    "allies"
+   ]
+  },
+  {
+   "id": "L135",
+   "text": "{tribute_a} decides {tribute_b} has outlived their usefulness—while {tribute_b} sleeps, {tribute_a} betrays and eliminates their ally!",
+   "phases": [
+    "night"
+   ],
+   "size": 2,
+   "killers": [
+    0
+   ],
+   "victims": [
+    1
+   ],
+   "type": "combat",
+   "tags": [
+    "betrayal"
+   ],
+   "stat": "strength"
+  },
+  {
+   "id": "L136",
+   "text": "{tribute_a} and {tribute_b} work together to haul a heavy crate out of a ravine, sharing the supplies inside.",
+   "phases": [
+    "day",
+    "night"
+   ],
+   "size": 2,
+   "killers": [],
+   "victims": [],
+   "type": "social",
+   "tags": []
+  },
+  {
+   "id": "L137",
+   "text": "{tribute_a} spots an ambush approaching their camp and pulls {tribute_b} to safety just in time.",
+   "phases": [
+    "day",
+    "night"
+   ],
+   "size": 2,
+   "killers": [],
+   "victims": [],
+   "type": "social",
+   "tags": [
+    "allies",
+    "hunt"
+   ]
+  },
+  {
+   "id": "L138",
+   "text": "Tensions boil over between allies {tribute_a} and {tribute_b} over dwindling water; {tribute_a} draws a blade and strikes {tribute_b} down.",
+   "phases": [
+    "day",
+    "night",
+    "finale"
+   ],
+   "size": 2,
+   "killers": [
+    0
+   ],
+   "victims": [
+    1
+   ],
+   "type": "combat",
+   "tags": [
+    "betrayal",
+    "weapon"
+   ],
+   "stat": "strength"
+  },
+  {
+   "id": "L139",
+   "text": "{tribute_a} and {tribute_b} coordinate a synchronized hunt, trapping and eliminating {tribute_c} between them.",
+   "phases": [
+    "day",
+    "night",
+    "finale"
+   ],
+   "size": 3,
+   "killers": [
+    0,
+    1
+   ],
+   "victims": [
+    2
+   ],
+   "type": "combat",
+   "tags": [
+    "hunt"
+   ],
+   "stat": "intellect"
+  },
+  {
+   "id": "L140",
+   "text": "{tribute_a} sneaks out of their shared camp before sunrise, stealing {tribute_b}'s backpack and dissolving their alliance.",
+   "phases": [
+    "day"
+   ],
+   "size": 2,
+   "killers": [],
+   "victims": [],
+   "type": "social",
+   "tags": [
+    "allies",
+    "break"
+   ],
+   "alliance": "break"
+  },
+  {
+   "id": "L141",
+   "text": "{tribute_a} and {tribute_b} huddle together under a single thermal tarp to survive a freezing mountain gale.",
+   "phases": [
+    "day",
+    "night"
+   ],
+   "size": 2,
+   "killers": [],
+   "victims": [],
+   "type": "social",
+   "tags": [
+    "hide"
+   ]
+  },
+  {
+   "id": "L142",
+   "text": "{tribute_a} uses {tribute_b} as bait to lure {tribute_c} into the open—eliminating {tribute_c}, though {tribute_b} barely survives the trap!",
+   "phases": [
+    "day",
+    "night",
+    "finale"
+   ],
+   "size": 3,
+   "killers": [
+    0
+   ],
+   "victims": [
+    2
+   ],
+   "type": "combat",
+   "tags": [],
+   "stat": "intellect"
+  },
+  {
+   "id": "L143",
+   "text": "{tribute_a} and {tribute_b} spend three hours around a smokeless campfire aggressively debating whether a hotdog is a sandwich, somehow bonding deeply over it.",
+   "phases": [
+    "day",
+    "night"
+   ],
+   "size": 2,
+   "killers": [],
+   "victims": [],
+   "type": "social",
+   "tags": []
+  },
+  {
+   "id": "L144",
+   "text": "{tribute_a} slips deadly berries into {tribute_b}'s stew during dinner, coldly eliminating their unsuspecting ally.",
+   "phases": [
+    "day",
+    "night",
+    "finale"
+   ],
+   "size": 2,
+   "killers": [
+    0
+   ],
+   "victims": [
+    1
+   ],
+   "type": "combat",
+   "tags": [
+    "betrayal",
+    "forage"
+   ],
+   "stat": "intellect"
+  },
+  {
+   "id": "L145",
+   "text": "{tribute_a} and {tribute_b} patrol the forest perimeter back-to-back, deterring nearby tributes from attacking.",
+   "phases": [
+    "day",
+    "night"
+   ],
+   "size": 2,
+   "killers": [],
+   "victims": [],
+   "type": "social",
+   "tags": [
+    "allies"
+   ]
+  },
+  {
+   "id": "L146",
+   "text": "{tribute_a} rescues {tribute_b} from a deep mud pit, pulling their ally free moments before a flash flood hits.",
+   "phases": [
+    "day",
+    "night"
+   ],
+   "size": 2,
+   "killers": [],
+   "victims": [],
+   "type": "social",
+   "tags": [
+    "allies"
+   ]
+  },
+  {
+   "id": "L147",
+   "text": "Realizing only one tribute can go home, {tribute_a} turns on {tribute_b} during a river crossing, pushing them into the falls.",
+   "phases": [
+    "day",
+    "night",
+    "finale"
+   ],
+   "size": 2,
+   "killers": [
+    0
+   ],
+   "victims": [
+    1
+   ],
+   "type": "combat",
+   "tags": [
+    "betrayal"
+   ],
+   "stat": "strength"
+  },
+  {
+   "id": "L148",
+   "text": "{tribute_a} and {tribute_b} agree to an unspoken temporary truce while sheltering together in a cave during a hailstorm.",
+   "phases": [
+    "day",
+    "night"
+   ],
+   "size": 2,
+   "killers": [],
+   "victims": [],
+   "type": "social",
+   "tags": [
+    "hide"
+   ]
+  },
+  {
+   "id": "L149",
+   "text": "{tribute_a} and {tribute_b} spend the afternoon teaching a local raccoon to steal supplies from other camps, naming it their official District mascot.",
+   "phases": [
+    "day"
+   ],
+   "size": 2,
+   "killers": [],
+   "victims": [],
+   "type": "social",
+   "tags": []
+  },
+  {
+   "id": "L150",
+   "text": "{tribute_a} abandons an injured {tribute_b} when wolf mutts howl nearby, leaving {tribute_b} to fend for themselves.",
+   "phases": [
+    "day",
+    "night"
+   ],
+   "size": 2,
+   "killers": [],
+   "victims": [],
+   "type": "social",
+   "tags": [
+    "break"
+   ],
+   "alliance": "break"
+  },
+  {
+   "id": "L151",
+   "text": "{tribute_a} and {tribute_b} pool their sponsorship gear together, dramatically increasing their combined combat readiness.",
+   "phases": [
+    "day",
+    "night"
+   ],
+   "size": 2,
+   "killers": [],
+   "victims": [],
+   "type": "social",
+   "tags": [
+    "allies"
+   ]
+  },
+  {
+   "id": "L152",
+   "text": "{tribute_a} and {tribute_b} stage a fake argument to lure {tribute_c} out of hiding, ambushing and eliminating {tribute_c}.",
+   "phases": [
+    "day",
+    "night",
+    "finale"
+   ],
+   "size": 3,
+   "killers": [
+    0,
+    1
+   ],
+   "victims": [
+    2
+   ],
+   "type": "combat",
+   "tags": [
+    "hide",
+    "hunt"
+   ],
+   "stat": "intellect"
+  },
+  {
+   "id": "L153",
+   "text": "{tribute_a} refuses to betray {tribute_b} despite an easy opening, choosing loyalty over a quick elimination.",
+   "phases": [
+    "day",
+    "night"
+   ],
+   "size": 2,
+   "killers": [],
+   "victims": [],
+   "type": "social",
+   "tags": [
+    "allies"
+   ]
+  },
+  {
+   "id": "L154",
+   "text": "{tribute_a} stabs {tribute_b} in the back while {tribute_b} is distracted watching a hovercraft collect a fallen tribute.",
+   "phases": [
+    "day",
+    "night",
+    "finale"
+   ],
+   "size": 2,
+   "killers": [
+    0
+   ],
+   "victims": [
+    1
+   ],
+   "type": "combat",
+   "tags": [
+    "betrayal"
+   ],
+   "stat": "strength"
+  },
+  {
+   "id": "L155",
+   "text": "{tribute_a} and {tribute_b} build a camouflaged lean-to out of pine boughs, sleeping soundly through the night.",
+   "phases": [
+    "night"
+   ],
+   "size": 2,
+   "killers": [],
+   "victims": [],
+   "type": "social",
+   "tags": [
+    "hide"
+   ]
+  },
+  {
+   "id": "L156",
+   "text": "{tribute_a} shares their last flask of clean water with a dehydrated {tribute_b}, saving {tribute_b} from collapsing.",
+   "phases": [
+    "day",
+    "night"
+   ],
+   "size": 2,
+   "killers": [],
+   "victims": [],
+   "type": "social",
+   "tags": [
+    "allies"
+   ]
+  },
+  {
+   "id": "L157",
+   "text": "{tribute_a} and {tribute_b} mutually decide to part ways peacefully as the arena shrinks toward the final showdown.",
+   "phases": [
+    "finale"
+   ],
+   "size": 2,
+   "killers": [],
+   "victims": [],
+   "type": "social",
+   "tags": [
+    "allies",
+    "break"
+   ],
+   "alliance": "break"
+  },
+  {
+   "id": "L158",
+   "text": "{tribute_a} pushes {tribute_b} directly into the path of a Gamemaker fireball to buy themselves time to escape!",
+   "phases": [
+    "day",
+    "night",
+    "finale"
+   ],
+   "size": 2,
+   "killers": [
+    0
+   ],
+   "victims": [
+    1
+   ],
+   "type": "combat",
+   "tags": [
+    "betrayal"
+   ],
+   "stat": "strength"
+  },
+  {
+   "id": "L159",
+   "text": "{tribute_a} and {tribute_b} successfully defend their hilltop camp against a midnight raid by {tribute_c}, eliminating {tribute_c}.",
+   "phases": [
+    "night"
+   ],
+   "size": 3,
+   "killers": [
+    0,
+    1
+   ],
+   "victims": [
+    2
+   ],
+   "type": "combat",
+   "tags": [],
+   "stat": "strength"
+  },
+  {
+   "id": "L160",
+   "text": "{tribute_a} and {tribute_b} forage together along the riverbank, gathering enough roots and fish to last two full days.",
+   "phases": [
+    "day",
+    "night"
+   ],
+   "size": 2,
+   "killers": [],
+   "victims": [],
+   "type": "social",
+   "tags": [
+    "forage"
+   ]
+  },
+  {
+   "id": "L161",
+   "text": "The Gamemakers announce a Feast at the Cornucopia! {tribute} sprints in, grabs a heavy pack of supplies, and bolts out unharmed.",
+   "phases": [
+    "feast"
+   ],
+   "size": 1,
+   "killers": [],
+   "victims": [],
+   "type": "neutral",
+   "tags": [
+    "feast"
+   ]
+  },
+  {
+   "id": "L162",
+   "text": "{tribute_a} and {tribute_b} collide at the Feast table; {tribute_a} slams {tribute_b} onto the metal floor and eliminates them.",
+   "phases": [
+    "feast"
+   ],
+   "size": 2,
+   "killers": [
+    0
+   ],
+   "victims": [
+    1
+   ],
+   "type": "combat",
+   "tags": [],
+   "stat": "strength"
+  },
+  {
+   "id": "L163",
+   "text": "{tribute} decides the Feast is an obvious trap, staying safely hidden in the trees while cannons boom in the distance.",
+   "phases": [
+    "feast"
+   ],
+   "size": 1,
+   "killers": [],
+   "victims": [],
+   "type": "neutral",
+   "tags": [
+    "feast",
+    "hide"
+   ]
+  },
+  {
+   "id": "L164",
+   "text": "{tribute_a} snipes {tribute_b} from the treeline just as {tribute_b} reaches for a silver medical bag at the Feast!",
+   "phases": [
+    "feast"
+   ],
+   "size": 2,
+   "killers": [
+    0
+   ],
+   "victims": [
+    1
+   ],
+   "type": "combat",
+   "tags": [
+    "hunt"
+   ],
+   "stat": "agility"
+  },
+  {
+   "id": "L165",
+   "text": "{tribute_a}, {tribute_b} and {tribute_c} brawl over one crate. {tribute_a} knocks both rivals out of the Games with a single swing of a serving platter. The Capitol would like its platter back. 💥",
+   "phases": [
+    "feast"
+   ],
+   "size": 3,
+   "killers": [
+    0
+   ],
+   "victims": [
+    1,
+    2
+   ],
+   "type": "combat",
+   "tags": [],
+   "stat": "strength"
+  },
+  {
+   "id": "L166",
+   "text": "{tribute} sneaks up to the Cornucopia under smoke cover, snatches a bundle of rations, and slips away unseen.",
+   "phases": [
+    "feast"
+   ],
+   "size": 1,
+   "killers": [],
+   "victims": [],
+   "type": "neutral",
+   "tags": [
+    "feast",
+    "hide"
+   ]
+  },
+  {
+   "id": "L167",
+   "text": "{tribute_a} ambushes {tribute_b} on the path back from the Feast, stealing their newly won supplies and eliminating them.",
+   "phases": [
+    "feast"
+   ],
+   "size": 2,
+   "killers": [
+    0
+   ],
+   "victims": [
+    1
+   ],
+   "type": "combat",
+   "tags": [
+    "hunt"
+   ],
+   "stat": "strength"
+  },
+  {
+   "id": "L168",
+   "text": "{tribute} arrives late to the Feast, finds nothing left except a single stale breadstick, and angrily eats it in the bushes.",
+   "phases": [
+    "feast"
+   ],
+   "size": 1,
+   "killers": [],
+   "victims": [],
+   "type": "neutral",
+   "tags": [
+    "feast"
+   ]
+  },
+  {
+   "id": "L175",
+   "text": "Wielding their sponsored Tempered Machete / Trident, {tribute_a} effortlessly overpowers {tribute_b} in a deadly duel!",
+   "phases": [
+    "any"
+   ],
+   "size": 2,
+   "killers": [
+    0
+   ],
+   "victims": [
+    1
+   ],
+   "type": "combat",
+   "tags": [
+    "weapon"
+   ],
+   "stat": "strength"
+  },
+  {
+   "id": "L178",
+   "text": "{tribute} spots a silver parachute drifting down into a nearby clearing, racing to retrieve it before anyone else notices.",
+   "phases": [
+    "day",
+    "night"
+   ],
+   "size": 1,
+   "killers": [],
+   "victims": [],
+   "type": "neutral",
+   "tags": []
+  },
+  {
+   "id": "L179",
+   "text": "{tribute_a} attempts to intercept a silver parachute meant for {tribute_b}, only for {tribute_b} to ambush and eliminate {tribute_a}!",
+   "phases": [
+    "day",
+    "finale",
+    "night"
+   ],
+   "size": 2,
+   "killers": [
+    1
+   ],
+   "victims": [
+    0
+   ],
+   "type": "combat",
+   "tags": [
+    "hunt"
+   ],
+   "stat": "strength"
+  },
+  {
+   "id": "L180",
+   "text": "{tribute} strikes a dramatic main-character pose on a cliff edge overlooking the arena, immediately ruins it by sneezing violently, and hides behind a bush.",
+   "phases": [
+    "day",
+    "night"
+   ],
+   "size": 1,
+   "killers": [],
+   "victims": [],
+   "type": "neutral",
+   "tags": [
+    "hide"
+   ]
+  },
+  {
+   "id": "L181",
+   "text": "The Gamemakers force all remaining tributes toward the central lake with walls of rolling fire; {tribute} barely reaches the shore alive.",
+   "phases": [
+    "finale"
+   ],
+   "size": 1,
+   "killers": [],
+   "victims": [],
+   "type": "neutral",
+   "tags": []
+  },
+  {
+   "id": "L182",
+   "text": "Driven out of hiding by encroaching poison gas, {tribute_a} runs straight into {tribute_b}'s ambush and is eliminated.",
+   "phases": [
+    "finale"
+   ],
+   "size": 2,
+   "killers": [
+    1
+   ],
+   "victims": [
+    0
+   ],
+   "type": "combat",
+   "tags": [
+    "hide",
+    "hunt"
+   ],
+   "stat": "intellect"
+  },
+  {
+   "id": "L183",
+   "text": "{tribute} gazes up at the night sky as the Capitol anthem plays, counting the fallen portraits projected in the clouds.",
+   "phases": [
+    "night"
+   ],
+   "size": 1,
+   "killers": [],
+   "victims": [],
+   "type": "neutral",
+   "tags": []
+  },
+  {
+   "id": "L184",
+   "text": "{tribute_a} and {tribute_b} spot each other across the central lake, knowing the final showdown is only moments away.",
+   "phases": [
+    "finale"
+   ],
+   "size": 2,
+   "killers": [],
+   "victims": [],
+   "type": "neutral",
+   "tags": []
+  },
+  {
+   "id": "L185",
+   "text": "{tribute} bandages a minor scrape with torn fabric, conserving their energy while other tributes exhaust themselves fighting.",
+   "phases": [
+    "day",
+    "night"
+   ],
+   "size": 1,
+   "killers": [],
+   "victims": [],
+   "type": "neutral",
+   "tags": [
+    "forage"
+   ]
+  },
+  {
+   "id": "L186",
+   "text": "{tribute_a} hurls a trident across the lake. It lands near {tribute_b}, who yells \"missed me!\" exactly one second too early. 💥",
+   "phases": [
+    "day",
+    "finale",
+    "night"
+   ],
+   "size": 2,
+   "killers": [
+    0
+   ],
+   "victims": [
+    1
+   ],
+   "type": "combat",
+   "tags": [
+    "weapon"
+   ],
+   "stat": "agility"
+  },
+  {
+   "id": "L187",
+   "text": "{tribute} hides inside the hollow metallic shell of the Cornucopia during a torrential storm, staying dry and hidden.",
+   "phases": [
+    "day",
+    "night"
+   ],
+   "size": 1,
+   "killers": [],
+   "victims": [],
+   "type": "neutral",
+   "tags": [
+    "hide"
+   ]
+  },
+  {
+   "id": "L188",
+   "text": "{tribute_a} catches {tribute_b} distracted by the sound of an approaching hovercraft, striking them down cleanly.",
+   "phases": [
+    "day",
+    "finale",
+    "night"
+   ],
+   "size": 2,
+   "killers": [
+    0
+   ],
+   "victims": [
+    1
+   ],
+   "type": "combat",
+   "tags": [],
+   "stat": "strength"
+  },
+  {
+   "id": "L189",
+   "text": "{tribute} discovers an abandoned backpack containing an extra roll of bandages and dried apple slices.",
+   "phases": [
+    "day",
+    "night"
+   ],
+   "size": 1,
+   "killers": [],
+   "victims": [],
+   "type": "neutral",
+   "tags": [
+    "forage",
+    "hide"
+   ]
+  },
+  {
+   "id": "L190",
+   "text": "{tribute_a} and {tribute_b} clash in a desperate, all-out battle on the Cornucopia steps; {tribute_a} lands the final strike!",
+   "phases": [
+    "finale"
+   ],
+   "size": 2,
+   "killers": [
+    0
+   ],
+   "victims": [
+    1
+   ],
+   "type": "combat",
+   "tags": [
+    "showdown"
+   ],
+   "stat": "strength"
+  },
+  {
+   "id": "L191",
+   "text": "Surrounded by rising floodwaters, {tribute_a} overpowers {tribute_b} in the churning rapids to claim survival!",
+   "phases": [
+    "finale"
+   ],
+   "size": 2,
+   "killers": [
+    0
+   ],
+   "victims": [
+    1
+   ],
+   "type": "combat",
+   "tags": [
+    "showdown"
+   ],
+   "stat": "strength"
+  },
+  {
+   "id": "L192",
+   "text": "{tribute_a} outmaneuvers {tribute_b} in the burning woods, knocking {tribute_b} back into the inferno.",
+   "phases": [
+    "finale"
+   ],
+   "size": 2,
+   "killers": [
+    0
+   ],
+   "victims": [
+    1
+   ],
+   "type": "combat",
+   "tags": [
+    "showdown"
+   ],
+   "stat": "strength"
+  },
+  {
+   "id": "L193",
+   "text": "Exhausted and bruised, {tribute_a} lands a decisive counter-strike against {tribute_b} as the final cannon echoes across the arena!",
+   "phases": [
+    "finale"
+   ],
+   "size": 2,
+   "killers": [
+    0
+   ],
+   "victims": [
+    1
+   ],
+   "type": "combat",
+   "tags": [
+    "showdown"
+   ],
+   "stat": "strength"
+  },
+  {
+   "id": "L194",
+   "text": "{tribute} tracks a wounded rival through the tall grass, patient and silent like a predator.",
+   "phases": [
+    "day",
+    "night"
+   ],
+   "size": 1,
+   "killers": [],
+   "victims": [],
+   "type": "neutral",
+   "tags": [
+    "hunt"
+   ]
+  },
+  {
+   "id": "L195",
+   "text": "{tribute_a} and {tribute_b} trade desperate blows in the mud; {tribute_a} grabs a jagged rock and ends the struggle.",
+   "phases": [
+    "day",
+    "finale",
+    "night"
+   ],
+   "size": 2,
+   "killers": [
+    0
+   ],
+   "victims": [
+    1
+   ],
+   "type": "combat",
+   "tags": [],
+   "stat": "strength"
+  },
+  {
+   "id": "L196",
+   "text": "{tribute} finds a cache of dry kindling and roasts wild roots, keeping out of sight while cannons boom in the distance.",
+   "phases": [
+    "day",
+    "night"
+   ],
+   "size": 1,
+   "killers": [],
+   "victims": [],
+   "type": "neutral",
+   "tags": [
+    "forage",
+    "hide"
+   ]
+  },
+  {
+   "id": "L197",
+   "text": "{tribute_a} ambushes {tribute_b} at the edge of the cliffs, sending {tribute_b} tumbling down into the rocky gorge.",
+   "phases": [
+    "day",
+    "finale",
+    "night"
+   ],
+   "size": 2,
+   "killers": [
+    0
+   ],
+   "victims": [
+    1
+   ],
+   "type": "combat",
+   "tags": [
+    "hunt"
+   ],
+   "stat": "strength"
+  },
+  {
+   "id": "L198",
+   "text": "{tribute} listens carefully to the rustling canopy, avoiding a disguised snare by mere inches.",
+   "phases": [
+    "day",
+    "night"
+   ],
+   "size": 1,
+   "killers": [],
+   "victims": [],
+   "type": "neutral",
+   "tags": []
+  },
+  {
+   "id": "L199",
+   "text": "{tribute_a} and {tribute_b} sprint toward the last high ground as the arena floods; {tribute_a} reaches the peak first and kicks {tribute_b} back into the torrent.",
+   "phases": [
+    "finale"
+   ],
+   "size": 2,
+   "killers": [
+    0
+   ],
+   "victims": [
+    1
+   ],
+   "type": "combat",
+   "tags": [
+    "showdown"
+   ],
+   "stat": "strength"
+  },
+  {
+   "id": "N001",
+   "text": "{tribute} spends the whole day perfectly still inside a hollow log. A deer sits on it for an hour. Neither party mentions it.",
+   "phases": [
+    "day"
+   ],
+   "size": 1,
+   "killers": [],
+   "victims": [],
+   "type": "neutral",
+   "tags": [
+    "hide"
+   ]
+  },
+  {
+   "id": "N002",
+   "text": "{tribute} builds a leaf fort so convincing that a squirrel moves in and starts paying rent.",
+   "phases": [
+    "day",
+    "night"
+   ],
+   "size": 1,
+   "killers": [],
+   "victims": [],
+   "type": "neutral",
+   "tags": [
+    "hide"
+   ]
+  },
+  {
+   "id": "N003",
+   "text": "{tribute} hides up a tree and practices their victory speech in a whisper. It needs work.",
+   "phases": [
+    "day",
+    "night"
+   ],
+   "size": 1,
+   "killers": [],
+   "victims": [],
+   "type": "neutral",
+   "tags": [
+    "hide"
+   ]
+  },
+  {
+   "id": "N004",
+   "text": "{tribute} smears mud on their face for camouflage and accidentally looks extremely cool.",
+   "phases": [
+    "day"
+   ],
+   "size": 1,
+   "killers": [],
+   "victims": [],
+   "type": "neutral",
+   "tags": [
+    "hide"
+   ]
+  },
+  {
+   "id": "N005",
+   "text": "{tribute} finds a cave, declares it 'the Bunker', and refuses to come out until further notice.",
+   "phases": [
+    "day",
+    "night"
+   ],
+   "size": 1,
+   "killers": [],
+   "victims": [],
+   "type": "neutral",
+   "tags": [
+    "hide"
+   ]
+  },
+  {
+   "id": "N006",
+   "text": "{tribute} naps under a pile of ferns and wakes up with a beetle sitting on their nose like a tiny hat.",
+   "phases": [
+    "day"
+   ],
+   "size": 1,
+   "killers": [],
+   "victims": [],
+   "type": "neutral",
+   "tags": [
+    "hide"
+   ]
+  },
+  {
+   "id": "N007",
+   "text": "{tribute} hides so well that the Capitol camera crew spends forty minutes filming a rock by mistake.",
+   "phases": [
+    "day"
+   ],
+   "size": 1,
+   "killers": [],
+   "victims": [],
+   "type": "neutral",
+   "tags": [
+    "hide"
+   ]
+  },
+  {
+   "id": "N008",
+   "text": "{tribute} watches a fight from a bush, eating trail mix like it's movie night.",
+   "phases": [
+    "day",
+    "night"
+   ],
+   "size": 1,
+   "killers": [],
+   "victims": [],
+   "type": "neutral",
+   "tags": [
+    "hide"
+   ]
+  },
+  {
+   "id": "N009",
+   "text": "{tribute} spends the night counting stars from a hidden ledge and gets to 4,000 before losing track.",
+   "phases": [
+    "night"
+   ],
+   "size": 1,
+   "killers": [],
+   "victims": [],
+   "type": "neutral",
+   "tags": [
+    "hide"
+   ]
+  },
+  {
+   "id": "N010",
+   "text": "{tribute} digs a cozy burrow and sleeps like a very anxious badger.",
+   "phases": [
+    "night"
+   ],
+   "size": 1,
+   "killers": [],
+   "victims": [],
+   "type": "neutral",
+   "tags": [
+    "hide"
+   ]
+  },
+  {
+   "id": "N011",
+   "text": "{tribute} whispers 'you didn't see me' to a passing hovercraft. It doesn't see them.",
+   "phases": [
+    "day",
+    "night"
+   ],
+   "size": 1,
+   "killers": [],
+   "victims": [],
+   "type": "neutral",
+   "tags": [
+    "hide"
+   ]
+  },
+  {
+   "id": "N012",
+   "text": "{tribute} drapes moss over themselves and holds a perfect statue pose for six hours. The pose is a flex.",
+   "phases": [
+    "day"
+   ],
+   "size": 1,
+   "killers": [],
+   "victims": [],
+   "type": "neutral",
+   "tags": [
+    "hide"
+   ]
+  },
+  {
+   "id": "N013",
+   "text": "{tribute_a} and {tribute_b} pick the same hiding bush, stare at each other in silence, and silently agree it's big enough for two.",
+   "phases": [
+    "day",
+    "night"
+   ],
+   "size": 2,
+   "killers": [],
+   "victims": [],
+   "type": "neutral",
+   "tags": [
+    "hide"
+   ]
+  },
+  {
+   "id": "N014",
+   "text": "{tribute} hides in the river reeds breathing through a hollow stem, then realizes it's a straw from a juice box.",
+   "phases": [
+    "day"
+   ],
+   "size": 1,
+   "killers": [],
+   "victims": [],
+   "type": "neutral",
+   "tags": [
+    "hide"
+   ]
+  },
+  {
+   "id": "N015",
+   "text": "{tribute} sleeps through the entire night undisturbed. The Gamemakers find this personally offensive.",
+   "phases": [
+    "night"
+   ],
+   "size": 1,
+   "killers": [],
+   "victims": [],
+   "type": "neutral",
+   "tags": [
+    "hide"
+   ]
+  },
+  {
+   "id": "N016",
+   "text": "{tribute} rearranges their hideout three times and settles on 'cozy cottagecore bunker'.",
+   "phases": [
+    "day"
+   ],
+   "size": 1,
+   "killers": [],
+   "victims": [],
+   "type": "neutral",
+   "tags": [
+    "hide"
+   ]
+  },
+  {
+   "id": "N017",
+   "text": "{tribute} forages a hatful of wild strawberries and eats them one at a time with great ceremony.",
+   "phases": [
+    "day"
+   ],
+   "size": 1,
+   "killers": [],
+   "victims": [],
+   "type": "neutral",
+   "tags": [
+    "forage"
+   ]
+  },
+  {
+   "id": "N018",
+   "text": "{tribute} catches a fish with their bare hands, screams, and drops it back in the river. Progress.",
+   "phases": [
+    "day"
+   ],
+   "size": 1,
+   "killers": [],
+   "victims": [],
+   "type": "neutral",
+   "tags": [
+    "forage"
+   ]
+  },
+  {
+   "id": "N019",
+   "text": "{tribute} collects pine nuts all afternoon and now rattles slightly when they walk.",
+   "phases": [
+    "day"
+   ],
+   "size": 1,
+   "killers": [],
+   "victims": [],
+   "type": "neutral",
+   "tags": [
+    "forage"
+   ]
+  },
+  {
+   "id": "N020",
+   "text": "{tribute} finds wild mint and spends the evening with very fresh breath and no dinner.",
+   "phases": [
+    "day",
+    "night"
+   ],
+   "size": 1,
+   "killers": [],
+   "victims": [],
+   "type": "neutral",
+   "tags": [
+    "forage"
+   ]
+  },
+  {
+   "id": "N021",
+   "text": "{tribute} rigs a rain catcher out of leaves and a sock. The water tastes like sock. Still water.",
+   "phases": [
+    "day",
+    "night"
+   ],
+   "size": 1,
+   "killers": [],
+   "victims": [],
+   "type": "neutral",
+   "tags": [
+    "forage"
+   ]
+  },
+  {
+   "id": "N022",
+   "text": "{tribute} sets a snare, checks it, and finds a very disappointed rabbit who is let go with a stern warning.",
+   "phases": [
+    "day"
+   ],
+   "size": 1,
+   "killers": [],
+   "victims": [],
+   "type": "neutral",
+   "tags": [
+    "forage"
+   ]
+  },
+  {
+   "id": "N023",
+   "text": "{tribute} roasts mushrooms over a tiny fire after checking them against a poster they remember from training.",
+   "phases": [
+    "night"
+   ],
+   "size": 1,
+   "killers": [],
+   "victims": [],
+   "type": "neutral",
+   "tags": [
+    "forage"
+   ]
+  },
+  {
+   "id": "N024",
+   "text": "{tribute} discovers a cluster of edible roots and names each one before eating it.",
+   "phases": [
+    "day"
+   ],
+   "size": 1,
+   "killers": [],
+   "victims": [],
+   "type": "neutral",
+   "tags": [
+    "forage"
+   ]
+  },
+  {
+   "id": "N025",
+   "text": "{tribute_a} and {tribute_b} both reach for the same apple tree, shrug, and split the harvest down the middle.",
+   "phases": [
+    "day"
+   ],
+   "size": 2,
+   "killers": [],
+   "victims": [],
+   "type": "neutral",
+   "tags": [
+    "forage"
+   ]
+  },
+  {
+   "id": "N026",
+   "text": "{tribute} fishes with a bent hairpin and lands a trout bigger than their dignity.",
+   "phases": [
+    "day"
+   ],
+   "size": 1,
+   "killers": [],
+   "victims": [],
+   "type": "neutral",
+   "tags": [
+    "forage"
+   ]
+  },
+  {
+   "id": "N027",
+   "text": "{tribute} gathers enough berries for three days and eats all of them in one sitting.",
+   "phases": [
+    "day",
+    "night"
+   ],
+   "size": 1,
+   "killers": [],
+   "victims": [],
+   "type": "neutral",
+   "tags": [
+    "forage"
+   ]
+  },
+  {
+   "id": "N028",
+   "text": "{tribute} finds a bird's nest, apologizes to the bird, and leaves empty-handed. The bird is unmoved.",
+   "phases": [
+    "day"
+   ],
+   "size": 1,
+   "killers": [],
+   "victims": [],
+   "type": "neutral",
+   "tags": [
+    "forage"
+   ]
+  },
+  {
+   "id": "N029",
+   "text": "{tribute} spends the day weaving a fishing net and catches a boot. It's a nice boot.",
+   "phases": [
+    "day"
+   ],
+   "size": 1,
+   "killers": [],
+   "victims": [],
+   "type": "neutral",
+   "tags": [
+    "forage"
+   ]
+  },
+  {
+   "id": "N030",
+   "text": "{tribute} raids an abandoned camp and finds half a granola bar and someone's diary. The diary is better.",
+   "phases": [
+    "day",
+    "night"
+   ],
+   "size": 1,
+   "killers": [],
+   "victims": [],
+   "type": "neutral",
+   "tags": [
+    "forage"
+   ]
+  },
+  {
+   "id": "N031",
+   "text": "{tribute} taps a birch tree for sap and gets a sticky, sweet, deeply unhelpful amount of it.",
+   "phases": [
+    "day"
+   ],
+   "size": 1,
+   "killers": [],
+   "victims": [],
+   "type": "neutral",
+   "tags": [
+    "forage"
+   ]
+  },
+  {
+   "id": "N032",
+   "text": "{tribute} cooks a stew of foraged greens that tastes exactly like a lawn. Nutritious lawn.",
+   "phases": [
+    "night"
+   ],
+   "size": 1,
+   "killers": [],
+   "victims": [],
+   "type": "neutral",
+   "tags": [
+    "forage"
+   ]
+  },
+  {
+   "id": "N033",
+   "text": "{tribute} stalks a rival for an hour before realizing it was their own shadow.",
+   "phases": [
+    "day"
+   ],
+   "size": 1,
+   "killers": [],
+   "victims": [],
+   "type": "neutral",
+   "tags": [
+    "hunt"
+   ]
+  },
+  {
+   "id": "N034",
+   "text": "{tribute} sharpens a stick into a spear, then sharpens it again, and now has a toothpick.",
+   "phases": [
+    "day",
+    "night"
+   ],
+   "size": 1,
+   "killers": [],
+   "victims": [],
+   "type": "neutral",
+   "tags": [
+    "hunt"
+   ]
+  },
+  {
+   "id": "N035",
+   "text": "{tribute} follows fresh footprints in a circle for three hours. They are their own footprints.",
+   "phases": [
+    "day"
+   ],
+   "size": 1,
+   "killers": [],
+   "victims": [],
+   "type": "neutral",
+   "tags": [
+    "hunt"
+   ]
+  },
+  {
+   "id": "N036",
+   "text": "{tribute} practices throwing knives at a tree and hits it once. The tree has learned nothing.",
+   "phases": [
+    "day"
+   ],
+   "size": 1,
+   "killers": [],
+   "victims": [],
+   "type": "neutral",
+   "tags": [
+    "hunt"
+   ]
+  },
+  {
+   "id": "N037",
+   "text": "{tribute} climbs a ridge to scout for rivals and sees only a very smug eagle.",
+   "phases": [
+    "day"
+   ],
+   "size": 1,
+   "killers": [],
+   "victims": [],
+   "type": "neutral",
+   "tags": [
+    "hunt"
+   ]
+  },
+  {
+   "id": "N038",
+   "text": "{tribute} sets an ambush on a game trail and catches nothing but a sunburn.",
+   "phases": [
+    "day"
+   ],
+   "size": 1,
+   "killers": [],
+   "victims": [],
+   "type": "neutral",
+   "tags": [
+    "hunt"
+   ]
+  },
+  {
+   "id": "N039",
+   "text": "{tribute_a} spots {tribute_b} across a ravine. They both wave out of habit, then feel weird about it.",
+   "phases": [
+    "day"
+   ],
+   "size": 2,
+   "killers": [],
+   "victims": [],
+   "type": "skirmish",
+   "tags": [
+    "hunt"
+   ]
+  },
+  {
+   "id": "N040",
+   "text": "{tribute_a} chases {tribute_b} through the woods until both get winded and sit down on the same log.",
+   "phases": [
+    "day"
+   ],
+   "size": 2,
+   "killers": [],
+   "victims": [],
+   "type": "skirmish",
+   "tags": [
+    "hunt"
+   ]
+  },
+  {
+   "id": "N041",
+   "text": "{tribute_a} throws a rock at {tribute_b} and misses so badly that {tribute_b} gives them a pity thumbs-up.",
+   "phases": [
+    "day",
+    "night"
+   ],
+   "size": 2,
+   "killers": [],
+   "victims": [],
+   "type": "skirmish",
+   "tags": [
+    "hunt"
+   ]
+  },
+  {
+   "id": "N042",
+   "text": "{tribute_a} ambushes {tribute_b}, trips on a root mid-leap, and both of them decide to pretend it never happened.",
+   "phases": [
+    "day",
+    "night"
+   ],
+   "size": 2,
+   "killers": [],
+   "victims": [],
+   "type": "skirmish",
+   "tags": [
+    "hunt"
+   ]
+  },
+  {
+   "id": "N043",
+   "text": "{tribute_a} and {tribute_b} trade insults across a stream for twenty minutes. {tribute_b} wins on creativity.",
+   "phases": [
+    "day"
+   ],
+   "size": 2,
+   "killers": [],
+   "victims": [],
+   "type": "skirmish",
+   "tags": [
+    "hunt"
+   ]
+  },
+  {
+   "id": "N044",
+   "text": "{tribute_a} steals {tribute_b}'s backpack, opens it, finds only socks, and gives it back out of pity.",
+   "phases": [
+    "day",
+    "night"
+   ],
+   "size": 2,
+   "killers": [],
+   "victims": [],
+   "type": "skirmish",
+   "tags": [
+    "hunt"
+   ]
+  },
+  {
+   "id": "N045",
+   "text": "{tribute} tracks a rival by the sound of their snoring, then loses them when the snoring stops.",
+   "phases": [
+    "night"
+   ],
+   "size": 1,
+   "killers": [],
+   "victims": [],
+   "type": "neutral",
+   "tags": [
+    "hunt"
+   ]
+  },
+  {
+   "id": "N046",
+   "text": "{tribute} lies in wait all night with a slingshot and accidentally ambushes a moth.",
+   "phases": [
+    "night"
+   ],
+   "size": 1,
+   "killers": [],
+   "victims": [],
+   "type": "neutral",
+   "tags": [
+    "hunt"
+   ]
+  },
+  {
+   "id": "N047",
+   "text": "{tribute_a} sneaks up on {tribute_b}'s camp at night, sneezes, and has to sprint away into the dark.",
+   "phases": [
+    "night"
+   ],
+   "size": 2,
+   "killers": [],
+   "victims": [],
+   "type": "skirmish",
+   "tags": [
+    "hunt"
+   ]
+  },
+  {
+   "id": "N048",
+   "text": "{tribute_a} lands a glancing blow on {tribute_b} before {tribute_b} vanishes into the brush, yelling about rematches.",
+   "phases": [
+    "day",
+    "night"
+   ],
+   "size": 2,
+   "killers": [],
+   "victims": [],
+   "type": "skirmish",
+   "tags": [
+    "hunt"
+   ]
+  },
+  {
+   "id": "N049",
+   "text": "{tribute} spends the day composing a heroic ballad about themselves. It has nine verses and no rhymes.",
+   "phases": [
+    "day"
+   ],
+   "size": 1,
+   "killers": [],
+   "victims": [],
+   "type": "neutral",
+   "tags": []
+  },
+  {
+   "id": "N050",
+   "text": "{tribute} waves at the hidden cameras every hour, on the hour, to stay relevant with sponsors.",
+   "phases": [
+    "day"
+   ],
+   "size": 1,
+   "killers": [],
+   "victims": [],
+   "type": "neutral",
+   "tags": []
+  },
+  {
+   "id": "N051",
+   "text": "{tribute} has a long, emotional conversation with a tree. The tree is a good listener.",
+   "phases": [
+    "day",
+    "night"
+   ],
+   "size": 1,
+   "killers": [],
+   "victims": [],
+   "type": "neutral",
+   "tags": []
+  },
+  {
+   "id": "N052",
+   "text": "{tribute} attempts a cartwheel to impress sponsors and lands in a bush. The sponsors are impressed anyway.",
+   "phases": [
+    "day"
+   ],
+   "size": 1,
+   "killers": [],
+   "victims": [],
+   "type": "neutral",
+   "tags": []
+  },
+  {
+   "id": "N053",
+   "text": "{tribute} names a friendly crow 'Kevin' and now has one ally the Gamemakers didn't plan for.",
+   "phases": [
+    "day"
+   ],
+   "size": 1,
+   "killers": [],
+   "victims": [],
+   "type": "neutral",
+   "tags": []
+  },
+  {
+   "id": "N054",
+   "text": "{tribute} gets lost, finds their camp, and gets lost again, all in the same afternoon.",
+   "phases": [
+    "day"
+   ],
+   "size": 1,
+   "killers": [],
+   "victims": [],
+   "type": "neutral",
+   "tags": []
+  },
+  {
+   "id": "N055",
+   "text": "{tribute} carves their name into a tree so future tributes know they were here. They misspell it.",
+   "phases": [
+    "day"
+   ],
+   "size": 1,
+   "killers": [],
+   "victims": [],
+   "type": "neutral",
+   "tags": []
+  },
+  {
+   "id": "N056",
+   "text": "{tribute} stares dramatically into the distance for the cameras until a bird lands on their head.",
+   "phases": [
+    "day"
+   ],
+   "size": 1,
+   "killers": [],
+   "victims": [],
+   "type": "neutral",
+   "tags": []
+  },
+  {
+   "id": "N057",
+   "text": "{tribute} tries to start a fire by rubbing two sticks together for four hours. The sticks are now very warm friends.",
+   "phases": [
+    "night"
+   ],
+   "size": 1,
+   "killers": [],
+   "victims": [],
+   "type": "neutral",
+   "tags": []
+  },
+  {
+   "id": "N058",
+   "text": "{tribute} hums the Capitol anthem to keep morale up and accidentally gets it stuck in everyone's head.",
+   "phases": [
+    "night"
+   ],
+   "size": 1,
+   "killers": [],
+   "victims": [],
+   "type": "neutral",
+   "tags": []
+  },
+  {
+   "id": "N059",
+   "text": "{tribute} spends the night telling ghost stories to themselves and scares themselves silly.",
+   "phases": [
+    "night"
+   ],
+   "size": 1,
+   "killers": [],
+   "victims": [],
+   "type": "neutral",
+   "tags": []
+  },
+  {
+   "id": "N060",
+   "text": "{tribute} writes a strongly worded letter to the Gamemakers in the dirt. It is not delivered.",
+   "phases": [
+    "day"
+   ],
+   "size": 1,
+   "killers": [],
+   "victims": [],
+   "type": "neutral",
+   "tags": []
+  },
+  {
+   "id": "N061",
+   "text": "{tribute} invents a new sport involving pinecones and plays it alone for three hours. Undefeated.",
+   "phases": [
+    "day"
+   ],
+   "size": 1,
+   "killers": [],
+   "victims": [],
+   "type": "neutral",
+   "tags": []
+  },
+  {
+   "id": "N062",
+   "text": "{tribute} takes a dramatic nap in a sunbeam and wakes up with a tan line shaped like a leaf.",
+   "phases": [
+    "day"
+   ],
+   "size": 1,
+   "killers": [],
+   "victims": [],
+   "type": "neutral",
+   "tags": []
+  },
+  {
+   "id": "N063",
+   "text": "{tribute} spends the night stargazing and names a constellation after their favorite snack.",
+   "phases": [
+    "night"
+   ],
+   "size": 1,
+   "killers": [],
+   "victims": [],
+   "type": "neutral",
+   "tags": []
+  },
+  {
+   "id": "N064",
+   "text": "{tribute} tries to tame a wild goose. The goose tames them instead.",
+   "phases": [
+    "day"
+   ],
+   "size": 1,
+   "killers": [],
+   "victims": [],
+   "type": "neutral",
+   "tags": []
+  },
+  {
+   "id": "N065",
+   "text": "{tribute} builds a tiny shrine to the sponsors out of pebbles and blows kisses at the sky.",
+   "phases": [
+    "day",
+    "night"
+   ],
+   "size": 1,
+   "killers": [],
+   "victims": [],
+   "type": "neutral",
+   "tags": []
+  },
+  {
+   "id": "N066",
+   "text": "{tribute} accidentally walks into the forcefield, bounces off, and pretends it was on purpose.",
+   "phases": [
+    "day"
+   ],
+   "size": 1,
+   "killers": [],
+   "victims": [],
+   "type": "neutral",
+   "tags": []
+  },
+  {
+   "id": "N067",
+   "text": "{tribute} spends the evening rehearsing a sad backstory for the cameras. It's mostly about a lost sandwich.",
+   "phases": [
+    "night"
+   ],
+   "size": 1,
+   "killers": [],
+   "victims": [],
+   "type": "neutral",
+   "tags": []
+  },
+  {
+   "id": "N068",
+   "text": "{tribute} wakes up, checks they're still alive, and celebrates with a small dance.",
+   "phases": [
+    "day"
+   ],
+   "size": 1,
+   "killers": [],
+   "victims": [],
+   "type": "neutral",
+   "tags": []
+  },
+  {
+   "id": "N069",
+   "text": "{tribute} practices their 'menacing glare' in a puddle until a frog jumps out of it.",
+   "phases": [
+    "day"
+   ],
+   "size": 1,
+   "killers": [],
+   "victims": [],
+   "type": "neutral",
+   "tags": []
+  },
+  {
+   "id": "N070",
+   "text": "{tribute} keeps a diary of the Games. Entry one reads: 'Day one. Bad vibes.'",
+   "phases": [
+    "night"
+   ],
+   "size": 1,
+   "killers": [],
+   "victims": [],
+   "type": "neutral",
+   "tags": []
+  },
+  {
+   "id": "N071",
+   "text": "{tribute} hears a twig snap and freezes for twenty minutes. It was a raccoon. It is still there. It is judging them.",
+   "phases": [
+    "night"
+   ],
+   "size": 1,
+   "killers": [],
+   "victims": [],
+   "type": "neutral",
+   "tags": []
+  },
+  {
+   "id": "N072",
+   "text": "{tribute} finds a quiet clearing and does yoga. Downward dog. Upward tribute.",
+   "phases": [
+    "day"
+   ],
+   "size": 1,
+   "killers": [],
+   "victims": [],
+   "type": "neutral",
+   "tags": []
+  },
+  {
+   "id": "N073",
+   "text": "{tribute} spends the night shivering and mumbling 'I'm fine' to nobody.",
+   "phases": [
+    "night"
+   ],
+   "size": 1,
+   "killers": [],
+   "victims": [],
+   "type": "neutral",
+   "tags": []
+  },
+  {
+   "id": "N074",
+   "text": "{tribute_a} and {tribute_b} meet at a stream, both too tired to fight, and nod respectfully like neighbors at a mailbox.",
+   "phases": [
+    "day"
+   ],
+   "size": 2,
+   "killers": [],
+   "victims": [],
+   "type": "social",
+   "tags": []
+  },
+  {
+   "id": "N075",
+   "text": "{tribute_a} and {tribute_b} argue over which of them the sponsors like more. Nobody wins. The sponsors are thrilled.",
+   "phases": [
+    "day",
+    "night"
+   ],
+   "size": 2,
+   "killers": [],
+   "victims": [],
+   "type": "social",
+   "tags": []
+  },
+  {
+   "id": "N076",
+   "text": "{tribute_a}, {tribute_b} and {tribute_c} all hide behind the same boulder and spend an awkward hour pretending the others aren't there.",
+   "phases": [
+    "day",
+    "night"
+   ],
+   "size": 3,
+   "killers": [],
+   "victims": [],
+   "type": "social",
+   "tags": []
+  },
+  {
+   "id": "N077",
+   "text": "{tribute_a} and {tribute_b} race to the same supply drop and find it empty. They share a moment of silence.",
+   "phases": [
+    "day"
+   ],
+   "size": 2,
+   "killers": [],
+   "victims": [],
+   "type": "social",
+   "tags": []
+  },
+  {
+   "id": "N078",
+   "text": "{tribute_a} teaches {tribute_b} a card game using leaves as cards. {tribute_b} cheats.",
+   "phases": [
+    "night"
+   ],
+   "size": 2,
+   "killers": [],
+   "victims": [],
+   "type": "social",
+   "tags": []
+  },
+  {
+   "id": "N079",
+   "text": "{tribute_a} and {tribute_b} share a campfire for one night under a strict 'no stabbing' rule.",
+   "phases": [
+    "night"
+   ],
+   "size": 2,
+   "killers": [],
+   "victims": [],
+   "type": "social",
+   "tags": []
+  },
+  {
+   "id": "N080",
+   "text": "{tribute_a} lends {tribute_b} a spare sock. A small kindness in a cruel arena.",
+   "phases": [
+    "day",
+    "night"
+   ],
+   "size": 2,
+   "killers": [],
+   "victims": [],
+   "type": "social",
+   "tags": []
+  },
+  {
+   "id": "N081",
+   "text": "{tribute_a} and {tribute_b} agree to a one-day truce to share a fish. The fish did not agree to anything.",
+   "phases": [
+    "day"
+   ],
+   "size": 2,
+   "killers": [],
+   "victims": [],
+   "type": "social",
+   "tags": []
+  },
+  {
+   "id": "N082",
+   "text": "{tribute_a} warns {tribute_b} about a snare up ahead. {tribute_b} steps in it anyway, out of spite, then escapes.",
+   "phases": [
+    "day"
+   ],
+   "size": 2,
+   "killers": [],
+   "victims": [],
+   "type": "social",
+   "tags": []
+  },
+  {
+   "id": "N083",
+   "text": "{tribute_a} and {tribute_b} build a lean-to together and argue about interior design until sunrise.",
+   "phases": [
+    "night"
+   ],
+   "size": 2,
+   "killers": [],
+   "victims": [],
+   "type": "social",
+   "tags": [
+    "allies"
+   ]
+  },
+  {
+   "id": "N084",
+   "text": "{tribute_a} keeps watch while {tribute_b} sleeps, then wakes {tribute_b} to show them a cool bug.",
+   "phases": [
+    "night"
+   ],
+   "size": 2,
+   "killers": [],
+   "victims": [],
+   "type": "social",
+   "tags": [
+    "allies"
+   ]
+  },
+  {
+   "id": "N085",
+   "text": "{tribute_a} and {tribute_b} invent a secret handshake. It takes two hours. It has eleven steps.",
+   "phases": [
+    "day"
+   ],
+   "size": 2,
+   "killers": [],
+   "victims": [],
+   "type": "social",
+   "tags": [
+    "allies"
+   ]
+  },
+  {
+   "id": "N086",
+   "text": "{tribute_a} and {tribute_b} split their last ration and pretend it was a feast.",
+   "phases": [
+    "night"
+   ],
+   "size": 2,
+   "killers": [],
+   "victims": [],
+   "type": "social",
+   "tags": [
+    "allies"
+   ]
+  },
+  {
+   "id": "N087",
+   "text": "{tribute_a} braids {tribute_b}'s hair for the cameras. Sponsors swoon.",
+   "phases": [
+    "day"
+   ],
+   "size": 2,
+   "killers": [],
+   "victims": [],
+   "type": "social",
+   "tags": [
+    "allies"
+   ]
+  },
+  {
+   "id": "N088",
+   "text": "{tribute_a} and {tribute_b} write a team cheer. It is terrible. They chant it anyway.",
+   "phases": [
+    "day"
+   ],
+   "size": 2,
+   "killers": [],
+   "victims": [],
+   "type": "social",
+   "tags": [
+    "allies"
+   ]
+  },
+  {
+   "id": "N089",
+   "text": "{tribute_a} carries {tribute_b} across a stream piggyback style. Both fall in. Both laugh.",
+   "phases": [
+    "day"
+   ],
+   "size": 2,
+   "killers": [],
+   "victims": [],
+   "type": "social",
+   "tags": [
+    "allies"
+   ]
+  },
+  {
+   "id": "N090",
+   "text": "{tribute_a} and {tribute_b} stand back-to-back on a ridge looking extremely like a movie poster.",
+   "phases": [
+    "day"
+   ],
+   "size": 2,
+   "killers": [],
+   "victims": [],
+   "type": "social",
+   "tags": [
+    "allies"
+   ]
+  },
+  {
+   "id": "N091",
+   "text": "{tribute} army-crawls to the Feast table, grabs a bag with their district number on it, and army-crawls back.",
+   "phases": [
+    "feast"
+   ],
+   "size": 1,
+   "killers": [],
+   "victims": [],
+   "type": "neutral",
+   "tags": [
+    "feast"
+   ]
+  },
+  {
+   "id": "N092",
+   "text": "{tribute} distracts everyone by yelling 'LOOK, A PARACHUTE!' and walks off with a backpack.",
+   "phases": [
+    "feast"
+   ],
+   "size": 1,
+   "killers": [],
+   "victims": [],
+   "type": "neutral",
+   "tags": [
+    "feast"
+   ]
+  },
+  {
+   "id": "N093",
+   "text": "{tribute} waits for the chaos to peak, then calmly strolls in and out like they're returning a library book.",
+   "phases": [
+    "feast"
+   ],
+   "size": 1,
+   "killers": [],
+   "victims": [],
+   "type": "neutral",
+   "tags": [
+    "feast"
+   ]
+  },
+  {
+   "id": "N094",
+   "text": "{tribute_a} and {tribute_b} grab the same bag, play tug of war, and the bag splits neatly in half. Fair.",
+   "phases": [
+    "feast"
+   ],
+   "size": 2,
+   "killers": [],
+   "victims": [],
+   "type": "neutral",
+   "tags": [
+    "feast"
+   ]
+  },
+  {
+   "id": "N095",
+   "text": "{tribute} skips the Feast on principle, then sneaks in at the last second for the leftovers.",
+   "phases": [
+    "feast"
+   ],
+   "size": 1,
+   "killers": [],
+   "victims": [],
+   "type": "neutral",
+   "tags": [
+    "feast"
+   ]
+  },
+  {
+   "id": "N096",
+   "text": "{tribute} cartwheels through the Feast for the cameras, grabs a pack mid-cartwheel, and sticks the landing.",
+   "phases": [
+    "feast"
+   ],
+   "size": 1,
+   "killers": [],
+   "victims": [],
+   "type": "neutral",
+   "tags": [
+    "feast"
+   ]
+  },
+  {
+   "id": "N097",
+   "text": "A wall of fire chases {tribute} downhill and wins the race. 💥",
+   "phases": [
+    "day",
+    "night",
+    "arena",
+    "finale"
+   ],
+   "size": 1,
+   "killers": [],
+   "victims": [
+    0
+   ],
+   "type": "hazard",
+   "tags": [],
+   "stat": "agility",
+   "hazard": "fire"
+  },
+  {
+   "id": "N098",
+   "text": "{tribute} tries to put out a Gamemaker fireball with a small leaf. The leaf did its best. 💥",
+   "phases": [
+    "day",
+    "night",
+    "arena",
+    "finale"
+   ],
+   "size": 1,
+   "killers": [],
+   "victims": [
+    0
+   ],
+   "type": "hazard",
+   "tags": [],
+   "stat": "intellect",
+   "hazard": "fire"
+  },
+  {
+   "id": "N099",
+   "text": "{tribute} gets cornered by a burning thicket and is airlifted out of the Games looking very toasted. 💥",
+   "phases": [
+    "day",
+    "night",
+    "arena",
+    "finale"
+   ],
+   "size": 1,
+   "killers": [],
+   "victims": [
+    0
+   ],
+   "type": "hazard",
+   "tags": [],
+   "stat": "endurance",
+   "hazard": "fire"
+  },
+  {
+   "id": "N100",
+   "text": "A pack of wolf mutts with suspiciously familiar eyes catches {tribute} before they reach a tree. 💥",
+   "phases": [
+    "day",
+    "night",
+    "arena",
+    "finale"
+   ],
+   "size": 1,
+   "killers": [],
+   "victims": [
+    0
+   ],
+   "type": "hazard",
+   "tags": [],
+   "stat": "agility",
+   "hazard": "mutt"
+  },
+  {
+   "id": "N101",
+   "text": "{tribute} tries to pet a mutt. The mutt was not that kind of dog. 💥",
+   "phases": [
+    "day",
+    "night",
+    "arena",
+    "finale"
+   ],
+   "size": 1,
+   "killers": [],
+   "victims": [
+    0
+   ],
+   "type": "hazard",
+   "tags": [],
+   "stat": "intellect",
+   "hazard": "mutt"
+  },
+  {
+   "id": "N102",
+   "text": "A swarm of monkey mutts carries {tribute} off into the canopy, never to be seen again (on camera). 💥",
+   "phases": [
+    "day",
+    "night",
+    "arena",
+    "finale"
+   ],
+   "size": 1,
+   "killers": [],
+   "victims": [
+    0
+   ],
+   "type": "hazard",
+   "tags": [],
+   "stat": "endurance",
+   "hazard": "mutt"
+  },
+  {
+   "id": "N103",
+   "text": "A flash flood sweeps {tribute} downstream and straight out of the Games, still holding a single sock. 💥",
+   "phases": [
+    "day",
+    "night",
+    "arena",
+    "finale"
+   ],
+   "size": 1,
+   "killers": [],
+   "victims": [
+    0
+   ],
+   "type": "hazard",
+   "tags": [],
+   "stat": "endurance",
+   "hazard": "flood"
+  },
+  {
+   "id": "N104",
+   "text": "{tribute} tries to surf the flood on a log. Bold. Doomed. Memorable. 💥",
+   "phases": [
+    "day",
+    "night",
+    "arena",
+    "finale"
+   ],
+   "size": 1,
+   "killers": [],
+   "victims": [
+    0
+   ],
+   "type": "hazard",
+   "tags": [],
+   "stat": "agility",
+   "hazard": "flood"
+  },
+  {
+   "id": "N105",
+   "text": "{tribute} sleeps a little too close to the riverbank as the water rises. 💥",
+   "phases": [
+    "day",
+    "night",
+    "arena",
+    "finale"
+   ],
+   "size": 1,
+   "killers": [],
+   "victims": [
+    0
+   ],
+   "type": "hazard",
+   "tags": [],
+   "stat": "endurance",
+   "hazard": "flood"
+  },
+  {
+   "id": "N106",
+   "text": "{tribute} wanders into the fog, follows a voice that sounds like their mom, and does not come back. 💥",
+   "phases": [
+    "day",
+    "night",
+    "arena",
+    "finale"
+   ],
+   "size": 1,
+   "killers": [],
+   "victims": [
+    0
+   ],
+   "type": "hazard",
+   "tags": [],
+   "stat": "intellect",
+   "hazard": "night"
+  },
+  {
+   "id": "N107",
+   "text": "The hallucination fog convinces {tribute} they can fly. They cannot. 💥",
+   "phases": [
+    "day",
+    "night",
+    "arena",
+    "finale"
+   ],
+   "size": 1,
+   "killers": [],
+   "victims": [
+    0
+   ],
+   "type": "hazard",
+   "tags": [],
+   "stat": "intellect",
+   "hazard": "night"
+  },
+  {
+   "id": "N108",
+   "text": "{tribute} gets lost in the night fog and walks straight into the forcefield at full speed. 💥",
+   "phases": [
+    "day",
+    "night",
+    "arena",
+    "finale"
+   ],
+   "size": 1,
+   "killers": [],
+   "victims": [
+    0
+   ],
+   "type": "hazard",
+   "tags": [],
+   "stat": "agility",
+   "hazard": "night"
+  },
+  {
+   "id": "N109",
+   "text": "{tribute} drinks from a glowing green puddle. In hindsight, the glowing should have been a clue. 💥",
+   "phases": [
+    "day",
+    "night",
+    "arena",
+    "finale"
+   ],
+   "size": 1,
+   "killers": [],
+   "victims": [
+    0
+   ],
+   "type": "hazard",
+   "tags": [],
+   "stat": "intellect",
+   "hazard": "poison"
+  },
+  {
+   "id": "N110",
+   "text": "A tracker jacker swarm chases {tribute} for a mile. The tracker jackers have better cardio. 💥",
+   "phases": [
+    "day",
+    "night",
+    "arena",
+    "finale"
+   ],
+   "size": 1,
+   "killers": [],
+   "victims": [
+    0
+   ],
+   "type": "hazard",
+   "tags": [],
+   "stat": "endurance",
+   "hazard": "poison"
+  },
+  {
+   "id": "N111",
+   "text": "{tribute} mistakes a nest of tracker jackers for a piñata. 💥",
+   "phases": [
+    "day",
+    "night",
+    "arena",
+    "finale"
+   ],
+   "size": 1,
+   "killers": [],
+   "victims": [
+    0
+   ],
+   "type": "hazard",
+   "tags": [],
+   "stat": "intellect",
+   "hazard": "poison"
+  },
+  {
+   "id": "N112",
+   "text": "{tribute} gets stuck in a heatwave with no water and wilts like a forgotten houseplant. 💥",
+   "phases": [
+    "day",
+    "night",
+    "arena",
+    "finale"
+   ],
+   "size": 1,
+   "killers": [],
+   "victims": [
+    0
+   ],
+   "type": "hazard",
+   "tags": [],
+   "stat": "endurance",
+   "hazard": "heat"
+  },
+  {
+   "id": "N113",
+   "text": "{tribute} builds a snowman during a Gamemaker blizzard. The snowman outlasts them. 💥",
+   "phases": [
+    "day",
+    "night",
+    "arena",
+    "finale"
+   ],
+   "size": 1,
+   "killers": [],
+   "victims": [
+    0
+   ],
+   "type": "hazard",
+   "tags": [],
+   "stat": "endurance",
+   "hazard": "cold"
+  },
+  {
+   "id": "N114",
+   "text": "{tribute} outruns a wall of fire with only slightly crispy eyebrows.",
+   "phases": [
+    "day",
+    "night",
+    "arena"
+   ],
+   "size": 1,
+   "killers": [],
+   "victims": [],
+   "type": "hazard",
+   "tags": [],
+   "hazard": "fire"
+  },
+  {
+   "id": "N115",
+   "text": "{tribute} dives into a pond as the fire passes overhead and comes up wearing a lily pad.",
+   "phases": [
+    "day",
+    "night",
+    "arena"
+   ],
+   "size": 1,
+   "killers": [],
+   "victims": [],
+   "type": "hazard",
+   "tags": [],
+   "hazard": "fire"
+  },
+  {
+   "id": "N116",
+   "text": "{tribute} smells smoke, sprints the other way, and keeps sprinting long after it's necessary.",
+   "phases": [
+    "day",
+    "night",
+    "arena"
+   ],
+   "size": 1,
+   "killers": [],
+   "victims": [],
+   "type": "hazard",
+   "tags": [],
+   "hazard": "fire"
+  },
+  {
+   "id": "N117",
+   "text": "{tribute} fends off a mutt with a frying pan and a very loud 'NO'.",
+   "phases": [
+    "day",
+    "night",
+    "arena"
+   ],
+   "size": 1,
+   "killers": [],
+   "victims": [],
+   "type": "hazard",
+   "tags": [],
+   "hazard": "mutt"
+  },
+  {
+   "id": "N118",
+   "text": "{tribute} climbs a tree so fast the mutts below give up and go bother someone else.",
+   "phases": [
+    "day",
+    "night",
+    "arena"
+   ],
+   "size": 1,
+   "killers": [],
+   "victims": [],
+   "type": "hazard",
+   "tags": [],
+   "hazard": "mutt"
+  },
+  {
+   "id": "N119",
+   "text": "{tribute} throws their last snack at a mutt. The mutt takes the snack and leaves. Fair trade.",
+   "phases": [
+    "day",
+    "night",
+    "arena"
+   ],
+   "size": 1,
+   "killers": [],
+   "victims": [],
+   "type": "hazard",
+   "tags": [],
+   "hazard": "mutt"
+  },
+  {
+   "id": "N120",
+   "text": "{tribute} rides out the flood clinging to a floating crate, yelling sea shanties.",
+   "phases": [
+    "day",
+    "night",
+    "arena"
+   ],
+   "size": 1,
+   "killers": [],
+   "victims": [],
+   "type": "hazard",
+   "tags": [],
+   "hazard": "flood"
+  },
+  {
+   "id": "N121",
+   "text": "{tribute} climbs onto a rooftop-sized boulder and watches the flood go by like a parade.",
+   "phases": [
+    "day",
+    "night",
+    "arena"
+   ],
+   "size": 1,
+   "killers": [],
+   "victims": [],
+   "type": "hazard",
+   "tags": [],
+   "hazard": "flood"
+  },
+  {
+   "id": "N122",
+   "text": "{tribute} gets swept downstream, beaches on a sandbar, and declares themselves its ruler.",
+   "phases": [
+    "day",
+    "night",
+    "arena"
+   ],
+   "size": 1,
+   "killers": [],
+   "victims": [],
+   "type": "hazard",
+   "tags": [],
+   "hazard": "flood"
+  },
+  {
+   "id": "N123",
+   "text": "{tribute} wanders through the fog humming loudly so the hallucinations can't get a word in.",
+   "phases": [
+    "day",
+    "night",
+    "arena"
+   ],
+   "size": 1,
+   "killers": [],
+   "victims": [],
+   "type": "hazard",
+   "tags": [],
+   "hazard": "night"
+  },
+  {
+   "id": "N124",
+   "text": "The fog shows {tribute} a vision of a giant cheeseburger. They resist. Barely.",
+   "phases": [
+    "day",
+    "night",
+    "arena"
+   ],
+   "size": 1,
+   "killers": [],
+   "victims": [],
+   "type": "hazard",
+   "tags": [],
+   "hazard": "night"
+  },
+  {
+   "id": "N125",
+   "text": "{tribute} ties a vine to a tree and follows it back out of the fog like a very lost hiker.",
+   "phases": [
+    "day",
+    "night",
+    "arena"
+   ],
+   "size": 1,
+   "killers": [],
+   "victims": [],
+   "type": "hazard",
+   "tags": [],
+   "hazard": "night"
+  },
+  {
+   "id": "N126",
+   "text": "{tribute} gets stung twice by tracker jackers and spends an hour convinced they're a teapot.",
+   "phases": [
+    "day",
+    "night",
+    "arena"
+   ],
+   "size": 1,
+   "killers": [],
+   "victims": [],
+   "type": "hazard",
+   "tags": [],
+   "hazard": "poison"
+  },
+  {
+   "id": "N127",
+   "text": "{tribute} spots the poison cloud early and holds their breath for an Olympic-record amount of time.",
+   "phases": [
+    "day",
+    "night",
+    "arena"
+   ],
+   "size": 1,
+   "killers": [],
+   "victims": [],
+   "type": "hazard",
+   "tags": [],
+   "hazard": "poison"
+  },
+  {
+   "id": "N128",
+   "text": "{tribute} nearly eats a nightlock berry, then remembers the training poster at the last second.",
+   "phases": [
+    "day",
+    "night",
+    "arena"
+   ],
+   "size": 1,
+   "killers": [],
+   "victims": [],
+   "type": "hazard",
+   "tags": [],
+   "hazard": "poison"
+  },
+  {
+   "id": "N129",
+   "text": "{tribute} survives the heatwave by lying perfectly still in the shade like a lizard.",
+   "phases": [
+    "day",
+    "night",
+    "arena"
+   ],
+   "size": 1,
+   "killers": [],
+   "victims": [],
+   "type": "hazard",
+   "tags": [],
+   "hazard": "heat"
+  },
+  {
+   "id": "N130",
+   "text": "{tribute} wraps themselves in leaves to survive the cold snap and emerges as a very angry salad.",
+   "phases": [
+    "day",
+    "night",
+    "arena"
+   ],
+   "size": 1,
+   "killers": [],
+   "victims": [],
+   "type": "hazard",
+   "tags": [],
+   "hazard": "cold"
+  },
+  {
+   "id": "N131",
+   "text": "{tribute} trips over a hidden wire, faceplants, and accidentally dodges the dart it triggered.",
+   "phases": [
+    "day",
+    "night",
+    "arena"
+   ],
+   "size": 1,
+   "killers": [],
+   "victims": [],
+   "type": "hazard",
+   "tags": [],
+   "hazard": "trap"
+  },
+  {
+   "id": "N132",
+   "text": "{tribute} slips off a ledge, catches a root, and hangs there for an hour reconsidering their life choices.",
+   "phases": [
+    "day",
+    "night",
+    "arena"
+   ],
+   "size": 1,
+   "killers": [],
+   "victims": [],
+   "type": "hazard",
+   "tags": [],
+   "hazard": "fall"
+  },
+  {
+   "id": "N133",
+   "text": "{tribute} has a close call with the arena and decides today is a 'stay inside' day.",
+   "phases": [
+    "day",
+    "night",
+    "arena"
+   ],
+   "size": 1,
+   "killers": [],
+   "victims": [],
+   "type": "hazard",
+   "tags": [],
+   "hazard": "other"
+  },
+  {
+   "id": "N134",
+   "text": "{tribute_a} twirls their sponsored blade like they've practiced in a mirror (they have) and sends {tribute_b} home. 💥",
+   "phases": [
+    "any"
+   ],
+   "size": 2,
+   "killers": [
+    0
+   ],
+   "victims": [
+    1
+   ],
+   "type": "combat",
+   "tags": [
+    "weapon"
+   ],
+   "stat": "strength"
+  },
+  {
+   "id": "N135",
+   "text": "{tribute_a} pokes {tribute_b} out of the Games with a sponsored trident. Polite, efficient, devastating. 💥",
+   "phases": [
+    "any"
+   ],
+   "size": 2,
+   "killers": [
+    0
+   ],
+   "victims": [
+    1
+   ],
+   "type": "combat",
+   "tags": [
+    "weapon"
+   ],
+   "stat": "strength"
+  },
+  {
+   "id": "N136",
+   "text": "{tribute_a}'s sponsored machete settles an argument with {tribute_b} very quickly. 💥",
+   "phases": [
+    "any"
+   ],
+   "size": 2,
+   "killers": [
+    0
+   ],
+   "victims": [
+    1
+   ],
+   "type": "combat",
+   "tags": [
+    "weapon"
+   ],
+   "stat": "strength"
+  }
+ ],
+ "lines": {
+  "victor": [
+   "🏆 {tribute} is the last one standing. Victor of {edition}!",
+   "🏆 The trumpets blare. {tribute} wins {edition}, mostly through spite and good snacks.",
+   "🏆 {tribute} walks out of the arena alone, waves to the cameras, and trips on the hovercraft ladder. Victor of {edition}!",
+   "🏆 Against all odds (and several mutts), {tribute} is the Victor of {edition}!",
+   "🏆 {tribute} survives it all. The Capitol is already printing the mugs. Victor of {edition}!",
+   "🏆 {tribute} does a little dance on the Cornucopia. Victor of {edition}!",
+   "🏆 The final cannon fades. {tribute} is the Victor of {edition}, and would really like a shower.",
+   "🏆 {tribute} outlasted every tribute in {edition}. Somewhere, a sponsor is crying happy tears.",
+   "🏆 Long live the Victor! {tribute} takes {edition}.",
+   "🏆 {tribute} wins {edition} and immediately asks if there's a buffet."
+  ],
+  "dq": [
+   "📛 Capitol Disqualification: {tribute} has left the arena (and the server). The Gamemakers are not amused.",
+   "📛 {tribute} is disqualified for leaving the server mid-Games. The cannon fires out of pure pettiness.",
+   "📛 The Capitol can no longer find {tribute}. They are declared out of the Games."
+  ],
+  "bloodbath_intro": [
+   "The gong sounds. Twelve-ish hearts pound. Everyone sprints for the Cornucopia at once.",
+   "Sixty seconds on the plates, then chaos. The Bloodbath begins!",
+   "The launch plates rise. The Cornucopia glitters. Somebody already regrets their life choices."
+  ],
+  "day_intro": [
+   "The sun rises over the arena. Somewhere a bird sings. Somewhere else, someone is plotting.",
+   "Another day in the arena. The sponsors are watching. So are the mutts.",
+   "Morning mist lifts off the arena. The tributes are on the move.",
+   "The Capitol cameras swivel into place. A new day begins."
+  ],
+  "night_intro": [
+   "Night falls. The anthem plays and the faces of the fallen light up the sky.",
+   "Darkness settles over the arena. Every twig snap sounds like a threat.",
+   "The temperature drops. The anthem plays. Nobody in the arena sleeps well.",
+   "The moon comes up over the arena. So do the night creatures."
+  ],
+  "feast_intro": [
+   "Claudius Templesmith's voice booms: 'Attention tributes! A Feast awaits at the Cornucopia. Each of you needs something badly...'",
+   "The Gamemakers announce a Feast at dawn. Backpacks with district numbers glint on a table at the Cornucopia."
+  ],
+  "finale_intro": [
+   "The arena shrinks. Walls of fire herd the last tributes toward the Cornucopia. This is it.",
+   "The Gamemakers have had enough. Floodwaters rise, pushing the survivors together for the final showdown.",
+   "A howl rolls across the arena. Mutts drive the remaining tributes into the open. Only one walks out."
+  ],
+  "arena_intro": {
+   "fire": [
+    "🔥 WILDFIRE! The Gamemakers set the eastern woods ablaze and the fire is spreading fast."
+   ],
+   "mutt": [
+    "🐺 MUTTS! Packs of Capitol-bred beasts pour out of the treeline, howling."
+   ],
+   "flood": [
+    "🌊 FLOOD! The dam upstream gives way and the valley starts to fill."
+   ],
+   "night": [
+    "🌫️ POISON FOG! A shimmering mist rolls in. Anyone who breathes it sees things that aren't there."
+   ],
+   "poison": [
+    "🐝 TRACKER JACKERS! Somebody's disturbed every nest in the arena at once."
+   ],
+   "rule_change": [
+    "📢 RULE CHANGE! 'Two tributes from the same alliance may now win together!' ...the Gamemakers giggle and revoke it an hour later.",
+    "📢 RULE CHANGE! 'Tonight, all weapons are replaced with pool noodles!' Nobody can tell if they're joking.",
+    "📢 RULE CHANGE! 'Every tribute must compliment another tribute before sundown!' Things get awkward.",
+    "📢 RULE CHANGE! 'Hugs now count as attacks.' The arena goes very, very quiet.",
+    "📢 RULE CHANGE! The Gamemakers announce a mandatory nap. Everyone is suspicious. Everyone naps.",
+    "📢 RULE CHANGE! 'The tribute with the best dance moves gets a prize!' There is no prize."
+   ]
+  },
+  "escape": {
+   "fire": [
+    "{tribute} has a close call with the flames and lives to tell about it."
+   ],
+   "heat": [
+    "{tribute} has a close call with the heat and lives to tell about it."
+   ],
+   "night": [
+    "{tribute} has a close call with the fog and lives to tell about it."
+   ],
+   "poison": [
+    "{tribute} has a close call with the poison and lives to tell about it."
+   ],
+   "cold": [
+    "{tribute} has a close call with the cold and lives to tell about it."
+   ],
+   "flood": [
+    "{tribute} has a close call with the water and lives to tell about it."
+   ],
+   "mutt": [
+    "{tribute} has a close call with the mutts and lives to tell about it."
+   ],
+   "fall": [
+    "{tribute} has a close call with the cliffs and lives to tell about it."
+   ],
+   "trap": [
+    "{tribute} has a close call with the traps and lives to tell about it."
+   ],
+   "other": [
+    "{tribute} has a close call with the arena and lives to tell about it."
+   ]
+  },
+  "save": {
+   "water": [
+    "{tribute} is wilting in the heat when a sponsored Water Flask parachutes down. Saved by hydration!",
+    "Severe dehydration threatens to knock {tribute} out, until they drink from their sponsored Purified Water Flask and recover!"
+   ],
+   "serum": [
+    "The fog starts whispering to {tribute}, so they take a sponsored Sleep Serum and snooze right through it. Saved!",
+    "Overwhelmed by panic and insomnia, {tribute} takes a dose of Calming Sleep Serum, getting deep restorative rest in a hidden hollow."
+   ],
+   "burn_cream": [
+    "{tribute} is badly singed, but a tube of sponsored Burn Salve has them good as new. Saved!",
+    "Scorched by a Gamemaker fireball, {tribute} applies their sponsored Specialized Burn Salve, preventing fatal shock and healing the burns!"
+   ],
+   "med_kit": [
+    "{tribute} should be out of the Games, but a sponsored First-Aid Kit lands on their head. It hurts. It also saves them.",
+    "A silver parachute drops a First-Aid Kit to {tribute} just in time. The sponsors have spoken!",
+    "Bitten by a venomous Tracker Jacker, {tribute} injects their sponsored Antivenom & First-Aid Kit, cheating certain death!"
+   ]
+  },
+  "medkit_fail": [
+   "{tribute} tears open their sponsored First-Aid Kit, but it isn't enough this time."
+  ],
+  "boost": {
+   "stew": [
+    "{tribute} gulps down a sponsored Hot Lamb Stew before the fight. Warm belly, strong arms!",
+    "Exhausted and shivering, {tribute} consumes their sponsored Hot Lamb Stew & Broth, instantly restoring their warmth and combat vigor!"
+   ],
+   "bread": [
+    "{tribute} munches sponsored District 11 Bread for strength. Carbs: the true survival tool.",
+    "{tribute} eats their sponsored District 11 Specialty Bread, powering through a grueling mountain climb ahead of pursuers."
+   ]
+  },
+  "gear": {
+   "weapon": [
+    "{tribute} polishes their sponsored blade and nods at it meaningfully. The blade nods back (probably)."
+   ],
+   "armor": [
+    "Clad in sponsored Thermal Gear & Combat Boots, {tribute} shrugs off an overnight blizzard that freezes lesser-equipped tributes."
+   ],
+   "survival_kit": [
+    "Using their sponsored Spiles, Flint & Rafter Kit, {tribute} builds a fire in pouring rain and taps fresh water from the trees."
+   ]
+  },
+  "combat_saved": [
+   "{tribute_a} lands what should be the finishing blow on {tribute_b}, but a silver parachute changes everything. {tribute_b} escapes!",
+   "{tribute_a} has {tribute_b} cornered, but {tribute_b}'s sponsors come through at the last second. {tribute_b} limps away alive!"
+  ],
+  "gift": [
+   "🎁 The Capitol adores {tribute}! A free gift drifts down: {item}.",
+   "🎁 {tribute}'s interview charmed the Capitol. A surprise parachute delivers {item}."
+  ],
+  "forage_find": [
+   "{tribute} also stumbles on a hidden stash: {item}!",
+   "Bonus: {tribute} finds a {item} tucked under a rock."
+  ],
+  "feast_find": [
+   "{tribute} grabbed exactly what they needed: {item}."
+  ],
+  "unused_bonus": [
+   "{tribute} trades in their unused {items} for a last burst of energy (+{bonus} in the Finale)."
+  ],
+  "filler": [
+   "{tribute} keeps their head down and survives another few hours.",
+   "{tribute} wanders the arena quietly. Nothing happens. Suspiciously nothing."
+  ]
+ }
+}
