@@ -453,7 +453,7 @@ class Arena:
                         kind: str | None = None, hazard: str | None = None, tag: str | None = None,
                         max_victims: int = 99, extra=None):
         def ok(t):
-            if phase not in t["phases"] and "any" not in t["phases"]:
+            if phase != "any" and phase not in t["phases"] and "any" not in t["phases"]:
                 return False
             if fatal is not None and bool(t["victims"]) != fatal:
                 return False
@@ -509,15 +509,20 @@ class Arena:
         t["finale_bonus"] = 0
         return soft_cap(raw)
 
-    def try_save(self, uid: str, hazard: str | None) -> bool:
-        """A matching consumable or a Med Kit saves a tribute who would die. True if saved."""
+    def try_save(self, uid: str, hazard: str | None, *, narrate: bool = True) -> bool:
+        """A matching consumable or a Med Kit saves a tribute who would die. True if saved.
+
+        narrate=False is for fights: the caller posts one "silver parachute" line that names the attacker,
+        so the item's own line would tell the same rescue twice (and could be about a hazard, not a fight)."""
         specific = HAZARD_SAVE.get(hazard or "")
         if specific and self.consume(uid, specific):
-            self.say(self.pick_line("save", specific), [uid])
+            if narrate:
+                self.say(self.pick_line("save", specific), [uid])
             return True
         if self.consume(uid, "med_kit"):
             if self.rng.random() < MED_KIT_SAVE:
-                self.say(self.pick_line("save", "med_kit"), [uid])
+                if narrate:
+                    self.say(self.pick_line("save", "med_kit"), [uid])
                 return True
             self.say(self.pick_line("medkit_fail"), [uid])
         return False
@@ -588,7 +593,7 @@ class Arena:
         for u in group:
             remaining.remove(u)
         self.spend_boosts(group)
-        saved = [v for v in victims if self.try_save(v, "combat")]
+        saved = [v for v in victims if self.try_save(v, "combat", narrate=False)]
         if saved:
             self.say(self.pick_line("combat_saved"), [killers[0], saved[0]])
             return 0
@@ -633,7 +638,7 @@ class Arena:
             remaining.remove(a)
             remaining.remove(b)
             self.spend_boosts([a, b])
-            if self.try_save(victim, "combat"):
+            if self.try_save(victim, "combat", narrate=False):
                 self.say(self.pick_line("combat_saved"), [killer, victim])
                 self.split(a, b)
                 return 0

@@ -145,6 +145,42 @@ def test_med_kit_saves_about_70_percent():
     assert 0.65 < saved / 2000 < 0.75
 
 
+SAVED_MARKERS = ("sponsors come through at the last second", "a silver parachute changes everything")
+
+
+def test_a_saved_fight_is_narrated_once():
+    """A Med Kit save in a fight used to post its own item line AND the generic "sponsors come through"
+    line, so the same rescue showed twice (and the item line could be about a different hazard)."""
+    saves = 0
+    for seed in range(300):
+        ed, rng = make_edition(6, seed, items=False)
+        for t in ed["roster"].values():
+            t["inventory"]["consumables"] = ["med_kit"]
+        arena = engine.Arena(ed, POOL, random.Random(seed))
+        arena.combat(engine.alive_ids(ed), "day", 2)
+        saved = [ln for ln in arena.lines if any(m in ln.get("text", "") for m in SAVED_MARKERS)]
+        if saved:
+            saves += 1
+            assert len(arena.lines) == 1, [ln.get("text") for ln in arena.lines]
+    assert saves > 20
+
+
+def test_a_saved_betrayal_is_narrated_once():
+    saves = 0
+    for seed in range(600):
+        ed, rng = make_edition(6, seed, items=False)
+        ed["alliances"] = [["0", "1", "2"]]
+        for t in ed["roster"].values():
+            t["inventory"]["consumables"] = ["med_kit"]
+        arena = engine.Arena(ed, POOL, random.Random(seed))
+        arena.betrayal(engine.alive_ids(ed), "day", 1)
+        saved = [ln for ln in arena.lines if any(m in ln.get("text", "") for m in SAVED_MARKERS)]
+        if saved:
+            saves += 1
+            assert len(arena.lines) == 1, [ln.get("text") for ln in arena.lines]
+    assert saves > 5
+
+
 def test_unused_consumables_become_a_finale_bonus():
     ed, rng = make_edition(3, 3, items=False)
     for i in range(1, 3):

@@ -1,6 +1,8 @@
 """Embed builders for hungergames. Rendering only: no Config, no game rules."""
 from __future__ import annotations
 
+import time
+
 import discord
 
 from . import engine
@@ -41,21 +43,30 @@ def roster_lines(ed: dict, *, scores: bool = False, mentions: bool = True) -> li
     return out
 
 
-def reaping_embed(ed: dict) -> "discord.Embed":
+def reaping_embed(ed: dict, *, closed: bool = False, now: float | None = None) -> "discord.Embed":
+    """The Reaping post. A step that has already happened reads "done" (a relative timestamp would keep
+    counting up, "31 seconds ago"), and once the roster locks the post says so."""
+    now = time.time() if now is None else now
     sched = ed["schedule"]
     seats = MAX_TRIBUTES - len(ed["roster"])
-    desc = (
-        "The Reaping is open! Press **I Volunteer** to take a seat. When every seat is full you can send "
-        "**one** swap request to a drafted tribute instead.\n\n"
-        f"🎲 Second Reaping (top-up draw): {ts(engine.step_ts(sched, 'second_reaping'))}\n"
-        f"🔒 Roster locks: {ts(engine.step_ts(sched, 'lock'))}\n"
-        f"🏋️ Training: {ts(engine.step_ts(sched, 'training'), 'F')}\n"
-    )
+    second = engine.step_ts(sched, "second_reaping")
+    lock = engine.step_ts(sched, "lock")
+    if closed:
+        desc = "The Reaping is closed and the roster is locked. See you in training!\n\n"
+    else:
+        desc = (
+            "The Reaping is open! Press **I Volunteer** to take a seat. When every seat is full you can send "
+            "**one** swap request to a drafted tribute instead.\n\n"
+            f"🎲 Second Reaping (top-up draw): {'✅ done' if second <= now else ts(second)}\n"
+            f"🔒 Roster locks: {ts(lock)}\n"
+        )
+    desc += f"🏋️ Training: {ts(engine.step_ts(sched, 'training'), 'F')}\n"
     e = _embed(f"🎯 {engine.edition_title(ed)} — The Reaping", desc)
     lines = roster_lines(ed)
-    e.add_field(name=f"Tributes ({len(ed['roster'])}/{MAX_TRIBUTES}, {seats} open)",
+    e.add_field(name=f"Tributes ({len(ed['roster'])}/{MAX_TRIBUTES}" + ("" if closed else f", {seats} open") + ")",
                 value="\n".join(lines) or "Nobody yet.", inline=False)
-    e.set_footer(text="Drafted and don't want to play? Press Withdraw. Never want to be drafted? Never draft me.")
+    if not closed:
+        e.set_footer(text="Drafted and don't want to play? Press Withdraw. Never want to be drafted? Never draft me.")
     return e
 
 

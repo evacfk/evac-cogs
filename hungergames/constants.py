@@ -1,7 +1,7 @@
 """Config defaults and lookup tables for hungergames. No discord/redbot imports here."""
 from zoneinfo import ZoneInfo
 
-COG_VERSION = "1.0.0"
+COG_VERSION = "1.0.1"
 CONFIG_IDENTIFIER = 0x48474D31
 HOME_TZ = ZoneInfo("America/Los_Angeles")
 
@@ -33,7 +33,7 @@ SCHEDULE = (
 # test mode: seconds after the start (the training window is long enough to actually play)
 TEST_SCHEDULE = (
     ("reaping", 0), ("second_reaping", 45), ("lock", 75), ("training", 80), ("training_close", 380),
-    ("scores", 390), ("broadcast", 400), ("broadcast", 430), ("broadcast", 460), ("broadcast", 490), ("finale", 520),
+    ("scores", 390), ("broadcast", 480), ("broadcast", 600), ("broadcast", 720), ("broadcast", 840), ("finale", 960),
 )
 BROADCASTS = 4
 

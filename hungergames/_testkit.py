@@ -183,10 +183,19 @@ class FakeChannel:
         self.guild, self.id, self.name = guild, cid, name
         self.sent = []
         self.members = []
+        self.locked, self.deleted = False, False
 
     @property
     def mention(self):
         return f"<#{self.id}>"
+
+    async def edit(self, **kw):
+        if "locked" in kw:
+            self.locked = kw["locked"]
+
+    async def delete(self):
+        self.deleted = True
+        self.guild.channels.pop(self.id, None)
 
     async def send(self, content=None, **kw):
         msg = FakeMessage(self, content=content, **kw)
@@ -269,6 +278,12 @@ class FakeGuild:
         return self.channels.get(cid)
 
     get_channel_or_thread = get_channel
+
+    async def fetch_channel(self, cid):
+        import discord
+        if cid not in self.channels:
+            raise discord.NotFound("gone")
+        return self.channels[cid]
 
 
 class FakeBot:

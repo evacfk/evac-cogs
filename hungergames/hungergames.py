@@ -279,6 +279,7 @@ class HungerGames(commands.Cog):
                 due = now >= sched[0][1] and s["last_sunday"] != sunday.isoformat()
                 if due and ed is not None and ed.get("test"):
                     await self._send(self._channel(guild, s, ed), "🛑 Test run stopped: the real Reaping is starting.")
+                    await self._cleanup_threads(guild, ed)
                     ed = None
                 if due and ed is None:
                     await gconf.last_sunday.set(sunday.isoformat())
@@ -361,7 +362,7 @@ class HungerGames(commands.Cog):
             await self._edit(channel, req.get("message_id"), content=f"⌛ The Reaping closed. {self._mention(ed, target)} keeps their seat.",
                              view=None, allowed_mentions=NONE)
         ed["swap_requests"] = {}
-        await self._edit(channel, ed["messages"].get("reaping"), view=None)
+        await self._edit(channel, ed["messages"].get("reaping"), embed=embeds.reaping_embed(ed, closed=True), view=None)
         if len(ed["roster"]) < MIN_TRIBUTES:
             await self._send(channel, f"😶 Only {len(ed['roster'])} tributes this week, and the Games need {MIN_TRIBUTES}. "
                              "The Gamemakers cancel this one. See you next Sunday!")
@@ -397,6 +398,7 @@ class HungerGames(commands.Cog):
                 log.warning("hungergames: could not open a training thread (needs Create Public Threads)")
                 continue
             ed["threads"][str(thread.id)] = uid
+            ed.setdefault("starters", {})[str(thread.id)] = starter.id
             await self._send(thread, embeds.training_intro(ed, uid), view=ui.TrainingView(self),
                              allowed_mentions=discord.AllowedMentions(users=[discord.Object(id=int(uid))]))
 
@@ -412,9 +414,48 @@ class HungerGames(commands.Cog):
         charisma = engine.charisma_scores(ed["cheers"], list(ed["roster"]))
         for uid, t in ed["roster"].items():
             t["stats"]["charisma"] = charisma[uid]
+        await self._lock_threads(guild, ed)
         await self._send(self._channel(guild, s, ed),
                          f"🔒 **Training is over.** The Gamemakers are scoring. Scores and sponsorship open "
                          f"{embeds.ts(engine.step_ts(ed['schedule'], 'scores'), 'F')}.")
+
+    async def _thread(self, guild, tid):
+        """The thread object, or None if it is gone or unreachable."""
+        try:
+            return guild.get_channel_or_thread(int(tid)) or await guild.fetch_channel(int(tid))
+        except _DISCORD_ERRORS:
+            return None
+
+    async def _lock_threads(self, guild, ed):
+        """Training is over: lock the training threads so they stay readable (everyone can see how the
+        others did) but nobody can post in them. Needs Manage Threads."""
+        for tid in ed.get("threads", {}):
+            thread = await self._thread(guild, tid)
+            if thread is None:
+                continue
+            try:
+                await thread.edit(locked=True)
+            except _DISCORD_ERRORS:
+                log.warning("hungergames: could not lock thread %s (needs Manage Threads)", tid, exc_info=True)
+
+    async def _cleanup_threads(self, guild, ed):
+        """The edition is over: delete its training threads and the starter posts they hang from. The
+        starter post is only deleted once its thread is gone, so a failed delete never orphans a thread."""
+        for tid in list(ed.get("threads", {})):
+            thread = await self._thread(guild, tid)
+            if thread is not None:
+                try:
+                    await thread.delete()
+                except _DISCORD_ERRORS:
+                    log.warning("hungergames: could not delete thread %s (needs Manage Threads)", tid, exc_info=True)
+                    continue
+            starter = ed.get("starters", {}).get(tid)
+            channel = guild.get_channel(ed.get("channel_id") or 0)
+            if starter and channel is not None:
+                try:
+                    await channel.get_partial_message(starter).delete()
+                except _DISCORD_ERRORS:
+                    log.debug("hungergames: could not delete starter post %s", starter, exc_info=True)
 
     async def _step_scores(self, guild, s, ed, now):
         channel = self._channel(guild, s, ed)
@@ -510,6 +551,7 @@ class HungerGames(commands.Cog):
         reports = (await gconf.reports())[-(REPORTS_KEPT - 1):]
         reports.append(engine.edition_report(ed))
         await gconf.reports.set(reports)
+        await self._cleanup_threads(guild, ed)
         if not ed.get("test"):
             await gconf.last_tributes.set([u for u in ed["roster"] if u.isdigit()])
             await gconf.last_puzzles.set(ed["puzzles_used"])
@@ -1231,6 +1273,7 @@ class HungerGames(commands.Cog):
                         except Exception:
                             log.exception("hungergames: refund failed")
             await self.config.guild(guild).current.set({})
+            await self._cleanup_threads(guild, ed)
             await self._send(self._channel(guild, s, ed), f"🛑 The Gamemakers have cancelled {engine.edition_title(ed)}."
                              + (f" Sponsors were refunded ({refunded:,} in total)." if refunded else ""))
         return f"Cancelled {engine.edition_title(ed)}." + (f" Refunded {refunded:,} to sponsors." if refunded else "")
@@ -1245,7 +1288,8 @@ class HungerGames(commands.Cog):
             ed = await self._start_edition(guild, s, engine.test_schedule(self._now()), self._now(), test=True, admin=member)
             await self.config.guild(guild).current.set(ed)
         return ("Test run started in the test channel with you as a tribute: Reaping now, training in about 80 seconds "
-                "(5 minutes to play), then the broadcasts and Finale. No coins move and nobody is pinged.")
+                "(5 minutes to play), then the shop and 4 broadcasts about 2 minutes apart (the shop is open between them) "
+                "and the Finale, about 16 minutes in all. No coins move and nobody is pinged.")
 
     async def _act_report(self, guild, member, _value) -> str:
         s = await self.config.guild(guild).all()

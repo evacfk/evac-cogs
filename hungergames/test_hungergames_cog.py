@@ -327,6 +327,41 @@ async def test_broadcasts_post_live_then_crown_the_victor(mod):
     assert await cog.config.guild(guild).last_tributes() == list(ed["roster"])
 
 
+async def test_training_threads_lock_at_close_and_are_deleted_after_the_crowning(mod):
+    cog, guild, people, _ = world(mod, members=20)
+    await enable(cog, guild)
+    ed = await full_week_to_scores(cog, guild, people)
+    threads = [guild.get_channel(int(t)) for t in ed["threads"]]
+    starters = [ch(guild).get_partial_message(m) for m in ed["starters"].values()]
+    assert len(threads) == 8 and len(starters) == 8
+    assert not any(t.locked for t in threads)
+    await cog._tick(guild, now=SUNDAY + 38 * H)                  # Monday 11:59 PM: training closes
+    assert all(t.locked for t in threads) and not any(t.deleted for t in threads)   # readable, not deleted
+    await cog._tick(guild, now=SUNDAY + 50 * H)
+    await run_until(cog, guild, SUNDAY + 57 * H, SUNDAY + 6 * 24 * H + 12 * H, step=45)
+    assert await cog.config.guild(guild).current() == {}
+    assert all(t.deleted for t in threads) and all(m.deleted for m in starters)
+
+
+async def test_reaping_post_says_done_instead_of_counting_up_and_closes_at_the_lock(mod):
+    cog, guild, people, _ = world(mod, members=20)
+    await enable(cog, guild)
+    await cog._tick(guild, now=SUNDAY)
+    ed = await cog.config.guild(guild).current()
+    from hungergames import embeds
+    second = ed["schedule"][1][1]
+    assert "✅ done" not in embeds.reaping_embed(ed, now=second - 60).description
+    after = embeds.reaping_embed(ed, now=second + 60)
+    assert "✅ done" in after.description and f"<t:{int(second)}:R>" not in after.description
+    closed = embeds.reaping_embed(ed, closed=True, now=second + 3600)
+    assert "closed" in closed.description and "Roster locks" not in closed.description
+    await cog._tick(guild, now=SUNDAY + 11 * H)
+    await cog._tick(guild, now=SUNDAY + 14 * H)                  # the lock re-renders the post as closed
+    reaping = ch(guild).get_partial_message((await cog.config.guild(guild).current())["messages"]["reaping"])
+    last = reaping.edits[-1]
+    assert last["view"] is None and "closed" in last["embed"].description
+
+
 async def test_restart_mid_broadcast_resumes_without_rerolling(mod):
     cog, guild, people, _ = world(mod, members=20)
     await enable(cog, guild)
