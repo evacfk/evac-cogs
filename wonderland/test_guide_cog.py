@@ -316,11 +316,11 @@ async def test_missing_manage_messages_does_not_break_the_reply(mod):
 
 
 async def test_page_shows_only_live_commands(mod):
-    cog = make(mod, commands={"payday", "shop"})
+    cog = make(mod, commands={"leaderboard", "shop"})
     ctx = FakeCtx()
     await cog.wonderland.subs["page"].callback(cog, ctx, "economy")
     text = (await shown(ctx))["embed"].description
-    assert "`.payday`" in text and "`.shop`" in text
+    assert "`.leaderboard`" in text and "`.shop`" in text and "`.payday`" not in text and "Payday" in text
     assert ".lottery" not in text and ".bank balance" not in text
 
 
@@ -811,11 +811,12 @@ async def test_buttons_fit_discord_limits_and_highlight_the_current_topic(mod):
 
 async def test_start_page_links_the_first_three_channels(mod):
     guild = FakeGuild([FakeChannel(1, "💌・intro"), FakeChannel(2, "🌈・role-select"), FakeChannel(3, "🧸・cuddle")])
-    cog = make(mod, commands={"payday"})
+    cog = make(mod, commands={"card daily"})
     text = cog.render("start", guild, False, member=types.SimpleNamespace(id=5)).description
     assert "<#1>" in text and "<#2>" in text and "<#3>" in text
     assert text.index("<#1>") < text.index("<#2>") < text.index("<#3>")
-    assert "`.payday`" in text and ".birthday" not in text and "{#" not in text
+    assert "`.card daily`" in text and ".birthday" not in text and "{#" not in text
+    assert "`.payday`" not in text and "**Payday**" in text
 
 
 async def test_start_page_names_a_channel_it_cannot_link(mod):

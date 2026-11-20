@@ -12,7 +12,7 @@ from redbot.core.bot import Red
 from . import panel as panel_specs
 from .settings_panel import PanelError, open_panel
 
-COG_VERSION = "1.3.0"
+COG_VERSION = "1.4.0"
 
 # ---------------------------------------------------------------------------
 # Wondercasino hub — how a "game" entry works
@@ -109,14 +109,20 @@ SEEDED_FLAGSHIPS = {
         "mode": "direct",
         "candidates": ["$", "bank balance"],
     },
+    "dailycards": {
+        "emoji": "\U0001F3B4",  # 🎴
+        "label": "Daily Cards",
+        "mode": "post",
+        "candidates": ["card daily"],
+    },
 }
 
 # Flagship keys get a dedicated, always-visible button on row 0 instead of
-# being buried in the "More games…" dropdown. Order here also drives the
-# button order (see HubView) — profile, balance, payday, "Open a Table",
-# then "Active Tables". Everything else (Wonderjack, ...) lives in
-# the "More games…" dropdown.
-FLAGSHIP_KEYS = ("profile", "balance", "payday", "gamble")
+# being buried in the "More…" dropdown. Order here also drives the
+# button order (see HubView) — profile, daily cards, payday, "Open a Table",
+# then "Active Tables". Everything else (Wonderjack, Balance, ...) lives in
+# the "More…" dropdown.
+FLAGSHIP_KEYS = ("profile", "dailycards", "payday", "gamble")
 
 SHARED_THREAD_NAMES = {
     "wonderjack": "blackjack-table",
@@ -145,14 +151,14 @@ class HubView(discord.ui.View):
         await self.cog.handle_hub_click(interaction, "profile")
 
     @discord.ui.button(
-        label="Balance",
-        emoji="\U0001F4B0",
+        label="Daily Cards",
+        emoji="\U0001F3B4",
         style=discord.ButtonStyle.blurple,
-        custom_id="gamblehub:flagship:balance",
+        custom_id="gamblehub:flagship:dailycards",
         row=0,
     )
-    async def balance_button(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await self.cog.handle_hub_click(interaction, "balance")
+    async def dailycards_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.cog.handle_hub_click(interaction, "dailycards")
 
     @discord.ui.button(
         label="Payday",
@@ -185,7 +191,7 @@ class HubView(discord.ui.View):
         await self.cog.show_active_sessions(interaction)
 
     @discord.ui.select(
-        placeholder="More games…",
+        placeholder="More…",
         custom_id="gamblehub:select",
         min_values=1,
         max_values=1,
@@ -270,7 +276,7 @@ class _ArgModal(discord.ui.Modal):
 class _RunAgainView(discord.ui.View):
     """Attached to the ephemeral result of a "modal" mode game (see
     _ArgModal) so a player can immediately go again without re-opening the
-    "More games…" dropdown and re-selecting the same entry from scratch
+    "More…" dropdown and re-selecting the same entry from scratch
     every single time — built for repeat-play commands like Coinflip,
     where re-navigating the dropdown for every roll is the whole
     complaint. Deliberately NOT attached to "direct" mode results (Payday):
@@ -457,6 +463,14 @@ class GambleThreads(commands.Cog):
                     # Drop hub buttons for games that no longer exist on this bot.
                     if games.pop("heist", None) is not None:
                         changed = True
+                    # Daily Cards became a flagship button (key "dailycards"). Keep a hand-added
+                    # `card daily` entry (its emoji/label) by re-keying it; drop it if the
+                    # flagship key already exists, so it never shows twice.
+                    for old_key, old in list(games.items()):
+                        if old_key != "dailycards" and str(old.get("command", "")).lower() in ("card daily", "cards daily"):
+                            entry = games.pop(old_key)
+                            games.setdefault("dailycards", entry)
+                            changed = True
                     for key, spec in SEEDED_FLAGSHIPS.items():
                         if key in games:
                             continue
@@ -1219,11 +1233,11 @@ class GambleThreads(commands.Cog):
             view.profile_button.disabled = False
         else:
             view.profile_button.disabled = True
-        if "balance" in games:
-            view.balance_button.label = games["balance"]["label"]
-            view.balance_button.disabled = False
+        if "dailycards" in games:
+            view.dailycards_button.label = games["dailycards"]["label"]
+            view.dailycards_button.disabled = False
         else:
-            view.balance_button.disabled = True
+            view.dailycards_button.disabled = True
         if "payday" in games:
             view.payday_button.label = games["payday"]["label"]
             view.payday_button.disabled = False

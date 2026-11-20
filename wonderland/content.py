@@ -47,20 +47,18 @@ class Section:
 
 
 PAGES = (
-    Page("start", "🌱", "Start here", "New here? Do these three first. Nothing is required.", (
+    Page("start", "🌱", "Start here", "New here? Do these first. Nothing is required.", (
         Entry(".birthday set <date>", "add your birthday", requires=("birthday set",)),
-        Entry(".payday", "free coins, any time", requires=("payday",)),
         Entry(".card daily", "a free card, once a day", requires=("card daily",)),
         Entry(".wld search <word>", "find any command by what it does"),
     ), body="**1.** Introduce yourself in {#intro}\n**2.** Pick your roles in {#role-select}\n"
-            "**3.** Say hi in {#cuddle}\n\n**When you have a minute**"),
+            "**3.** Say hi in {#cuddle}\n**4.** Tap **Payday** in {#wondercasino} for free coins\n\n**When you have a minute**"),
     Page("economy", "💰", "Economy & Shop", "Earn, spend and send wondercoin.", (
         Entry(".bank balance", "check your coins", requires=("bank balance",)),
         Entry(".bank transfer @user <amount>", "send coins to someone", requires=("bank transfer",)),
-        Entry(".payday", "claim your regular coins", requires=("payday",)),
         Entry(".leaderboard", "the richest members", requires=("leaderboard",)),
         Entry(".shop", "browse and buy items", requires=("shop",)),
-    )),
+    ), body="Claim your free coins with the **Payday** button in {#wondercasino}."),
     Page("casino", "🎰", "Casino",
          "Games happen in {#wondercasino}. Tap **Open a Table** on its menu for your own private thread, "
          "or pick a game from its dropdown. The commands below also work.", (
