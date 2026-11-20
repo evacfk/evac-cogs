@@ -122,7 +122,7 @@ def fallen_embed(ed: dict, item: dict) -> "discord.Embed":
     return _embed(title, desc, RED)
 
 
-def crowning_embed(ed: dict, guild, prize: int, currency: str, awards: dict) -> "discord.Embed":
+def crowning_embed(ed: dict, guild, prize: int, currency: str, awards: dict, wins: int | None = None) -> "discord.Embed":
     uid = ed["victor"]
     t = ed["roster"][uid]
     e = _embed(f"🏆 Victor of {engine.edition_title(ed)}", f"## {t['name']}", GOLD)
@@ -133,6 +133,8 @@ def crowning_embed(ed: dict, guild, prize: int, currency: str, awards: dict) -> 
     e.add_field(name="Training Score", value=str(t["score"]), inline=True)
     e.add_field(name="Kills", value=str(t["kills"]), inline=True)
     e.add_field(name="Prize", value=f"{prize:,} {currency}" if prize else "—", inline=True)
+    if wins:
+        e.add_field(name="Total wins", value=f"{wins:,}", inline=True)
     e.add_field(name="Sponsors", value=", ".join(f"<@{s}>" for s in sponsors) or "Nobody. A self-made Victor.", inline=False)
     names = {
         "most_kills": "🗡️ Most Kills", "darling": "💝 Capitol's Darling", "top_patron": "💰 Top Patron",

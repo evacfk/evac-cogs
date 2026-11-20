@@ -521,10 +521,13 @@ class HungerGames(commands.Cog):
             else:
                 prize = minted = 0
         ed["prize"], ed["minted"] = prize, minted
+        wins = None
+        if not ed.get("test") and uid.isdigit():
+            wins = (await self.config.member_from_ids(guild.id, int(uid)).wins()) + 1   # counting this one
         awards = engine.awards(ed)
         prefix, mentions = self._pings(s, ed, [uid])
         msg = await self._send(channel, f"{prefix}🏆 {self._mention(ed, uid)} is the Victor of **{engine.edition_title(ed)}**!",
-                               embed=embeds.crowning_embed(ed, guild, prize, currency, awards), allowed_mentions=mentions)
+                               embed=embeds.crowning_embed(ed, guild, prize, currency, awards, wins), allowed_mentions=mentions)
         await self._pin(channel, msg, ed)
         await self._teaser(guild, s, ed, f"🏆 {self._mention(ed, uid)} won **{engine.edition_title(ed)}**! "
                                          f"See the Crowning in {channel.mention if channel else 'the Hunger Games channel'}.")

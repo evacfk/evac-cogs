@@ -362,6 +362,27 @@ async def test_reaping_post_says_done_instead_of_counting_up_and_closes_at_the_l
     assert last["view"] is None and "closed" in last["embed"].description
 
 
+async def test_crowning_shows_the_victors_avatar_and_total_wins(mod):
+    import types
+    cog, guild, people, _ = world(mod, members=20)
+    for p in people:
+        p.display_avatar = types.SimpleNamespace(url=f"https://cdn.example/{p.id}.png")
+    await enable(cog, guild)
+    await full_week_to_scores(cog, guild, people)
+    await cog._tick(guild, now=SUNDAY + 38 * H)
+    await cog._tick(guild, now=SUNDAY + 50 * H)
+    ed = await cog.config.guild(guild).current()
+    uids = [u for u in ed["roster"] if u.isdigit()]
+    for u in uids:                                               # whoever wins already has 2 wins on record
+        await cog.config.member_from_ids(1, int(u)).wins.set(2)
+    await run_until(cog, guild, SUNDAY + 57 * H, SUNDAY + 6 * 24 * H + 12 * H, step=45)
+    crown = next(m.embed for m in ch(guild).sent if m.embed is not None and "Victor of" in (m.embed.title or ""))
+    winner = (await cog.config.guild(guild).hall())[0]["uid"]
+    assert crown.thumbnail.url == f"https://cdn.example/{winner}.png"
+    fields = {f.name: f.value for f in crown.fields}
+    assert fields["Total wins"] == "3"                           # 2 before + this one
+
+
 async def test_restart_mid_broadcast_resumes_without_rerolling(mod):
     cog, guild, people, _ = world(mod, members=20)
     await enable(cog, guild)

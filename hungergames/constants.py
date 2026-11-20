@@ -1,7 +1,7 @@
 """Config defaults and lookup tables for hungergames. No discord/redbot imports here."""
 from zoneinfo import ZoneInfo
 
-COG_VERSION = "1.0.1"
+COG_VERSION = "1.0.2"
 CONFIG_IDENTIFIER = 0x48474D31
 HOME_TZ = ZoneInfo("America/Los_Angeles")
 
