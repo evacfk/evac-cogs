@@ -117,6 +117,7 @@ DEFAULT_GUILD = {
     "featured_enabled": True,
     "featured": {"week": "", "series": "", "history": []},
     "legendary_ping_role_id": None,
+    "drop_ping_role_id": 1573451042304299188,  # opt-in role pinged on every real drop (button under the drop toggles it)
     "set_roles": {},  # sets completed (str) -> role id given on reaching that many
 }
 
@@ -442,6 +443,10 @@ class CardCollect(commands.Cog):
             "one card per person, and you can change your pick until then."
         )
         mentions = discord.AllowedMentions.none()
+        ping_role = await self._drop_ping_role(guild)
+        if ping_role is not None and not is_test:
+            content = f"{ping_role.mention} {content}"
+            mentions = discord.AllowedMentions(everyone=False, users=False, roles=[ping_role])
         legendaries = [card for card, _ in entries if card.rarity == "legendary"]
         if legendaries:
             names = ", ".join(f"**{discord.utils.escape_markdown(c.name)}**" for c in legendaries)
@@ -450,9 +455,10 @@ class CardCollect(commands.Cog):
             role = guild.get_role(role_id) if role_id and not is_test and hasattr(guild, "get_role") else None
             if role is not None:
                 hype += f" {role.mention}"
-                mentions = discord.AllowedMentions(everyone=False, users=False, roles=[role])
+                roles = [role] if ping_role is None or is_test or role.id == ping_role.id else [role, ping_role]
+                mentions = discord.AllowedMentions(everyone=False, users=False, roles=roles)
             content = f"{hype}\n{content}"
-        view = views.DrawView(self, [card for card, _ in entries], window)
+        view = views.DrawView(self, [card for card, _ in entries], window, ping_button=ping_role is not None)
         sent = await channel.send(
             content=content, file=discord.File(composite, filename="drop.png"), view=view, allowed_mentions=mentions
         )
@@ -476,6 +482,28 @@ class CardCollect(commands.Cog):
             self._bg_tasks.add(ping)  # keep a reference so it can't be garbage-collected mid-run
             ping.add_done_callback(self._bg_tasks.discard)
         return None
+
+    async def _drop_ping_role(self, guild: discord.Guild) -> Optional[discord.Role]:
+        """The opt-in card-ping role, or None when unset or deleted."""
+        role_id = await self.config.guild(guild).drop_ping_role_id()
+        return guild.get_role(role_id) if role_id and hasattr(guild, "get_role") else None
+
+    async def toggle_drop_ping(self, member: discord.abc.User) -> str:
+        """Give the member the card-ping role, or take it back if they have it.
+        Returns the private reply for the button press."""
+        guild = getattr(member, "guild", None)
+        role = await self._drop_ping_role(guild) if guild is not None else None
+        if role is None or not hasattr(member, "add_roles"):
+            return "Card pings aren't set up right now."
+        try:
+            if role in getattr(member, "roles", []):
+                await member.remove_roles(role, reason="cardcollect: opted out of card pings")
+                return "Card pings **off**. You won't be pinged when a card drops. Press the button again to turn them back on."
+            await member.add_roles(role, reason="cardcollect: opted in to card pings")
+            return "Card pings **on**. You'll be pinged when a card drops. Press the button again to turn them off."
+        except discord.HTTPException:
+            log.warning("cardcollect: couldn't toggle the card ping role for %s", member.id, exc_info=True)
+            return "I couldn't change your role. Please tell a mod."
 
     # ------------------------------------------------------------------
     # the draw: pick -> close -> resolve
@@ -2168,6 +2196,14 @@ class CardCollect(commands.Cog):
             return "Legendary drops are announced without a ping."
         await conf.legendary_ping_role_id.set(role.id)
         return f"Legendary drops will ping {role.mention}."
+
+    async def _apply_drop_ping_role(self, guild, member, role) -> str:
+        conf = self.config.guild(guild)
+        if role is None:
+            await conf.drop_ping_role_id.set(None)
+            return "Drops no longer ping anyone, and the opt-in button is gone."
+        await conf.drop_ping_role_id.set(role.id)
+        return f"Drops will ping {role.mention}; members opt in with the button under each drop."
 
     async def _apply_daily_odds(self, guild, member, values) -> str:
         weights = {}

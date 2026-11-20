@@ -145,7 +145,7 @@ async def test_the_button_press_records_before_it_acknowledges(cog):
 async def test_a_press_after_a_restart_gets_a_friendly_reply(cog):
     guild, admin, (a, b, c), channel, drop, message, ids = await ready_draw(cog, 308)
     persistent = views.DrawView(cog, None)
-    assert len(persistent.children) == 5 and persistent.timeout is None
+    assert len(persistent.children) == 6 and persistent.timeout is None  # 5 picks + the ping toggle
     cog.active_drops.clear()  # as after a restart
     inter = FakeInteraction(a, channel, message=message)
     await persistent.children[0].callback(inter)

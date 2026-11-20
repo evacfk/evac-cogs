@@ -128,6 +128,10 @@ async def _legendary_role_get(cog, guild):
     return await cog.config.guild(guild).legendary_ping_role_id()
 
 
+async def _drop_ping_role_get(cog, guild):
+    return await cog.config.guild(guild).drop_ping_role_id()
+
+
 async def _test_mode_get(cog, guild):
     return await cog.config.guild(guild).test_mode()
 
@@ -146,6 +150,10 @@ def build_specs():
              apply=_apply("_apply_legendary_role"), fmt=lambda v, g: f"<@&{v}>" if v else "no ping", clearable=True,
              help="A drop with a legendary in it always gets a big announcement line. Pick a role to also ping it "
                   "(an opt-in role works best); clear it for no ping."),
+        Spec("droprole", "Card ping role", "Drops", "role", get=_drop_ping_role_get,
+             apply=_apply("_apply_drop_ping_role"), fmt=lambda v, g: f"<@&{v}>" if v else "off", clearable=True,
+             help="Every drop pings this role, and a button under the drop lets members opt in or out of it. "
+                  "Clear it for no ping and no button. Needs Manage Roles, with the bot's role above this one."),
         Spec("odds", "Daily pull odds", "Drops", "modal", get=_odds_get, apply=_apply("_apply_daily_odds"),
              fmt=_odds_fmt, button="Edit…",
              fields=tuple(_odds_field(t) for t in ("common", "rare", "epic", "legendary")),

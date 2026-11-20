@@ -11,7 +11,7 @@ Use it to answer "does a cog already cover this?" and "what depends on this cog?
 - **afterdark** 1.8.2: Gated Rabbit Hole access: button + invitations, interest opt-ins, inactivity cleanup, exclude list.
 - **blackjacktable** 1.1.0: Multiplayer blackjack table (.wonderjack)
 - **bumpreward** 1.1.0: Currency rewards, streaks, auto reminders and a daily board for Disboard bumps.
-- **cardcollect** 2.15.2: Ambient anime-character card collecting: pick the card you want from each drop and the draw decides.
+- **cardcollect** 2.16.0: Ambient anime-character card collecting: pick the card you want from each drop and the draw decides.
 - **celebrations** 1.2.1: Birthdays (hoisted role, wondercoin gift, posts), join-anniversary shout-outs and year club roles.
 - **duel** 1.1.0: 1v1 best-of-3 wagered duels
 - **gamble** 1.3.0: Per-user gambling threads plus the Wondercasino hub menu.
@@ -57,7 +57,7 @@ Needs: no extra pip packages · Config scopes: guild, member
 Data: Stores per-member bump counts, streak and last bump date.
 
 ### cardcollect
-v2.15.2 · CardCollect · 7518 lines · 333 tests
+v2.16.0 · CardCollect · 7586 lines · 340 tests
 Commands:
 - `.card|cards`: addcard, daily, diagnostics, find, give, importseries, leaderboard, sell, settings, showcase, trade
 Links: called by minigamehub, wonderland
@@ -181,7 +181,7 @@ Needs: no extra pip packages · Config scopes: guild, member
 Data: This cog stores, per event, the user IDs of members who RSVP'd and how many minutes each member spent in voice while the event ran, plus a staff member's chosen timezone…
 
 ### wonderland
-v1.6.3 · IntroCleanup, IntroForm, MyStats, Wonderland · 2896 lines · 222 tests
+v1.6.3 · IntroCleanup, IntroForm, MyStats, Wonderland · 2897 lines · 222 tests
 Commands:
 - `.introcleanup|ic`: settings, sweep
 - `.introform`: panel, prune, settings

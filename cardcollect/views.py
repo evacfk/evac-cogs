@@ -24,6 +24,7 @@ from .constants import (
     MAX_DROP_SIZE,
     PACK_SIZE,
     PICK_BUTTON_PREFIX,
+    PING_TOGGLE_ID,
     REQUEST_ADD_ID,
     REQUEST_APPROVE_ID,
     REQUEST_DECLINE_ID,
@@ -315,7 +316,7 @@ class DrawView(discord.ui.View):
     still lands in the cog and is answered ("this drop is over") instead of
     Discord's "This interaction failed"."""
 
-    def __init__(self, cog, cards=None, window: float = 90):
+    def __init__(self, cog, cards=None, window: float = 90, ping_button: bool = True):
         super().__init__(timeout=None if cards is None else window + 120)
         self.cog = cog
         count = MAX_DROP_SIZE if cards is None else len(cards)
@@ -330,6 +331,28 @@ class DrawView(discord.ui.View):
             )
             button.callback = self._callback_for(position)
             self.add_item(button)
+        if ping_button:  # own row: a full drop already fills row 0
+            toggle = discord.ui.Button(
+                label="Card pings: opt in / out", style=discord.ButtonStyle.primary, custom_id=PING_TOGGLE_ID,
+                emoji="\U0001f514", row=1,
+            )
+            toggle.callback = self._toggle_ping
+            self.add_item(toggle)
+
+    async def _toggle_ping(self, interaction: discord.Interaction):
+        try:
+            await interaction.response.defer(ephemeral=True)
+        except discord.HTTPException:
+            log.warning("cardcollect: couldn't acknowledge a ping toggle", exc_info=True)
+        try:
+            text = await self.cog.toggle_drop_ping(interaction.user)
+        except Exception:
+            log.exception("cardcollect: toggling the card ping role failed")
+            text = "Something went wrong with that -- try again."
+        try:
+            await interaction.followup.send(text, ephemeral=True)
+        except discord.HTTPException:
+            log.warning("cardcollect: couldn't send a ping toggle reply", exc_info=True)
 
     def _callback_for(self, position: int):
         async def pressed(interaction: discord.Interaction):
