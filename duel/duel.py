@@ -21,6 +21,11 @@ WEAPONS = [
     ("🎯", "Arcade Dart"),
 ]
 
+# seconds each beat stays on screen (the fight log keeps every result visible after it moves on)
+OPEN_PAUSE = 3.0
+CLASH_PAUSE = 3.5
+HIT_PAUSE = 4.0
+
 CLASH_LINES = [
     "{a} and {b} circle each other, weapons raised...",
     "{a} and {b} charge in at full speed...",
@@ -102,7 +107,7 @@ class DuelView(discord.ui.View):
 class Duel(commands.Cog):
     """Challenge another member to a best-of-3 wagered duel."""
 
-    __version__ = "1.1.0"
+    __version__ = "1.2.0"
 
     def __init__(self, bot):
         self.bot = bot
@@ -248,10 +253,14 @@ class Duel(commands.Cog):
                     f"{'🖤' * (2 - hearts[opponent.id])}"
                 )
 
+            fight_log = []  # one line per finished round, so results stay readable
+
             def base_embed(title, color, description):
                 e = discord.Embed(title=title, description=description, color=color)
                 e.add_field(name="Wager", value=f"{humanize_number(amount)} {currency} each", inline=False)
                 e.add_field(name="Hearts", value=hearts_field(), inline=False)
+                if fight_log:
+                    e.add_field(name="Fight log", value="\n".join(fight_log), inline=False)
                 return e
 
             embed = base_embed(
@@ -260,7 +269,7 @@ class Duel(commands.Cog):
                 weapons_line() + "\n\nBest of 3 — first to land 2 hits takes the pot.",
             )
             msg = await channel.send(embed=embed)
-            await asyncio.sleep(1.2)
+            await asyncio.sleep(OPEN_PAUSE)
 
             round_num = 0
             while max(wins.values()) < 2:
@@ -274,7 +283,7 @@ class Duel(commands.Cog):
                     weapons_line() + f"\n\n{clash} 🎲",
                 )
                 await msg.edit(embed=embed)
-                await asyncio.sleep(1.4)
+                await asyncio.sleep(CLASH_PAUSE)
 
                 # phase 2: the hit (result beat)
                 winner_id = random.choice([challenger.id, opponent.id])
@@ -286,9 +295,12 @@ class Duel(commands.Cog):
                     winner=winner_member.mention, weapon=weapons[winner_id][1]
                 )
                 color = discord.Color.green() if winner_id == challenger.id else discord.Color.blue()
+                fight_log.append(
+                    f"Round {round_num}: {winner_member.display_name}'s {weapons[winner_id][1]} {weapons[winner_id][0]} hit"
+                )
                 embed = base_embed(f"⚔️ Round {round_num}", color, weapons_line() + f"\n\n{hit}")
                 await msg.edit(embed=embed)
-                await asyncio.sleep(1.6)
+                await asyncio.sleep(HIT_PAUSE)
 
             winner = challenger if wins[challenger.id] == 2 else opponent
             loser = opponent if winner.id == challenger.id else challenger

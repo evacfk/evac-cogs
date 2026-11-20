@@ -13,7 +13,7 @@ Use it to answer "does a cog already cover this?" and "what depends on this cog?
 - **bumpreward** 1.1.0: Currency rewards, streaks, auto reminders and a daily board for Disboard bumps.
 - **cardcollect** 2.16.0: Ambient anime-character card collecting: pick the card you want from each drop and the draw decides.
 - **celebrations** 1.2.1: Birthdays (hoisted role, wondercoin gift, posts), join-anniversary shout-outs and year club roles.
-- **duel** 1.1.0: 1v1 best-of-3 wagered duels
+- **duel** 1.2.0: 1v1 best-of-3 wagered duels
 - **gamble** 1.3.0: Per-user gambling threads plus the Wondercasino hub menu.
 - **hungergames** 1.0.3: A weekly Hunger Games: Reaping, training challenges, live arena broadcasts and Wondercoin sponsorship.
 - **lurker** 2.7.0: Auto-hide inactive members behind a Lurker role.
@@ -75,7 +75,7 @@ Needs: no extra pip packages · Config scopes: guild, member
 Data: This cog stores each member's birthday (month, day and, only if they provide it, year) and the date they were last celebrated.
 
 ### duel
-v1.1.0 · Duel · 416 lines · 6 tests
+v1.2.0 · Duel · 428 lines · 6 tests
 Commands:
 - `.duelset`: version
 - Standalone: `.duel`, `.duelstats`
