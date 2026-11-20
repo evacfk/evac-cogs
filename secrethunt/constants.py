@@ -1,7 +1,7 @@
 """Config defaults and fixed values for secrethunt (Secrets of Wonderland)."""
 from zoneinfo import ZoneInfo
 
-COG_VERSION = "1.14.1"
+COG_VERSION = "1.15.0"
 CONFIG_IDENTIFIER = 0x5EC8E7A1
 HOME_TZ = ZoneInfo("America/Los_Angeles")
 
@@ -15,6 +15,7 @@ TEST_DELAY_SECONDS = 30            # test mode: skip the wait
 DM_RETRY_SECONDS = 3600            # a closed-DM clue is retried hourly...
 MAX_DM_FAILS = 72                  # ...for about three days, then waits for the member to retrigger
 MAX_WRONG_PER_DAY = 10
+PROFILE_WRONG_PER_DAY = 5          # The Caterpillar's Question: wrong join dates a member can give per Pacific day
 MAX_WRONG_REACTS = 2               # wrong hunt objects allowed before the Rabbit stops listening
 REACT_LOCK_HOURS = 24              # ...for this long (test mode: TEST_DELAY_SECONDS)
 TRIAL_LOCK_R1_HOURS = 4            # The Knave's Trial: a wrong round 1 answer locks the member out this long, then re-rolls

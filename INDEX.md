@@ -21,7 +21,7 @@ Use it to answer "does a cog already cover this?" and "what depends on this cog?
 - **puzzle** 1.8.1: Image-reveal puzzle game with an auto-rotating image pool.
 - **redditfeed** source-v10: Config-driven subreddit-to-channel image feed (Arctic Shift-backed, swappable source).
 - **rejoinwatch** 1.1.0: Tracks voluntary leaves; warns rejoiners and flags repeat leavers to mods with a ban button.
-- **secrethunt** 1.14.1: WoW-style secret hunts: hidden, personalised puzzles in forum posts, a Medium logic trial, a Hall of Secrets, and badge roles for Hard and Expert.
+- **secrethunt** 1.15.0: WoW-style secret hunts: hidden, personalised puzzles in forum posts, a Medium logic trial, a Hall of Secrets, and badge roles for Hard and Expert.
 - **serverpulse** 1.8.0: Server activity analytics: busy/quiet hours, reports, heatmap, live board, digests, and an approval-gated weekly recap.
 - **tgfeed** tg-v4: Telegram forum group photos/videos -> Discord channels, media only, read-only and throttled.
 - **verdict** 1.5.0: A daily crowd question: pick your answer, then guess what everyone else picks.
@@ -140,7 +140,7 @@ Needs: no extra pip packages · Config scopes: guild
 Data: This cog stores, per member, the timestamps of the times they left the server within the retention window (default 180 days; older ones are deleted automatically).
 
 ### secrethunt
-v1.14.1 · SecretHunt · 4306 lines · 460 tests
+v1.15.0 · SecretHunt · 4575 lines · 498 tests
 Commands:
 - `.secrethunt`: preview, reset, roleicon, status, version, who
 - Standalone: `.secrets`

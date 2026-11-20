@@ -245,8 +245,9 @@ class FakeThread(FakeChannel):
 
 
 class FakeMember:
-    def __init__(self, guild, uid, bot=False, name=None):
+    def __init__(self, guild, uid, bot=False, name=None, joined_at=None):
         self.guild, self.id, self.bot = guild, uid, bot
+        self.joined_at = joined_at  # an aware datetime, like discord.py's Member.joined_at
         self.display_name = name or f"user{uid}"
         self.roles = []
         self.dms = []

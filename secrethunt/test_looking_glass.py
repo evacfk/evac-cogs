@@ -129,14 +129,15 @@ async def test_setup_pins_one_button_message_in_every_room(env):
 
 async def test_cog_load_registers_the_persistent_buttons_and_unload_stops_them(env):
     await env.cog.cog_load()
-    # the glass buttons, the trial's witness button and the tea table's four
-    assert env.bot.views == [env.cog._view, env.cog._witness_view, env.cog._trail_view]
+    # the glass buttons, the trial's witness button, the tea table's four and the Caterpillar's one
+    assert env.bot.views == [env.cog._view, env.cog._witness_view, env.cog._trail_view, env.cog._cat_view]
     stopped = []
     env.cog._view.stop = lambda: stopped.append("glass")  # works with the repo's stub View and with real discord.py
     env.cog._witness_view.stop = lambda: stopped.append("witness")
     env.cog._trail_view.stop = lambda: stopped.append("trail")
+    env.cog._cat_view.stop = lambda: stopped.append("caterpillar")
     env.cog.cog_unload()
-    assert stopped == ["glass", "witness", "trail"]
+    assert stopped == ["glass", "witness", "trail", "caterpillar"]
 
 
 async def test_the_poem_word_starts_the_chain_and_the_message_is_deleted(env):
@@ -402,7 +403,8 @@ def test_every_easy_poem_carries_its_typing_hint_inside_the_verse():
             continue
         hint = puzzle["typing_hint"]
         assert engine.normalize(hint) in _poem_text(puzzle), pid  # the phrase really is in the poem
-        assert engine.normalize(puzzle["trigger"]) not in engine.normalize(hint)  # and never gives the word away
+        if puzzle.get("trigger"):  # a puzzle started by pressing its object has no word to give away
+            assert engine.normalize(puzzle["trigger"]) not in engine.normalize(hint)  # and never gives the word away
         assert not any(w in hint.lower() for w in ("react", "click", "press", "command", "prefix", "dot"))
 
 

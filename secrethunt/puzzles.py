@@ -439,7 +439,79 @@ TREACLE_WELL = {
     ),
 }
 
-PUZZLES = {p["id"]: p for p in (LATE_RABBIT, LOOKING_GLASS, KNAVE_TRIAL, TREACLE_WELL)}
+# Easy #3. Different on purpose: no typed trigger and no room to hunt for. The poem points at a pinned Caterpillar that sits
+# in every pool room; pressing his button (anywhere) starts the puzzle, and the question he asks is about the member
+# themselves (when they joined this server), answered by DM. The final clue is the member's word slid forward by the month
+# they told him, so a leaked word is useless to anyone with another month. See caterpillar.py.
+CATERPILLAR = {
+    "id": "caterpillar",
+    "title": "The Caterpillar's Question",
+    "tier": "easy",
+    "kind": "profile",           # a pressed object whose question is about the member (caterpillar.py), answered by DM
+    "trigger_kind": "object",    # no trigger word at all: the object itself starts the puzzle
+    "poem_title": "Written in smoke, above the pins",
+    "typing_hint": "he reads, he does not listen",
+    "poem": [
+        "Pinned in the rooms where you already talk,",
+        "A blue fellow lounges on a seat that grew in the shade.",
+        "He has one question, and it is not about the weather.",
+        "He wants to know who you are, and since when.",
+        "The smoke is thick; he reads, he does not listen.",
+    ],
+    # variant i ends on answers[i]; the clue is the word slid forward by the month the member gave
+    "answers": ["chrysalis", "mushroom", "hookah", "cocoon", "antennae"],
+    "object_title": "A large blue Caterpillar",
+    "object_text": (
+        "A large blue Caterpillar sits on a toadstool with his arms folded, smoking a long pipe and taking no notice of "
+        "anything at all. A small sign leans against the toadstool: ASK ME."
+    ),
+    "riddle": (
+        "\N{BUG} *The Caterpillar looks at you for a long time through the smoke.*\n\n"
+        "\"Who. Are. You?\"\n\n"
+        "\"Not your name. I have no use for names. Tell me when you first tumbled down into Wonderland: the **month and the "
+        "year**. Your own profile remembers it. Look for *Member since*, and take the date for this server, not the one "
+        "for Discord.\"\n\n"
+        "Write it to the bot in a **private message**, like this: `March 2023`"
+    ),
+    "riddle_no_hint": (
+        "\N{BUG} *The Caterpillar looks at you for a long time through the smoke.*\n\n"
+        "\"Who. Are. You?\"\n\n"
+        "\"Not your name. I have no use for names. Tell me when you first tumbled down into Wonderland: the **month and the "
+        "year**. Your own profile remembers it. Look for *Member since*, and take the date for this server, not the one "
+        "for Discord.\"\n\n"
+        "Write it to the bot in a **private message**, like this: `March 2023`"
+    ),
+    "partial": "\N{BUG} *A smoke ring, slowly.* \"A month **and** a year. I am not a patient creature.\"",
+    "wrong": [
+        "\N{BUG} *He blows a smoke ring and shakes his head.* \"No. That is not when you came.\"",
+        "\N{BUG} *The smoke curls into a question mark.* \"Look again. Your profile knows.\"",
+        "\N{BUG} \"You are somebody else.\" *He closes his eyes.* \"Try again.\"",
+    ],
+    "locked": "\N{BUG} *He has fallen asleep on the toadstool.* Come back tomorrow.",
+    "blind": "\N{BUG} *He squints, and cannot quite make you out through the smoke.* Try again in a little while.",
+    "found": (
+        "\N{BUG} *A very long smoke ring.* \"Mm. So that is who you are.\"\n\n"
+        "*His eyes close.* \"I shall think it over. Let me sleep, and I will send word when I wake.\""
+    ),
+    "waiting": "\N{SLEEPING SYMBOL} *The Caterpillar is thinking it over, and sleeping while he does it. Let him rest.*",
+    "final": (
+        "\N{BUG} *The Caterpillar wakes and writes a word in smoke. He has slid every letter forward, the way he "
+        "does when he is being tiresome:*\n\n**{cipher}**\n\n"
+        "\"Slide each letter **back** by the number of the month you told me. January is 1, December is 12. Then say what "
+        "it spells, here in this chat.\""
+    ),
+    "final_wait": "\N{BUG} *He has already written it for you.* Check your messages.",
+    "decoy": "",
+    "lockout": "",
+    "idle": "",
+    "solved": (
+        "\N{BUG} *The Caterpillar yawns, and for the first time he looks pleased.* \"Well. Somebody knows who "
+        "they are.\"\n\nYour name is on the **Hall of Secrets** now.{rank}"
+    ),
+    "already": "\N{BUG} *You have already answered the Caterpillar.* He has gone back to his pipe.",
+}
+
+PUZZLES = {p["id"]: p for p in (LATE_RABBIT, LOOKING_GLASS, KNAVE_TRIAL, TREACLE_WELL, CATERPILLAR)}
 
 
 # Shown to a member (privately) whose DMs are closed at a moment the bot needed to send one.

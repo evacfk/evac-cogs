@@ -12,6 +12,8 @@ How a hunt runs (see puzzles.py for the content of each puzzle):
   when that tier has one. Easy and Medium never do.
 - `kind: trial` puzzles (The Knave's Trial, trial.py) are logic puzzles instead of a chain of finds: every pool room
   holds a witness whose private, generated statement is read with a button; wrong answers re-roll the testimony.
+- `kind: profile` puzzles (The Caterpillar's Question, caterpillar.py) have no trigger word: pressing the pinned object in
+  any pool room starts them, and the question is about the member (when they joined), answered by DM.
 """
 from __future__ import annotations
 
@@ -27,7 +29,7 @@ from typing import Union
 import discord
 from redbot.core import Config, commands
 
-from . import embeds, engine, trail, trial, views
+from . import caterpillar, embeds, engine, trail, trial, views
 from . import panel as panel_specs
 from .settings_panel import PanelError, open_panel
 from .constants import (
@@ -65,11 +67,13 @@ class SecretHunt(commands.Cog):
         self.bot.add_view(self._witness_view)
         self._trail_view = views.TrailView(self)
         self.bot.add_view(self._trail_view)
+        self._cat_view = views.CaterpillarView(self)
+        self.bot.add_view(self._cat_view)
         self._purged = self._drop_stale_views()
 
     def cog_unload(self):
         self._task.cancel()
-        for name in ("_view", "_witness_view", "_trail_view"):
+        for name in ("_view", "_witness_view", "_trail_view", "_cat_view"):
             view = getattr(self, name, None)
             if view is not None:
                 view.stop()
@@ -225,8 +229,10 @@ class SecretHunt(commands.Cog):
             channel=channel.mention if channel else "a room I cannot name",
             object_hint=engine.object_hint(puzzle, variant) if "buttons" in puzzle else "")
 
-    def _final_text(self, puzzle, variant) -> str:
+    def _final_text(self, puzzle, variant, shift=None) -> str:
         answer = puzzle["answers"][variant % len(puzzle["answers"])]
+        if puzzle.get("kind") == "profile":  # the word slid forward by the month the member told the Caterpillar
+            return puzzle["final"].format(cipher=caterpillar.slide(engine.normalize(answer), shift or 1))
         if "rebuses" in puzzle:  # a picture to read instead of a word to unjumble
             return puzzle["final"].format(rebus=puzzle["rebuses"][variant % len(puzzle["rebuses"])],
                                           shape=len(engine.normalize(answer)))
@@ -304,6 +310,8 @@ class SecretHunt(commands.Cog):
                     await self._run_trigger(guild, member, pid, now)
                 return
             if await self._trail_dm(guild, member, low, now):
+                return
+            if await self._profile_dm(guild, member, low, now):
                 return
             if await self._try_guess(guild, member, low, now):
                 return
@@ -955,6 +963,84 @@ class SecretHunt(commands.Cog):
         rooms = self._rooms(pool)
         return puzzle["testimony"].format(room=rooms[witness], text=trial.testimony(case[0][witness], rooms))
 
+    async def handle_caterpillar(self, interaction):
+        """The button under The Caterpillar was pressed. The reply is private: it is this member's own question."""
+        outcome = "answered"
+        try:
+            text = await self._caterpillar_text(interaction)
+        except Exception as err:
+            log.exception("secrethunt caterpillar button failed")
+            text, outcome = None, "error"
+            await self._note_click(getattr(interaction, "guild", None), f"caterpillar: error {type(err).__name__}: {err}",
+                                   getattr(interaction, "message", None), getattr(interaction, "user", None))
+        if not text:
+            outcome = "error" if outcome == "error" else "no answer"
+        try:
+            await interaction.response.send_message(text or "Nothing happens.", ephemeral=True)
+        except _DISCORD_ERRORS as err:
+            outcome += f", reply failed ({type(err).__name__})"
+            await self._note_click(getattr(interaction, "guild", None), f"caterpillar: reply failed, {type(err).__name__}",
+                                   getattr(interaction, "message", None), getattr(interaction, "user", None))
+        await self._note_press("caterpillar", "ask", interaction, outcome)
+
+    async def _caterpillar_text(self, interaction):
+        guild, member = interaction.guild, interaction.user
+        message = getattr(interaction, "message", None)
+        if guild is None or message is None or getattr(member, "bot", False):
+            log.warning("secrethunt: caterpillar click dropped (guild %s, message %s, bot %s)", getattr(guild, "id", None),
+                        getattr(message, "id", None), getattr(member, "bot", False))
+            return None
+        conf = self.config.guild(guild)
+        if not await conf.enabled():
+            return await self._ignore_press(guild, member, message, "caterpillar", "the hunt is switched off")
+        if await self._blocked(guild, member):
+            return await self._ignore_press(guild, member, message, "caterpillar", "the member holds the blocked role")
+        hit = await self._find_object(conf, message.id)
+        puzzle = PUZZLES.get(hit[0]) if hit else None
+        pool = await conf.pool()
+        if puzzle is None:
+            return await self._ignore_press(guild, member, message, "caterpillar", "this message is not a hunt object the bot knows")
+        if puzzle.get("kind") != "profile":
+            return await self._ignore_press(guild, member, message, "caterpillar", f"this message belongs to {hit[0]}, not a profile puzzle")
+        pid = hit[0]
+        if pid not in await conf.published() or not self._can_play(member, puzzle):
+            return await self._ignore_press(guild, member, message, "caterpillar", "the puzzle is not live for this member")
+        if len(pool) < POOL_MIN:
+            return await self._ignore_press(guild, member, message, "caterpillar", f"only {len(pool)} hiding places are set")
+        if getattr(member, "joined_at", None) is None:
+            return puzzle["blind"]  # Discord gave no join date: nothing to ask about yet, and nothing is started
+        salt, now = await self._salt(guild), time.time()
+        async with self._lock(guild.id):
+            async with self.config.member(member).puzzles() as states:
+                state = states.get(pid)
+                if not state:
+                    states[pid] = engine.new_state(engine.variant_for(salt, pid, member.id, len(pool)), now)
+                    return puzzle["riddle"]
+                return {engine.STAGE_RIDDLE: puzzle["riddle"], engine.STAGE_FOUND: puzzle["waiting"],
+                        engine.STAGE_FINAL: puzzle["final_wait"]}.get(state["stage"], puzzle["already"])
+
+    async def _profile_dm(self, guild, member, text: str, now: float) -> bool:
+        """True when this DM answered an open Caterpillar question (a month and a year). Anything that does not look like
+        a date is left for the other handlers, so nobody's other DMs are swallowed."""
+        conf = self.config.guild(guild)
+        test_mode, reply = await conf.test_mode(), None
+        async with self._lock(guild.id):
+            async with self.config.member(member).puzzles() as states:
+                for pid in await conf.published():
+                    puzzle, state = PUZZLES.get(pid), states.get(pid)
+                    if puzzle is None or puzzle.get("kind") != "profile" or not state or not self._can_play(member, puzzle):
+                        continue
+                    result = caterpillar.check(state, text, getattr(member, "joined_at", None), now, test_mode)
+                    if result == "ignore":
+                        continue
+                    reply = {"correct": puzzle["found"], "partial": puzzle["partial"], "locked": puzzle["locked"],
+                             "wrong": puzzle["wrong"][(state["wrong_count"] - 1) % len(puzzle["wrong"])]}[result]
+                    break
+        if reply is None:
+            return False
+        await self._dm(member, reply)
+        return True
+
     async def _remove_reaction(self, guild, payload, member):
         channel = self._lookup(guild, payload.channel_id)
         if channel is None:
@@ -1022,11 +1108,11 @@ class SecretHunt(commands.Cog):
                 engine.mark_final_sent(state, now)
                 if puzzle.get("kind") == "trial":
                     trial.start_round2(state)  # the court reconvenes: fresh testimony, fresh hint ladder
-                variant = state["variant"]
+                variant, shift = state["variant"], state.get("shift")
         if puzzle.get("kind") == "trial":
             text = puzzle["summons2"].format(rooms=" ".join(self._rooms(await self.config.guild(guild).pool())))
         else:
-            text = self._final_text(puzzle, variant)
+            text = self._final_text(puzzle, variant, shift)
         if await self._dm(member, text):
             return
         async with self._lock(guild.id):
@@ -1254,6 +1340,8 @@ class SecretHunt(commands.Cog):
             return {"embed": embeds.witness_embed(puzzle, label), "view": self._sent_view(views.WitnessView)}
         if kind == "trail":
             return {"embed": embeds.object_embed(puzzle, label), "view": self._sent_view(views.TrailView)}
+        if kind == "profile":
+            return {"embed": embeds.object_embed(puzzle, label), "view": self._sent_view(views.CaterpillarView)}
         return {"embed": embeds.object_embed(puzzle, label)}
 
     async def _setup_objects(self, guild, pid: str, force: bool = False) -> list[str]:
@@ -1908,6 +1996,15 @@ class SecretHunt(commands.Cog):
             raise PanelError("Unknown puzzle, or the pool is not set yet.")
         if puzzle.get("kind") == "trial":
             return await self._preview_trial(guild, member, puzzle, pool)
+        if puzzle.get("kind") == "profile":
+            lines = [f"**{puzzle['title']}**: no trigger word; a member presses the Caterpillar in any pool room and DMs the month "
+                     "and year they joined this server. The clue below is the word slid forward by that month (shown here for March)."]
+            for v in range(len(pool)):
+                answer = engine.normalize(puzzle["answers"][v % len(puzzle["answers"])])
+                lines.append(f"Variant {v + 1}: answer `{answer}`, clue for March `{caterpillar.slide(answer, 3)}`")
+            if not await self._dm(member, "\n".join(lines)):
+                raise PanelError("I could not DM you.")
+            return "Sent you a DM with every variant and its answer."
         lines = [f"**{puzzle['title']}** trigger word: `{puzzle['trigger']}`"]
         for v in range(len(pool)):
             channel, hint = self._hint_for(guild, puzzle, pool, v)
@@ -2099,6 +2196,10 @@ class SecretHunt(commands.Cog):
             if PUZZLES.get(pid, {}).get("kind") == "trial":
                 lines.append(f"**{pid}**: {trial_names.get(st['stage'], st['stage'])}; re-rolls {st.get('roll', 0)}, "
                              f"wrong answers {st.get('wrongs', 0)}, hints {st.get('hints', 0)}")
+                continue
+            if PUZZLES.get(pid, {}).get("kind") == "profile":
+                lines.append(f"**{pid}**: {names.get(st['stage'], st['stage'])}; variant {st['variant'] + 1}; "
+                             f"wrong join dates today {st['wrong_count']}; month given {st.get('shift', 'none yet')}")
                 continue
             where = f"<#{pool[st['variant'] % len(pool)]}>" if pool else "?"
             lines.append(f"**{pid}**: {names.get(st['stage'], st['stage'])}; variant {st['variant'] + 1} ({where}); "

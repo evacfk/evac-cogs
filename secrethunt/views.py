@@ -69,3 +69,16 @@ class TrailView(discord.ui.View):
     @discord.ui.button(label="Toast", custom_id="secrethunt:trail:toast", style=discord.ButtonStyle.secondary)
     async def toast(self, interaction: discord.Interaction, button):
         await self.cog.handle_trail(interaction, "toast")
+
+
+class CaterpillarView(discord.ui.View):
+    """The single button under The Caterpillar's Question. Persistent, registered once at cog load; every room holds the same
+    Caterpillar, and the cog works out which member pressed. Replies are private."""
+
+    def __init__(self, cog):
+        super().__init__(timeout=None)
+        self.cog = cog
+
+    @discord.ui.button(label="Who are YOU?", custom_id="secrethunt:caterpillar", style=discord.ButtonStyle.secondary)
+    async def ask(self, interaction: discord.Interaction, button):
+        await self.cog.handle_caterpillar(interaction)

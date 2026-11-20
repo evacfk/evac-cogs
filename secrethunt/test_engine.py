@@ -58,7 +58,7 @@ def test_answers_cover_the_largest_pool_and_stay_out_of_the_public_poem(pid):
 @pytest.mark.parametrize("pid", FIXED)
 def test_text_templates_format_cleanly(pid):
     p = PUZZLES[pid]
-    keys = dict(hint="x", shape="1", pointer="p", object_hint="o", channel="#c", anagram="x", rebus="r", rank=" #1")
+    keys = dict(hint="x", shape="1", pointer="p", object_hint="o", channel="#c", anagram="x", rebus="r", cipher="c", rank=" #1")
     for field in ("riddle", "riddle_no_hint", "final", "solved"):
         p[field].format_map(keys)
 

@@ -9,7 +9,28 @@ Tiers: **Easy** (days) and **Medium** (about a week) have no role or badge: solv
 (`looking_glass`: riddle poem whose answer is `.mirror`, a room named in words, a pinned glass with Drink / Eat / Knock / Look
 buttons answered privately, an emoji rebus). A puzzle with `"kind": "button"` gets the buttons from `views.py`; the pool and
 setup steps are the same for both. For The Looking Glass use the same panel buttons; `.secrethunt preview looking_glass`
-DMs you every variant's pointer, right button, rebus and answer (spoilers).
+DMs you every variant's pointer, right button, rebus and answer (spoilers). The third Easy is **The Caterpillar's Question**
+(`caterpillar`), described below.
+
+## The Caterpillar's Question (Easy, `caterpillar`)
+No typed trigger and no room to hunt for. The poem says a blue Caterpillar is pinned in the rooms members already talk in
+(the pool: the same five rooms as the other Easy puzzles). Every pool room holds the same pinned Caterpillar with one
+**Who are YOU?** button; pressing it in any room starts the puzzle and gives a private reply asking the member **the month
+and year they joined this server** (their profile shows it as *Member since*). They answer by DM (`March 2023`, `3/2023`,
+`2023-03` all work).
+- The date is read from Discord's `joined_at` and accepted in any time zone, because a profile shows it in the viewer's own
+  zone. A wrong date costs nothing but the daily allowance (5 per Pacific day); a month with no year is asked again for free;
+  a DM that is not a date is left for the other handlers.
+- A right answer sends him to sleep until the next 9:00 Pacific (at least 4 hours), like the other Easy puzzles.
+- The clue is the member's own word (5 variants) **slid forward by the month they gave** (March = 3); the DM tells them to
+  slide each letter back by that number. Two members with the same word get different clues. The answer is then said back
+  by DM, same as the Rabbit and the Glass.
+- No role (Easy). Hall of Secrets, `.secrets` and the solve announcement work as for every other puzzle. A member with no
+  join date from Discord gets a polite "try again later" and nothing is started; the Lurker role is ignored.
+- `preview caterpillar` DMs you every variant's answer and its clue for March (spoilers). `who <member>` shows the stage, wrong
+  dates today and the month they gave.
+- Set it up like any puzzle: *Set up objects* (pins a Caterpillar in each pool room), *Go live*, post the poem. Test mode
+  skips the wait. Nothing to configure beyond the pool.
 
 ## The Knave's Trial (Medium, `knaves_trial`)
 A logic puzzle instead of a chain of finds. The poem's rhyme-breakers (the last word of each verse that fails to rhyme),
