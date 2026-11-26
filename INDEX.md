@@ -13,7 +13,7 @@ Use it to answer "does a cog already cover this?" and "what depends on this cog?
 - **bumpreward** 1.1.0: Currency rewards, streaks, auto reminders and a daily board for Disboard bumps.
 - **cardcollect** 2.17.0: Ambient anime-character card collecting: pick the card you want from each drop and the draw decides.
 - **celebrations** 1.2.1: Birthdays (hoisted role, wondercoin gift, posts), join-anniversary shout-outs and year club roles.
-- **dailyquests** 1.1.0: Daily quests with streak badges, XP and weekly prizes
+- **dailyquests** 1.1.1: Daily quests with streak badges, XP and weekly prizes
 - **duel** 1.2.1: 1v1 best-of-3 wagered duels
 - **gamble** 1.7.1: Per-user gambling threads plus the Wondercasino hub menu.
 - **hungergames** 1.2.1: A weekly Hunger Games: Reaping, training challenges, live arena broadcasts and Wondercoin sponsorship.
@@ -28,7 +28,7 @@ Use it to answer "does a cog already cover this?" and "what depends on this cog?
 - **verdict** 1.6.2: A daily crowd question (pick, then guess the crowd) and Acrophobia, a quick acronym game twice a day.
 - **wonderevents** 1.4.2: Movie and game nights: RSVP buttons, Discord scheduled events, votes, reminders and attendance.
 - **wonderland** 1.10.0: The Wonderland guidebook: .wld command guide, server map and mod cheat sheet, plus the intro form and member stats.
-- **wonderpet** 1.3.2: One server pet raised together in #cuddle: daily free care, coin treats, weekly top carers, evolution.
+- **wonderpet** 1.3.3: One server pet raised together in #cuddle: daily free care, coin treats, weekly top carers, evolution.
 
 ## Cogs
 
@@ -76,7 +76,7 @@ Needs: no extra pip packages · Config scopes: guild, member
 Data: This cog stores each member's birthday (month, day and, only if they provide it, year) and the date they were last celebrated.
 
 ### dailyquests
-v1.1.0 · DailyQuests · 1947 lines · 76 tests
+v1.1.1 · DailyQuests · 1925 lines · 75 tests
 Commands:
 - `.dailyquests`: version
 Links: calls cardcollect, gamble, lurker; optional/external Economy, ExtendedEconomy, Heist, LevelUp; called by gamble, wonderland
@@ -202,7 +202,7 @@ Needs: no extra pip packages · Config scopes: guild
 Data: The guide stores only the channel and message IDs of any published copy.
 
 ### wonderpet
-v1.3.2 · WonderPet · 1283 lines · 54 tests
+v1.3.3 · WonderPet · 1282 lines · 54 tests
 Commands:
 - `.wonderpet`: art, card, carers, history, me, name, newegg, settings, version
 Links: called by wonderland

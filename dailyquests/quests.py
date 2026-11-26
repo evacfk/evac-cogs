@@ -67,8 +67,7 @@ class Quest:
 
 QUESTS = (
     Quest("verdict", "Answer today's Verdict", "Tap your answer, then your guess, on today's Verdict question.", HOOK),
-    Quest("pet", "Look after the pet", "Feed, Play or Clean on the pet's card. It's free once a day.", HOOK),
-    Quest("treat", "Give the pet a treat", "Pick **Treat** on the pet's card. Treats cost coins.", HOOK),
+    Quest("pet", "Take care of the pet", "Tap Feed, Play or Clean on the pet's card. Any one counts, and it's free once a day.", HOOK),
     Quest("card", "Pull your daily card", "Tap **Daily Cards** in {#wondercasino}, or type `.card daily`.", HOOK),
     Quest("pick", "Pick a card from a drop", "Tap a card on a drop when one appears. Picking is free.", HOOK),
     Quest("puzzle", "Claim a puzzle piece", "React 🧩 on a new piece when one drops.", HOOK),

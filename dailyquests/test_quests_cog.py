@@ -480,35 +480,6 @@ def _cfg(**values):
     return SimpleNamespace(**{k: (lambda v=v: _ret(v)) for k, v in values.items()})
 
 
-async def test_the_pet_treat_is_offered_only_when_a_treat_can_be_given_and_paid_for(world, monkeypatch):
-    engine = SimpleNamespace(TREATS={"snack": (0, 0, 0, 1), "feast": (0, 0, 0, 4)}, treat_price=lambda k, base: base * (4 if k == "feast" else 1))
-    monkeypatch.setitem(sys.modules, "fakepet.engine", engine)
-    guild_values = {"pet": {"alive": True, "stage": "baby"}, "treat_cap": 2, "treat_price": 10000, "channel_id": 10}
-    member_daily = {}
-
-    class WonderPet:
-        __module__ = "fakepet.wonderpet"
-        config = SimpleNamespace(
-            guild=lambda g: SimpleNamespace(all=lambda: _ret(dict(guild_values))),
-            member=lambda m: SimpleNamespace(daily=lambda: _ret(dict(member_daily))))
-
-    world.cog._cogs["WonderPet"] = WonderPet()
-    await switch_on(world)
-    m = member(world.guild, 1)
-    conf = await world.cog._q_conf(world.guild)
-    status = lambda: world.cog._q_status("treat", m, conf)
-    assert (await status())[2] == "can't afford a treat"
-    world.balances[1] = 10000
-    assert (await status())[0] == QC.OPEN                                      # the basic treat is the price that counts
-    guild_values["pet"] = {"alive": True, "stage": "egg"}
-    assert (await status())[2] == "no pet to treat"
-    guild_values["pet"] = {"alive": True, "stage": "baby"}
-    member_daily.update(date=Q.today(), treats=1)
-    assert (await status())[0] == QC.DONE                                      # already treated today: not dealt
-    guild_values["treat_cap"] = 0
-    assert (await status())[2] == "treats are off"
-
-
 async def test_the_card_pick_is_offered_where_drops_land_unless_they_are_test_drops(world):
     values = {"test_mode": False, "channel_id": 10}
     world.cog._cogs["CardCollect"] = SimpleNamespace(

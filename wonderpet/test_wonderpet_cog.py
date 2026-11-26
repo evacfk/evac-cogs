@@ -513,7 +513,7 @@ async def test_removed_setter_commands_are_gone(env):
         assert hasattr(env.mod.WonderPet, kept)
 
 
-async def test_a_paid_treat_counts_for_the_daily_quest_and_a_refused_one_does_not(env):
+async def test_a_paid_treat_is_not_a_daily_quest_only_the_free_care_is(env):
     await _setup(env, "baby")
     ia = Interaction(env.guild, Member(5))
     await env.cog.handle_treat(ia, "snack")                    # no coins
@@ -522,5 +522,5 @@ async def test_a_paid_treat_counts_for_the_daily_quest_and_a_refused_one_does_no
     await env.cog.handle_treat(ia, "snack")
     await env.cog.handle_treat(ia, "snack")                    # past the daily cap of 2
     hits = [(a[1:]) for e, *a in getattr(env.cog.bot, "dispatched", []) if e == "wonderland_quest"]
-    assert hits == [["treat", 1]] * 2
+    assert hits == []                                          # the treat quest was retired: treats send no quest event
 

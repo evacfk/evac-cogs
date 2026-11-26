@@ -480,27 +480,6 @@ class QuestsMixin:
             daily = await cog.config.member(member).daily() or {}
             used = daily.get("date") == day and (daily.get("used") or any(daily.get(k) for k in ("feed", "play", "clean")))
             return (DONE, *status[1:]) if status[0] == OPEN and used else status
-        if key == "treat":
-            cog = get("WonderPet")
-            engine = None if cog is None else sys.modules.get(type(cog).__module__.rsplit(".", 1)[0] + ".engine")
-            if engine is None or not hasattr(engine, "TREATS"):
-                return OFF, None, "WonderPet not loaded"
-            s = await cog.config.guild(guild).all()
-            pet = s.get("pet")
-            if not pet or not pet.get("alive") or pet.get("stage") == "egg":
-                return OFF, None, "no pet to treat"
-            if int(s.get("treat_cap", 0)) <= 0:
-                return OFF, None, "treats are off"
-            daily = await cog.config.member(member).daily() or {}
-            given = int(daily.get("treats", 0)) if daily.get("date") == day else 0
-            status = ok(guild.get_channel(s.get("channel_id") or 0))
-            if status[0] == OPEN and given > 0:
-                return DONE, *status[1:]
-            from redbot.core import bank
-            cheapest = min(engine.treat_price(k, s["treat_price"]) for k in engine.TREATS)
-            if status[0] == OPEN and await bank.get_balance(member) < cheapest:
-                return OFF, status[1], "can't afford a treat"
-            return status
         if key == "card":
             cog = get("CardCollect")
             if cog is None or not self._exists("card daily"):
@@ -810,7 +789,7 @@ class QuestsMixin:
             if target > 1:
                 head += f"\n`{Q.bar(progress, target)}` {progress}/{target}"
             how = self._q_link(guild, Q.BY_KEY[key].how)
-            if key in ("verdict", "pet", "treat", "pick", "puzzle", "acro", "sponsor"):   # say where, when the cog knows
+            if key in ("verdict", "pet", "pick", "puzzle", "acro", "sponsor"):   # say where, when the cog knows
                 channel = (await self._q_status(key, member, conf))[1]
                 if channel is not None:
                     how += f" ({channel.mention})"
