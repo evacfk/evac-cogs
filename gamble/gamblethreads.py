@@ -22,8 +22,8 @@ COG_VERSION = "1.8.0"
 
 # The pixel canvas (canvas_*.py) is built into this cog: no commands of its own. Members open it from the
 # hub's "More…" dropdown (a "canvas" mode entry, handled here instead of resolving a command); mods use
-# `.gamblehub canvas`. Text members attach to pixels is posted to this channel (#mod-log).
-MODLOG_CHANNEL_ID = 397513667052175360
+# `.gamblehub canvas`. Text members attach to pixels is posted to this channel (#more-mod-log).
+MODLOG_CHANNEL_ID = 1575655292367016107  # #more-mod-log (canvas logs moved out of #mod-log)
 
 # ---------------------------------------------------------------------------
 # Wondercasino hub — how a "game" entry works
@@ -1425,7 +1425,7 @@ class GambleThreads(commands.Cog):
             async def modlog(content: str) -> None:
                 channel = guild.get_channel(MODLOG_CHANNEL_ID)
                 if channel is None:
-                    log.warning("gamble: #mod-log (%s) not found; canvas log line dropped: %s", MODLOG_CHANNEL_ID, content)
+                    log.warning("gamble: #more-mod-log (%s) not found; canvas log line dropped: %s", MODLOG_CHANNEL_ID, content)
                     return
                 await channel.send(content, allowed_mentions=discord.AllowedMentions.none())
 
@@ -1454,7 +1454,7 @@ class GambleThreads(commands.Cog):
             return False
 
     async def _canvas_recover(self, guild: discord.Guild) -> None:
-        """After a restart: tell #mod-log about a charge that may have been taken without a pixel being saved."""
+        """After a restart: tell #more-mod-log about a charge that may have been taken without a pixel being saved."""
         if not self._canvas_path(guild).exists():
             return
         service = self._canvas(guild)
