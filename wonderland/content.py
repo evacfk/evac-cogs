@@ -146,7 +146,8 @@ PAGES = (
                       "hg admin")),
         Entry(".wld publish #channel", "post or refresh the guide in a channel"),
         Entry(".wld roomperms [on|off]", "voice room owners' Manage Permissions: status, or switch it"),
-        Entry(".wld economy", "wondercoin report: total in circulation, who holds it, change since the last run"),
+        Entry(".wld economy [@member]", "wondercoin report: supply, spread, which cogs add or remove coins, "
+                                        "house results; with a member, their last 25 changes"),
         Entry(".wld version", "version probe for this cog"),
     ), mod_only=True),
 )

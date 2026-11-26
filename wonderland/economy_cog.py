@@ -31,7 +31,9 @@ class EconomyMixin:
         except Exception:
             return None
 
-    async def _eco_report(self, guild: discord.Guild) -> discord.Embed:
+    async def _eco_report(self, guild: discord.Guild):
+        """(report embed, currency name, supply) where supply is every non-bot account's balance,
+        leavers included, for the ledger's reconciliation."""
         from redbot.core import bank  # imported here: the dev test stub has no bank
 
         currency = await bank.get_currency_name(guild)
@@ -73,4 +75,5 @@ class EconomyMixin:
             saved["snapshots"] = economy.add_snapshot(history, entry)
         delta = economy.change(previous, entry) if previous else None
         top = [(names[uid], balance) for uid, balance in economy.top_holders(balances)]
-        return embeds.economy_embed(currency, stats, top, gone_n, gone_total, delta, active)
+        embed = embeds.economy_embed(currency, stats, top, gone_n, gone_total, delta, active)
+        return embed, currency, stats["total"] + gone_total

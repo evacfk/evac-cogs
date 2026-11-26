@@ -19,6 +19,7 @@ from .constants import (
 )
 from .content import HOME_KEY, MAP_KEY, PAGES
 from .economy_cog import EconomyMixin
+from .ledger_cog import LedgerMixin
 from .roomperms_cog import RoomPermsMixin
 
 log = logging.getLogger("red.evac-cogs.wonderland")
@@ -115,7 +116,7 @@ class OpenView(discord.ui.View):
                 pass
 
 
-class Wonderland(EconomyMixin, RoomPermsMixin, commands.Cog):
+class Wonderland(EconomyMixin, LedgerMixin, RoomPermsMixin, commands.Cog):
     """A compact guidebook to everything Wonderland's bots can do."""
 
     def __init__(self, bot):
@@ -124,9 +125,10 @@ class Wonderland(EconomyMixin, RoomPermsMixin, commands.Cog):
         self.config.register_guild(publish={"channel_id": None, "messages": {}}, roomperms={"enabled": True},
                                    economy={"snapshots": []})
         self._rp_setup()
+        self._ledger_setup()
 
-    async def red_delete_data_for_user(self, **kwargs):
-        return  # nothing stored per user
+    async def red_delete_data_for_user(self, *, requester=None, user_id: int = 0):
+        await self._ledger_delete_user(int(user_id))  # the coin ledger is the only per-user data
 
     # ------------------------------------------------------------------ helpers
 
@@ -300,11 +302,23 @@ class Wonderland(EconomyMixin, RoomPermsMixin, commands.Cog):
     @wonderland.command(name="economy")
     @commands.mod_or_permissions(manage_guild=True)
     @commands.cooldown(1, ECONOMY_COOLDOWN, commands.BucketType.user)
-    async def wonderland_economy(self, ctx: commands.Context):
-        """Mods: wondercoin in circulation, who holds it, and the change since the last run."""
+    async def wonderland_economy(self, ctx: commands.Context, member: Optional[discord.Member] = None):
+        """Mods: wondercoin supply and where it comes from and goes, or one member's last 25 changes."""
         async with ctx.typing():
-            embed = await self._eco_report(ctx.guild)
+            if member is not None:
+                from redbot.core import bank
+                currency = await bank.get_currency_name(ctx.guild)
+                embed = await self._ledger_member(ctx.guild, member, currency)
+                return await ctx.send(embed=embed, ephemeral=True, allowed_mentions=discord.AllowedMentions.none())
+            embed, currency, supply = await self._eco_report(ctx.guild)
+            try:
+                flow = await self._ledger_report(ctx.guild, currency, supply)
+            except Exception:
+                log.exception("wonderland: coin ledger report failed")
+                flow = None
         await ctx.send(embed=embed, ephemeral=True, allowed_mentions=discord.AllowedMentions.none())
+        if flow is not None:
+            await ctx.send(embed=flow, ephemeral=True, allowed_mentions=discord.AllowedMentions.none())
 
     @wonderland.command(name="publish")
     @commands.mod_or_permissions(manage_guild=True)

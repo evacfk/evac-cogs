@@ -94,11 +94,11 @@ def mod(monkeypatch):
     root.core = core
     for name, m in (("redbot", root), ("redbot.core", core), ("redbot.core.commands", commands_ns)):
         monkeypatch.setitem(sys.modules, name, m)
-    for name in ("wonderland.guide", "wonderland.embeds", "wonderland.economy_cog"):
+    for name in ("wonderland.guide", "wonderland.embeds", "wonderland.economy_cog", "wonderland.ledger_cog"):
         monkeypatch.delitem(sys.modules, name, raising=False)
     m = importlib.import_module("wonderland.guide")
     yield m
-    for name in ("wonderland.guide", "wonderland.embeds", "wonderland.economy_cog"):
+    for name in ("wonderland.guide", "wonderland.embeds", "wonderland.economy_cog", "wonderland.ledger_cog"):
         sys.modules.pop(name, None)
 
 
@@ -670,6 +670,73 @@ async def test_economy_report_when_nobody_holds_anything(mod, monkeypatch):
     install_bank(monkeypatch, [(1, {"balance": 0})])
     ctx = await run_economy(make(mod), guild)
     assert "Nobody holds any wondercoin" in ctx.sent[0].kw["embed"].description
+
+
+async def test_economy_sends_the_coin_flow_second_and_says_when_the_ledger_is_off(mod, monkeypatch):
+    guild = EcoGuild([eco_member(1, "Ann")])
+    install_bank(monkeypatch, [(1, {"balance": 10})])
+    ctx = await run_economy(make(mod), guild)                  # never loaded, so the ledger never started
+    assert len(ctx.sent) == 2 and ctx.sent[1].kw["ephemeral"] is True
+    flow = ctx.sent[1].kw["embed"]
+    assert "not recording" in flow.description and "Ledger not started" in flow.footer.text
+
+
+def ledger_bank(monkeypatch, balances):
+    """install_bank plus the two calls the ledger wrapper needs, shaped like Red\x27s."""
+    install_bank(monkeypatch, [(uid, {"balance": b}) for uid, b in balances.items()])
+    bank = sys.modules["redbot.core"].bank
+
+    async def get_balance(member):
+        return balances.get(member.id, 0)
+
+    async def set_balance(member, amount):
+        balances[member.id] = amount
+        return amount
+
+    async def get_leaderboard(positions=None, guild=None):
+        return [(uid, {"balance": b}) for uid, b in balances.items()]
+    bank.get_balance, bank.set_balance, bank.get_leaderboard = get_balance, set_balance, get_leaderboard
+    return bank
+
+
+async def test_economy_reports_flows_house_result_reconciliation_and_member_history(mod, monkeypatch, tmp_path):
+    from wonderland import ledger
+    ann = eco_member(1, "Ann")
+    ann.guild = types.SimpleNamespace(id=1)
+    guild = EcoGuild([ann])
+    balances = {1: 1_000}
+    bank = ledger_bank(monkeypatch, balances)
+    cog = make(mod)
+    cog.bot.extensions = {"casino": None}
+    assert cog._ledger_start(bank, ledger.LedgerStore(tmp_path / "l.sqlite3"), loop_task=False)
+    ctx = await run_economy(cog, guild)                        # first run: saves the supply for the check
+    assert "Run this again later" in fields(ctx.sent[1].kw["embed"])["Check"]
+
+    casino = types.ModuleType("casino.games")
+    exec("async def play(self, ctx, bank, m):\n    await bank.set_balance(m, 900)\n", casino.__dict__)
+    cmd = types.SimpleNamespace(qualified_name="casino blackjack", callback=None)
+    await casino.play(None, types.SimpleNamespace(command=cmd, invoked_with="blackjack", message=None), bank, ann)
+    balances[1] = 950                                           # 50 more appears without the bank API
+
+    ctx = await run_economy(cog, guild)
+    f = fields(ctx.sent[1].kw["embed"])
+    assert f["Sinks, last 7 days"].startswith("**casino** -100 (in 0 / out 100) · mostly .casino blackjack")
+    assert "**casino**: house up **100** (1 changes)" in f["House result, last 30 days"]
+    check = next(v for k, v in f.items() if k.startswith("Check since"))
+    assert "Supply -50 · ledger -100 · unaccounted +50" in check
+
+    ctx = FakeCtx(guild=guild)
+    await cog.wonderland.subs["economy"].callback(cog, ctx, ann)
+    assert len(ctx.sent) == 1
+    hist = ctx.sent[0].kw["embed"]
+    assert "Ann" in hist.title and "**-100** → 900 · casino · .casino blackjack" in hist.description
+
+    await cog.red_delete_data_for_user(requester="user", user_id=1)
+    ctx = FakeCtx(guild=guild)
+    await cog.wonderland.subs["economy"].callback(cog, ctx, ann)
+    assert "No wondercoin changes recorded" in ctx.sent[0].kw["embed"].description
+    cog._ledger_stop()
+    assert bank.set_balance is not None and not getattr(bank.set_balance, "__wonderland_ledger__", None)
 
 
 async def test_the_economy_report_is_on_the_mod_page_only(mod):

@@ -133,3 +133,83 @@ def economy_embed(currency: str, stats: dict, top, gone_n: int, gone_total: int,
 
 def key_label(key: str) -> str:
     return {HOME_KEY: "Home", MAP_KEY: "Channel Guide"}.get(key, key)
+
+
+# ------------------------------------------------------------------ coin ledger (`.wld economy`)
+
+def _short(n: int) -> str:
+    n = int(n)
+    sign = "-" if n < 0 else ""
+    n = abs(n)
+    for size, suffix in ((1_000_000_000, "B"), (1_000_000, "M"), (1_000, "k")):
+        if n >= size:
+            return f"{sign}{n / size:.1f}{suffix}".replace(".0", "")
+    return f"{sign}{n:,}"
+
+
+def _field(e: discord.Embed, name: str, lines, empty: str) -> None:
+    value = "\n".join(lines) if lines else empty
+    if len(value) > 1024:
+        value = value[:1020].rsplit("\n", 1)[0] + "\n…"
+    e.add_field(name=name, value=value, inline=False)
+
+
+def _flow_lines(rows, unit: str):
+    out = []
+    for cog, net, coins_in, coins_out, top in rows:
+        hint = f" · mostly {discord.utils.escape_markdown(top)}" if top else ""
+        out.append(f"**{cog}** {_signed(net)} (in {_short(coins_in)} / out {_short(coins_out)}){hint}")
+    return out
+
+
+def ledger_off_embed(status: str) -> discord.Embed:
+    return _base("📒 Coin flow", "The coin ledger is not recording, so there is no flow data to show.", status)
+
+
+def ledger_embed(currency: str, started: float, week: dict, month: dict, recon, status: str) -> discord.Embed:
+    """Where coins came from and went. `week`/`month` are ledger.flows() results; `recon` is
+    {"since", "supply", "ledger"} or None. In/out/net are from the members' side: positive net is a faucet."""
+    from . import ledger
+    unit = currency or "coins"
+    e = _base("📒 Coin flow by source",
+              f"Every balance change since <t:{int(started)}:d>, grouped by the cog that made it. "
+              f"Positive = {unit} into members (faucet), negative = out of members (sink).", status)
+    for label, flows in (("7 days", week), ("30 days", month)):
+        faucets, sinks = ledger.rank(flows, 6)
+        _field(e, f"Faucets, last {label} (net {_signed(ledger.total_net(flows))})",
+               _flow_lines(faucets, unit), "None recorded.")
+        _field(e, f"Sinks, last {label}", _flow_lines(sinks, unit), "None recorded.")
+    lines = []
+    for source, result, events in ledger.house(month):
+        if not events:
+            lines.append(f"**{source}**: no activity")
+        elif result > 0:
+            lines.append(f"**{source}**: house up **{result:,}** ({events:,} changes)")
+        elif result < 0:
+            lines.append(f"**{source}**: house down **{-result:,}**, paid out more than it took ({events:,} changes)")
+        else:
+            lines.append(f"**{source}**: even ({events:,} changes)")
+    _field(e, "House result, last 30 days", lines, "No gambling activity.")
+    if recon is not None:
+        gap = recon["supply"] - recon["ledger"]
+        _field(e, f"Check since <t:{int(recon['since'])}:f>",
+               [f"Supply {_signed(recon['supply'])} · ledger {_signed(recon['ledger'])} · "
+                f"unaccounted {_signed(gap)}",
+                "Unaccounted = changes that skip Red's bank API (direct writes such as ExtendedEconomy "
+                "auto-payday or backpay, bank wipes or prunes) plus new accounts' starting balance."],
+               "")
+    else:
+        _field(e, "Check", ["Run this again later to compare the change in supply with the ledger."], "")
+    return e
+
+
+def ledger_member_embed(currency: str, name: str, rows) -> discord.Embed:
+    """`rows` from LedgerStore.history(): newest first [(ts, old, new, delta, cog, action)]."""
+    unit = currency or "coins"
+    title = f"📒 Last {len(rows)} {unit} changes: {discord.utils.escape_markdown(name)}"
+    if not rows:
+        return _base(f"📒 {discord.utils.escape_markdown(name)}",
+                     f"No {unit} changes recorded for this member in the last 30 days.", "Mods only")
+    lines = [f"<t:{int(ts)}:f> **{_signed(delta)}** → {new:,} · {cog} · {discord.utils.escape_markdown(action)}"
+             for ts, old, new, delta, cog, action in rows]
+    return _base(title, "\n".join(lines), "Mods only · newest first · times in your timezone")
