@@ -7,6 +7,7 @@ full `.minigamehub` / `.mgh` admin command tree. See the individual modules
 (claude/minigamehub-cog-design.md) for the reasoning behind each piece --
 this file is mostly plumbing.
 """
+import asyncio
 import copy
 import io
 import json
@@ -21,7 +22,7 @@ from discord.ext import tasks
 from redbot.core import Config, bank, commands
 from redbot.core.utils.chat_formatting import box, humanize_list, pagify
 
-from . import migrations, offerings, pacing, scenarios as scenario_data, stats
+from . import migrations, offerings, pacing, plant, scenarios as scenario_data, stats
 from .activity import ActivityTracker, is_channel_active
 from .config_schema import DEFAULT_GUILD, DEFAULT_MEMBER
 from .constants import COG_VERSION, CONFIG_IDENTIFIER, GAME_KEYS, MOD_ROLE_ID, RESET_TIMEZONE, SCHEDULER_TICK_SECONDS
@@ -166,11 +167,25 @@ class MinigameHub(commands.Cog):
         # process-wide, not per-guild, since a reload/restart resets every
         # guild's live concurrency reading at the same moment.
         self._process_started_at: float = time.time()
+        self._plant_lock = asyncio.Lock()
+        self._plant_last: dict = {}       # (guild_id, member_id) -> when they last dropped (a restart clears it)
+        self._plant_tasks: set = set()
 
         self.scheduler_loop.start()
 
+    async def cog_load(self):
+        task = asyncio.create_task(plant.recover(self))
+        self._plant_tasks.add(task)
+        task.add_done_callback(self._plant_tasks.discard)
+
     def cog_unload(self):
         self.scheduler_loop.cancel()
+        for task in list(self._plant_tasks):
+            task.cancel()
+
+    async def plant_from_hub(self, interaction: discord.Interaction) -> None:
+        """Called by gamble's #wondercasino "More..." dropdown (the "Drop coins in #cuddle" entry)."""
+        await plant.open_modal(self, interaction)
 
     # ------------------------------------------------------------------ #
     # Setup / seeding
@@ -551,6 +566,20 @@ class MinigameHub(commands.Cog):
         need = boss_game.min_fighters(solo)
         return f"Boss tier `{tier}` updated" + (f": at least {need} fighters needed." if need > 1 else ".")
 
+    async def _apply_plant_enabled(self, guild, member, on) -> str:
+        async with self.config.guild(guild).plant() as p:
+            p["enabled"] = bool(on)
+        return "Coin drops are " + ("on." if on else "off.")
+
+    async def _apply_plant_limits(self, guild, member, values) -> str:
+        low = self._number(values, "min", "The minimum", integer=True)
+        high = self._number(values, "max", "The maximum", integer=True)
+        if not 1 <= low <= high <= 100_000_000:
+            raise PanelError("The minimum must be at least 1, and the maximum at least the minimum (up to 100,000,000).")
+        async with self.config.guild(guild).plant() as p:
+            p["min"], p["max"] = low, high
+        return f"Coin drops now run from {low:,} to {high:,}."
+
     async def _apply_card_enabled(self, guild, member, on) -> str:
         async with self.config.guild(guild).games() as games:
             games["boss"]["card_drop"]["enabled"] = bool(on)
@@ -739,6 +768,7 @@ class MinigameHub(commands.Cog):
         if summary["boss_damage"]:
             lines.append(f"- Lifetime boss damage: {summary['boss_damage']:,}")
         lines.append(f"- Today's payouts: {today_total:,} / {daily_cap:,} daily cap")
+        lines += await plant.stats_lines(self, ctx.guild)
         await ctx.send("\n".join(lines))
 
     @minigamehub.command(name="leaderboard")

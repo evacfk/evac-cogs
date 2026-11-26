@@ -18,7 +18,7 @@ from .settings_panel import PanelError, open_panel
 
 log = logging.getLogger("red.evac-cogs.gamble")
 
-COG_VERSION = "1.5.0"
+COG_VERSION = "1.6.0"
 
 # The pixel canvas (canvas_*.py) is built into this cog: no commands of its own. Members open it from the
 # hub's "More…" dropdown (a "canvas" mode entry, handled here instead of resolving a command); mods use
@@ -33,7 +33,7 @@ MODLOG_CHANNEL_ID = 397513667052175360
 #       "emoji": "🃏",
 #       "label": "Wonderjack",
 #       "command": "wonderjack table",   # resolved via bot.get_command() at click time
-#       "mode": "personal" | "shared" | "direct" | "modal" | "post",   # routing model, see below
+#       "mode": "personal" | "shared" | "direct" | "modal" | "post" | "cog",   # routing model, see below
 #       "args": [{"label": "Amount"}, {"label": "Heads or Tails"}],  # modal mode only, 1-2 entries
 #   }
 #
@@ -69,6 +69,11 @@ MODLOG_CHANNEL_ID = 397513667052175360
 #             Built for `.card daily`: a real pull is public in the reply
 #             channel, "already pulled" stays private, and the pack
 #             reveal is posted in the reply channel, never the hub.
+#
+# "cog":      no command at all: the entry names a cog and one of its async
+#             methods ({"cog": "MinigameHub", "method": "plant_from_hub"}) and
+#             a click calls `method(interaction)`, which answers the
+#             interaction itself (the coin-drop modal lives there).
 #
 # Session liveness for "shared" games is tracked purely off Discord's own
 # thread state (does the stored thread ID still resolve, is it archived) —
@@ -107,6 +112,18 @@ DEFAULT_GAMES = {
 # plus an ordered list of candidate commands — the first one that actually
 # resolves on the live bot wins (e.g. `$` is only a real command if it isn't
 # just an Alias-cog alias, which bot.get_command() can't see).
+# Entries that call a cog method directly instead of a command (mode "cog"),
+# seeded the same way once their cog is loaded.
+SEEDED_COG_ENTRIES = {
+    "plant": {
+        "emoji": "\U0001FA99",  # 🪙
+        "label": "Drop coins in #cuddle",
+        "mode": "cog",
+        "cog": "MinigameHub",
+        "method": "plant_from_hub",
+    },
+}
+
 SEEDED_FLAGSHIPS = {
     "profile": {
         "emoji": "\U0001F464",  # 👤
@@ -519,6 +536,10 @@ class GambleThreads(commands.Cog):
                             "mode": spec["mode"],
                         }
                         changed = True
+                    for key, entry in SEEDED_COG_ENTRIES.items():
+                        if key not in games and self.bot.get_cog(entry["cog"]) is not None:
+                            games[key] = dict(entry)
+                            changed = True
                 if changed and await self.config.guild(guild).hub_message_id():
                     await self._refresh_hub_message(guild)
                 await self._canvas_recover(guild)
@@ -843,6 +864,17 @@ class GambleThreads(commands.Cog):
             return
         if entry.get("mode") == "canvas":
             await self._open_canvas(interaction)
+            if from_select:
+                self._schedule_select_reset(guild)
+            return
+        if entry["mode"] == "cog":
+            handler = getattr(self.bot.get_cog(entry["cog"]), entry["method"], None)
+            if handler is None:
+                await interaction.response.send_message(
+                    "That isn't available right now — let a mod know.", ephemeral=True
+                )
+                return
+            await handler(interaction)
             if from_select:
                 self._schedule_select_reset(guild)
             return
@@ -1779,7 +1811,8 @@ class GambleThreads(commands.Cog):
                 mode_suffix = f"modal: {arg_labels}"
                 if data.get("notify_recipient"):
                     mode_suffix += ", notifies recipient"
-            target = "built-in pixel canvas" if data["mode"] == "canvas" else f"`.{data['command']}`"
+            target = ("built-in pixel canvas" if data["mode"] == "canvas" else
+                      f"{data['cog']}.{data['method']}" if data["mode"] == "cog" else f"`.{data['command']}`")
             lines.append(
                 f"`{key}` — {data['emoji']} **{data['label']}** → {target} ({mode_suffix}"
                 f"{', flagship' if key in FLAGSHIP_KEYS else ''})"

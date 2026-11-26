@@ -14,10 +14,10 @@ Use it to answer "does a cog already cover this?" and "what depends on this cog?
 - **cardcollect** 2.16.0: Ambient anime-character card collecting: pick the card you want from each drop and the draw decides.
 - **celebrations** 1.2.1: Birthdays (hoisted role, wondercoin gift, posts), join-anniversary shout-outs and year club roles.
 - **duel** 1.2.0: 1v1 best-of-3 wagered duels
-- **gamble** 1.5.0: Per-user gambling threads plus the Wondercasino hub menu.
+- **gamble** 1.6.0: Per-user gambling threads plus the Wondercasino hub menu.
 - **hungergames** 1.2.0: A weekly Hunger Games: Reaping, training challenges, live arena broadcasts and Wondercoin sponsorship.
 - **lurker** 2.7.0: Auto-hide inactive members behind a Lurker role.
-- **minigamehub** 1.2.0: Unified, config-driven minigame spawner (pet/mathdrop/hunt/lootdrop/reacttowin/boss).
+- **minigamehub** 1.3.0: Unified, config-driven minigame spawner (pet/mathdrop/hunt/lootdrop/reacttowin/boss).
 - **puzzle** 1.8.1: Image-reveal puzzle game with an auto-rotating image pool.
 - **redditfeed** source-v10: Config-driven subreddit-to-channel image feed (Arctic Shift-backed, swappable source).
 - **rejoinwatch** 1.1.0: Tracks voluntary leaves; warns rejoiners and flags repeat leavers to mods with a ban button.
@@ -83,7 +83,7 @@ Links: called by wonderland
 Needs: no extra pip packages · Config scopes: guild, member
 
 ### gamble
-v1.5.0 · GambleThreads · 3144 lines · 122 tests
+v1.6.0 · GambleThreads · 3177 lines · 122 tests
 Commands:
 - `.gamblehub`: addgame, addmodalgame, canvas, listgames, lockdown, notifyrecipient, removegame, setup
 - `.gambleset`: settings, version
@@ -105,15 +105,15 @@ v2.7.0 · Lurker · 1924 lines · 58 tests
 Commands:
 - `.lurkerset`: postinfo, settings
 - Standalone: `.lurker`, `.lurkerbackfill`, `.lurkerbackfillconfirm`, `.lurkerbackfillstatus`, `.lurkerexemptaudit`, `.lurkerreport`, `.lurkerreportsend`, `.lurkerstatus`, `.lurkersweeppreview`, `.lurkersweeprun`, `.lurkerundoall`, `.lurkerundoallconfirm`, `.lurkerunflag`, `.lurkerversion`
-Links: calls celebrations; called by afterdark, celebrations, gamble, hungergames, wonderland
+Links: calls celebrations; called by afterdark, celebrations, gamble, hungergames, minigamehub, wonderland
 Needs: no extra pip packages · Config scopes: guild, member
 Data: This cog stores member IDs, role IDs, last-activity timestamps, and display names of members flagged or restored since the last mod report.
 
 ### minigamehub
-v1.2.0 · MinigameHub · 4632 lines · 29 tests
+v1.3.0 · MinigameHub · 4971 lines · 39 tests
 Commands:
 - `.minigamehub|mgh`: adaptive{show}, bossscenario{add, export, import, list, remove}, diagnostics{reset}, game{list, settings}, huntanimals, huntsafe{add, list, penalty, reaction, remove, reward, text, word}, leaderboard, scenario{add, export, import, list, remove}, schedule, settings, shuffle, stats, test, version, wipedata, wipestats
-Links: calls cardcollect; called by wonderland
+Links: calls cardcollect, lurker; called by wonderland
 Needs: no extra pip packages · Config scopes: guild, member
 Data: This cog stores per-user game statistics (wins, streaks, boss damage, daily payout totals) and per-guild configuration.
 
@@ -182,7 +182,7 @@ Needs: no extra pip packages · Config scopes: guild, member
 Data: This cog stores, per event, the user IDs of members who RSVP'd and how many minutes each member spent in voice while the event ran, plus a staff member's chosen timezone…
 
 ### wonderland
-v1.7.1 · IntroCleanup, IntroForm, MyStats, Wonderland · 3617 lines · 248 tests
+v1.7.1 · IntroCleanup, IntroForm, MyStats, Wonderland · 3619 lines · 248 tests
 Commands:
 - `.introcleanup|ic`: settings, sweep
 - `.introform`: panel, prune, settings

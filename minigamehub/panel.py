@@ -150,6 +150,18 @@ async def _tier_save(cog, guild, member, name, values, picked):
     return await cog._apply_tier_save(guild, member, name, values, picked)
 
 
+async def _plant_get(cog, guild):
+    return await cog.config.guild(guild).plant()
+
+
+async def _plant_get(cog, guild):
+    return await cog.config.guild(guild).plant()
+
+
+async def _plant_enabled(cog, guild):
+    return (await _plant_get(cog, guild))["enabled"]
+
+
 def build_specs():
     return [
         # -- Spawning --------------------------------------------------------------------------
@@ -218,4 +230,12 @@ def build_specs():
                      Field("max_rarity", "Highest rarity: common, rare or epic", value=lambda r: r.get("max_rarity", ""),
                            max_length=6)),
              help="The rarity inside a roll follows the card game's daily pull odds, capped at the highest rarity here."),
+        # -- Coin drops ----------------------------------------------------------------------------------
+        Spec("plant_enabled", "Coin drops", "Coin drops", "toggle", get=_plant_enabled, apply=_apply("_apply_plant_enabled"),
+             help="Members drop their own coins in #cuddle from the #wondercasino dropdown. 10% of every drop is burned."),
+        Spec("plant_limits", "Drop size limits", "Coin drops", "modal", get=_plant_get, apply=_apply("_apply_plant_limits"),
+             fmt=lambda v, g: f"{v['min']:,} to {v['max']:,}" if v else "?", button="Edit…",
+             fields=(Field("min", "Smallest drop", value=lambda v: str(v["min"]), max_length=9),
+                     Field("max", "Largest drop", value=lambda v: str(v["max"]), max_length=9)),
+             help="What one drop can hold. Each member can drop once every 10 minutes."),
     ]

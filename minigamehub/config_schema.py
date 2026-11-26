@@ -207,6 +207,10 @@ DEFAULT_GUILD = {
         "last_spawn_at": 0,  # epoch seconds of the most recent logged spawn (any game), for computing the next gap
     },
 
+    # Member-funded coin drops (plant.py). "open" holds live drops so a restart can refund them.
+    "plant": {"enabled": True, "min": 1000, "max": 1000000, "drops": 0, "planted": 0, "burned": 0,
+              "week": "", "week_planters": {}, "open": {}},
+
     "last_game": None,
 
     # Minimum seconds between any two games' scheduled times. Used only to

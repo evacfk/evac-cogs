@@ -67,6 +67,8 @@ PAGES = (
         Entry(".wonderjack table", "sit at the multiplayer blackjack table", requires=("wonderjack table",)),
         Entry("{cmds}", "table games: pick one and place your bet",
               expand=("slot", "blackjack", "coin", "dice", "craps", "cups", "hilo", "war", "double", "allin")),
+        Entry("Drop coins in #cuddle", "pick it in the #wondercasino dropdown: put in coins (10% is burned), the rest is up for grabs in #cuddle, first click or a shared Rain",
+              requires=("minigamehub",)),
         Entry(".payouts", "what the slot machine pays", requires=("payouts",)),
         Entry(".duel @user <bet>", "challenge someone to a best-of-3 duel", requires=("duel",)),
         Entry(".duelstats [@user]", "a duel record", requires=("duelstats",)),
