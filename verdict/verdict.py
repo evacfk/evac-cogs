@@ -386,7 +386,8 @@ class Verdict(AcroMixin, commands.Cog):
             return f"**{cur['question']}**\nNobody answered. It happens."
         top = ", ".join(f"{cur['options'][i]} ({engine.percent(counts[i], total)}%)" for i in sorted(win))
         text = f"**{cur['question']}**\n\N{TROPHY} {top} · {total} voted"
-        return text + ("\n" + " · ".join(extra) if extra else "")
+        tail = ([f"\N{BRAIN} {len(readers)} read the crowd"] if readers else []) + [e for e in extra if "Streak" in e]
+        return text + ("\n" + " · ".join(tail) if tail else "")   # lone wolves' names live on the final post
 
     @staticmethod
     def _names(uids: list[str], limit: int = 5) -> str:

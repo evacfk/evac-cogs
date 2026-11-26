@@ -503,22 +503,24 @@ async def test_staff_settings_readout_carries_the_mod_panel(acro):
 # ---------------------------------------------------------------- the schedule
 
 
-async def test_one_round_a_day_opens_at_the_daily_post_hour_with_hours_long_phases(acro):
+async def test_one_round_a_day_opens_an_hour_after_the_daily_question(acro):
     env = acro
-    nine = ts(2026, 11, 26, 9, 0)
-    env.clock.t = nine - 60
-    await env.cog._acro_tick(env.g, nine - 60)
-    assert env.chan.sent == []                                                        # before 9am: nothing
-    env.clock.t = nine + 20
-    await env.cog._acro_tick(env.g, nine + 20)
+    ten = ts(2026, 11, 26, 10, 0)
+    for t in (ts(2026, 11, 26, 9, 5), ten - 60):                                      # the 9am question hour: nothing yet
+        env.clock.t = t
+        await env.cog._acro_tick(env.g, t)
+    assert env.chan.sent == []
+    env.clock.t = ten + 20
+    await env.cog._acro_tick(env.g, ten + 20)
     assert len(env.chan.sent) == 1 and (await cur(env))["manual"] is False
     c = await cur(env)
-    assert c["submit_ends_ts"] - nine - 20 == 5 * 3600                                # submit until 2pm
-    assert "2:00" in env.chan.sent[0].embed.fields[1].value or "<t:" in env.chan.sent[0].embed.fields[1].value
-    await env.cog.acro_cancel(env.g, nine + 40)
-    await env.cog._acro_tick(env.g, nine + 100)                                       # never twice the same day
+    assert c["submit_ends_ts"] - ten - 20 == 4 * 3600                                 # submit until 2pm
+    text = env.chan.sent[0].embed.fields[0].value
+    assert "Submit" in text and "<t:" in text and len(env.chan.sent[0].embed.fields) == 1
+    await env.cog.acro_cancel(env.g, ten + 40)
+    await env.cog._acro_tick(env.g, ten + 100)                                        # never twice the same day
     assert len(env.chan.sent) == 1 and await cur(env) == {}
-    tomorrow = ts(2026, 11, 27, 9, 5)
+    tomorrow = ts(2026, 11, 27, 10, 5)
     env.clock.t = tomorrow
     await env.cog._acro_tick(env.g, tomorrow)
     assert len(env.chan.sent) == 2
@@ -526,7 +528,7 @@ async def test_one_round_a_day_opens_at_the_daily_post_hour_with_hours_long_phas
 
 async def test_the_day_is_skipped_when_the_bot_is_far_too_late(acro):
     env = acro
-    late = ts(2026, 11, 26, 12, 0)
+    late = ts(2026, 11, 26, 13, 0)
     env.clock.t = late
     await env.cog._acro_tick(env.g, late)
     assert env.chan.sent == []
@@ -535,7 +537,7 @@ async def test_the_day_is_skipped_when_the_bot_is_far_too_late(acro):
 async def test_the_daily_round_follows_the_daily_post_hour_setting(acro):
     env = acro
     await env.conf.post_hour.set(7)
-    t = ts(2026, 11, 26, 7, 10)
+    t = ts(2026, 11, 26, 8, 10)
     env.clock.t = t
     await env.cog._acro_tick(env.g, t)
     assert len(env.chan.sent) == 1
@@ -543,14 +545,14 @@ async def test_the_daily_round_follows_the_daily_post_hour_setting(acro):
 
 async def test_phases_last_hours_and_close_on_the_clock(acro):
     env = acro
-    nine = ts(2026, 11, 26, 9, 0)
+    nine = ts(2026, 11, 26, 10, 0)
     c = await start(env, now=nine)
     for i in range(3):
         await enter(env, Member(env.g, 900 + i))
-    env.clock.t = nine + 4 * 3600
+    env.clock.t = nine + 3 * 3600
     await env.cog._acro_tick(env.g, env.clock.t)
     assert (await cur(env))["phase"] == "submit"                                      # still open at 1pm
-    env.clock.t = nine + 5 * 3600 + 1
+    env.clock.t = nine + 4 * 3600 + 1
     await env.cog._acro_tick(env.g, env.clock.t)
     c = await cur(env)
     assert c["phase"] == "vote" and c["vote_ends_ts"] - env.clock.t == 4 * 3600

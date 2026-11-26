@@ -431,10 +431,11 @@ async def test_results_with_no_history_and_unknown_number(env):
 async def test_question_embed_explains_the_two_taps_scoring_and_public_results(env):
     await env.cog.post_daily(env.g, ts(2026, 10, 5))
     fields = {f.name: f.value for f in env.chan.sent[0].embed.fields}
-    how = fields["How to play (2 taps)"]
-    assert "your own answer" in how and "most people" in how and "Tap any answer again" in how
-    assert "Mind Reader" in fields["Scoring"] and "streak" in fields["Scoring"]
-    assert "who picked what" in fields["Results"] and "9am" in fields["Results"]
+    how = fields["How to play"]
+    assert "your own answer" in how and "most people" in how and "Tap an answer again" in how
+    assert "Mind Reader" in how and "streak" in how
+    footer = fields_footer = env.chan.sent[0].embed.footer.text
+    assert "who picked what" in footer and "9am" in footer
 
 
 async def test_step_two_prompt_says_how_the_guess_scores(env):
@@ -488,7 +489,7 @@ async def test_thread_is_private_voters_only_and_linked_in_the_post(env):
     assert t.kw["auto_archive_duration"] == 10080 and t.name.startswith("Verdict #1: ")
     assert (await env.conf.current())["thread_id"] == t.id
     field = next(f for f in env.chan.sent[0].embed.fields if "thread" in f.name.lower())
-    assert f"<#{t.id}>" in field.value and "voters-only" in field.value and "public thread" in field.value
+    assert f"<#{t.id}>" in field.value and "Voters only" in field.value
     assert "Verdict #1" in t.sent[0].content and "already locked in" in t.sent[0].content
     assert t.members == []
 

@@ -92,7 +92,7 @@ def build_specs():
         Spec("acro_enabled", "Acrophobia", "Acrophobia", "toggle", get=_conf("acro_enabled"),
              apply=_apply("_apply_acro_enabled"),
              confirm="Acrophobia pays wondercoin: the prize on every win, up to the daily cap below. Switch it on?",
-             help="A daily acronym game in the daily question channel: submit until ~2pm, vote until ~6pm Pacific, opens with the question."),
+             help="A daily acronym game in the daily question channel: submit until ~2pm, vote until ~6pm Pacific, opens an hour after the question."),
         Spec("acro_prize", "Prize & daily cap", "Acrophobia", "modal", get=_acro_prize_get,
              apply=_apply("_apply_acro_prize"),
              fmt=lambda v, g: f"{v['prize']:,} per win · {v['cap']:,} a day at most" if v else "?", button="Edit…",

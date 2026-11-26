@@ -21,21 +21,12 @@ def question_embed(cur: dict, *, yesterday: str | None = None, award: str | None
     when = f"~{post_hour % 12 or 12}{'am' if post_hour < 12 else 'pm'} Pacific"
     e = discord.Embed(title=f"\N{BALLOT BOX WITH BALLOT} Daily Verdict #{cur['seq']}", description=f"**{cur['question']}**",
                       color=discord.Color(COLOR_OPEN))
-    e.add_field(name="How to play (2 taps)", value=(
-        "**1.** Tap **your own answer** below. Pick what *you* would choose.\n"
-        "**2.** A private pop-up then asks what you think **most people** will pick. Tap that.\n"
-        "Both taps are needed to count. Closed the pop-up early? Tap any answer again to finish."), inline=False)
-    e.add_field(name="Scoring", value=(
-        "\N{BRAIN} Your guess matches the winning answer = a **Mind Reader** point. "
-        "The best score each month earns the title.\n"
-        "\N{FIRE} Play every day to build a streak."), inline=False)
-    e.add_field(name="Results", value=f"This post turns into the results at {when} tomorrow and shows **who picked what**.",
-                inline=False)
+    e.add_field(name="How to play", value=(
+        "**1.** Tap **your own answer**.\n"
+        "**2.** A private pop-up asks what **most people** will pick. Tap that. Both taps count; closed the pop-up? Tap an answer again.\n"
+        "\N{BRAIN} Guess the winner = a Mind Reader point. \N{FIRE} Play daily for a streak."), inline=False)
     if cur.get("thread_id"):
-        e.add_field(name="\N{SPEECH BALLOON} Discussion thread", value=(
-            f"<#{cur['thread_id']}> opens for you once both taps are in. It's voters-only while voting is open, so it can't "
-            "spoil your guess. When voting closes, the discussion is copied to a public thread for everyone."),
-            inline=False)
+        e.add_field(name="\N{SPEECH BALLOON} Discussion thread", value=f"<#{cur['thread_id']}> opens once both taps are in. Voters only, so no spoilers.", inline=False)
     if cur.get("submitter_id"):
         e.add_field(name="Question by", value=f"<@{cur['submitter_id']}>", inline=True)
     if yesterday:
@@ -43,7 +34,7 @@ def question_embed(cur: dict, *, yesterday: str | None = None, award: str | None
         e.add_field(name="\N{CALENDAR} Yesterday", value=_clip(yesterday, 1024 - len(link)) + link, inline=False)
     if award:
         e.add_field(name="\N{CROWN} Mind Reader", value=_clip(award, 1024), inline=False)
-    e.set_footer(text="Got a question for the crowd? /verdict suggest (only you see it)")
+    e.set_footer(text=f"Results at {when} tomorrow, with who picked what · Got a question? /verdict suggest")
     return e
 
 
@@ -51,8 +42,8 @@ def thread_intro(cur: dict) -> str:
     """First message in the private discussion thread: the question and its options (no buttons; voting happens in the channel)."""
     opts = "\n".join(f"**{LETTERS[i]}.** {o}" for i, o in enumerate(cur["options"]))
     return (f"**Daily Verdict #{cur['seq']}: {cur['question']}**\n{opts}\n\n"
-            "Everyone in here has already locked in, so talk freely. Results post with tomorrow's question, and then this "
-            "discussion is copied to a public thread for everyone to read.")
+            "Everyone in here has already locked in, so talk freely and without spoilers: it's voters-only while voting is open. "
+            "Results post with tomorrow's question, then this discussion is copied to a public thread for everyone.")
 
 
 def _mentions(uids: list[str], readers: frozenset | set, budget: int) -> str:

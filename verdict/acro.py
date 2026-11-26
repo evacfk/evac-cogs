@@ -1,7 +1,7 @@
 """Acrophobia: the second Verdict round type, a quick acronym game.
 
-Once a day, when the daily question posts (9am Pacific), the bot posts 3-5 random letters in the same channel.
-Members tap Submit and write one word per letter (each starting with its letter, in order), anonymously. After 5 hours
+Once a day, an hour after the daily question posts (10am Pacific), the bot posts 3-5 random letters in the same channel.
+Members tap Submit and write one word per letter (each starting with its letter, in order), anonymously. After 4 hours
 the entries go up numbered for a 4 hour vote (one vote each, never for your own). The winner gets wondercoin from a
 capped daily faucet.
 
@@ -26,7 +26,7 @@ from . import acro_engine as ae
 from . import engine
 from .constants import (
     ACRO_MAX_ENTRIES, ACRO_MAX_PRIZE, ACRO_MIN_ENTRIES, ACRO_REVIEW_DAYS, ACRO_REVIEW_MIN_AVG,
-    ACRO_START_GRACE_SECONDS, ACRO_SUBMIT_SECONDS, ACRO_VOTE_SECONDS, ACRO_HISTORY, KEEP_MONTHS,
+    ACRO_START_GRACE_SECONDS, ACRO_START_OFFSET_HOURS, ACRO_SUBMIT_SECONDS, ACRO_VOTE_SECONDS, ACRO_HISTORY, KEEP_MONTHS,
 )
 from .settings_panel import PanelError
 
@@ -95,9 +95,9 @@ class AcroMixin:
         await self._acro_schedule(guild, now_ts)
 
     async def _acro_schedule(self, guild, now_ts: float) -> None:
-        """One round a day, opening when the daily question does (the Daily Verdict post hour)."""
+        """One round a day, opening an hour after the daily question (the Daily Verdict post hour)."""
         conf = self.config.guild(guild)
-        if not ae.start_due(now_ts, await conf.post_hour(), await conf.acro_auto_date(), ACRO_START_GRACE_SECONDS):
+        if not ae.start_due(now_ts, min(23, await conf.post_hour() + ACRO_START_OFFSET_HOURS), await conf.acro_auto_date(), ACRO_START_GRACE_SECONDS):
             return
         await conf.acro_auto_date.set(engine.pt_date(now_ts))   # marked before posting, so a failure can't start it twice
         status = await self.acro_start(guild, now_ts, manual=False)
@@ -446,7 +446,7 @@ class AcroMixin:
         if s["acro_enabled"] and not cur and s["acro_auto_date"] != engine.pt_date(now_ts):
             hour = s["post_hour"]
             lines.append(f"Next automatic round: today at {hour % 12 or 12}{'am' if hour < 12 else 'pm'} PT if it's still ahead, "
-                         "otherwise tomorrow (with the daily question).")
+                         "otherwise tomorrow (an hour after the daily question).")
         paid = s["acro_paid"]
         today_paid = paid["amount"] if paid.get("date") == engine.pt_date(now_ts) else 0
         lines.append(f"Paid today: {today_paid:,} of {s['acro_daily_cap']:,}")
@@ -532,7 +532,7 @@ class AcroMixin:
         await conf.acro_enabled.set(bool(on))
         if on and not await conf.acro_launch_ts():
             await conf.acro_launch_ts.set(time.time())
-        return "Acrophobia is on. A round opens every day with the daily question." if on else "Acrophobia is off. An open round still finishes."
+        return "Acrophobia is on. A round opens every day an hour after the daily question." if on else "Acrophobia is off. An open round still finishes."
 
     async def _apply_acro_prize(self, guild, member, values) -> str:
         try:

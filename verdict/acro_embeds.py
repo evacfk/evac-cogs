@@ -36,12 +36,9 @@ def submit_embed(cur: dict) -> discord.Embed:
     e = discord.Embed(title=f"\N{INPUT SYMBOL FOR LATIN CAPITAL LETTERS} Acrophobia #{cur['seq']}",
                       description=f"# {_letters_line(cur)}{theme}", color=discord.Color(COLOR_SUBMIT))
     e.add_field(name="How to play", value=(
-        f"Tap **Submit** and write {n} words, one for each letter, **in order**: "
-        f"each word starts with its letter. Make it funny.\n"
-        f"You can change your entry until submissions close. Entries stay anonymous while everyone votes."), inline=False)
-    e.add_field(name="Time", value=(f"Submissions close <t:{int(cur['submit_ends_ts'])}:t> ({_when(cur['submit_ends_ts'])}). "
-                                    f"Voting then runs until <t:{int(cur['submit_ends_ts'] + ACRO_VOTE_SECONDS)}:t>."), inline=False)
-    e.set_footer(text=f"Needs {ACRO_MIN_ENTRIES}+ entries to go to a vote · max {ACRO_MAX_ENTRIES} entries")
+        f"Tap **Submit** and write {n} words, one per letter, **in order**. Make it funny.\n"
+        f"Edit until <t:{int(cur['submit_ends_ts'])}:t>, then vote until "
+        f"<t:{int(cur['submit_ends_ts'] + ACRO_VOTE_SECONDS)}:t>. Entries stay anonymous."), inline=False)
     return e
 
 
@@ -56,7 +53,7 @@ def cancelled_embed(cur: dict, n_entries: int) -> discord.Embed:
     return discord.Embed(
         title=f"\N{INPUT SYMBOL FOR LATIN CAPITAL LETTERS} Acrophobia #{cur['seq']}: not this time",
         description=(f"Only {n_entries} {'entry' if n_entries == 1 else 'entries'} came in and it takes {ACRO_MIN_ENTRIES} "
-                     "to make a vote. Nobody loses anything. A new round opens tomorrow with the daily question, so keep an eye out!"),
+                     "to make a vote. Nobody loses anything. A new round opens tomorrow at 10am."),
         color=discord.Color(COLOR_CANCEL))
 
 
