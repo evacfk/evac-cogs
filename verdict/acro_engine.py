@@ -20,10 +20,11 @@ BANNED_FRAGMENTS = ("<", ">", "@", "://", "www.", "discord.gg", "discord.com/inv
 _MD_CHARS = "\\*_~`|>[]"
 
 
-def pick_letters(rng: Optional[random.Random] = None, count: Optional[int] = None) -> str:
-    """3-5 different letters, weighted toward common word starters, never Q, X or Z."""
-    rng = rng or random
-    count = count or rng.choice(ACRO_LETTER_COUNTS)
+ANCHOR_LETTERS = frozenset("TAISWHO")   # easy starters (the, a, I, so, we, he, of): every round gets at least one
+HARD_LETTERS = frozenset("BFMNKJVYUG")   # fiddly starters: at most one per round
+
+
+def _draw(rng, count: int) -> list[str]:
     pool = dict(LETTER_WEIGHTS)
     out = []
     for _ in range(count):
@@ -31,7 +32,19 @@ def pick_letters(rng: Optional[random.Random] = None, count: Optional[int] = Non
         pick = rng.choices(letters, weights=weights, k=1)[0]
         out.append(pick)
         pool.pop(pick)
-    return "".join(out)
+    return out
+
+
+def pick_letters(rng: Optional[random.Random] = None, count: Optional[int] = None) -> str:
+    """3-4 different letters, weighted toward common word starters, never Q, X or Z. Each set has at least one easy
+    starter and at most one fiddly one, so a round is never four hard consonants."""
+    rng = rng or random
+    count = count or rng.choice(ACRO_LETTER_COUNTS)
+    for _ in range(200):
+        out = _draw(rng, count)
+        if any(c in ANCHOR_LETTERS for c in out) and sum(c in HARD_LETTERS for c in out) <= 1:
+            return "".join(out)
+    return "".join(rng.sample("TAISWHO", 1) + _draw(rng, count - 1))   # unreachable in practice; keeps the call total
 
 
 def pick_theme(themes: Sequence[str], rng: Optional[random.Random] = None) -> Optional[str]:

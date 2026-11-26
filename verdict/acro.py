@@ -1,6 +1,6 @@
 """Acrophobia: the second Verdict round type, a quick acronym game.
 
-Once a day, an hour after the daily question posts (10am Pacific), the bot posts 3-5 random letters in the same channel.
+Once a day, an hour after the daily question posts (10am Pacific), the bot posts 3-4 random letters in the same channel.
 Members tap Submit and write one word per letter (each starting with its letter, in order), anonymously. After 4 hours
 the entries go up numbered for a 4 hour vote (one vote each, never for your own). The winner gets wondercoin from a
 capped daily faucet.

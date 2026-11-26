@@ -12,7 +12,7 @@ LA = ZoneInfo("America/Los_Angeles")
 
 # ---- letters and themes
 
-def test_letters_are_3_to_5_distinct_and_never_q_x_z():
+def test_letters_are_3_to_4_distinct_and_never_q_x_z():
     rng = random.Random(7)
     sizes = set()
     for _ in range(2000):
@@ -20,7 +20,7 @@ def test_letters_are_3_to_5_distinct_and_never_q_x_z():
         sizes.add(len(letters))
         assert len(set(letters)) == len(letters) and letters.isupper()
         assert not set(letters) & set("QXZ")
-    assert sizes == {3, 4, 5}
+    assert sizes == {3, 4}
 
 
 def test_letters_lean_toward_common_starters():
@@ -173,3 +173,27 @@ def test_merge_top_keeps_mind_reader_order_and_adds_acro_only_winners():
     assert out == [("1", 5, 6, 0), ("2", 3, 6, 2), ("8", None, None, 3), ("9", None, None, 3)]
     assert len(ae.merge_top(rows, {str(i): 1 for i in range(100, 130)}, limit=10)) == 10
     assert ae.month_wins({"2026-11": {"a": 2, "b": 0}}, "2026-11") == {"a": 2}
+
+
+def test_letter_sets_are_playable_never_all_hard_consonants():
+    rng = random.Random(7)
+    seen = set()
+    for _ in range(2000):
+        letters = ae.pick_letters(rng)
+        seen.add(len(letters))
+        assert len(set(letters)) == len(letters) and not set(letters) & set("QXZ")
+        assert any(c in ae.ANCHOR_LETTERS for c in letters), letters
+        assert sum(c in ae.HARD_LETTERS for c in letters) <= 1, letters
+    assert seen == {3, 4}                                       # never 5 any more
+
+
+def test_the_round_that_prompted_this_is_rejected():
+    class Rig(random.Random):
+        calls = 0
+        def choices(self, pop, weights=None, k=1):       # first draw is F N M B, then fall back to real picks
+            Rig.calls += 1
+            if Rig.calls <= 4:
+                return ["FNMB"[Rig.calls - 1]]
+            return super().choices(pop, weights=weights, k=k)
+    letters = ae.pick_letters(Rig(1), 4)
+    assert letters != "FNMB" and any(c in ae.ANCHOR_LETTERS for c in letters)

@@ -1,7 +1,7 @@
 """Config defaults and fixed values for verdict (Daily Verdict)."""
 from zoneinfo import ZoneInfo
 
-COG_VERSION = "1.7.1"
+COG_VERSION = "1.7.2"
 CONFIG_IDENTIFIER = 0x7E4D1C70
 HOME_TZ = ZoneInfo("America/Los_Angeles")
 
@@ -36,7 +36,7 @@ ACRO_VOTE_SECONDS = 4 * 3600     # voting runs to ~6pm, before chat dies
 ACRO_MIN_ENTRIES = 3          # fewer entries and the round is cancelled before voting
 ACRO_MAX_ENTRIES = 20         # 4 rows of 5 vote buttons; row 5 holds the mod button
 ACRO_MAX_ENTRY_LEN = 120
-ACRO_LETTER_COUNTS = (3, 4, 5)
+ACRO_LETTER_COUNTS = (3, 4)   # 5 letters is too much work for a game that runs for hours
 ACRO_THEME_CHANCE = 0.7       # share of rounds that get a theme (when the list isn't empty)
 ACRO_START_OFFSET_HOURS = 1      # Acrophobia posts this long after the Daily Verdict so the two never land together
 ACRO_START_GRACE_SECONDS = 2 * 3600   # the daily round is skipped if the bot is this late to start it

@@ -24,7 +24,7 @@ Use it to answer "does a cog already cover this?" and "what depends on this cog?
 - **rejoinwatch** 1.1.0: Tracks voluntary leaves; warns rejoiners and flags repeat leavers to mods with a ban button.
 - **serverpulse** 1.8.0: Server activity analytics: busy/quiet hours, reports, heatmap, live board, digests, and an approval-gated weekly recap.
 - **tgfeed** tg-v4: Telegram forum group photos/videos -> Discord channels, media only, read-only and throttled.
-- **verdict** 1.7.1: A daily crowd question (pick, then guess the crowd) and Acrophobia, a quick acronym game twice a day.
+- **verdict** 1.7.2: A daily crowd question (pick, then guess the crowd) and Acrophobia, a quick acronym game twice a day.
 - **wonderevents** 1.4.2: Movie and game nights: RSVP buttons, Discord scheduled events, votes, reminders and attendance.
 - **wonderland** 1.10.3: The Wonderland guidebook: .wld command guide, server map and mod cheat sheet, plus the intro form and member stats.
 - **wonderpet** 1.3.3: One server pet raised together in #cuddle: daily free care, coin treats, weekly top carers, evolution.
@@ -166,7 +166,7 @@ Needs: telethon · Config scopes: global
 Data: This cog stores no end-user data.
 
 ### verdict
-v1.7.1 · Verdict · 4244 lines · 127 tests
+v1.7.2 · Verdict · 4257 lines · 129 tests
 Commands:
 - `.verdict`: add, post, queue, remove, results, settings, suggest, top, version
 Links: calls lurker; called by wonderland
