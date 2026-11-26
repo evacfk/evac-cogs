@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from zoneinfo import ZoneInfo
 
-COG_VERSION = "1.8.0"
+COG_VERSION = "1.8.1"
 COG_BUILD = "2026-10-28"
 
 TIMEZONE_NAME = "America/Los_Angeles"
@@ -14,7 +14,7 @@ CONFIG_IDENTIFIER = 0x5E4B5075  # arbitrary, unique to this cog
 # -- hardcoded defaults (change with `.pulse settings`) ----------------
 DEFAULT_MOD_CHANNEL_ID = 912520841613418596
 DEFAULT_MOD_ROLE_ID = 426696709780013066
-DEFAULT_IGNORED_CHANNEL_IDS = [1546909458582474772, 1530348323330986005]  # bot channels
+DEFAULT_IGNORED_CHANNEL_IDS = [1546909458582474772, 1575647106419654738]  # bot channels
 
 # -- tracking ---------------------------------------------------------------
 CONCURRENCY_WINDOW_SECONDS = 300  # "peak concurrent chatters" = distinct authors in a rolling 5 minutes

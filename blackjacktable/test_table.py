@@ -53,7 +53,7 @@ def make_table(rng_seed: int = 0, **kwargs) -> tuple[Table, FakeBank]:
     bank = FakeBank(starting_balance=kwargs.pop("starting_balance", 1000))
     table = Table(
         guild_id=1,
-        channel_id=1530348323330986005,
+        channel_id=1575647106419654738,
         host_id=100,
         bank=bank,
         min_bet=kwargs.pop("min_bet", 10),

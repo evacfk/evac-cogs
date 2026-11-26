@@ -9,7 +9,7 @@ Use it to answer "does a cog already cover this?" and "what depends on this cog?
 ## At a glance
 
 - **afterdark** 1.9.1: Gated Rabbit Hole access: permanent rabbit button + invitations, interest opt-ins, inactivity cleanup, exclude list.
-- **blackjacktable** 1.1.1: Multiplayer blackjack table (.wonderjack)
+- **blackjacktable** 1.1.2: Multiplayer blackjack table (.wonderjack)
 - **bumpreward** 1.1.0: Currency rewards, streaks, auto reminders and a daily board for Disboard bumps.
 - **cardcollect** 2.17.0: Ambient anime-character card collecting: pick the card you want from each drop and the draw decides.
 - **celebrations** 1.2.1: Birthdays (hoisted role, wondercoin gift, posts), join-anniversary shout-outs and year club roles.
@@ -22,7 +22,7 @@ Use it to answer "does a cog already cover this?" and "what depends on this cog?
 - **puzzle** 1.8.2: Image-reveal puzzle game with an auto-rotating image pool.
 - **redditfeed** source-v10: Config-driven subreddit-to-channel image feed (Arctic Shift-backed, swappable source).
 - **rejoinwatch** 1.1.0: Tracks voluntary leaves; warns rejoiners and flags repeat leavers to mods with a ban button.
-- **serverpulse** 1.8.0: Server activity analytics: busy/quiet hours, reports, heatmap, live board, digests, and an approval-gated weekly recap.
+- **serverpulse** 1.8.1: Server activity analytics: busy/quiet hours, reports, heatmap, live board, digests, and an approval-gated weekly recap.
 - **tgfeed** tg-v4: Telegram forum group photos/videos -> Discord channels, media only, read-only and throttled.
 - **verdict** 1.7.2: A daily crowd question (pick, then guess the crowd) and Acrophobia, a quick acronym game twice a day.
 - **wonderevents** 1.4.2: Movie and game nights: RSVP buttons, Discord scheduled events, votes, reminders and attendance.
@@ -40,7 +40,7 @@ Needs: no extra pip packages · Config scopes: guild
 Data: This cog stores Discord user IDs and timestamps: who holds Rabbit Hole access and how they got it, per-interest join and last-activity times, the exclude list (with the…
 
 ### blackjacktable
-v1.1.1 · BlackjackTable · 1745 lines · 84 tests
+v1.1.2 · BlackjackTable · 1745 lines · 84 tests
 Commands:
 - `.wonderjack`: count, table
 - `.wonderjackset`: version
@@ -150,7 +150,7 @@ Needs: no extra pip packages · Config scopes: guild
 Data: This cog stores, per member, the timestamps of the times they left the server within the retention window (default 180 days; older ones are deleted automatically).
 
 ### serverpulse
-v1.8.0 · ServerPulse · 6349 lines · 351 tests
+v1.8.1 · ServerPulse · 6349 lines · 351 tests
 Commands:
 - `.pulse|activity`: anomalies, backfill{cancel, resume, status}, best, board, channel, channels, day, digest{now, recap{status}}, export, guilds{add, remove}, heatmap, hour, hours, joinlog{backfill, test}, members, month, retention, settings, sources, top, version, week
 Links: called by hungergames

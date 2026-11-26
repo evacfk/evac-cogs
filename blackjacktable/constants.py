@@ -14,7 +14,7 @@ payout ratio).
 # spins up) -- see _channel_allowed() in blackjacktable.py. Not a full
 # any-channel opt-in: still scoped to one home channel, just no longer
 # just that one exact channel ID.
-DEFAULT_CHANNEL_ID: int = 1530348323330986005
+DEFAULT_CHANNEL_ID: int = 1575647106419654738
 
 # A table can start with just the host (solo vs. dealer is allowed).
 MIN_SEATS: int = 1
@@ -56,4 +56,4 @@ BLACKJACK_PAYOUT_DENOMINATOR: int = 2
 # in engine.py beyond "bet * 2 back", but named here for clarity/searchability.
 REGULAR_WIN_MULTIPLIER: int = 2
 
-COG_VERSION: str = "1.1.1"
+COG_VERSION: str = "1.1.2"
