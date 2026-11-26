@@ -127,7 +127,7 @@ def test_progress_caps_at_target_and_pays_each_quest_once():
     Q.add_progress(s, "card", 1)
     Q.add_progress(s, "fish", 5)
     new, full = Q.settle(s)
-    assert sorted(new) == ["card", "fish"] and full and s["streak"] == 1 and s["sets"] == 1
+    assert sorted(new) == ["card", "fish"] and full and s["sets"] == 1 and s["streak"] == 0
     Q.add_progress(s, "card", 1)
     assert Q.settle(s) == ([], False) and s["sets"] == 1          # one set per day
 
@@ -139,20 +139,65 @@ def test_unassigned_progress_never_pays():
     assert Q.settle(s) == ([], False) and s["last_done"]["card"] == "2026-11-26"
 
 
-def test_streak_counts_consecutive_full_days_and_breaks_on_a_gap():
+def test_streak_counts_consecutive_days_with_any_quest_and_breaks_on_a_gap():
     s = Q.roll_day(None, "2026-11-24")
-    for day in ("2026-11-24", "2026-11-25"):
-        s = Q.roll_day(s, day)
-        s["assigned"] = ["card"]
-        Q.add_progress(s, "card", 1)
-        Q.settle(s)
-    assert s["streak"] == 2 and Q.current_streak(s, "2026-11-26") == 2   # alive until a whole day is missed
+    assert Q.advance_streak(s, "2026-11-24") == 1
+    assert Q.advance_streak(s, "2026-11-24") is None            # one quest or three, the day counts once
+    s = Q.roll_day(s, "2026-11-25")
+    assert Q.advance_streak(s, "2026-11-25") == 2
+    assert Q.current_streak(s, "2026-11-26") == 2               # alive until a whole day is missed
     assert Q.current_streak(s, "2026-11-27") == 0
     s = Q.roll_day(s, "2026-11-27")
-    s["assigned"] = ["card"]
-    Q.add_progress(s, "card", 1)
-    Q.settle(s)
-    assert s["streak"] == 1 and s["best_streak"] == 2
+    assert Q.advance_streak(s, "2026-11-27") == 1 and s["best_streak"] == 2
+
+
+def test_a_broken_streak_reopens_the_milestone_prizes():
+    s = Q.roll_day(None, "2026-11-01")
+    s.update(streak=3, last_active="2026-11-01", ms_given=[3])
+    s = Q.roll_day(s, "2026-11-05")
+    Q.advance_streak(s, "2026-11-05")
+    assert s["ms_given"] == [] and Q.milestones_due(3, s["ms_given"]) == [3]
+
+
+def test_milestones_badges_and_prizes():
+    assert Q.milestones_due(7, []) == [3, 7] and Q.milestones_due(7, [3]) == [7] and Q.milestones_due(2, []) == []
+    assert Q.badge_for(8)[0] == 7 and Q.badge_for(2) is None and Q.badge_for(150)[0] == 100
+    assert Q.next_badge(8)[0] == 14
+    assert Q.next_badge(100) is None
+    assert Q.prize_for({}, 7) == Q.DEFAULT_PRIZES[7]
+    assert Q.prize_for({"7": {"coins": 2.0, "xp": 5, "pack": False}}, 7)["xp"] == 5
+
+
+def test_reroll_cost_climbs_one_five_ten_then_doubles():
+    costs = Q.DEFAULT_REROLL_COSTS
+    assert [Q.reroll_cost(costs, n) for n in range(7)] == [1000, 5000, 10000, 20000, 40000, 80000, 160000]
+    assert Q.reroll_cost([500], 0) == 500 and Q.reroll_cost([500], 3) == 4000 and Q.reroll_cost([], 0) == 1000
+
+
+def test_xp_weekend_multiplies_only_inside_its_window():
+    boost = {"start": "2026-11-27", "end": "2026-11-29", "multiplier": 2.0}
+    assert Q.quest_xp(50, boost, "2026-11-26") == 50
+    assert Q.quest_xp(50, boost, "2026-11-27") == 100 and Q.quest_xp(50, boost, "2026-11-29") == 100
+    assert Q.quest_xp(50, boost, "2026-11-30") == 50 and Q.quest_xp(50, {}, "2026-11-27") == 50
+
+
+def test_weekly_days_count_distinct_days_and_reset_each_iso_week():
+    s = Q.roll_day(None, "2026-11-23")
+    for day in ("2026-11-23", "2026-11-23", "2026-11-24"):
+        Q.track_week(s, day, 5)
+    assert Q.week_days(s, "2026-11-24") == 2
+    assert Q.week_days(s, "2026-11-30") == 0                     # a new ISO week starts Monday
+
+
+def test_set_pack_price_modes():
+    assert Q.set_pack_price("free", 10000) == 0 and Q.set_pack_price("half", 10000) == 5000
+    assert Q.set_pack_price("off", 10000) is None
+
+
+def test_post_quests_need_a_channel_and_the_heist_command_is_configurable():
+    assert Q.BY_KEY["selfie"].source == Q.POST and Q.BY_KEY["selfie"].channel == "selfie"
+    assert Q.BY_KEY["counting"].source == Q.POST and Q.BY_KEY["heist"].command == "{heist}"
+    assert Q.valid_day("2026-12-25") and not Q.valid_day("2026-13-01") and not Q.valid_day("tomorrow")
 
 
 def test_new_day_clears_quests_but_keeps_history():
@@ -173,8 +218,9 @@ def test_custom_targets_and_titles():
 
 def test_every_quest_has_exactly_one_source_and_command_quests_name_their_command():
     for q in Q.QUESTS:
-        assert q.source in (Q.HOOK, Q.COMMAND, Q.CHAT, Q.CALL)
+        assert q.source in (Q.HOOK, Q.COMMAND, Q.CHAT, Q.CALL, Q.POST)
         assert bool(q.command) == (q.source == Q.COMMAND)
+        assert bool(q.channel) == (q.source == Q.POST)
     assert len({q.key for q in Q.QUESTS}) == len(Q.QUESTS)
 
 
@@ -222,7 +268,8 @@ def test_start_page_mentions_daily_quests_only_while_they_are_on():
     off = engine.gate_body(start, lambda name: False).body
     on = engine.gate_body(start, lambda name: name == "@quests").body
     assert "Daily Quests" not in off and "[[" not in off and "Payday" in off
-    assert "📜 **Daily Quests**: three small quests a day; each pays a third of your payday\n" in on
+    assert "📜 **Daily Quests**: three small quests a day; each pays a third of your payday plus XP." in on
+    assert "streak with badges and prizes" in on
     assert off.endswith("**When you have a minute**") and on.endswith("**When you have a minute**")
 
 

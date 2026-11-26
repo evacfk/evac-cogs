@@ -54,7 +54,7 @@ PAGES = (
     ), body="**1.** Introduce yourself in {#intro}\n**2.** Pick your roles in {#role-select}\n**3.** Say hi in {#cuddle}\n\n"
             "**Your daily loop** (buttons in {#wondercasino}, new every midnight Pacific)\n"
             "💵 **Payday**: free coins\n🎴 **Daily Cards**: a free card\n"
-            "[[@quests|📜 **Daily Quests**: three small quests a day; each pays a third of your payday\n]]"
+            "[[@quests|📜 **Daily Quests**: three small quests a day; each pays a third of your payday plus XP. Do one a day to build a streak with badges and prizes; spend coins to reroll a quest\n]]"
             "\n**When you have a minute**"),
     Page("economy", "💰", "Economy & Shop", "Earn, spend and send wondercoin.", (
         Entry(".bank balance", "check your coins", requires=("bank balance",)),

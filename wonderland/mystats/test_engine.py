@@ -85,3 +85,10 @@ def test_clip_limits_field_length():
 def test_games_that_cannot_be_lost_never_show_a_lost_count():
     data = {"games": {"mathdrop": {"good": 4, "bad": 2, "highest_streak": 0}}, "boss_damage": 0}
     assert engine.minigame_lines(data) == ["**Quick math:** 4 wins"]
+
+
+def test_quest_line_shows_badge_streak_and_full_sets():
+    line = engine.quest_lines({"streak": 12, "best": 20, "sets": 34, "badge": "🏅 Week Warrior"})
+    assert line == ["🏅 Week Warrior · 🔥 12-day streak (best 20) · 34 full sets"]
+    assert engine.quest_lines({"streak": 1, "best": 1, "sets": 0, "badge": ""}) == ["🔥 1-day streak"]
+    assert engine.quest_lines({"streak": 0, "best": 0, "sets": 0}) == []

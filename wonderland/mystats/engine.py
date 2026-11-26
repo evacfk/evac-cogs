@@ -131,14 +131,17 @@ def lottery_lines(data: Optional[dict]) -> list[str]:
 
 
 def quest_lines(data: Optional[dict]) -> list[str]:
-    """Daily quests: the streak (consecutive days with a full set) and how many full sets. Pays nothing."""
+    """Daily quests: the badge, the streak (consecutive days with a quest finished) and how many full sets."""
     if not data:
         return []
     sets, streak, best = _int(data.get("sets")), _int(data.get("streak")), _int(data.get("best"))
-    if not sets:
+    if not sets and not best:
         return []
-    line = f"{sets:,} full set{'s' if sets != 1 else ''} · streak {streak} day{'s' if streak != 1 else ''}"
-    return [line + (f" (best {best})" if best > streak else "")]
+    parts = [str(data["badge"])] if data.get("badge") else []
+    parts.append(f"🔥 {streak}-day streak" + (f" (best {best})" if best > streak else ""))
+    if sets:
+        parts.append(f"{sets:,} full set{'s' if sets != 1 else ''}")
+    return [" · ".join(parts)]
 
 
 def clip(text: str, limit: int = FIELD_LIMIT) -> str:

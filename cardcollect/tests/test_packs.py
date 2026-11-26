@@ -438,3 +438,40 @@ async def test_a_gifted_reveal_names_the_recipient_in_upgrade_nudges(cog):
               "price": 0, "gifted_by": member}
     text, _file = await cog.pack_result_message(guild, friend, result)
     assert f"{friend.mention} has enough duplicates" in text and "You have" not in text
+
+
+# --- 2.17.0: bonus packs (daily-quest prizes) ------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_a_bonus_pack_is_free_and_does_not_use_the_daily_pack(cog):
+    guild, _a, member, _c = await setup(cog, 410)
+    result = await cog.open_bonus_pack(guild, member, 0)
+    assert isinstance(result, dict) and result["bonus"] and result["price"] == 0
+    assert bank.balances[(guild.id, member.id)] == 100_000
+    state = await cog._member_state(member)
+    assert len(state.collection) + len(state.sell_tokens) == 3
+    assert state.pack_date == "" and state.pack_pity == 0
+    assert isinstance(await cog.open_pack(guild, member), dict)  # today's pack is still there
+
+
+@pytest.mark.asyncio
+async def test_a_bonus_pack_works_after_the_daily_pack_and_charges_its_price(cog):
+    guild, _a, member, _c = await setup(cog, 411)
+    assert isinstance(await cog.open_pack(guild, member), dict)
+    before = bank.balances[(guild.id, member.id)]
+    result = await cog.open_bonus_pack(guild, member, 5000)
+    assert isinstance(result, dict) and result["price"] == 5000
+    assert bank.balances[(guild.id, member.id)] == before - 5000
+    assert result["entries"][-1][0].rarity != "common"  # one rare or better is guaranteed
+
+
+@pytest.mark.asyncio
+async def test_a_bonus_pack_never_touches_pity_and_a_poor_member_is_not_charged(cog):
+    guild, _a, member, _c = await setup(cog, 412, balance=100)
+    result = await cog.open_bonus_pack(guild, member, 5000)
+    assert isinstance(result, str) and "5,000" in result
+    assert bank.balances[(guild.id, member.id)] == 100
+    assert (await cog._member_state(member)).pack_pity == 0
+    text, _file = await cog.pack_result_message(guild, member, await cog.open_bonus_pack(guild, member, 0))
+    assert "quest pack" in text and "Pack pity" not in text and "No epic" not in text

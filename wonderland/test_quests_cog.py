@@ -383,7 +383,7 @@ async def test_mystats_summary_and_data_deletion(world):
     for _ in range(3):
         await world.cog._q_record(m, "fish", 1, source=Q.COMMAND)
     await world.cog._q_record(m, "chat", 10, source=Q.CHAT)
-    assert await world.cog.quest_summary(m) == {"streak": 1, "best": 1, "sets": 1}
+    assert await world.cog.quest_summary(m) == {"streak": 1, "best": 1, "sets": 1, "badge": ""}
     await world.cog._q_delete_member(1)
     assert (GUILD_ID, 1) not in world.cog.config.members
 
@@ -565,3 +565,312 @@ async def test_the_guide_quest_counts_a_real_lookup_once_and_only_from_its_own_h
     assert state(world, m)["progress"]["guide"] == 1
     assert world.balances[1] > 0
 
+
+
+# ------------------------------------------------------------------ streaks, prizes, XP, rerolls, packs, post quests
+
+class LevelUpFake:
+    """LevelUp as the quests use it: a profile with xp, check_levelups, and a separate weekly board that must stay put."""
+
+    def __init__(self):
+        self.profile = SimpleNamespace(xp=0, level=1)
+        self.weekly = SimpleNamespace(xp=0)
+        self.checked, self.ignored = 0, set()
+        fake = self
+        conf = SimpleNamespace(ignoredusers=self.ignored, get_profile=lambda m: fake.profile)
+        self.db = SimpleNamespace(get_conf=lambda g: conf)
+
+    async def check_levelups(self, **kw):
+        self.checked += 1
+        assert kw["profile"] is self.profile and not kw.get("channel")
+
+    def save(self, *a):
+        pass
+
+
+async def finish_day(w, m, day, monkeypatch, key="card"):
+    monkeypatch.setattr(Q, "today", lambda *a, **k: day)
+    await w.cog._q_panel_embed(m)
+    await w.cog._q_record(m, key, 1, source=Q.HOOK)
+
+
+def next_day(day):
+    return Q.yesterday_of(day) if False else (Q.date.fromisoformat(day) + Q.timedelta(days=1)).isoformat()
+
+
+async def test_one_finished_quest_a_day_keeps_the_streak_and_day_three_pays_its_prize(world, monkeypatch):
+    await switch_on(world, keep_off=["guide", "star"], multiplier=1.0)
+    m = member(world.guild, 1)
+    day = "2026-11-02"
+    for n in range(3):
+        await finish_day(world, m, day, monkeypatch)
+        day = next_day(day)
+    assert state(world, m)["streak"] == 3 and state(world, m)["ms_given"] == [3]
+    assert state(world, m)["notes"] and "3 days" in state(world, m)["notes"][0]["label"]
+    assert world.balances[1] == 1000 * 3 + 0       # three card quests; the 3-day prize is XP only (0 coins)
+
+
+async def test_a_missed_day_resets_the_streak_and_prizes_pay_again(world, monkeypatch):
+    await switch_on(world, keep_off=["guide", "star"])
+    m = member(world.guild, 1)
+    day = "2026-11-02"
+    for n in range(3):
+        await finish_day(world, m, day, monkeypatch)
+        day = next_day(day)
+    day = next_day(next_day(day))
+    await finish_day(world, m, day, monkeypatch)
+    assert state(world, m)["streak"] == 1 and state(world, m)["best_streak"] == 3 and state(world, m)["ms_given"] == []
+
+
+async def test_seven_day_streak_pays_a_payday_xp_and_a_free_pack_voucher(world, monkeypatch):
+    await switch_on(world, keep_off=["guide", "star"], multiplier=1.0)
+    m = member(world.guild, 1)
+    day = "2026-11-02"
+    for n in range(7):
+        await finish_day(world, m, day, monkeypatch)
+        day = next_day(day)
+    st = state(world, m)
+    assert st["streak"] == 7 and st["packs"] == 1 and 7 in st["ms_given"]
+    assert world.balances[1] == 1000 * 7 + 3000 + 3000   # seven quests + the 7-day prize + the weekly prize (5 days)
+    assert Q.badge_text(7) == "🏅 Week Warrior"
+
+
+async def test_quest_xp_goes_to_the_profile_not_the_weekly_board(world, monkeypatch):
+    lu = LevelUpFake()
+    world.cog._cogs["LevelUp"] = lu
+    await switch_on(world, keep_off=["guide", "star"])
+    m = member(world.guild, 1)
+    await finish_day(world, m, "2026-11-02", monkeypatch)
+    assert lu.profile.xp == 50 and lu.weekly.xp == 0 and lu.checked == 1
+    assert state(world, m)["xp"] == 50
+
+
+async def test_the_holiday_xp_weekend_multiplies_quest_xp(world, monkeypatch):
+    lu = LevelUpFake()
+    world.cog._cogs["LevelUp"] = lu
+    await switch_on(world, keep_off=["guide", "star"], xp_boost={"start": "2026-11-27", "end": "2026-11-29", "multiplier": 2.0})
+    m = member(world.guild, 1)
+    await finish_day(world, m, "2026-11-26", monkeypatch)
+    assert lu.profile.xp == 50
+    await finish_day(world, m, "2026-11-27", monkeypatch)
+    assert lu.profile.xp == 50 + 100
+
+
+async def test_ignored_levelup_users_get_no_quest_xp_and_missing_levelup_is_fine(world, monkeypatch):
+    lu = LevelUpFake()
+    lu.ignored.add(1)
+    world.cog._cogs["LevelUp"] = lu
+    await switch_on(world, keep_off=["guide", "star"])
+    m = member(world.guild, 1)
+    await finish_day(world, m, "2026-11-02", monkeypatch)
+    assert lu.profile.xp == 0
+    world.cog._cogs.pop("LevelUp")
+    other = member(world.guild, 2)
+    await finish_day(world, other, "2026-11-02", monkeypatch)
+    assert state(world, other)["xp"] == 0 and world.balances[2] == 1000
+
+
+async def test_weekly_prize_pays_once_on_the_fifth_active_day(world, monkeypatch):
+    await switch_on(world, keep_off=["guide", "star"], multiplier=1.0, weekly={"days": 2, "coins": 1.0, "xp": 0, "pack": False})
+    m = member(world.guild, 1)
+    for day in ("2026-11-23", "2026-11-24", "2026-11-25"):       # Monday to Wednesday
+        await finish_day(world, m, day, monkeypatch)
+    assert world.balances[1] == 1000 * 3 + 3000                   # one weekly payday, not two
+    assert state(world, m)["week_paid"] == Q.week_key("2026-11-24")
+
+
+async def test_reroll_costs_climb_and_a_swapped_away_quest_is_not_dealt_back(world, monkeypatch):
+    selfie = Channel(40, "selfie")                       # guide, card, chat, fish, selfie: five on offer, three dealt
+    world.guild._channels[40] = selfie
+    world.guild.text_channels.append(selfie)
+    await switch_on(world, keep_off=[])
+    m = member(world.guild, 1)
+    monkeypatch.setattr(Q, "today", lambda *a, **k: "2026-11-02")
+    paid = []
+
+    async def withdraw(who, amount):
+        world.balances[who.id] -= amount
+        paid.append(amount)
+    monkeypatch.setattr(bank, "withdraw_credits", withdraw)
+    await world.cog._q_panel_embed(m)
+    world.balances[1] = 1_000_000
+    first = list(state(world, m)["assigned"])
+    text1 = await world.cog._q_reroll(m, first[0])
+    text2 = await world.cog._q_reroll(m, state(world, m)["assigned"][0])
+    assert paid == [1000, 5000] and state(world, m)["rerolls"] == 2
+    assert "next reroll today costs 5,000" in text1 and "costs 10,000" in text2
+    now = state(world, m)["assigned"]
+    assert len(set(now)) == 3 and not set(state(world, m)["swapped"]) & set(now)
+    assert world.balances[1] == 1_000_000 - 6000
+    third = await world.cog._q_reroll(m, now[0])         # nothing left to swap in: not charged
+    assert "nothing else" in third and paid == [1000, 5000]
+
+
+async def test_a_reroll_you_cannot_afford_changes_nothing(world, monkeypatch):
+    await switch_on(world, keep_off=[])
+    m = member(world.guild, 1)
+    monkeypatch.setattr(Q, "today", lambda *a, **k: "2026-11-02")
+    await world.cog._q_panel_embed(m)
+    before = list(state(world, m)["assigned"])
+
+    async def withdraw(who, amount):
+        raise ValueError("no")
+    monkeypatch.setattr(bank, "withdraw_credits", withdraw)
+    text = await world.cog._q_reroll(m, before[0])
+    assert state(world, m)["assigned"] == before and state(world, m)["rerolls"] == 0
+    assert "don't have enough" in text or "nothing else" in text
+
+
+async def test_selfie_counts_only_an_image_in_its_channel(world):
+    selfie = Channel(40, "📸・selfie")
+    world.guild._channels[40] = selfie
+    world.guild.text_channels.append(selfie)
+    await switch_on(world, keep_off=[])
+    m = member(world.guild, 1)
+    await world.cog._q_panel_embed(m)
+    state(world, m)["assigned"] = ["selfie", "card", "fish"]
+    img = SimpleNamespace(content_type="image/png")
+    txt = SimpleNamespace(content_type="text/plain")
+    base = dict(guild=world.guild, author=m, channel=selfie, content="", created_at=SimpleNamespace(timestamp=lambda: 1.0), id=1)
+    await world.cog._q_message(SimpleNamespace(**base, attachments=[txt]))
+    assert state(world, m)["progress"].get("selfie", 0) == 0
+    await world.cog._q_message(SimpleNamespace(**base, attachments=[img]))
+    assert state(world, m)["progress"]["selfie"] == 1 and "selfie" in state(world, m)["paid"]
+
+
+async def test_counting_ignores_words_and_wrong_counts_that_get_deleted(world, monkeypatch):
+    counting = Channel(41, "counting")
+    world.guild._channels[41] = counting
+    world.guild.text_channels.append(counting)
+    monkeypatch.setattr(QC, "COUNT_CHECK_SECONDS", 0)
+    deleted = set()
+
+    async def fetch_message(mid):
+        if mid in deleted:
+            raise QC.discord.NotFound(SimpleNamespace(status=404, reason="x"), "gone")
+    counting.fetch_message = fetch_message
+    await switch_on(world, keep_off=[])
+    m = member(world.guild, 1)
+    await world.cog._q_panel_embed(m)
+    state(world, m)["assigned"] = ["counting", "card", "fish"]
+
+    def msg(mid, content):
+        return SimpleNamespace(guild=world.guild, author=m, channel=counting, content=content, attachments=[], id=mid,
+                               created_at=SimpleNamespace(timestamp=lambda: float(mid)))
+    await world.cog._q_message(msg(1, "lol nice"))
+    deleted.add(2)
+    await world.cog._q_message(msg(2, "17"))
+    assert state(world, m)["progress"].get("counting", 0) == 0
+    await world.cog._q_message(msg(3, "18"))
+    assert "counting" in state(world, m)["paid"]
+
+
+async def test_heist_quest_stays_off_until_a_real_command_is_set(world):
+    await switch_on(world, keep_off=[])
+    m = member(world.guild, 1)
+    status = (await world.cog._q_status("heist", m, await world.cog._q_conf(world.guild)))[0]
+    assert status == QC.OFF
+    world.cog._commands.add("heist play")
+    await world.cog._q_set(world.guild, heist_command="heist play")
+    status = (await world.cog._q_status("heist", m, await world.cog._q_conf(world.guild)))[0]
+    assert status == QC.OPEN
+
+
+async def test_the_panel_shows_streak_week_xp_and_packs(world, monkeypatch):
+    await switch_on(world, keep_off=["guide", "star"], multiplier=1.0, xp_boost={"start": "2026-11-02", "end": "2026-11-09", "multiplier": 2.0})
+    m = member(world.guild, 1)
+    day = "2026-11-02"
+    for n in range(3):
+        await finish_day(world, m, day, monkeypatch)
+        day = next_day(day)
+    monkeypatch.setattr(Q, "today", lambda *a, **k: Q.date.fromisoformat(day).isoformat())
+    # the last finished day was day-1; showing the panel for that same day keeps the streak alive
+    monkeypatch.setattr(Q, "today", lambda *a, **k: "2026-11-04")
+    embed, extras = await world.cog._q_panel_parts(m, count_open=False)
+    text = embed.description + "".join(f.value for f in embed.fields)
+    assert "Streak" in text and "🔥" in text and "This week" in text and "Holiday XP" in text and "XP" in text
+    assert "reroll" not in extras or extras["reroll"] == 1000
+
+
+async def test_a_voucher_pack_opens_through_cardcollect_and_is_used_up(world, monkeypatch):
+    await switch_on(world, keep_off=["guide", "star"])
+    m = member(world.guild, 1)
+    monkeypatch.setattr(Q, "today", lambda *a, **k: "2026-11-02")
+    await world.cog._q_panel_embed(m)
+    state(world, m)["packs"] = 1
+    calls = []
+
+    class CC(Cards):
+        config = SimpleNamespace(guild=lambda g: SimpleNamespace(pack_price=lambda: _ret(10000)))
+
+        async def open_bonus_pack(self, guild, who, price=0):
+            calls.append(price)
+            return {"entries": [], "bonus": True}
+
+        async def pack_result_message(self, guild, who, result):
+            return "🎁 opened a quest pack:", None
+    world.cog._cogs["CardCollect"] = CC()
+    text, _file = await world.cog._q_open_pack(m, "voucher")
+    assert calls == [0] and state(world, m)["packs"] == 0 and "quest pack" in text
+    again, _ = await world.cog._q_open_pack(m, "voucher")
+    assert "no free packs" in again and calls == [0]
+
+
+async def test_a_full_set_pack_is_half_price_by_default_once_a_day_and_can_be_off(world, monkeypatch):
+    await switch_on(world, keep_off=["guide", "star"])
+    m = member(world.guild, 1)
+    monkeypatch.setattr(Q, "today", lambda *a, **k: "2026-11-02")
+    await world.cog._q_panel_embed(m)
+    st = state(world, m)
+    st["paid"] = list(st["assigned"])
+    calls = []
+
+    class CC(Cards):
+        config = SimpleNamespace(guild=lambda g: SimpleNamespace(pack_price=lambda: _ret(10000)))
+
+        async def open_bonus_pack(self, guild, who, price=0):
+            calls.append(price)
+            return {"entries": [], "bonus": True}
+
+        async def pack_result_message(self, guild, who, result):
+            return "ok", None
+    world.cog._cogs["CardCollect"] = CC()
+    await world.cog._q_open_pack(m, "set")
+    assert calls == [5000]
+    again, _ = await world.cog._q_open_pack(m, "set")
+    assert calls == [5000] and "no full-set pack" in again
+
+
+async def test_admin_specs_save_and_reject_bad_input(world):
+    from wonderland import quests_panel as QP
+    from wonderland.settings_panel import PanelError
+    await switch_on(world)
+    g, cog = world.guild, world.cog
+    assert "XP" in await QP._apply_xp(cog, g, None, {"xp": "75"}) and (await cog._q_conf(g))["xp_per_quest"] == 75
+    with pytest.raises(PanelError):
+        await QP._apply_xp(cog, g, None, {"xp": "-1"})
+    await QP._apply_boost(cog, g, None, {"start": "2026-12-24", "end": "2026-12-26", "multiplier": "3"})
+    assert (await cog._q_conf(g))["xp_boost"] == {"start": "2026-12-24", "end": "2026-12-26", "multiplier": 3.0}
+    with pytest.raises(PanelError):
+        await QP._apply_boost(cog, g, None, {"start": "2026-12-26", "end": "2026-12-24", "multiplier": "2"})
+    await QP._boost_end(cog, g, None, None)
+    assert (await cog._q_conf(g))["xp_boost"]["start"] == ""
+    await QP._apply_rerolls(cog, g, None, {"costs": "500 2000"})
+    assert (await cog._q_conf(g))["reroll_costs"] == [500, 2000]
+    with pytest.raises(PanelError):
+        await QP._apply_rerolls(cog, g, None, {"costs": "abc"})
+    await QP._apply_weekly(cog, g, None, {"days": "4", "coins": "0.5", "xp": "100", "pack": "yes"})
+    assert (await cog._q_conf(g))["weekly"] == {"days": 4, "coins": 0.5, "xp": 100, "pack": True}
+    await QP._milestone_save(cog, g, None, "7", {"coins": "2", "xp": "10", "pack": "no"}, None)
+    assert Q.prize_for((await cog._q_conf(g))["milestones"], 7) == {"coins": 2.0, "xp": 10, "pack": False}
+    await QP._apply_set_pack(cog, g, None, "free")
+    assert (await cog._q_conf(g))["set_pack"] == "free"
+    with pytest.raises(PanelError):
+        await QP._apply_heist(cog, g, None, {"command": "nosuchcmd"})
+    world.cog._commands.add("heist play")
+    await QP._apply_heist(cog, g, None, {"command": ".heist play"})
+    assert cog._q_heist == "heist play"
+    assert len(QP.build_specs()) >= 15
+    member(g, 77)
+    estimate = await cog._q_estimate(g)
+    assert "weekly prize" in estimate and "Rerolls" in estimate
