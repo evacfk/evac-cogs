@@ -18,7 +18,7 @@ Use it to answer "does a cog already cover this?" and "what depends on this cog?
 - **gamble** 1.7.1: Per-user gambling threads plus the Wondercasino hub menu.
 - **hungergames** 1.2.1: A weekly Hunger Games: Reaping, training challenges, live arena broadcasts and Wondercoin sponsorship.
 - **lurker** 2.7.0: Auto-hide inactive members behind a Lurker role.
-- **minigamehub** 1.3.1: Unified, config-driven minigame spawner (pet/mathdrop/hunt/lootdrop/reacttowin/boss).
+- **minigamehub** 1.4.0: Unified, config-driven minigame spawner (pet/mathdrop/hunt/lootdrop/reacttowin/boss).
 - **puzzle** 1.8.2: Image-reveal puzzle game with an auto-rotating image pool.
 - **redditfeed** source-v10: Config-driven subreddit-to-channel image feed (Arctic Shift-backed, swappable source).
 - **rejoinwatch** 1.1.0: Tracks voluntary leaves; warns rejoiners and flags repeat leavers to mods with a ban button.
@@ -119,9 +119,10 @@ Needs: no extra pip packages · Config scopes: guild, member
 Data: This cog stores member IDs, role IDs, last-activity timestamps, and display names of members flagged or restored since the last mod report.
 
 ### minigamehub
-v1.3.1 · MinigameHub · 4972 lines · 41 tests
+v1.4.0 · MinigameHub · 4980 lines · 41 tests
 Commands:
 - `.minigamehub|mgh`: adaptive{show}, bossscenario{add, export, import, list, remove}, diagnostics{reset}, game{list, settings}, huntanimals, huntsafe{add, list, penalty, reaction, remove, reward, text, word}, leaderboard, scenario{add, export, import, list, remove}, schedule, settings, shuffle, stats, test, version, wipedata, wipestats
+- Standalone: `.dropcoins`
 Links: calls cardcollect, lurker; called by wonderland
 Needs: no extra pip packages · Config scopes: guild, member
 Data: This cog stores per-user game statistics (wins, streaks, boss damage, daily payout totals) and per-guild configuration.

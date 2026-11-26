@@ -609,6 +609,12 @@ class MinigameHub(commands.Cog):
             games["boss"]["card_drop"]["tiers"][tier] = {"chance": chance, "max_rarity": top}
         return f"`{tier}` bosses: {chance:g}% chance of a card, up to {top}."
 
+    @commands.command(name="dropcoins")
+    @commands.guild_only()
+    async def dropcoins_command(self, ctx: commands.Context, amount: str, mode: str = "grab"):
+        """Drop your own coins in #cuddle. Mode: grab (first click takes it all) or rain (clickers split it)."""
+        await ctx.send(await plant.start(self, ctx.guild, ctx.author, amount, mode))
+
     @minigamehub.command(name="version")
     async def mgh_version(self, ctx: commands.Context):
         """Show the running build (deploy probe)."""

@@ -171,6 +171,8 @@ class Drop:
                 log.exception("plant: deposit of %s to %s failed", share, m.id)
                 lost += share
         await _refund(self.cog, self.guild, self.planter.id, lost)
+        if paid:  # the daily quest counts only a drop someone else really claimed, so it can't be farmed by letting drops expire
+            self.cog.bot.dispatch("wonderland_quest", self.planter, "plant", 1)
         who = ", ".join(m.mention for m in paid[:12]) + (f" (+{len(paid) - 12} more)" if len(paid) > 12 else "")
         if not paid:
             text = f"\U0001F4A8 {self.planter.mention}'s drop couldn't be paid out, so they got it back."
@@ -187,11 +189,12 @@ class Drop:
             pass
 
 
-async def start(cog, interaction, amount_text, mode_text):
-    """Validate, take the coins, post the drop. Returns the private reply for the planter."""
-    guild, planter = interaction.guild, interaction.user
+async def start(cog, guild, planter, amount_text, mode_text):
+    """Validate, take the coins, post the drop. Shared by the hub modal and `.plant`; returns the reply for the planter."""
     amount, mode = parse_amount(amount_text), parse_mode(mode_text)
     p = await cog.config.guild(guild).plant()
+    if not p["enabled"]:
+        return "Coin drops are off right now."
     if amount is None or mode is None:
         return "Put a number for the amount (like 5000 or 5k) and Grab or Rain for the mode."
     if not p["min"] <= amount <= p["max"]:
@@ -226,7 +229,6 @@ async def start(cog, interaction, amount_text, mode_text):
     task = asyncio.create_task(drop.run())
     cog._plant_tasks.add(task)
     task.add_done_callback(cog._plant_tasks.discard)
-    cog.bot.dispatch("wonderland_quest", planter, "plant", 1)
     return f"Dropped {drop.amount:,} {currency} in {channel.mention} ({burned:,} burned)."
 
 
@@ -248,13 +250,13 @@ class PlantModal(discord.ui.Modal):
         super().__init__(title="Drop coins in #cuddle")
         self.cog = cog
         self.amount = discord.ui.TextInput(label=f"Amount ({lo:,} to {hi:,})", placeholder="5000 or 5k", max_length=12)
-        self.mode = discord.ui.TextInput(label="Mode: Grab or Rain", default="Grab", max_length=5)
+        self.mode = discord.ui.TextInput(label="Mode: Grab (first click) or Rain (shared)", default="Grab", max_length=5)
         self.add_item(self.amount)
         self.add_item(self.mode)
 
     async def on_submit(self, interaction):
         await interaction.response.defer(ephemeral=True)
-        await interaction.followup.send(await start(self.cog, interaction, self.amount.value, self.mode.value), ephemeral=True)
+        await interaction.followup.send(await start(self.cog, interaction.guild, interaction.user, self.amount.value, self.mode.value), ephemeral=True)
 
 
 async def recover(cog):

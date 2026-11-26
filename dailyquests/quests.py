@@ -89,7 +89,7 @@ QUESTS = (
     Quest("guide", "Look something up in the guide", "Type `.wld search card` (or any word) in {#bot-commands}.", HOOK),
     Quest("acro", "Play Acrophobia", "Enter an acronym or vote on one when a round pops up. Rounds run twice a day at busy hours.",
           HOOK),
-    Quest("plant", "Drop coins in {#cuddle}", "Pick **Drop coins in #cuddle** in the More… menu in {#wondercasino}. 10% is burned.",
+    Quest("plant", "Drop coins in {#cuddle}", "Pick **Drop coins in #cuddle** in the More… menu in {#wondercasino}. 10% is burned. It counts once another member claims your drop (or use `.dropcoins`).",
           HOOK),
 )
 BY_KEY = {q.key: q for q in QUESTS}

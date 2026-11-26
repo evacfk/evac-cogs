@@ -113,7 +113,7 @@ def world(monkeypatch):
 
 
 async def drop(w, planter=1, amount="5000", mode="grab"):
-    reply = await plant.start(w.cog, Inter(w.members[planter], w.guild), amount, mode)
+    reply = await plant.start(w.cog, w.guild, w.members[planter], amount, mode)
     return reply, (w.channel.sent[-1] if w.channel.sent else None)
 
 
@@ -143,12 +143,16 @@ async def test_plant_burns_ten_percent_and_posts(world):
     assert world.bank.balances[1] == 45_000 and "4,500" in msg.content and "500 burned" in reply
     p = await world.conf
     assert (p["drops"], p["planted"], p["burned"], p["week_planters"]) == (1, 5000, 500, {"1": 5000})
-    assert len(p["open"]) == 1 and world.cog.events[0][2:] == ("plant", 1)
+    assert len(p["open"]) == 1 and world.cog.events == []   # the quest waits for a real claim
 
 
 async def test_checks_before_any_coins_move(world):
-    assert "between 1,000 and 1,000,000" in (await drop(world, amount="999"))[0]
-    assert "between 1,000 and 1,000,000" in (await drop(world, amount="2m"))[0]
+    assert "between 100 and 1,000,000" in (await drop(world, amount="99"))[0]
+    assert "between 100 and 1,000,000" in (await drop(world, amount="2m"))[0]
+    assert (await drop(world, planter=2, amount="100"))[0].startswith("You don't have")   # 100 is the smallest legal drop
+    world.conf.data["enabled"] = False
+    assert "off right now" in (await drop(world))[0]
+    world.conf.data["enabled"] = True
     assert "Grab or Rain" in (await drop(world, mode="x"))[0]
     assert "enough coins" in (await drop(world, planter=2))[0]
     assert world.bank.balances[1] == 50_000 and not world.channel.sent
@@ -164,6 +168,7 @@ async def test_grab_pays_once_even_with_simultaneous_clicks(world):
     assert sum(world.bank.balances[i] for i in (2, 3, 4)) == 4500
     assert sorted(c.said == ["This drop is already gone."] for c in clicks) == [False, True, True]
     assert (await world.conf)["open"] == {}
+    assert [e[2:] for e in world.cog.events] == [("plant", 1)]   # once, for the planter
 
 
 async def test_planter_and_lurkers_cannot_claim(world):
@@ -201,6 +206,7 @@ async def test_unclaimed_drop_refunds_the_planter_and_nets_out_the_stats(world, 
     assert world.bank.balances[1] == 50_000 - 500 and "went back" in world.channel.sent[-1].content
     p = await world.conf
     assert (p["planted"], p["burned"], p["open"]) == (500, 500, {})
+    assert world.cog.events == []   # an expired drop earns no quest credit
 
 
 async def test_failed_deposit_goes_back_to_the_planter(world):
