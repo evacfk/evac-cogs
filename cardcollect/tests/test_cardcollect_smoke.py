@@ -133,6 +133,10 @@ class FakeBot:
     def add_view(self, view):
         self.added_views.append(view)
 
+    def dispatch(self, event, *args):
+        self.dispatched = getattr(self, "dispatched", [])
+        self.dispatched.append((event, *args))
+
     def register_channel(self, channel):
         self._channels[channel.id] = channel
 
@@ -760,6 +764,8 @@ async def test_daily_pull_once_per_day_and_streak(cog, monkeypatch):
     state = await cog._member_state(author)
     assert len(state.collection) + len(state.sell_tokens) == 3
     assert state.daily_pull_date == "2026-10-04" and state.daily_streak == 1
+    quests = [a for e, *a in getattr(cog.bot, "dispatched", []) if e == "wonderland_quest"]
+    assert quests == [[author, "card", 1]] * 3   # each real pull tells daily quests once; "already pulled" doesn't
 
 
 

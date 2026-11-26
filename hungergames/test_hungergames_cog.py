@@ -298,6 +298,7 @@ async def test_shop_charges_enforces_limits_and_never_charges_on_refusal(mod):
     m = await cog.config.member(sponsor).all()
     assert m["items_sent"] == 2 and m["coins_spent"] == 101500
     assert any("silver parachute" in t for t in texts(ch(guild)))
+    assert [(e, a[1:]) for e, *a in getattr(cog.bot, "dispatched", []) if e == "wonderland_quest"] == [("wonderland_quest", ["sponsor", 1])] * 2   # refused buys don't count
 
 
 async def test_broadcasts_post_live_then_crown_the_victor(mod):

@@ -58,7 +58,7 @@ class Puzzle(commands.Cog):
     per person across every round.
     """
 
-    __version__ = "1.8.1"
+    __version__ = "1.8.2"
 
     def __init__(self, bot: Red):
         self.bot = bot
@@ -1168,6 +1168,7 @@ class Puzzle(commands.Cog):
             is_new_distinct = piece_index not in active["inventories"].get(user_key, [])
             active["inventories"].setdefault(user_key, []).append(piece_index)
             await self.config.guild(guild).active.set(active)
+            self.bot.dispatch("wonderland_quest", payload.member, "puzzle", 1)   # daily quests (wonderland)
 
             if is_new_distinct:
                 async with self.config.guild(guild).lifetime_stats() as stats:

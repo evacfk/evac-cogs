@@ -375,6 +375,7 @@ class WonderPet(commands.Cog):
                          f"{before} to {after}). That was your free care for today. Treats are still open."
                          f"{embeds.streak_suffix(streak)}")
                 changed = True
+                self.bot.dispatch("wonderland_quest", member, "pet", 1)   # daily quests (wonderland)
             s = await gconf.all()
         await interaction.response.send_message(reply, ephemeral=True)
         await self._send_all(guild, s, msgs)

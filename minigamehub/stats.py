@@ -15,6 +15,7 @@ async def record_result(config: Config, member, game_key: str, good: bool) -> in
     async with config.member(member).games() as games:
         entry = games.setdefault(game_key, {"good": 0, "bad": 0, "streak": 0, "highest_streak": 0})
         if good:
+            getattr(getattr(member, "_state", None), "dispatch", lambda *a: None)("wonderland_quest", member, "minigame", 1)   # daily quests (wonderland)
             entry["good"] += 1
             entry["streak"] += 1
             entry["highest_streak"] = max(entry["highest_streak"], entry["streak"])

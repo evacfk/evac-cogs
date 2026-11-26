@@ -333,4 +333,7 @@ def fake_bot():
         def get_channel(self, channel_id):
             return None
 
+        def dispatch(self, event, *args):
+            pass
+
     return FakeBot()

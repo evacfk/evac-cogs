@@ -54,6 +54,12 @@ class FakeConfig:
     def register_guild(self, **defaults):
         self.defaults.update(defaults)
 
+    def register_member(self, **defaults):
+        self.member_defaults = defaults
+
+    async def all_members(self):
+        return {}
+
     def guild(self, guild):
         outer = self
 
@@ -94,11 +100,11 @@ def mod(monkeypatch):
     root.core = core
     for name, m in (("redbot", root), ("redbot.core", core), ("redbot.core.commands", commands_ns)):
         monkeypatch.setitem(sys.modules, name, m)
-    for name in ("wonderland.guide", "wonderland.embeds", "wonderland.economy_cog", "wonderland.ledger_cog"):
+    for name in ("wonderland.guide", "wonderland.embeds", "wonderland.economy_cog", "wonderland.ledger_cog", "wonderland.quests_cog"):
         monkeypatch.delitem(sys.modules, name, raising=False)
     m = importlib.import_module("wonderland.guide")
     yield m
-    for name in ("wonderland.guide", "wonderland.embeds", "wonderland.economy_cog", "wonderland.ledger_cog"):
+    for name in ("wonderland.guide", "wonderland.embeds", "wonderland.economy_cog", "wonderland.ledger_cog", "wonderland.quests_cog"):
         sys.modules.pop(name, None)
 
 

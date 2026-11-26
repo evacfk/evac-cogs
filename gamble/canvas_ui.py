@@ -304,6 +304,7 @@ class ConfirmView(discord.ui.View):
                                     "charged, tell a mod.", color=discord.Color.red()), view=None)
             return
         if outcome.status == "ok":
+            interaction.client.dispatch("wonderland_quest", self.member, "canvas", 1)   # daily quests (wonderland)
             data = await self.service.image()
             embed = discord.Embed(title="✅ Painted", color=_swatch(self.draft.color),
                                   description=f"{coords_text(self.draft.cells)} is yours for {coins(outcome.total)}."

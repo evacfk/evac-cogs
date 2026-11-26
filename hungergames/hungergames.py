@@ -1175,6 +1175,8 @@ class HungerGames(commands.Cog):
                 await mconf.items_sent.set(await mconf.items_sent() + 1)
                 await mconf.coins_spent.set(await mconf.coins_spent() + price)
             engine.apply_purchase(ed, sponsor, tribute, item, price, engine.day_key(now), now)
+            if not ed.get("test"):
+                self.bot.dispatch("wonderland_quest", member, "sponsor", 1)   # daily quests (wonderland)
             self._touch(ed, sponsor)
             await self.config.guild(guild).current.set(ed)
             name, emoji = ITEMS[item][0], ITEMS[item][1]

@@ -257,6 +257,10 @@ class FakeBot:
         coro.close()  # background loops never run in unit tests
         return types.SimpleNamespace(cancel=lambda: None)
 
+    def dispatch(self, event, *args):
+        self.dispatched = getattr(self, "dispatched", [])
+        self.dispatched.append((event, *args))
+
     def get_cog(self, name):
         return self._cogs.get(name)
 

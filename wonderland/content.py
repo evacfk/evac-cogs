@@ -51,8 +51,11 @@ PAGES = (
         Entry(".birthday set <date>", "add your birthday", requires=("birthday set",)),
         Entry(".card daily", "a free card, once a day (or tap Daily Cards in #wondercasino)", requires=("card daily",)),
         Entry(".wld search <word>", "find any command by what it does"),
-    ), body="**1.** Introduce yourself in {#intro}\n**2.** Pick your roles in {#role-select}\n"
-            "**3.** Say hi in {#cuddle}\n**4.** Tap **Payday** and **Daily Cards** in {#wondercasino} for free coins and a free card\n\n**When you have a minute**"),
+    ), body="**1.** Introduce yourself in {#intro}\n**2.** Pick your roles in {#role-select}\n**3.** Say hi in {#cuddle}\n\n"
+            "**Your daily loop** (buttons in {#wondercasino}, new every midnight Pacific)\n"
+            "💵 **Payday**: free coins\n🎴 **Daily Cards**: a free card\n"
+            "[[@quests|📜 **Daily Quests**: three small quests a day; each pays a third of your payday\n]]"
+            "\n**When you have a minute**"),
     Page("economy", "💰", "Economy & Shop", "Earn, spend and send wondercoin.", (
         Entry(".bank balance", "check your coins", requires=("bank balance",)),
         Entry(".bank transfer @user <amount>", "send coins to someone", requires=("bank transfer",)),
@@ -152,6 +155,7 @@ PAGES = (
                       "hg admin")),
         Entry(".wld publish #channel", "post or refresh the guide in a channel"),
         Entry(".wld roomperms [on|off]", "voice room owners' Manage Permissions: status, or switch it"),
+        Entry(".wld quests", "daily quests: on/off switch, reward multiplier, quest pool and usage counts"),
         Entry(".wld economy [@member]", "wondercoin report: supply, spread, which cogs add or remove coins, "
                                         "house results; with a member, their last 25 changes"),
         Entry(".wld version", "version probe for this cog"),

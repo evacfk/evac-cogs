@@ -1362,6 +1362,7 @@ class CardCollect(commands.Cog):
             state.daily_pull_date, state.daily_streak = today, streak
             await self._save_member_state(member, state)
         await self._bump_stats(guild, daily_pull_date=today)
+        self.bot.dispatch("wonderland_quest", member, "card", 1)   # daily quests (wonderland)
         return card, outcome, price, streak, bonus, set_done
 
     async def reward_card(self, guild: discord.Guild, member: discord.Member, max_rarity: str = "epic"):

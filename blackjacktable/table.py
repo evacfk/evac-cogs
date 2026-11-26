@@ -339,6 +339,7 @@ class Table:
                 outcome, payout = settlement.outcome, settlement.payout
             if payout > 0:
                 await self.bank.deposit(seat.member_id, payout)
+            getattr(self.bank, "hand_played", lambda _id: None)(seat.member_id)   # daily quests (wonderland)
             results.append(
                 RoundResult(seat.member_id, seat.display_name, outcome, payout, hand.bet)
             )

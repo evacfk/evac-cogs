@@ -56,9 +56,13 @@ class Resp:
         return self.done
 
 
+DISPATCHED: list = []   # bot.dispatch calls made through interaction.client
+
+
 class Inter:
     def __init__(self, user, guild=None, data=None):
         self.user, self.guild, self.data = user, guild, data or {}
+        self.client = SimpleNamespace(dispatch=lambda *a: DISPATCHED.append(a))
         self.sent, self.edits, self.deferred, self.modals, self.followups, self.original = [], [], [], [], [], []
         self.response = Resp(self)
         self.followup = SimpleNamespace(send=self._followup)
@@ -242,6 +246,66 @@ async def test_confirm_paints_and_charges_exactly_the_confirmed_price(env):
     assert result["view"] is None and result["attachments"][0].filename == "canvas.png"
     assert env.bank.balances[1] == 99_000 and env.store.get_pixel(4, 4).owner == 1
     assert len(env.modlog) == 1 and "hi" in env.modlog[0]
+
+
+async def test_a_paint_tells_daily_quests_once_and_a_failed_paint_does_not(env):
+    DISPATCHED.clear()
+    inter = await submit_paint(env, 1, "4,4", color="#ffb7c5")
+    await inter.sent[0]["view"].confirm.callback(Inter(user(1)))
+    assert DISPATCHED == [("wonderland_quest", user(1), "canvas", 1)] or (
+        len(DISPATCHED) == 1 and DISPATCHED[0][0] == "wonderland_quest" and DISPATCHED[0][2:] == ("canvas", 1))
+    DISPATCHED.clear()
+    poor = await submit_paint(env, 1, "5,5", color="#ffb7c5")
+    await env.svc.paint(user(2), [(5, 5)], "#000000", "", (1000,))         # price moves: no paint, no quest
+    await poor.sent[0]["view"].confirm.callback(Inter(user(1)))
+    assert DISPATCHED == []
+
+
+def test_daily_quests_button_sits_after_payday_only_when_quests_are_on():
+    from gamble.gamblethreads import QUESTS_CUSTOM_ID, QuestsRouteView
+    cog = object.__new__(GambleThreads)
+    games = {k: {"emoji": "x", "label": k.title(), "command": k} for k in ("profile", "dailycards", "payday", "gamble")}
+    off = cog._build_hub_view(games)
+    assert QUESTS_CUSTOM_ID not in [getattr(c, "custom_id", None) for c in off.children]
+    rows_off = off.to_components()
+    assert [c["custom_id"] for c in rows_off[0]["components"]][-1] == "gamblehub:active"   # layout unchanged
+    on = cog._build_hub_view(games, quests=True)
+    rows = on.to_components()
+    assert [c["custom_id"] for c in rows[0]["components"]] == [
+        "gamblehub:flagship:profile", "gamblehub:flagship:dailycards", "gamblehub:flagship:payday",
+        QUESTS_CUSTOM_ID, "gamblehub:flagship:gamble"]
+    assert rows[1]["components"][0]["custom_id"] == "gamblehub:select"
+    assert rows[2]["components"][0]["custom_id"] == "gamblehub:active"
+    route = QuestsRouteView(cog)
+    assert route.is_persistent() and route.children[0].custom_id == QUESTS_CUSTOM_ID
+
+
+async def test_daily_quests_click_hands_off_to_wonderland_or_says_unavailable():
+    cog = object.__new__(GambleThreads)
+    opened = []
+
+    class Wonderland:
+        on = True
+
+        async def quests_open(self, guild):
+            return self.on
+
+        async def open_quest_panel(self, interaction):
+            opened.append(interaction)
+
+    wl = Wonderland()
+    cog.bot = SimpleNamespace(get_cog=lambda name: wl if name == "Wonderland" else None)
+    inter = Inter(user(1), guild=SimpleNamespace(id=5))
+    await cog.handle_quests_click(inter)
+    assert opened == [inter]
+    wl.on = False
+    off = Inter(user(1), guild=SimpleNamespace(id=5))
+    await cog.handle_quests_click(off)
+    assert opened == [inter] and "aren't available" in off.sent[0]["content"] and off.sent[0]["ephemeral"]
+    cog.bot = SimpleNamespace(get_cog=lambda name: None)
+    gone = Inter(user(1), guild=SimpleNamespace(id=5))
+    await cog.handle_quests_click(gone)
+    assert "aren't available" in gone.sent[0]["content"]
 
 
 async def test_if_the_price_moved_the_screen_shows_the_new_price_and_nobody_is_charged(env):

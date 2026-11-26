@@ -485,6 +485,7 @@ class Verdict(AcroMixin, commands.Cog):
                 return
             preds[uid] = idx
             await conf.current.set(cur)
+            self.bot.dispatch("wonderland_quest", interaction.user, "verdict", 1)   # daily quests (wonderland)
             mconf = self.config.member_from_ids(guild.id, interaction.user.id)
             streak = engine.update_streak(await mconf.last_seq(), await mconf.streak(), cur["seq"])
             await mconf.streak.set(streak)

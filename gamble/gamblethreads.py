@@ -18,7 +18,7 @@ from .settings_panel import PanelError, open_panel
 
 log = logging.getLogger("red.evac-cogs.gamble")
 
-COG_VERSION = "1.6.0"
+COG_VERSION = "1.7.0"
 
 # The pixel canvas (canvas_*.py) is built into this cog: no commands of its own. Members open it from the
 # hub's "More…" dropdown (a "canvas" mode entry, handled here instead of resolving a command); mods use
@@ -163,6 +163,30 @@ FLAGSHIP_KEYS = ("profile", "dailycards", "payday", "gamble")
 SHARED_THREAD_NAMES = {
     "wonderjack": "blackjack-table",
 }
+
+
+QUESTS_CUSTOM_ID = "gamblehub:flagship:quests"
+
+
+class QuestsButton(discord.ui.Button):
+    """Daily Quests (wonderland cog). Only on the hub while quests are switched on in `.wld quests`."""
+
+    def __init__(self, cog: "GambleThreads"):
+        super().__init__(label="Daily Quests", emoji="\U0001F4DC", style=discord.ButtonStyle.primary,
+                         custom_id=QUESTS_CUSTOM_ID, row=0)
+        self.cog = cog
+
+    async def callback(self, interaction: discord.Interaction):
+        await self.cog.handle_quests_click(interaction)
+
+
+class QuestsRouteView(discord.ui.View):
+    """Registered at load so clicks on the Daily Quests button still route after a restart. Never sent:
+    HubView already has five buttons on row 0, so the button can't live in the registered HubView."""
+
+    def __init__(self, cog: "GambleThreads"):
+        super().__init__(timeout=None)
+        self.add_item(QuestsButton(cog))
 
 
 class HubView(discord.ui.View):
@@ -477,6 +501,7 @@ class GambleThreads(commands.Cog):
         # startup — Discord will route interactions on any live hub
         # message back to this same view even after a restart.
         self.bot.add_view(HubView(self))
+        self.bot.add_view(QuestsRouteView(self))
         self.bot.add_view(CloseTableView(self))
         self._seed_task = self.bot.loop.create_task(self._seed_flagship_games())
 
@@ -1285,7 +1310,7 @@ class GambleThreads(commands.Cog):
             embed.add_field(name="Also in the dropdown", value="\n".join(extra), inline=False)
         return embed
 
-    def _build_hub_view(self, games: dict) -> HubView:
+    def _build_hub_view(self, games: dict, quests: bool = False) -> HubView:
         view = HubView(self)
         options = [
             discord.SelectOption(
@@ -1321,7 +1346,35 @@ class GambleThreads(commands.Cog):
             view.gamble_button.disabled = False
         else:
             view.gamble_button.disabled = True
+        if quests:
+            # Daily Quests goes right after Payday. Row 0 holds five buttons, so Active Tables moves
+            # below the More… menu. Re-adding in this order keeps the left-to-right order.
+            for item in (view.gamble_button, view.active_button):
+                view.remove_item(item)
+            view.add_item(QuestsButton(self))
+            view.add_item(view.gamble_button)
+            view.active_button.row = 2
+            view.add_item(view.active_button)
         return view
+
+    async def _quests_on(self, guild: discord.Guild) -> bool:
+        wonderland = self.bot.get_cog("Wonderland")
+        check = getattr(wonderland, "quests_open", None)
+        if check is None:
+            return False
+        try:
+            return bool(await check(guild))
+        except Exception:
+            log.exception("gamble: asking wonderland whether daily quests are on failed")
+            return False
+
+    async def handle_quests_click(self, interaction: discord.Interaction) -> None:
+        wonderland = self.bot.get_cog("Wonderland")
+        opener = getattr(wonderland, "open_quest_panel", None)
+        if opener is None or interaction.guild is None or not await self._quests_on(interaction.guild):
+            await interaction.response.send_message("Daily quests aren't available right now.", ephemeral=True)
+            return
+        await opener(interaction)
 
     async def _refresh_hub_message(self, guild: discord.Guild) -> Optional[str]:
         """Re-renders the hub embed/view onto the stored hub message.
@@ -1332,7 +1385,7 @@ class GambleThreads(commands.Cog):
         message_id = await self.config.guild(guild).hub_message_id()
         games = await self.config.guild(guild).games()
         embed = self._build_hub_embed(games)
-        view = self._build_hub_view(games)
+        view = self._build_hub_view(games, quests=await self._quests_on(guild))
         message = None
         if message_id:
             try:

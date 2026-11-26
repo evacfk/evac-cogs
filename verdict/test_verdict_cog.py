@@ -138,6 +138,7 @@ async def test_answer_then_guess_locks_in_and_counts_streak(env):
     await env.cog.on_interaction(again)
     assert "Locked in" in again.out[0][1]
     assert (await env.conf.current())["answers"] == {"10": 0}
+    assert [(e, a[1:]) for e, *a in getattr(env.cog.bot, "dispatched", []) if e == "wonderland_quest"] == [("wonderland_quest", ["verdict", 1])]   # daily quests: once
 
 
 async def test_guess_without_answer_is_refused(env):

@@ -130,6 +130,17 @@ def lottery_lines(data: Optional[dict]) -> list[str]:
     return [f"Holding {tickets:,} lottery ticket{'s' if tickets != 1 else ''}"] if tickets else []
 
 
+def quest_lines(data: Optional[dict]) -> list[str]:
+    """Daily quests: the streak (consecutive days with a full set) and how many full sets. Pays nothing."""
+    if not data:
+        return []
+    sets, streak, best = _int(data.get("sets")), _int(data.get("streak")), _int(data.get("best"))
+    if not sets:
+        return []
+    line = f"{sets:,} full set{'s' if sets != 1 else ''} · streak {streak} day{'s' if streak != 1 else ''}"
+    return [line + (f" (best {best})" if best > streak else "")]
+
+
 def clip(text: str, limit: int = FIELD_LIMIT) -> str:
     return text if len(text) <= limit else text[: limit - 1] + "…"
 
@@ -146,5 +157,6 @@ def build_sections(raw: dict, currency: str = "coins") -> list[tuple[str, list[s
         ("\N{EGG} Server pet", pet_lines(raw.get("pet"))),
         ("\N{PUBLIC ADDRESS LOUDSPEAKER} Bumps", bump_lines(raw.get("bumps"))),
         ("\N{ADMISSION TICKETS} Lottery", lottery_lines(raw.get("lottery"))),
+        ("\N{SCROLL} Daily quests", quest_lines(raw.get("quests"))),
     ]
     return [(title, lines) for title, lines in order if lines]

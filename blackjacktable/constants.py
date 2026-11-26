@@ -56,4 +56,4 @@ BLACKJACK_PAYOUT_DENOMINATOR: int = 2
 # in engine.py beyond "bet * 2 back", but named here for clarity/searchability.
 REGULAR_WIN_MULTIPLIER: int = 2
 
-COG_VERSION: str = "1.1.0"
+COG_VERSION: str = "1.1.1"

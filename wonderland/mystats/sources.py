@@ -77,6 +77,12 @@ async def _lottery(bot, member) -> Optional[dict]:
     return {"tickets": await cog.config.user(member).tickets()}
 
 
+async def _quests(bot, member) -> Optional[dict]:
+    cog = bot.get_cog("Wonderland")
+    summary = getattr(cog, "quest_summary", None)
+    return None if summary is None else await summary(member)
+
+
 READERS: dict[str, Callable[[Any, Any], Awaitable[Optional[dict]]]] = {
     "minigames": _minigames,
     "duel": _duel,
@@ -87,6 +93,7 @@ READERS: dict[str, Callable[[Any, Any], Awaitable[Optional[dict]]]] = {
     "pet": _pet,
     "bumps": _bumps,
     "lottery": _lottery,
+    "quests": _quests,
 }
 
 

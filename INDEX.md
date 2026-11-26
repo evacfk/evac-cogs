@@ -9,25 +9,25 @@ Use it to answer "does a cog already cover this?" and "what depends on this cog?
 ## At a glance
 
 - **afterdark** 1.9.1: Gated Rabbit Hole access: permanent rabbit button + invitations, interest opt-ins, inactivity cleanup, exclude list.
-- **blackjacktable** 1.1.0: Multiplayer blackjack table (.wonderjack)
+- **blackjacktable** 1.1.1: Multiplayer blackjack table (.wonderjack)
 - **bumpreward** 1.1.0: Currency rewards, streaks, auto reminders and a daily board for Disboard bumps.
-- **cardcollect** 2.16.0: Ambient anime-character card collecting: pick the card you want from each drop and the draw decides.
+- **cardcollect** 2.16.1: Ambient anime-character card collecting: pick the card you want from each drop and the draw decides.
 - **celebrations** 1.2.1: Birthdays (hoisted role, wondercoin gift, posts), join-anniversary shout-outs and year club roles.
 - **duel** 1.2.0: 1v1 best-of-3 wagered duels
-- **gamble** 1.6.0: Per-user gambling threads plus the Wondercasino hub menu.
-- **hungergames** 1.2.0: A weekly Hunger Games: Reaping, training challenges, live arena broadcasts and Wondercoin sponsorship.
+- **gamble** 1.7.0: Per-user gambling threads plus the Wondercasino hub menu.
+- **hungergames** 1.2.1: A weekly Hunger Games: Reaping, training challenges, live arena broadcasts and Wondercoin sponsorship.
 - **lurker** 2.7.0: Auto-hide inactive members behind a Lurker role.
-- **minigamehub** 1.3.0: Unified, config-driven minigame spawner (pet/mathdrop/hunt/lootdrop/reacttowin/boss).
-- **puzzle** 1.8.1: Image-reveal puzzle game with an auto-rotating image pool.
+- **minigamehub** 1.3.1: Unified, config-driven minigame spawner (pet/mathdrop/hunt/lootdrop/reacttowin/boss).
+- **puzzle** 1.8.2: Image-reveal puzzle game with an auto-rotating image pool.
 - **redditfeed** source-v10: Config-driven subreddit-to-channel image feed (Arctic Shift-backed, swappable source).
 - **rejoinwatch** 1.1.0: Tracks voluntary leaves; warns rejoiners and flags repeat leavers to mods with a ban button.
 - **secrethunt** 1.15.0: WoW-style secret hunts: hidden, personalised puzzles in forum posts, a Medium logic trial, a Hall of Secrets, and badge roles for Hard and Expert.
 - **serverpulse** 1.8.0: Server activity analytics: busy/quiet hours, reports, heatmap, live board, digests, and an approval-gated weekly recap.
 - **tgfeed** tg-v4: Telegram forum group photos/videos -> Discord channels, media only, read-only and throttled.
-- **verdict** 1.6.0: A daily crowd question (pick, then guess the crowd) and Acrophobia, a quick acronym game twice a day.
-- **wonderevents** 1.4.0: Movie and game nights: RSVP buttons, Discord scheduled events, votes, reminders and attendance.
-- **wonderland** 1.7.2: The Wonderland guidebook: .wld command guide, server map and mod cheat sheet, plus the intro form and member stats.
-- **wonderpet** 1.3.0: One server pet raised together in #cuddle: daily free care, coin treats, weekly top carers, evolution.
+- **verdict** 1.6.1: A daily crowd question (pick, then guess the crowd) and Acrophobia, a quick acronym game twice a day.
+- **wonderevents** 1.4.1: Movie and game nights: RSVP buttons, Discord scheduled events, votes, reminders and attendance.
+- **wonderland** 1.8.0: The Wonderland guidebook: .wld command guide, server map and mod cheat sheet, plus the intro form and member stats.
+- **wonderpet** 1.3.1: One server pet raised together in #cuddle: daily free care, coin treats, weekly top carers, evolution.
 
 ## Cogs
 
@@ -40,7 +40,7 @@ Needs: no extra pip packages · Config scopes: guild
 Data: This cog stores Discord user IDs and timestamps: who holds Rabbit Hole access and how they got it, per-interest join and last-activity times, the exclude list (with the…
 
 ### blackjacktable
-v1.1.0 · BlackjackTable · 1737 lines · 83 tests
+v1.1.1 · BlackjackTable · 1745 lines · 84 tests
 Commands:
 - `.wonderjack`: count, table
 - `.wonderjackset`: version
@@ -57,7 +57,7 @@ Needs: no extra pip packages · Config scopes: guild, member
 Data: Stores per-member bump counts, streak and last bump date.
 
 ### cardcollect
-v2.16.0 · CardCollect · 7586 lines · 340 tests
+v2.16.1 · CardCollect · 7587 lines · 340 tests
 Commands:
 - `.card|cards`: addcard, daily, diagnostics, find, give, importseries, leaderboard, sell, settings, showcase, trade
 Links: called by minigamehub, wonderland
@@ -83,17 +83,17 @@ Links: called by wonderland
 Needs: no extra pip packages · Config scopes: guild, member
 
 ### gamble
-v1.6.0 · GambleThreads · 3177 lines · 122 tests
+v1.7.0 · GambleThreads · 3231 lines · 125 tests
 Commands:
 - `.gamblehub`: addgame, addmodalgame, canvas, listgames, lockdown, notifyrecipient, removegame, setup
 - `.gambleset`: settings, version
 - Standalone: `.endgambling`, `.gamble`
-Links: calls lurker
+Links: calls lurker, wonderland; called by wonderland
 Needs: Pillow · Config scopes: guild
 Data: The pixel canvas stores, per guild in the cog's data folder: every painted pixel (position, colour, the owner's user ID, price, time, and any text up to 100 characters),…
 
 ### hungergames
-v1.2.0 · HungerGames · 4216 lines · 87 tests
+v1.2.1 · HungerGames · 4218 lines · 87 tests
 Commands:
 - `.hg|hungergames`: admin, version
 Links: calls lurker, serverpulse
@@ -110,7 +110,7 @@ Needs: no extra pip packages · Config scopes: guild, member
 Data: This cog stores member IDs, role IDs, last-activity timestamps, and display names of members flagged or restored since the last mod report.
 
 ### minigamehub
-v1.3.0 · MinigameHub · 4971 lines · 39 tests
+v1.3.1 · MinigameHub · 4972 lines · 41 tests
 Commands:
 - `.minigamehub|mgh`: adaptive{show}, bossscenario{add, export, import, list, remove}, diagnostics{reset}, game{list, settings}, huntanimals, huntsafe{add, list, penalty, reaction, remove, reward, text, word}, leaderboard, scenario{add, export, import, list, remove}, schedule, settings, shuffle, stats, test, version, wipedata, wipestats
 Links: calls cardcollect, lurker; called by wonderland
@@ -118,7 +118,7 @@ Needs: no extra pip packages · Config scopes: guild, member
 Data: This cog stores per-user game statistics (wins, streaks, boss damage, daily payout totals) and per-guild configuration.
 
 ### puzzle
-v1.8.1 · Puzzle · 2220 lines · 17 tests
+v1.8.2 · Puzzle · 2221 lines · 17 tests
 Commands:
 - `.puzzle`: addimage, delimage, gallery, images, leaderboard, migratepool, mypieces, next, retire, settings, skip, start, status, stop, testrun, teststop, unretire, version
 Links: called by wonderland
@@ -166,7 +166,7 @@ Needs: telethon · Config scopes: global
 Data: This cog stores no end-user data.
 
 ### verdict
-v1.6.0 · Verdict · 4365 lines · 129 tests
+v1.6.1 · Verdict · 4366 lines · 129 tests
 Commands:
 - `.verdict`: add, post, queue, remove, results, settings, suggest, top, version
 Links: calls lurker, serverpulse; called by wonderland
@@ -174,7 +174,7 @@ Needs: no extra pip packages · Config scopes: guild, member
 Data: This cog stores each member's answers and guesses to the open question (answers are shown by name in the final result post), their streak and counts, and monthly scores.
 
 ### wonderevents
-v1.4.0 · WonderEvents · 1164 lines · 31 tests
+v1.4.1 · WonderEvents · 1165 lines · 31 tests
 Commands:
 - `.event|events`: attendance, cancel, create, edit, list, mytz, poll, regulars, settings, version
 Links: none
@@ -182,18 +182,18 @@ Needs: no extra pip packages · Config scopes: guild, member
 Data: This cog stores, per event, the user IDs of members who RSVP'd and how many minutes each member spent in voice while the event ran, plus a staff member's chosen timezone…
 
 ### wonderland
-v1.7.2 · IntroCleanup, IntroForm, MyStats, Wonderland · 3621 lines · 250 tests
+v1.8.0 · IntroCleanup, IntroForm, MyStats, Wonderland · 4782 lines · 289 tests
 Commands:
 - `.introcleanup|ic`: settings, sweep
 - `.introform`: panel, prune, settings
 - `.mystats`: version
-- `.wonderland|wld`: economy, map, mod, page, publish, roomperms, search, stats, version
-Links: calls bumpreward, cardcollect, duel, lurker, minigamehub, puzzle, verdict, wonderpet; optional/external AutoRoom, Casino, Lottery
-Needs: no extra pip packages · Config scopes: guild
+- `.wonderland|wld`: economy, map, mod, page, publish, quests, roomperms, search, stats, version
+Links: calls bumpreward, cardcollect, duel, gamble, lurker, minigamehub, puzzle, verdict, wonderpet; optional/external AutoRoom, Casino, Economy, ExtendedEconomy, LevelUp, Lottery; called by gamble
+Needs: no extra pip packages · Config scopes: guild, member
 Data: The guide stores only the channel and message IDs of any published copy.
 
 ### wonderpet
-v1.3.0 · WonderPet · 1281 lines · 53 tests
+v1.3.1 · WonderPet · 1282 lines · 53 tests
 Commands:
 - `.wonderpet`: art, card, carers, history, me, name, newegg, settings, version
 Links: called by wonderland

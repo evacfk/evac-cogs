@@ -65,8 +65,15 @@ class RedBankAdapter:
     testable without a bot) -- this is where an ID gets turned back into
     the discord.Member object bank.* actually wants."""
 
-    def __init__(self, guild: discord.Guild) -> None:
+    def __init__(self, guild: discord.Guild, bot=None) -> None:
         self.guild = guild
+        self.bot = bot
+
+    def hand_played(self, member_id: int) -> None:
+        """A seat's hand was settled: tell daily quests (wonderland). Never raises."""
+        member = self.guild.get_member(member_id)
+        if member is not None and self.bot is not None:
+            self.bot.dispatch("wonderland_quest", member, "blackjack", 1)
 
     def _member(self, member_id: int) -> discord.Member:
         member = self.guild.get_member(member_id)
@@ -168,7 +175,7 @@ class BlackjackTable(commands.Cog):
             return
 
         settings = await self.config.guild(ctx.guild).all()
-        bank_adapter = RedBankAdapter(ctx.guild)
+        bank_adapter = RedBankAdapter(ctx.guild, ctx.bot)
         table = Table(
             guild_id=ctx.guild.id,
             channel_id=ctx.channel.id,

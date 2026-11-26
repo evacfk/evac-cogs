@@ -308,6 +308,26 @@ async def test_full_round_settlement_matches_engine():
 
 
 @pytest.mark.asyncio
+async def test_each_settled_hand_is_reported_once_to_daily_quests():
+    """A bank adapter with `hand_played` hears about every settled seat once (win, lose or bust);
+    adapters without it (like FakeBank) are untouched."""
+    table, bank = make_table(rng_seed=7, starting_balance=1000)
+    played = []
+    bank.hand_played = played.append
+    for seat_id, name in ((100, "evac"), (200, "hana")):
+        table.add_seat(seat_id, name)
+    table.open_betting()
+    await table.place_bet(100, 100)
+    await table.place_bet(200, 100)
+    await table.deal()
+    for seat_id in (100, 200):
+        if table.state == "player_turns" and table.current_seat() is not None:
+            await table.stand(table.current_seat().member_id)
+    assert table.state == "closed"
+    assert sorted(played) == [100, 200]
+
+
+@pytest.mark.asyncio
 async def test_all_bust_table_dealer_does_not_draw():
     """When every seated player busts, the dealer shouldn't draw at all
     (nothing left to compare against) -- this locks in that optimization

@@ -137,6 +137,7 @@ async def test_each_member_gets_one_free_care_a_day_of_their_choice(env):
     assert "played" in ib.text
     pet = await _pet(env)
     assert pet["carers"] == {"1": 1, "2": 1}
+    assert [(e, a[1:]) for e, *a in getattr(env.cog.bot, "dispatched", []) if e == "wonderland_quest"] == [("wonderland_quest", ["pet", 1])] * 2   # refused cares don't count
     week = (await env.cog.config.guild(env.guild).all())["week_carers"]
     assert list(week.values()) == [{"1": 1, "2": 1}]
     env.clock.t += 24 * H                             # tomorrow it resets

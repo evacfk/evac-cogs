@@ -4,6 +4,8 @@ No discord/redbot imports, so it is fully testable on its own.
 """
 from __future__ import annotations
 
+import dataclasses
+
 import re
 from typing import Callable, Dict, Iterable, List, Optional, Tuple
 
@@ -24,6 +26,18 @@ def resolve_entry(entry: Entry, exists: Exists) -> Optional[Tuple[str, str]]:
             return None
         usage = usage.replace("{cmds}", "  ".join(f".{name}" for name in live))
     return usage, entry.desc
+
+
+def gate_body(page: Page, exists: Exists) -> Page:
+    """Drop `[[name|text]]` parts of a page body whose command (or `@feature` switch) isn't live, so a body
+    never mentions something hidden or switched off. Live parts keep just their text."""
+    body = page.body
+    while "[[" in body:
+        start = body.index("[[")
+        end = body.index("]]", start)
+        name, _, text = body[start + 2:end].partition("|")
+        body = body[:start] + (text if exists(name) else "") + body[end + 2:]
+    return page if body == page.body else dataclasses.replace(page, body=body)
 
 
 def page_lines(page: Page, exists: Exists) -> List[str]:

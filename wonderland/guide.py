@@ -20,6 +20,7 @@ from .constants import (
 from .content import HOME_KEY, MAP_KEY, PAGES
 from .economy_cog import EconomyMixin
 from .ledger_cog import LedgerMixin
+from .quests_cog import DEFAULT_GUILD_QUESTS, QuestsMixin
 from .roomperms_cog import RoomPermsMixin
 
 log = logging.getLogger("red.evac-cogs.wonderland")
@@ -116,23 +117,28 @@ class OpenView(discord.ui.View):
                 pass
 
 
-class Wonderland(EconomyMixin, LedgerMixin, RoomPermsMixin, commands.Cog):
+class Wonderland(QuestsMixin, EconomyMixin, LedgerMixin, RoomPermsMixin, commands.Cog):
     """A compact guidebook to everything Wonderland's bots can do."""
 
     def __init__(self, bot):
         self.bot = bot
         self.config = Config.get_conf(self, identifier=CONFIG_ID, force_registration=True)
         self.config.register_guild(publish={"channel_id": None, "messages": {}}, roomperms={"enabled": True},
-                                   economy={"snapshots": []})
+                                   economy={"snapshots": []}, quests=DEFAULT_GUILD_QUESTS)
+        self.config.register_member(quests={})
         self._rp_setup()
         self._ledger_setup()
+        self._q_setup()
 
     async def red_delete_data_for_user(self, *, requester=None, user_id: int = 0):
-        await self._ledger_delete_user(int(user_id))  # the coin ledger is the only per-user data
+        await self._ledger_delete_user(int(user_id))   # coin ledger history
+        await self._q_delete_member(int(user_id))      # daily quest progress and streak
 
     # ------------------------------------------------------------------ helpers
 
     def _exists(self, name: str) -> bool:
+        if name.startswith("@"):   # a feature switch, not a command: "@quests" = daily quests are on
+            return name == "@quests" and bool(getattr(self, "_q_live", False))
         try:
             cmd = self.bot.get_command(name)
         except Exception:
@@ -187,6 +193,7 @@ class Wonderland(EconomyMixin, LedgerMixin, RoomPermsMixin, commands.Cog):
         page = engine.get_page(key, is_mod)
         if page is None:
             return embeds.home_embed(engine.visible_pages(is_mod))
+        page = engine.gate_body(page, self._exists)
         lines = engine.page_lines(page, self._exists)
         resolver = self._resolver(guild, member, public)
         return embeds.page_embed(page, lines, footer or FOOTER, resolver)
@@ -319,6 +326,14 @@ class Wonderland(EconomyMixin, LedgerMixin, RoomPermsMixin, commands.Cog):
         await ctx.send(embed=embed, ephemeral=True, allowed_mentions=discord.AllowedMentions.none())
         if flow is not None:
             await ctx.send(embed=flow, ephemeral=True, allowed_mentions=discord.AllowedMentions.none())
+
+    @wonderland.command(name="quests")
+    @commands.mod_or_permissions(manage_guild=True)
+    async def wonderland_quests(self, ctx: commands.Context):
+        """Mods: daily quests. On/off switch, reward multiplier, quest pool, channels and usage counts."""
+        from . import quests_panel
+        from .settings_panel import open_panel
+        await open_panel(ctx, self, quests_panel.build_specs(), title="Daily quests", intro=quests_panel.INTRO)
 
     @wonderland.command(name="publish")
     @commands.mod_or_permissions(manage_guild=True)
