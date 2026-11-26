@@ -739,6 +739,34 @@ async def test_economy_reports_flows_house_result_reconciliation_and_member_hist
     assert bank.set_balance is not None and not getattr(bank.set_balance, "__wonderland_ledger__", None)
 
 
+async def test_load_and_unload_through_the_real_class_wrap_and_restore_the_bank(mod, monkeypatch, tmp_path):
+    """The mixins chain cog_load/cog_unload; the ledger must start and stop without breaking the room guard."""
+    bank = ledger_bank(monkeypatch, {})
+    original = bank.set_balance
+    dm = types.ModuleType("redbot.core.data_manager")
+    dm.cog_data_path = lambda cog: tmp_path
+    monkeypatch.setitem(sys.modules, "redbot.core.data_manager", dm)
+    cog = make(mod)
+    calls = []
+    cog._rp_patch = lambda: calls.append("patch")
+    cog._rp_unpatch = lambda: calls.append("unpatch")
+    await cog.cog_load()
+    assert calls == ["patch"] and cog._ledger_status == "on"
+    assert bank.set_balance is not original and getattr(bank.set_balance, "__wonderland_ledger__", None)
+    cog.cog_unload()
+    assert calls == ["patch", "unpatch"] and bank.set_balance is original
+
+
+async def test_a_ledger_that_cannot_start_does_not_stop_the_cog_loading(mod, monkeypatch):
+    ledger_bank(monkeypatch, {})
+    monkeypatch.setitem(sys.modules, "redbot.core.data_manager", types.ModuleType("redbot.core.data_manager"))  # no cog_data_path
+    cog = make(mod)
+    cog._rp_patch = lambda: None
+    await cog.cog_load()                                       # must not raise
+    assert cog._ledger_status.startswith("off: could not start")
+    cog.cog_unload()
+
+
 async def test_the_economy_report_is_on_the_mod_page_only(mod):
     cog = make(mod, mods={5})
     mod_text = cog.render("mod", FakeGuild([]), True).description

@@ -182,7 +182,7 @@ Needs: no extra pip packages · Config scopes: guild, member
 Data: This cog stores, per event, the user IDs of members who RSVP'd and how many minutes each member spent in voice while the event ran, plus a staff member's chosen timezone…
 
 ### wonderland
-v1.7.1 · IntroCleanup, IntroForm, MyStats, Wonderland · 3619 lines · 248 tests
+v1.7.1 · IntroCleanup, IntroForm, MyStats, Wonderland · 3619 lines · 250 tests
 Commands:
 - `.introcleanup|ic`: settings, sweep
 - `.introform`: panel, prune, settings
