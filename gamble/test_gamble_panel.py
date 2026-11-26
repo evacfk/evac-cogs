@@ -182,7 +182,7 @@ async def test_group_opens_the_panel_for_admins_and_help_for_everyone_else():
 def test_removed_setters_are_gone_and_the_probe_exists():
     names = {c.name for c in GambleThreads.gambleset.commands}
     assert names == {"version", "settings"}
-    assert COG_VERSION == "1.7.0"
+    assert COG_VERSION == "1.7.1"
     assert {"setup", "listgames", "lockdown"} <= {c.name for c in GambleThreads.gamblehub.commands}
 
 

@@ -18,7 +18,7 @@ from .settings_panel import PanelError, open_panel
 
 log = logging.getLogger("red.evac-cogs.gamble")
 
-COG_VERSION = "1.7.0"
+COG_VERSION = "1.7.1"
 
 # The pixel canvas (canvas_*.py) is built into this cog: no commands of its own. Members open it from the
 # hub's "More…" dropdown (a "canvas" mode entry, handled here instead of resolving a command); mods use

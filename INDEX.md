@@ -15,7 +15,7 @@ Use it to answer "does a cog already cover this?" and "what depends on this cog?
 - **celebrations** 1.2.1: Birthdays (hoisted role, wondercoin gift, posts), join-anniversary shout-outs and year club roles.
 - **dailyquests** 1.0.0: Daily quests with streak badges, XP and weekly prizes
 - **duel** 1.2.1: 1v1 best-of-3 wagered duels
-- **gamble** 1.7.0: Per-user gambling threads plus the Wondercasino hub menu.
+- **gamble** 1.7.1: Per-user gambling threads plus the Wondercasino hub menu.
 - **hungergames** 1.2.1: A weekly Hunger Games: Reaping, training challenges, live arena broadcasts and Wondercoin sponsorship.
 - **lurker** 2.7.0: Auto-hide inactive members behind a Lurker role.
 - **minigamehub** 1.3.1: Unified, config-driven minigame spawner (pet/mathdrop/hunt/lootdrop/reacttowin/boss).
@@ -92,7 +92,7 @@ Links: called by wonderland
 Needs: no extra pip packages · Config scopes: guild, member
 
 ### gamble
-v1.7.0 · GambleThreads · 3231 lines · 125 tests
+v1.7.1 · GambleThreads · 3231 lines · 125 tests
 Commands:
 - `.gamblehub`: addgame, addmodalgame, canvas, listgames, lockdown, notifyrecipient, removegame, setup
 - `.gambleset`: settings, version
