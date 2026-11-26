@@ -949,3 +949,23 @@ async def test_retired_commands_never_appear_even_when_live(mod):
     for key in [p.key for p in mod.PAGES]:
         text = cog.render(key, FakeGuild([]), True, member=types.SimpleNamespace(id=9)).description
         assert ".lottery" not in text and ".selfrole" not in text and ".pp " not in text
+
+
+async def test_a_search_with_a_hit_or_a_page_counts_as_a_guide_lookup_and_a_miss_does_not(mod):
+    cog = make(mod, commands={"fish", "fishinfo", "leaderboard", "shop"})
+    seen = []
+
+    async def lookup(member):
+        seen.append(member)
+    cog._q_guide_lookup = lookup
+    ctx = FakeCtx()
+    await search(cog, ctx, "zzzz")
+    assert seen == []                                          # nothing found: no credit
+    await search(cog, ctx, "fish")
+    assert len(seen) == 1                                      # prefix search with a hit
+    slash = FakeCtx(interaction=object())
+    await search(cog, slash, "fish")
+    await shown(slash)                                         # slash searches are built when the member opens them
+    assert len(seen) == 2
+    await cog.wonderland.subs["page"].callback(cog, FakeCtx(), "economy")
+    assert len(seen) == 3

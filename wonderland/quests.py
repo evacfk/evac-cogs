@@ -32,7 +32,7 @@ REVIEW_DAYS = 21
 LOW_COMPLETION = 0.20   # under this after the review: propose removing the quest
 BAR_WIDTH = 10
 
-HOOK, COMMAND, CHAT = "hook", "command", "chat"
+HOOK, COMMAND, CHAT, CALL = "hook", "command", "chat", "call"   # CALL: our own cog calls _q_record directly
 
 # Never offered, never matched: checked by a test against every quest's key and text.
 FORBIDDEN_WORDS = ("secret", "afterdark", "after dark", "rabbit", "pillow")
@@ -51,7 +51,9 @@ class Quest:
 QUESTS = (
     Quest("verdict", "Answer today's Verdict", "Tap your answer, then your guess, on today's Verdict question.", HOOK),
     Quest("pet", "Look after the pet", "Feed, Play or Clean on the pet's card. It's free once a day.", HOOK),
+    Quest("treat", "Give the pet a treat", "Pick **Treat** on the pet's card. Treats cost coins.", HOOK),
     Quest("card", "Pull your daily card", "Tap **Daily Cards** in {#wondercasino}, or type `.card daily`.", HOOK),
+    Quest("pick", "Pick a card from a drop", "Tap a card on a drop when one appears. Picking is free.", HOOK),
     Quest("puzzle", "Claim a puzzle piece", "React 🧩 on a new piece when one drops.", HOOK),
     Quest("minigame", "Win a minigame in {#cuddle}", "Be first to a drop, a math question or a hunt when one pops up.",
           HOOK),
@@ -63,6 +65,8 @@ QUESTS = (
           HOOK),
     Quest("sponsor", "Sponsor a tribute", "Send a parachute from the Hunger Games shop (`.hg`).", HOOK),
     Quest("canvas", "Paint a canvas pixel", "Pick **Pixel Canvas** in the More… menu in {#wondercasino}.", HOOK),
+    Quest("duel", "Play a duel", "Challenge someone with `.duel @them <wager>` and see the fight through.", HOOK),
+    Quest("guide", "Look something up in the guide", "Type `.wld search card` (or any word) in {#bot-commands}.", CALL),
     Quest("acro", "Play Acrophobia", "Enter an acronym or vote on one when a round pops up. Rounds run twice a day at busy hours.",
           HOOK),
     Quest("plant", "Drop coins in {#cuddle}", "Pick **Drop coins in #cuddle** in the More… menu in {#wondercasino}. 10% is burned.",

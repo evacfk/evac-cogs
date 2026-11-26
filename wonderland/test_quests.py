@@ -173,7 +173,7 @@ def test_custom_targets_and_titles():
 
 def test_every_quest_has_exactly_one_source_and_command_quests_name_their_command():
     for q in Q.QUESTS:
-        assert q.source in (Q.HOOK, Q.COMMAND, Q.CHAT)
+        assert q.source in (Q.HOOK, Q.COMMAND, Q.CHAT, Q.CALL)
         assert bool(q.command) == (q.source == Q.COMMAND)
     assert len({q.key for q in Q.QUESTS}) == len(Q.QUESTS)
 

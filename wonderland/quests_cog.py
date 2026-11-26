@@ -11,6 +11,7 @@ Tracking. Each quest key has one source, so an action counts once:
            already-answered Verdict and a lost minigame fire the same events).
   command  on_command_completion for third-party commands (`.fish`, LevelUp `.stars`), checked
            against the cog's own state where it keeps one (stars: LevelUp's cooldown stamp).
+  call     our own `.wld search` / `.wld page` call _q_record when a member really looked something up.
   chat     on_message in the chat channel (#cuddle), at most one counted message per 15 seconds.
 Payday claims (for the "share of Payday users who open quests" number) come from ExtendedEconomy's
 `red_economy_payday_claim` event, which only fires on a real claim.
@@ -226,6 +227,27 @@ class QuestsMixin:
             daily = await cog.config.member(member).daily() or {}
             used = daily.get("date") == day and (daily.get("used") or any(daily.get(k) for k in ("feed", "play", "clean")))
             return (DONE, *status[1:]) if status[0] == OPEN and used else status
+        if key == "treat":
+            cog = get("WonderPet")
+            engine = None if cog is None else sys.modules.get(type(cog).__module__.rsplit(".", 1)[0] + ".engine")
+            if engine is None or not hasattr(engine, "TREATS"):
+                return OFF, None, "WonderPet not loaded"
+            s = await cog.config.guild(guild).all()
+            pet = s.get("pet")
+            if not pet or not pet.get("alive") or pet.get("stage") == "egg":
+                return OFF, None, "no pet to treat"
+            if int(s.get("treat_cap", 0)) <= 0:
+                return OFF, None, "treats are off"
+            daily = await cog.config.member(member).daily() or {}
+            given = int(daily.get("treats", 0)) if daily.get("date") == day else 0
+            status = ok(guild.get_channel(s.get("channel_id") or 0))
+            if status[0] == OPEN and given > 0:
+                return DONE, *status[1:]
+            from redbot.core import bank
+            cheapest = min(engine.treat_price(k, s["treat_price"]) for k in engine.TREATS)
+            if status[0] == OPEN and await bank.get_balance(member) < cheapest:
+                return OFF, status[1], "can't afford a treat"
+            return status
         if key == "card":
             cog = get("CardCollect")
             if cog is None or not self._exists("card daily"):
@@ -233,6 +255,14 @@ class QuestsMixin:
             status = ok(await self._q_hub_channel(guild))
             pulled = (await cog._member_state(member)).daily_pull_date == day
             return (DONE, *status[1:]) if status[0] == OPEN and pulled else status
+        if key == "pick":
+            cog = get("CardCollect")
+            if cog is None:
+                return OFF, None, "CardCollect not loaded"
+            gc = cog.config.guild(guild)
+            if await gc.test_mode():
+                return OFF, None, "drops are in test mode"
+            return ok(guild.get_channel(await gc.channel_id() or 0))   # drops land there; picking is a button
         if key == "puzzle":
             cog = get("Puzzle")
             if cog is None:
@@ -259,6 +289,19 @@ class QuestsMixin:
             if await bank.get_balance(member) <= 0:
                 return OFF, None, "no coins to bet"
             return ok(await self._q_hub_channel(guild), threads=True)
+        if key == "duel":
+            cog = get("Duel")
+            if cog is None or not self._exists("duel"):
+                return OFF, None, "Duel not loaded"
+            from redbot.core import bank
+            lowest = max(1, int(await cog.config.guild(guild).min_bet()))
+            if await bank.get_balance(member) < lowest:
+                return OFF, None, "can't cover the smallest wager"
+            if await cog._check_cooldown(guild, member):
+                return OFF, None, "on duel cooldown"
+            return ok(guild.get_channel(conf.get("commands_channel_id") or 0), send=True)
+        if key == "guide":
+            return ok(guild.get_channel(conf.get("commands_channel_id") or 0), send=True)
         if key == "acro":
             cog = get("Verdict")
             if cog is None or not hasattr(cog, "_acro_status"):
@@ -462,7 +505,7 @@ class QuestsMixin:
             if target > 1:
                 head += f"\n`{Q.bar(progress, target)}` {progress}/{target}"
             how = self._q_link(guild, Q.BY_KEY[key].how)
-            if key in ("verdict", "pet", "puzzle", "acro", "sponsor"):   # say where, when the cog knows
+            if key in ("verdict", "pet", "treat", "pick", "puzzle", "acro", "sponsor"):   # say where, when the cog knows
                 channel = (await self._q_status(key, member, conf))[1]
                 if channel is not None:
                     how += f" ({channel.mention})"
@@ -532,6 +575,14 @@ class QuestsMixin:
                     return
                 await self._q_record(member, quest.key, 1, source=Q.COMMAND)
                 return
+
+    async def _q_guide_lookup(self, member) -> None:
+        """`.wld search` found something, or `.wld page` opened a topic: that is the guide quest."""
+        try:
+            if hasattr(member, "roles") and getattr(member, "guild", None) is not None:
+                await self._q_record(member, "guide", 1, source=Q.CALL)
+        except Exception:
+            log.exception("quests: counting a guide lookup failed")
 
     def _q_star_given(self, ctx) -> bool:
         """LevelUp stamps the giver's cooldown only when a star actually went out (see its give_stars)."""

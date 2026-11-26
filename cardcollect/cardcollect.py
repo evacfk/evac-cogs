@@ -519,6 +519,8 @@ class CardCollect(commands.Cog):
             return None, None
         previous = drop.picks.get(member.id)
         drop.picks[member.id] = position
+        if previous is None and not drop.is_test:   # the first pick on a real drop; changing it doesn't count again
+            self.bot.dispatch("wonderland_quest", drop.guild.get_member(member.id) or member, "pick", 1)   # daily quests (wonderland)
         return drop, previous
 
     async def pick_reply(self, member: discord.abc.User, drop: ActiveDrop, position: int, previous: Optional[int]) -> str:

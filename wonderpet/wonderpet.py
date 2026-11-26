@@ -434,6 +434,7 @@ class WonderPet(commands.Cog):
             streak = await self._touch_streak(mconf, today)
             msgs = await self._process(guild, s, pet, events, now)
             s = await gconf.all()
+        self.bot.dispatch("wonderland_quest", member, "treat", 1)   # daily quests (wonderland)
         label, emoji, _m, _mult = TREATS[key]
         await interaction.response.send_message(
             f"{emoji} {pet['name']} loved the {label.lower()}! (-{price:,}){embeds.streak_suffix(streak)}", ephemeral=True)

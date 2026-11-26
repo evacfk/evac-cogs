@@ -245,6 +245,7 @@ class Wonderland(QuestsMixin, EconomyMixin, LedgerMixin, RoomPermsMixin, command
     async def wonderland_page(self, ctx: commands.Context, topic: Topic):
         """Jump straight to one topic."""
         await self._open(ctx, topic)
+        await self._q_guide_lookup(ctx.author)
 
     @wonderland.command(name="map")
     async def wonderland_map(self, ctx: commands.Context):
@@ -262,12 +263,16 @@ class Wonderland(QuestsMixin, EconomyMixin, LedgerMixin, RoomPermsMixin, command
         if ctx.interaction is not None:
             async def make(user):
                 hits = engine.search(word, self._exists, await self._is_mod(user))
+                if hits:
+                    await self._q_guide_lookup(user)
                 return embeds.search_embed(word, hits), None
             return await self._deliver(ctx, make)
         # Prefix: the answer is just command names and what they do, so show it straight away (no "tap to
         # open" stub, which cost every search an extra click). It is the member-level answer, since the
         # channel can see it; a mod is told when mod-only matches were left out. It cleans itself up.
         hits = engine.search(word, self._exists, False)
+        if hits:
+            await self._q_guide_lookup(ctx.author)
         hidden = False
         if await self._is_mod(ctx.author):
             hidden = len(engine.search(word, self._exists, True)) > len(hits)

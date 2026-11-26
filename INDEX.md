@@ -11,9 +11,9 @@ Use it to answer "does a cog already cover this?" and "what depends on this cog?
 - **afterdark** 1.9.1: Gated Rabbit Hole access: permanent rabbit button + invitations, interest opt-ins, inactivity cleanup, exclude list.
 - **blackjacktable** 1.1.1: Multiplayer blackjack table (.wonderjack)
 - **bumpreward** 1.1.0: Currency rewards, streaks, auto reminders and a daily board for Disboard bumps.
-- **cardcollect** 2.16.1: Ambient anime-character card collecting: pick the card you want from each drop and the draw decides.
+- **cardcollect** 2.16.2: Ambient anime-character card collecting: pick the card you want from each drop and the draw decides.
 - **celebrations** 1.2.1: Birthdays (hoisted role, wondercoin gift, posts), join-anniversary shout-outs and year club roles.
-- **duel** 1.2.0: 1v1 best-of-3 wagered duels
+- **duel** 1.2.1: 1v1 best-of-3 wagered duels
 - **gamble** 1.7.0: Per-user gambling threads plus the Wondercasino hub menu.
 - **hungergames** 1.2.1: A weekly Hunger Games: Reaping, training challenges, live arena broadcasts and Wondercoin sponsorship.
 - **lurker** 2.7.0: Auto-hide inactive members behind a Lurker role.
@@ -26,8 +26,8 @@ Use it to answer "does a cog already cover this?" and "what depends on this cog?
 - **tgfeed** tg-v4: Telegram forum group photos/videos -> Discord channels, media only, read-only and throttled.
 - **verdict** 1.6.2: A daily crowd question (pick, then guess the crowd) and Acrophobia, a quick acronym game twice a day.
 - **wonderevents** 1.4.2: Movie and game nights: RSVP buttons, Discord scheduled events, votes, reminders and attendance.
-- **wonderland** 1.8.1: The Wonderland guidebook: .wld command guide, server map and mod cheat sheet, plus the intro form and member stats.
-- **wonderpet** 1.3.1: One server pet raised together in #cuddle: daily free care, coin treats, weekly top carers, evolution.
+- **wonderland** 1.8.2: The Wonderland guidebook: .wld command guide, server map and mod cheat sheet, plus the intro form and member stats.
+- **wonderpet** 1.3.2: One server pet raised together in #cuddle: daily free care, coin treats, weekly top carers, evolution.
 
 ## Cogs
 
@@ -57,7 +57,7 @@ Needs: no extra pip packages · Config scopes: guild, member
 Data: Stores per-member bump counts, streak and last bump date.
 
 ### cardcollect
-v2.16.1 · CardCollect · 7587 lines · 340 tests
+v2.16.2 · CardCollect · 7589 lines · 341 tests
 Commands:
 - `.card|cards`: addcard, daily, diagnostics, find, give, importseries, leaderboard, sell, settings, showcase, trade
 Links: called by minigamehub, wonderland
@@ -75,7 +75,7 @@ Needs: no extra pip packages · Config scopes: guild, member
 Data: This cog stores each member's birthday (month, day and, only if they provide it, year) and the date they were last celebrated.
 
 ### duel
-v1.2.0 · Duel · 428 lines · 6 tests
+v1.2.1 · Duel · 430 lines · 7 tests
 Commands:
 - `.duelset`: version
 - Standalone: `.duel`, `.duelstats`
@@ -182,7 +182,7 @@ Needs: no extra pip packages · Config scopes: guild, member
 Data: This cog stores, per event, the user IDs of members who RSVP'd and how many minutes each member spent in voice while the event ran, plus a staff member's chosen timezone…
 
 ### wonderland
-v1.8.1 · IntroCleanup, IntroForm, MyStats, Wonderland · 4789 lines · 292 tests
+v1.8.2 · IntroCleanup, IntroForm, MyStats, Wonderland · 4849 lines · 297 tests
 Commands:
 - `.introcleanup|ic`: settings, sweep
 - `.introform`: panel, prune, settings
@@ -193,7 +193,7 @@ Needs: no extra pip packages · Config scopes: guild, member
 Data: The guide stores only the channel and message IDs of any published copy.
 
 ### wonderpet
-v1.3.1 · WonderPet · 1282 lines · 53 tests
+v1.3.2 · WonderPet · 1283 lines · 54 tests
 Commands:
 - `.wonderpet`: art, card, carers, history, me, name, newegg, settings, version
 Links: called by wonderland

@@ -89,3 +89,87 @@ async def test_duelset_opens_the_panel_and_version_reports(monkeypatch):
 def test_the_old_setter_commands_are_gone():
     for name in ("duelset_mincost", "duelset_maxcost", "duelset_cooldown", "duelset_settings"):
         assert not hasattr(Duel, name), name
+
+
+class _Player:
+    def __init__(self, uid):
+        self.id, self.display_name, self.mention = uid, f"p{uid}", f"<@{uid}>"
+        self.display_avatar = SimpleNamespace(url="https://x/a.png")
+
+
+class _Msg:
+    async def edit(self, **kw):
+        pass
+
+
+class _Channel:
+    def __init__(self):
+        self.guild = SimpleNamespace(id=1)
+
+    async def send(self, *a, **k):
+        return _Msg()
+
+
+async def _fight(monkeypatch, pay_fails=False):
+    """Run a whole duel against fakes; returns (cog, dispatched quest hits, challenger, opponent)."""
+    from duel import duel as module
+
+    async def no_sleep(_):
+        pass
+
+    async def currency(_):
+        return "wc"
+
+    async def can_spend(*_):
+        return True
+
+    async def withdraw(*_):
+        if pay_fails:
+            raise ValueError
+
+    async def deposit(*_):
+        return 0
+
+    monkeypatch.setattr(module.asyncio, "sleep", no_sleep)
+    monkeypatch.setattr(module.bank, "get_currency_name", currency)
+    monkeypatch.setattr(module.bank, "can_spend", can_spend)
+    monkeypatch.setattr(module.bank, "withdraw_credits", withdraw)
+    monkeypatch.setattr(module.bank, "deposit_credits", deposit)
+    cog, _g = make()
+    hits = []
+    cog.bot = SimpleNamespace(dispatch=lambda event, *a: hits.append((event, a[0].id, a[1], a[2])))
+
+    class Member:
+        def __init__(self):
+            self.vals = {"wins": 0, "losses": 0, "coins_won": 0, "coins_lost": 0, "last_duel": 0}
+
+        async def __aenter__(self):
+            return self.vals
+
+        async def __aexit__(self, *exc):
+            return False
+
+        def all(self):
+            return self
+
+        async def _noop(self, *_):
+            pass
+
+        @property
+        def last_duel(self):
+            return SimpleNamespace(set=self._noop)
+
+    members = {}
+    cog.config = SimpleNamespace(guild=cog.config.guild, member=lambda m: members.setdefault(m.id, Member()))
+    a, b = _Player(1), _Player(2)
+    await cog.run_duel(_Channel(), a, b, 100)
+    return cog, hits, a, b
+
+
+async def test_a_finished_duel_counts_for_both_players_and_a_cancelled_one_for_nobody(monkeypatch):
+    pytest.importorskip("redbot.core.bank")
+    cog, hits, a, b = await _fight(monkeypatch)
+    assert sorted(hits) == [("wonderland_quest", 1, "duel", 1), ("wonderland_quest", 2, "duel", 1)]
+    assert not cog._active
+    cog, hits, a, b = await _fight(monkeypatch, pay_fails=True)
+    assert hits == []

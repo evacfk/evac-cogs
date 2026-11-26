@@ -197,6 +197,8 @@ def world(monkeypatch):
 
 
 async def switch_on(w, **extra):
+    # "guide" needs no other cog, so it is always on offer; the older tests count on a fixed set of three
+    extra["disabled"] = sorted(set(extra.get("disabled", [])) | set(extra.pop("keep_off", ["guide"])))
     await w.cog._q_set(w.guild, enabled=True, **extra)
 
 
@@ -468,4 +470,98 @@ async def test_a_member_dealt_a_quest_that_was_later_retired_still_gets_a_workin
                                                              "progress": {"rsvp": 1}, "paid": ["rsvp"]}}
     embed = await world.cog._q_panel_embed(m)
     assert "rsvp" not in state(world, m)["assigned"] and "RSVP" not in embed.description
+
+
+
+
+# ------------------------------------------------------------------ pet treat, card pick, duel, guide
+
+def _cfg(**values):
+    return SimpleNamespace(**{k: (lambda v=v: _ret(v)) for k, v in values.items()})
+
+
+async def test_the_pet_treat_is_offered_only_when_a_treat_can_be_given_and_paid_for(world, monkeypatch):
+    engine = SimpleNamespace(TREATS={"snack": (0, 0, 0, 1), "feast": (0, 0, 0, 4)}, treat_price=lambda k, base: base * (4 if k == "feast" else 1))
+    monkeypatch.setitem(sys.modules, "fakepet.engine", engine)
+    guild_values = {"pet": {"alive": True, "stage": "baby"}, "treat_cap": 2, "treat_price": 10000, "channel_id": 10}
+    member_daily = {}
+
+    class WonderPet:
+        __module__ = "fakepet.wonderpet"
+        config = SimpleNamespace(
+            guild=lambda g: SimpleNamespace(all=lambda: _ret(dict(guild_values))),
+            member=lambda m: SimpleNamespace(daily=lambda: _ret(dict(member_daily))))
+
+    world.cog._cogs["WonderPet"] = WonderPet()
+    await switch_on(world)
+    m = member(world.guild, 1)
+    conf = await world.cog._q_conf(world.guild)
+    status = lambda: world.cog._q_status("treat", m, conf)
+    assert (await status())[2] == "can't afford a treat"
+    world.balances[1] = 10000
+    assert (await status())[0] == QC.OPEN                                      # the basic treat is the price that counts
+    guild_values["pet"] = {"alive": True, "stage": "egg"}
+    assert (await status())[2] == "no pet to treat"
+    guild_values["pet"] = {"alive": True, "stage": "baby"}
+    member_daily.update(date=Q.today(), treats=1)
+    assert (await status())[0] == QC.DONE                                      # already treated today: not dealt
+    guild_values["treat_cap"] = 0
+    assert (await status())[2] == "treats are off"
+
+
+async def test_the_card_pick_is_offered_where_drops_land_unless_they_are_test_drops(world):
+    values = {"test_mode": False, "channel_id": 10}
+    world.cog._cogs["CardCollect"] = SimpleNamespace(
+        config=SimpleNamespace(guild=lambda g: SimpleNamespace(**{k: (lambda k=k: _ret(values[k])) for k in values})))
+    await switch_on(world)
+    m = member(world.guild, 1)
+    conf = await world.cog._q_conf(world.guild)
+    assert (await world.cog._q_status("pick", m, conf))[0] == QC.OPEN
+    values["test_mode"] = True
+    assert (await world.cog._q_status("pick", m, conf))[2] == "drops are in test mode"
+    values["test_mode"] = False
+    world.cuddle.everyone = False
+    assert (await world.cog._q_status("pick", m, conf))[0] == QC.OFF
+
+
+async def test_a_duel_is_offered_only_with_coins_for_the_smallest_wager_and_no_cooldown(world):
+    cooldown = {"left": None}
+
+    class Duel:
+        config = SimpleNamespace(guild=lambda g: SimpleNamespace(min_bet=lambda: _ret(500)))
+
+        async def _check_cooldown(self, guild, member):
+            return cooldown["left"]
+
+    world.cog._cogs["Duel"] = Duel()
+    world.cog._commands.add("duel")
+    await switch_on(world)
+    m = member(world.guild, 1)
+    conf = await world.cog._q_conf(world.guild)
+    status = lambda: world.cog._q_status("duel", m, conf)
+    assert (await status())[2] == "can't cover the smallest wager"
+    world.balances[1] = 500
+    assert (await status())[0] == QC.OPEN
+    cooldown["left"] = 30
+    assert (await status())[2] == "on duel cooldown"
+
+
+async def test_the_guide_quest_counts_a_real_lookup_once_and_only_from_its_own_helper(world):
+    await switch_on(world, keep_off=[])
+    m = member(world.guild, 1)
+    conf = await world.cog._q_conf(world.guild)
+    assert (await world.cog._q_status("guide", m, conf))[0] == QC.OPEN
+    world.cmds.everyone = False
+    assert (await world.cog._q_status("guide", m, conf))[0] == QC.OFF          # #bot-commands private: never a quest
+    world.cmds.everyone = True
+    await world.cog._q_set(world.guild, targets={})
+    assert await world.cog._q_record(m, "guide", 1, source=Q.HOOK) is None     # a hook or a command can't count it
+    assert await world.cog._q_record(m, "guide", 1, source=Q.COMMAND) is None
+    await world.cog._q_panel_embed(m)
+    state(world, m)["assigned"] = ["guide", "card", "chat"]
+    await world.cog._q_guide_lookup(m)
+    assert state(world, m)["progress"]["guide"] == 1 and "guide" in state(world, m)["paid"]
+    await world.cog._q_guide_lookup(m)
+    assert state(world, m)["progress"]["guide"] == 1
+    assert world.balances[1] > 0
 

@@ -1174,3 +1174,24 @@ async def test_find_results_are_paged_so_every_match_can_be_reached(cog):
     # a short list has no pager
     small = await find(cog, asker, guild, other, "Hero0")
     assert not hasattr(small.view, "prev_page")
+
+
+def _quest_hits(cog):
+    return [(a[0].id, a[1]) for e, *a in getattr(cog.bot, "dispatched", []) if e == "wonderland_quest"]
+
+
+@pytest.mark.asyncio
+async def test_the_first_pick_on_a_real_drop_counts_for_the_daily_quest_but_a_changed_pick_does_not(cog):
+    if not hasattr(cog.bot, "dispatch"):
+        cog.bot.dispatched = []
+        cog.bot.dispatch = lambda event, *a: cog.bot.dispatched.append((event, *a))
+    guild, admin, (a, b, c), channel, drop, message, ids = await ready_draw(cog, 310)
+    await cog.handle_pick(a, message.id, 0)
+    await cog.handle_pick(a, message.id, 1)
+    await cog.handle_pick(a, message.id, 1)
+    await cog.handle_pick(b, 424242, 0)                      # an unknown drop: refused
+    assert _quest_hits(cog) == [(a.id, "pick")]
+    drop.is_test = True                                      # test drops award nothing, so they count for nothing
+    await cog.handle_pick(b, message.id, 0)
+    assert _quest_hits(cog) == [(a.id, "pick")]
+

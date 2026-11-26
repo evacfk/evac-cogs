@@ -107,7 +107,7 @@ class DuelView(discord.ui.View):
 class Duel(commands.Cog):
     """Challenge another member to a best-of-3 wagered duel."""
 
-    __version__ = "1.2.0"
+    __version__ = "1.2.1"
 
     def __init__(self, bot):
         self.bot = bot
@@ -314,6 +314,8 @@ class Duel(commands.Cog):
             async with self.config.member(loser).all() as data:
                 data["losses"] += 1
                 data["coins_lost"] += amount
+            for player in (winner, loser):   # daily quests (wonderland): a fight seen through, for both players
+                self.bot.dispatch("wonderland_quest", player, "duel", 1)
 
             await self._set_cooldown(challenger)
             await self._set_cooldown(opponent)
