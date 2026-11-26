@@ -224,3 +224,13 @@ def test_start_page_mentions_daily_quests_only_while_they_are_on():
     assert "Daily Quests" not in off and "[[" not in off and "Payday" in off
     assert "📜 **Daily Quests**: three small quests a day; each pays a third of your payday\n" in on
     assert off.endswith("**When you have a minute**") and on.endswith("**When you have a minute**")
+
+
+def test_a_quest_removed_from_the_pool_drops_out_of_a_set_dealt_before_the_removal():
+    old = Q.fresh_state()
+    old.update(day="2026-11-26", assigned=["card", "rsvp", "chat"], paid=["rsvp"], progress={"rsvp": 1, "card": 1})
+    state = Q.roll_day(old, "2026-11-26")
+    assert state["assigned"] == ["card", "chat"] and state["paid"] == []
+    assert "rsvp" not in Q.BY_KEY and "acro" in Q.BY_KEY
+    assert Q.title_of("acro") == "Play Acrophobia"
+

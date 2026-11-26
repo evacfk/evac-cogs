@@ -24,9 +24,9 @@ Use it to answer "does a cog already cover this?" and "what depends on this cog?
 - **secrethunt** 1.15.0: WoW-style secret hunts: hidden, personalised puzzles in forum posts, a Medium logic trial, a Hall of Secrets, and badge roles for Hard and Expert.
 - **serverpulse** 1.8.0: Server activity analytics: busy/quiet hours, reports, heatmap, live board, digests, and an approval-gated weekly recap.
 - **tgfeed** tg-v4: Telegram forum group photos/videos -> Discord channels, media only, read-only and throttled.
-- **verdict** 1.6.1: A daily crowd question (pick, then guess the crowd) and Acrophobia, a quick acronym game twice a day.
-- **wonderevents** 1.4.1: Movie and game nights: RSVP buttons, Discord scheduled events, votes, reminders and attendance.
-- **wonderland** 1.8.0: The Wonderland guidebook: .wld command guide, server map and mod cheat sheet, plus the intro form and member stats.
+- **verdict** 1.6.2: A daily crowd question (pick, then guess the crowd) and Acrophobia, a quick acronym game twice a day.
+- **wonderevents** 1.4.2: Movie and game nights: RSVP buttons, Discord scheduled events, votes, reminders and attendance.
+- **wonderland** 1.8.1: The Wonderland guidebook: .wld command guide, server map and mod cheat sheet, plus the intro form and member stats.
 - **wonderpet** 1.3.1: One server pet raised together in #cuddle: daily free care, coin treats, weekly top carers, evolution.
 
 ## Cogs
@@ -166,7 +166,7 @@ Needs: telethon · Config scopes: global
 Data: This cog stores no end-user data.
 
 ### verdict
-v1.6.1 · Verdict · 4366 lines · 129 tests
+v1.6.2 · Verdict · 4371 lines · 131 tests
 Commands:
 - `.verdict`: add, post, queue, remove, results, settings, suggest, top, version
 Links: calls lurker, serverpulse; called by wonderland
@@ -174,7 +174,7 @@ Needs: no extra pip packages · Config scopes: guild, member
 Data: This cog stores each member's answers and guesses to the open question (answers are shown by name in the final result post), their streak and counts, and monthly scores.
 
 ### wonderevents
-v1.4.1 · WonderEvents · 1165 lines · 31 tests
+v1.4.2 · WonderEvents · 1164 lines · 31 tests
 Commands:
 - `.event|events`: attendance, cancel, create, edit, list, mytz, poll, regulars, settings, version
 Links: none
@@ -182,7 +182,7 @@ Needs: no extra pip packages · Config scopes: guild, member
 Data: This cog stores, per event, the user IDs of members who RSVP'd and how many minutes each member spent in voice while the event ran, plus a staff member's chosen timezone…
 
 ### wonderland
-v1.8.0 · IntroCleanup, IntroForm, MyStats, Wonderland · 4782 lines · 289 tests
+v1.8.1 · IntroCleanup, IntroForm, MyStats, Wonderland · 4789 lines · 292 tests
 Commands:
 - `.introcleanup|ic`: settings, sweep
 - `.introform`: panel, prune, settings

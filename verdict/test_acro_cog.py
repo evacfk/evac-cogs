@@ -859,3 +859,31 @@ async def test_turning_acrophobia_on_asks_for_confirmation_and_cancel_does_nothi
     assert await env.conf.acro_enabled() is False
     await p._on_confirm(PClick(admin))
     assert await env.conf.acro_enabled() is True and await env.conf.acro_launch_ts() > 0
+
+
+def quest_hits(env):
+    return [(a[0].id, a[1], a[2]) for e, *a in getattr(env.cog.bot, "dispatched", []) if e == "wonderland_quest"]
+
+
+async def test_entering_counts_once_for_the_daily_quest_and_changing_it_does_not(acro):
+    env = acro
+    await start(env)
+    p = Member(env.g, 52)
+    await enter(env, p, tag="1")
+    await enter(env, p, tag="2")                                  # a change of mind, not a second action
+    await enter(env, p, text="not an acronym")                    # refused entries never count
+    q = Member(env.g, 53)
+    await enter(env, q, text="nope")
+    assert quest_hits(env) == [(52, "acro", 1)]
+
+
+async def test_first_vote_counts_for_the_daily_quest_and_changed_or_refused_votes_do_not(acro):
+    env = acro
+    a, b, d, e = await to_vote(env)
+    base = len(quest_hits(env))
+    await vote(env, a, a)                                         # own entry: refused
+    await vote(env, a, b)
+    await vote(env, a, d)                                         # changing the vote
+    await vote(env, a, d)                                         # same vote again
+    assert quest_hits(env)[base:] == [(100, "acro", 1)]
+

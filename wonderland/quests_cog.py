@@ -8,7 +8,7 @@ until a mod turns it on.
 Tracking. Each quest key has one source, so an action counts once:
   hook     `bot.dispatch("wonderland_quest", member, key, amount)` from the success path of our own cog.
            Used for every evac-cogs quest because a button press or reaction is not an outcome (an
-           already-answered Verdict, a lost minigame and a "Can't make it" RSVP fire the same events).
+           already-answered Verdict and a lost minigame fire the same events).
   command  on_command_completion for third-party commands (`.fish`, LevelUp `.stars`), checked
            against the cog's own state where it keeps one (stars: LevelUp's cooldown stamp).
   chat     on_message in the chat channel (#cuddle), at most one counted message per 15 seconds.
@@ -259,20 +259,24 @@ class QuestsMixin:
             if await bank.get_balance(member) <= 0:
                 return OFF, None, "no coins to bet"
             return ok(await self._q_hub_channel(guild), threads=True)
-        if key == "rsvp":
-            cog = get("WonderEvents")
-            if cog is None:
-                return OFF, None, "WonderEvents not loaded"
-            open_events = [e for e in (await cog.config.guild(guild).events() or {}).values()
-                           if e.get("message_id") and not e.get("ended") and not e.get("cancelled")]
-            if not open_events:
-                return OFF, None, "no open event"
-            todo = [e for e in open_events if str((e.get("rsvp") or {}).get(uid)) not in ("going", "maybe")]
-            for ev in todo:
-                status = ok(guild.get_channel(ev.get("channel_id") or 0))
-                if status[0] == OPEN:
-                    return status
-            return (DONE, None, "already RSVP'd") if not todo else (OFF, None, "event channel hidden")
+        if key == "acro":
+            cog = get("Verdict")
+            if cog is None or not hasattr(cog, "_acro_status"):
+                return OFF, None, "Acrophobia not loaded"
+            gc = cog.config.guild(guild)
+            if not await gc.acro_enabled():
+                return OFF, None, "Acrophobia is off"
+            now, cur = time.time(), await gc.acro_current()
+            if cur:   # a round is running: entering (submit phase) or voting (vote phase) both count
+                end = cur.get("submit_ends_ts") if cur.get("phase") == "submit" else cur.get("vote_ends_ts")
+                if not end or now >= end:
+                    return OFF, None, "round just closing"
+            else:     # none running: only offer it while a round is still planned for later today
+                plan = await gc.acro_plan() or {}
+                left = [s for s in plan.get("slots") or [] if s not in set(plan.get("done") or []) and s > now - 60]
+                if plan.get("date") != Q.today(datetime.fromtimestamp(now, Q.TZ)) or not left:
+                    return OFF, None, "no round left today"
+            return ok(guild.get_channel(await gc.channel_id() or 0))
         if key == "sponsor":
             cog = get("HungerGames")
             engine = None if cog is None else self._q_hg_engine(cog)
@@ -458,7 +462,7 @@ class QuestsMixin:
             if target > 1:
                 head += f"\n`{Q.bar(progress, target)}` {progress}/{target}"
             how = self._q_link(guild, Q.BY_KEY[key].how)
-            if key in ("verdict", "pet", "puzzle", "rsvp", "sponsor"):   # say where, when the cog knows
+            if key in ("verdict", "pet", "puzzle", "acro", "sponsor"):   # say where, when the cog knows
                 channel = (await self._q_status(key, member, conf))[1]
                 if channel is not None:
                     how += f" ({channel.mention})"

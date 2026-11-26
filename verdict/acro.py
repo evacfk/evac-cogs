@@ -451,9 +451,12 @@ class AcroMixin:
             if uid not in cur["entries"] and len(cur["entries"]) >= ACRO_MAX_ENTRIES:
                 await self._say(interaction, f"This round is full ({ACRO_MAX_ENTRIES} entries).")
                 return
+            first_entry = uid not in cur["entries"]
             cur["entries"][uid] = clean
             await conf.acro_current.set(cur)
             ends = int(cur["submit_ends_ts"])
+        if first_entry:
+            self.bot.dispatch("wonderland_quest", user, "acro", 1)   # daily quests (wonderland)
         await self._say(interaction, f"\N{WHITE HEAVY CHECK MARK} Entered: **{ae.escape(clean)}**\n"
                                      f"Tap **Submit** again to change it before <t:{ends}:R>.")
 
@@ -480,6 +483,8 @@ class AcroMixin:
             before = cur["votes"].get(uid)
             cur["votes"][uid] = target
             await conf.acro_current.set(cur)
+        if before is None:
+            self.bot.dispatch("wonderland_quest", user, "acro", 1)   # daily quests (wonderland)
         if before == target:
             await self._say(interaction, f"Your vote is already on **#{idx + 1}**.")
         elif before is None:

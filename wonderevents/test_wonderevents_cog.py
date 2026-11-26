@@ -158,7 +158,7 @@ async def test_rsvp_buttons_toggle_and_redraw(env):
     assert it.edits and it.edits[0]["view"] is env.cog.rsvp_view
     await env.cog.handle_rsvp(Interaction(env.guild, 5, message=msg), "going")  # click again = undo
     assert (await env.cog._get_event(env.guild, 1))["rsvp"] == {"6": "maybe"}
-    assert [(e, a[1:]) for e, *a in getattr(env.cog.bot, "dispatched", []) if e == "wonderland_quest"] == [("wonderland_quest", ["rsvp", 1])] * 2   # the undo doesn't count
+    assert not [e for e, *_ in getattr(env.cog.bot, "dispatched", []) if e == "wonderland_quest"]   # RSVP is not a daily quest
 
 
 async def test_full_timeline_remind_start_attendance_end(env):

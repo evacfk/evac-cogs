@@ -61,9 +61,10 @@ QUESTS = (
           command="stars"),
     Quest("blackjack", "Play a hand of Wonderjack", "Pick **Wonderjack** in the More… menu in {#wondercasino} and bet.",
           HOOK),
-    Quest("rsvp", "RSVP to an event", "Tap **Going** or **Maybe** on an upcoming event.", HOOK),
     Quest("sponsor", "Sponsor a tribute", "Send a parachute from the Hunger Games shop (`.hg`).", HOOK),
     Quest("canvas", "Paint a canvas pixel", "Pick **Pixel Canvas** in the More… menu in {#wondercasino}.", HOOK),
+    Quest("acro", "Play Acrophobia", "Enter an acronym or vote on one when a round pops up. Rounds run twice a day at busy hours.",
+          HOOK),
     Quest("plant", "Drop coins in {#cuddle}", "Pick **Drop coins in #cuddle** in the More… menu in {#wondercasino}. 10% is burned.",
           HOOK),
 )
@@ -149,7 +150,9 @@ def roll_day(state: Optional[dict], day: str) -> dict:
         out.update(day=day, assigned=[], progress={}, paid=[], earned=0, opened=False, payday=False)
     out["progress"] = dict(out["progress"])
     out["last_done"] = dict(out["last_done"])
-    out["assigned"], out["paid"] = list(out["assigned"]), list(out["paid"])
+    # a quest removed from the pool after it was dealt (or paid) simply drops out of today's set
+    out["assigned"] = [k for k in out["assigned"] if k in BY_KEY]
+    out["paid"] = [k for k in out["paid"] if k in BY_KEY]
     return out
 
 

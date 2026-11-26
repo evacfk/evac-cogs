@@ -390,8 +390,7 @@ class WonderEvents(commands.Cog):
             if ev is None or ev.get("ended") or ev.get("cancelled"):
                 await interaction.response.send_message("This event is over.", ephemeral=True)
                 return
-            if engine.toggle_rsvp(ev.setdefault("rsvp", {}), interaction.user.id, choice) in ("going", "maybe"):
-                self.bot.dispatch("wonderland_quest", interaction.user, "rsvp", 1)   # daily quests (wonderland)
+            engine.toggle_rsvp(ev.setdefault("rsvp", {}), interaction.user.id, choice)
             await self._save_event(guild, ev)
         await self._sync_role(guild, ev, interaction.user)
         await interaction.response.edit_message(embed=embeds.event_embed(ev, guild_id=guild.id), view=self.rsvp_view)

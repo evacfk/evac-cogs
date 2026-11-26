@@ -423,3 +423,49 @@ async def test_plant_is_offered_only_when_the_member_can_drop_now(world, monkeyp
     hub._plant_last.clear()
     world.cuddle.everyone = False                       # the drop would land somewhere private: never
     assert (await world.cog._q_status("plant", m, conf))[0] == QC.OFF
+
+
+async def test_acrophobia_is_offered_only_while_a_round_is_running_or_still_planned_today(world):
+    import time as _time
+    now = _time.time()
+    plan = {"date": Q.today(), "slots": [now + 3600], "done": []}
+
+    class Verdict:
+        _acro_status = None
+        values = {"acro_enabled": True, "acro_current": {}, "acro_plan": plan, "channel_id": 10}
+        config = SimpleNamespace(guild=lambda g: SimpleNamespace(
+            **{k: (lambda k=k: _ret(Verdict.values[k])) for k in ("acro_enabled", "acro_current", "acro_plan", "channel_id")}))
+
+    world.cog._cogs["Verdict"] = Verdict()
+    await switch_on(world)
+    m = member(world.guild, 1)
+    conf = await world.cog._q_conf(world.guild)
+    status = lambda: world.cog._q_status("acro", m, conf)
+    assert (await status())[0] == QC.OPEN                                     # a round is planned for later today
+    Verdict.values["acro_plan"] = {**plan, "done": plan["slots"]}
+    assert (await status())[2] == "no round left today"                       # both rounds already ran
+    Verdict.values["acro_plan"] = {**plan, "date": "2026-01-01"}
+    assert (await status())[2] == "no round left today"                       # a stale plan is not a promise
+    Verdict.values["acro_current"] = {"phase": "submit", "submit_ends_ts": now + 60}
+    assert (await status())[0] == QC.OPEN                                     # entering a live round
+    Verdict.values["acro_current"] = {"phase": "vote", "vote_ends_ts": now + 60}
+    assert (await status())[0] == QC.OPEN                                     # voting counts too
+    Verdict.values["acro_current"] = {"phase": "vote", "vote_ends_ts": now - 1}
+    assert (await status())[2] == "round just closing"
+    Verdict.values["acro_current"] = {}
+    Verdict.values["acro_plan"] = plan
+    Verdict.values["acro_enabled"] = False
+    assert (await status())[2] == "Acrophobia is off"
+    Verdict.values["acro_enabled"] = True
+    world.cuddle.everyone = False                                             # the round's channel went private
+    assert (await status())[0] == QC.OFF
+
+
+async def test_a_member_dealt_a_quest_that_was_later_retired_still_gets_a_working_panel(world):
+    await switch_on(world)
+    m = member(world.guild, 1)
+    world.cog.config.members[(GUILD_ID, m.id)] = {"quests": {**Q.fresh_state(), "day": Q.today(), "assigned": ["rsvp", "card", "chat"],
+                                                             "progress": {"rsvp": 1}, "paid": ["rsvp"]}}
+    embed = await world.cog._q_panel_embed(m)
+    assert "rsvp" not in state(world, m)["assigned"] and "RSVP" not in embed.description
+
