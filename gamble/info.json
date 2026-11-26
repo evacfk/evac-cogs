@@ -1,9 +1,19 @@
 {
-    "author": ["Fareed"],
+    "author": [
+        "Fareed"
+    ],
     "min_bot_version": "3.5.0",
-    "description": "Per-user gambling threads to keep the shared bot channel clean, plus the Wondercasino hub: a read-only channel with a persistent button/dropdown menu (.gamblehub) that routes players into personal or shared threads instead of letting them post directly. .gamble opens a private thread; it auto-closes after inactivity or .endgambling.",
+    "description": "Per-user gambling threads to keep the shared bot channel clean, plus the Wondercasino hub: a read-only channel with a persistent button/dropdown menu (.gamblehub) that routes players into personal or shared threads instead of letting them post directly. .gamble opens a private thread; it auto-closes after inactivity or .endgambling. Also hosts the Wonderland pixel canvas (Pixel Canvas in the hub's More… menu; mods: .gamblehub canvas), a coin sink.",
+    "requirements": [
+        "Pillow"
+    ],
     "hidden": false,
     "disabled": false,
     "short": "Per-user gambling threads plus the Wondercasino hub menu.",
-    "tags": ["economy", "utility", "threads"]
+    "tags": [
+        "economy",
+        "utility",
+        "threads"
+    ],
+    "end_user_data_statement": "The pixel canvas stores, per guild in the cog's data folder: every painted pixel (position, colour, the owner's user ID, price, time, and any text up to 100 characters), a permanent log of each paint (user ID, position, coins paid, colour, text, time), the user IDs mods have banned from painting, and the time of the last weekly post. Wiping a member or resetting the canvas blanks pixels but keeps the paint log. The rest of the cog stores channel and message IDs and open thread IDs."
 }

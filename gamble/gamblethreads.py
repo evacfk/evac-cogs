@@ -2,6 +2,9 @@ from __future__ import annotations
 
 import asyncio
 import copy
+import logging
+import re
+import time
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
@@ -9,10 +12,18 @@ import discord
 from redbot.core import bank, commands, Config, checks
 from redbot.core.bot import Red
 
-from . import panel as panel_specs
+from . import canvas_store, canvas_ui, panel as panel_specs
+from .canvas_service import CanvasService
 from .settings_panel import PanelError, open_panel
 
-COG_VERSION = "1.4.0"
+log = logging.getLogger("red.evac-cogs.gamble")
+
+COG_VERSION = "1.5.0"
+
+# The pixel canvas (canvas_*.py) is built into this cog: no commands of its own. Members open it from the
+# hub's "More…" dropdown (a "canvas" mode entry, handled here instead of resolving a command); mods use
+# `.gamblehub canvas`. Text members attach to pixels is posted to this channel (#mod-log).
+MODLOG_CHANNEL_ID = 397513667052175360
 
 # ---------------------------------------------------------------------------
 # Wondercasino hub — how a "game" entry works
@@ -114,6 +125,14 @@ SEEDED_FLAGSHIPS = {
         "label": "Daily Cards",
         "mode": "post",
         "candidates": ["card daily"],
+    },
+    # Built-in: opens the pixel canvas (canvas_ui). No command to resolve, so "builtin" skips that step.
+    "canvas": {
+        "emoji": "\U0001F3A8",  # 🎨
+        "label": "Pixel Canvas",
+        "mode": "canvas",
+        "builtin": True,
+        "candidates": [],
     },
 }
 
@@ -432,6 +451,8 @@ class GambleThreads(commands.Cog):
         }
         self.config.register_guild(**default_guild)
         self._bg_tasks: set = set()
+        self._canvases: dict = {}        # guild id -> CanvasService
+        self._canvas_retry: dict = {}    # guild id -> unix time before which the weekly post isn't retried
         self._cleanup_task = self.bot.loop.create_task(self._cleanup_loop())
 
     async def cog_load(self):
@@ -447,6 +468,11 @@ class GambleThreads(commands.Cog):
         seed_task = getattr(self, "_seed_task", None)
         if seed_task is not None:
             seed_task.cancel()
+        for service in getattr(self, "_canvases", {}).values():
+            try:
+                service.store.close()
+            except Exception:
+                pass
 
     async def _seed_flagship_games(self):
         """Add any SEEDED_FLAGSHIPS entry missing from a guild's stored
@@ -474,6 +500,11 @@ class GambleThreads(commands.Cog):
                     for key, spec in SEEDED_FLAGSHIPS.items():
                         if key in games:
                             continue
+                        if spec.get("builtin"):
+                            games[key] = {"emoji": spec["emoji"], "label": spec["label"], "command": "",
+                                          "mode": spec["mode"]}
+                            changed = True
+                            continue
                         resolved = None
                         for candidate in spec["candidates"]:
                             resolved = self.bot.get_command(candidate)
@@ -490,10 +521,11 @@ class GambleThreads(commands.Cog):
                         changed = True
                 if changed and await self.config.guild(guild).hub_message_id():
                     await self._refresh_hub_message(guild)
+                await self._canvas_recover(guild)
         except asyncio.CancelledError:
             raise
         except Exception:
-            pass
+            log.exception("gamble: seeding flagship games failed")
 
     # ---------- background cleanup ----------
 
@@ -508,6 +540,10 @@ class GambleThreads(commands.Cog):
 
     async def _check_all_guilds(self):
         for guild in self.bot.guilds:
+            try:
+                await self._canvas_weekly_tick(guild)
+            except Exception:
+                log.exception("gamble: canvas weekly post failed for guild %s", guild.id)
             await self._cleanup_thread_map(
                 guild,
                 config_attr=self.config.guild(guild).active_threads,
@@ -804,6 +840,11 @@ class GambleThreads(commands.Cog):
             await interaction.response.send_message(
                 "That game isn't configured right now.", ephemeral=True
             )
+            return
+        if entry.get("mode") == "canvas":
+            await self._open_canvas(interaction)
+            if from_select:
+                self._schedule_select_reset(guild)
             return
         command = self.bot.get_command(entry["command"])
         if command is None:
@@ -1278,6 +1319,104 @@ class GambleThreads(commands.Cog):
             return f"Discord rejected the hub menu update: `{e}`. Check emoji/labels on recently added games."
         return None
 
+    # ---------- pixel canvas (see canvas_*.py) ----------
+
+    def _canvas_path(self, guild: discord.Guild):
+        from redbot.core.data_manager import cog_data_path
+        return cog_data_path(self) / f"canvas-{guild.id}.sqlite"
+
+    def _canvas(self, guild: discord.Guild) -> CanvasService:
+        """The guild's canvas, created on first use. SQLite in the cog's data path, not Config."""
+        service = self._canvases.get(guild.id)
+        if service is None:
+            store = canvas_store.CanvasStore(str(self._canvas_path(guild)))
+
+            async def modlog(content: str) -> None:
+                channel = guild.get_channel(MODLOG_CHANNEL_ID)
+                if channel is None:
+                    log.warning("gamble: #mod-log (%s) not found; canvas log line dropped: %s", MODLOG_CHANNEL_ID, content)
+                    return
+                await channel.send(content, allowed_mentions=discord.AllowedMentions.none())
+
+            service = CanvasService(store, bank, is_lurker=self._is_lurker, modlog=modlog)
+            self._canvases[guild.id] = service
+        return service
+
+    async def _open_canvas(self, interaction: discord.Interaction) -> None:
+        await canvas_ui.open_canvas(interaction, self._canvas(interaction.guild))
+
+    async def _is_lurker(self, member) -> bool:
+        """True when the member holds the Lurker role (looked up from the Lurker cog's own setting)."""
+        lurker = self.bot.get_cog("Lurker")
+        if lurker is None:
+            return False
+        role_id = await lurker.config.guild(member.guild).lurker_role_id()
+        return bool(role_id) and any(role.id == role_id for role in getattr(member, "roles", ()))
+
+    async def _is_mod(self, member) -> bool:
+        perms = getattr(member, "guild_permissions", None)
+        if perms is not None and (perms.administrator or perms.manage_guild):
+            return True
+        try:
+            return bool(await self.bot.is_mod(member))
+        except Exception:
+            return False
+
+    async def _canvas_recover(self, guild: discord.Guild) -> None:
+        """After a restart: tell #mod-log about a charge that may have been taken without a pixel being saved."""
+        if not self._canvas_path(guild).exists():
+            return
+        service = self._canvas(guild)
+        pending = await service.take_pending()
+        if pending:
+            await service._modlog(
+                f"🎨 **Canvas: unfinished paint found after a restart.** <@{pending.get('user')}> may have been charged "
+                f"{pending.get('amount', 0):,} wc for {pending.get('cells', '?')} without the pixels saving. "
+                f"Check the pixel and their balance, and refund if it isn't theirs.")
+
+    @staticmethod
+    def _find_cuddle(guild: discord.Guild):
+        """The #cuddle text channel, looked up live by name (channel names change; emoji prefixes come and go)."""
+        def norm(name: str) -> str:
+            return re.sub(r"[^a-z0-9]+", "", name.lower())
+
+        channels = [c for c in getattr(guild, "text_channels", [])]
+        exact = [c for c in channels if norm(c.name) == "cuddle"]
+        loose = [c for c in channels if "cuddle" in norm(c.name)]
+        for pool in (exact, loose):
+            if pool:
+                return sorted(pool, key=lambda c: getattr(c, "position", 0))[0]
+        return None
+
+    async def _canvas_weekly_tick(self, guild: discord.Guild) -> None:
+        """Sunday 6 PM PT: snapshot of the canvas to #cuddle. Runs on the cleanup loop's minute tick; the last
+        post time is stored in the canvas database, so a restart neither double-posts nor skips a week."""
+        if not self._canvas_path(guild).exists():
+            return
+        service = self._canvas(guild)
+        now = time.time()
+        boundary = canvas_store.last_weekly_boundary(now)
+        if service.weekly_last_posted() >= boundary or self._canvas_retry.get(guild.id, 0) > now:
+            return
+        report = service.weekly_report(boundary)
+        if report is None:                      # nobody painted that week: nothing to post
+            service.weekly_mark_posted(boundary)
+            return
+        channel = self._find_cuddle(guild)
+        if channel is None:
+            log.warning("gamble: no #cuddle channel found in guild %s; canvas weekly post waits", guild.id)
+            self._canvas_retry[guild.id] = now + 3600
+            return
+        try:
+            data = await service.image()
+            await channel.send(embed=canvas_ui.weekly_embed(report), file=canvas_ui._file(data, "canvas.png"),
+                               allowed_mentions=discord.AllowedMentions.none())
+        except Exception:
+            log.exception("gamble: canvas weekly post to %s failed; retrying in an hour", channel.id)
+            self._canvas_retry[guild.id] = now + 3600
+            return
+        service.weekly_mark_posted(boundary)
+
     # ---------- admin config: gambling threads ----------
 
     @commands.group(name="gambleset", invoke_without_command=True)
@@ -1365,6 +1504,14 @@ class GambleThreads(commands.Cog):
             await ctx.send(error)
             return
         await ctx.send("Hub menu posted/refreshed.")
+
+    @gamblehub.command(name="canvas")
+    @checks.mod_or_permissions(manage_guild=True)
+    async def gamblehub_canvas(self, ctx: commands.Context):
+        """Pixel canvas mod panel: usage counts, clear text, wipe or ban a painter, reset the canvas."""
+        service = self._canvas(ctx.guild)
+        view = canvas_ui.OpenModPanel(service, self._is_mod)
+        view.message = await ctx.send("🎨 Canvas mod panel:", view=view)
 
     @gamblehub.command(name="addgame")
     @commands.is_owner()
@@ -1632,8 +1779,9 @@ class GambleThreads(commands.Cog):
                 mode_suffix = f"modal: {arg_labels}"
                 if data.get("notify_recipient"):
                     mode_suffix += ", notifies recipient"
+            target = "built-in pixel canvas" if data["mode"] == "canvas" else f"`.{data['command']}`"
             lines.append(
-                f"`{key}` — {data['emoji']} **{data['label']}** → `.{data['command']}` ({mode_suffix}"
+                f"`{key}` — {data['emoji']} **{data['label']}** → {target} ({mode_suffix}"
                 f"{', flagship' if key in FLAGSHIP_KEYS else ''})"
             )
         await ctx.send("\n".join(lines))
