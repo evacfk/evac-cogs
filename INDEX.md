@@ -13,7 +13,7 @@ Use it to answer "does a cog already cover this?" and "what depends on this cog?
 - **bumpreward** 1.1.0: Currency rewards, streaks, auto reminders and a daily board for Disboard bumps.
 - **cardcollect** 2.17.0: Ambient anime-character card collecting: pick the card you want from each drop and the draw decides.
 - **celebrations** 1.2.1: Birthdays (hoisted role, wondercoin gift, posts), join-anniversary shout-outs and year club roles.
-- **dailyquests** 1.0.0: Daily quests with streak badges, XP and weekly prizes
+- **dailyquests** 1.1.0: Daily quests with streak badges, XP and weekly prizes
 - **duel** 1.2.1: 1v1 best-of-3 wagered duels
 - **gamble** 1.7.1: Per-user gambling threads plus the Wondercasino hub menu.
 - **hungergames** 1.2.1: A weekly Hunger Games: Reaping, training challenges, live arena broadcasts and Wondercoin sponsorship.
@@ -76,10 +76,10 @@ Needs: no extra pip packages · Config scopes: guild, member
 Data: This cog stores each member's birthday (month, day and, only if they provide it, year) and the date they were last celebrated.
 
 ### dailyquests
-v1.0.0 · DailyQuests · 1901 lines · 70 tests
+v1.1.0 · DailyQuests · 1947 lines · 76 tests
 Commands:
 - `.dailyquests`: version
-Links: calls cardcollect, gamble, lurker; optional/external Economy, ExtendedEconomy, LevelUp; called by gamble, wonderland
+Links: calls cardcollect, gamble, lurker; optional/external Economy, ExtendedEconomy, Heist, LevelUp; called by gamble, wonderland
 Needs: no extra pip packages · Config scopes: guild, member
 Data: Daily quests store, per member, today's quests and progress, coins and XP earned today, their streak, best streak, full-set count, this week's active days and the last d…
 

@@ -194,9 +194,9 @@ def test_set_pack_price_modes():
     assert Q.set_pack_price("off", 10000) is None
 
 
-def test_post_quests_need_a_channel():
+def test_post_quests_need_a_channel_and_heist_quests_read_counters():
     assert Q.BY_KEY["selfie"].source == Q.POST and Q.BY_KEY["selfie"].channel == "selfie"
-    assert Q.BY_KEY["counting"].source == Q.POST and "heist" not in Q.BY_KEY
+    assert Q.BY_KEY["counting"].source == Q.POST and Q.BY_KEY["heist"].source == Q.COUNTER and Q.BY_KEY["getaway"].source == Q.COUNTER
     assert Q.valid_day("2026-12-25") and not Q.valid_day("2026-13-01") and not Q.valid_day("tomorrow")
 
 
@@ -218,7 +218,7 @@ def test_custom_targets_and_titles():
 
 def test_every_quest_has_exactly_one_source_and_command_quests_name_their_command():
     for q in Q.QUESTS:
-        assert q.source in (Q.HOOK, Q.COMMAND, Q.CHAT, Q.CALL, Q.POST)
+        assert q.source in (Q.HOOK, Q.COMMAND, Q.CHAT, Q.CALL, Q.POST, Q.COUNTER)
         assert bool(q.command) == (q.source == Q.COMMAND)
         assert bool(q.channel) == (q.source == Q.POST)
     assert len({q.key for q in Q.QUESTS}) == len(Q.QUESTS)

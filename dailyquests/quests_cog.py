@@ -55,6 +55,7 @@ DEFAULT_GUILD_QUESTS = {
 }
 
 OPEN, DONE, OFF = "open", "done", "off"
+COUNTERS = ("heist", "getaway")   # quests read off another cog's lifetime counters (see _q_counters)
 RECONCILE = ("verdict", "pet", "card")   # once-a-day actions whose own cog says whether they were done today
 
 
@@ -387,6 +388,7 @@ class QuestsMixin:
                 except ValueError:
                     return f"This reroll costs {cost:,} and you don't have enough."
             state["assigned"][state["assigned"].index(old_key)] = pick[0]
+            await self._q_set_base(member, state, [pick[0]])
             state["swapped"].append(old_key)
             state["rerolls"] = int(state["rerolls"]) + 1
             await mconf.quests.set(state)
@@ -542,6 +544,17 @@ class QuestsMixin:
             return ok(await self._q_hub_channel(guild), threads=True)
         if key in ("selfie", "counting"):
             return ok(await self._q_post_channel(guild, key, conf), send=True)
+        if key in COUNTERS:
+            cog = get("Heist")
+            if cog is None or not self._exists("heist start"):
+                return OFF, None, "Heist not loaded"
+            user = cog.config.user(member)
+            jail, debt = await user.jail(), await user.debt()
+            if jail and float(jail.get("end_time") or 0) > time.time():
+                return OFF, None, "in jail"
+            if debt and int(debt) > 0:
+                return OFF, None, "owes a debt"
+            return ok(guild.get_channel(conf.get("commands_channel_id") or 0), send=True)
         if key == "duel":
             cog = get("Duel")
             if cog is None or not self._exists("duel"):
@@ -682,6 +695,30 @@ class QuestsMixin:
             await self._q_bump(guild, day, done={k: 1 for k in new}, sets=int(set_done), paid=paid)
         return progress
 
+    async def _q_counters(self, member) -> Optional[dict]:
+        """The Heist cog's lifetime tallies for this member as {"heist": heists ended, "getaway": clean wins}, or None.
+        The Heist cog keeps success (won and not caught), caught (police got them) and fail; it sends no events."""
+        cog = self.bot.get_cog("Heist")
+        if cog is None:
+            return None
+        try:
+            stats = await cog.config.user(member).stats() or {}
+            won, caught, failed = (int(stats.get(k, 0) or 0) for k in ("success", "caught", "fail"))
+        except Exception:
+            log.exception("quests: reading the heist tallies for %s failed", member.id)
+            return None
+        return {"heist": won + caught + failed, "getaway": won}
+
+    async def _q_set_base(self, member, state: dict, keys=None) -> None:
+        """Remember each counter quest's tally as it stands now, so only what happens after it was dealt counts."""
+        wanted = [k for k in (keys or state["assigned"]) if k in COUNTERS and k not in state["base"]]
+        if not wanted:
+            return
+        now = await self._q_counters(member)
+        if now is not None:
+            for key in wanted:
+                state["base"][key] = now[key]
+
     async def _q_open(self, member, conf: dict, count_open: bool) -> dict:
         """Deal today's quests if needed, catch up on anything the listeners missed, count the open."""
         guild, day = member.guild, Q.today()
@@ -696,6 +733,12 @@ class QuestsMixin:
                               if s == OPEN and not Q.is_done(state, k, conf["targets"])]
                 state["assigned"] = Q.deal(candidates, state["last_done"], day, Q.rng_for(guild.id, member.id, day))
                 offered = {k: 1 for k in state["assigned"]}
+            now = await self._q_counters(member) if any(k in COUNTERS for k in state["assigned"]) else None
+            for key in [k for k in state["assigned"] if k in COUNTERS and not Q.is_done(state, k, conf["targets"])]:
+                if key not in state["base"]:
+                    await self._q_set_base(member, state, [key])       # just dealt: start counting from here
+                elif now is not None and now[key] > state["base"][key]:
+                    Q.add_progress(state, key, Q.target_of(key, conf["targets"]), conf["targets"])
             for key in [k for k in state["assigned"] if k in RECONCILE and not Q.is_done(state, k, conf["targets"])]:
                 status = await self._q_status(key, member, conf) if statuses is None else statuses[key]
                 if status[0] == DONE:   # done since it was dealt, but the hook was missed (a reload, say)

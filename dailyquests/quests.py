@@ -48,7 +48,7 @@ DEFAULT_WEEKLY = {"days": 5, "coins": 1.0, "xp": 300, "pack": False}   # quests 
 DEFAULT_XP_BOOST = {"start": "", "end": "", "multiplier": 2.0}          # a holiday XP window (Pacific dates)
 MAX_XP = 100000
 
-HOOK, COMMAND, CHAT, CALL, POST = "hook", "command", "chat", "call", "post"   # CALL: our own cog calls _q_record; POST: a message in a named channel
+HOOK, COMMAND, CHAT, CALL, POST, COUNTER = "hook", "command", "chat", "call", "post", "counter"   # CALL: our own cog calls _q_record; POST: a message in a named channel
 
 # Never offered, never matched: checked by a test against every quest's key and text.
 FORBIDDEN_WORDS = ("secret", "afterdark", "after dark", "rabbit", "pillow")
@@ -84,6 +84,8 @@ QUESTS = (
     Quest("canvas", "Paint a canvas pixel", "Pick **Pixel Canvas** in the More… menu in {#wondercasino}.", HOOK),
     Quest("selfie", "Post a selfie in {#selfie}", "Share a photo of yourself in {#selfie}.", POST, channel="selfie"),
     Quest("counting", "Count in {#counting}", "Add the next number in {#counting}.", POST, channel="counting"),
+    Quest("heist", "Finish a heist", "Run one: `.heist start` in {#bot-commands}. Win or lose, it counts once it ends.", COUNTER),
+    Quest("getaway", "Make a clean getaway", "Pull off a heist and don't get caught: `.heist start` in {#bot-commands}.", COUNTER),
     Quest("duel", "Play a duel", "Challenge someone with `.duel @them <wager>` and see the fight through.", HOOK),
     Quest("guide", "Look something up in the guide", "Type `.wld search card` (or any word) in {#bot-commands}.", HOOK),
     Quest("acro", "Play Acrophobia", "Enter an acronym or vote on one when a round pops up. Rounds run twice a day at busy hours.",
@@ -164,7 +166,8 @@ def fresh_state() -> dict:
     return {"day": "", "assigned": [], "progress": {}, "paid": [], "earned": 0, "opened": False,
             "payday": False, "streak": 0, "best_streak": 0, "last_active": "", "last_full": "", "sets": 0,
             "last_done": {}, "xp": 0, "rerolls": 0, "swapped": [], "notes": [],
-            "ms_given": [], "week": {"key": "", "days": []}, "week_paid": "", "packs": 0, "set_pack_day": ""}
+            "ms_given": [], "week": {"key": "", "days": []}, "week_paid": "", "packs": 0, "set_pack_day": "",
+            "base": {}}
 
 
 def roll_day(state: Optional[dict], day: str) -> dict:
@@ -173,8 +176,8 @@ def roll_day(state: Optional[dict], day: str) -> dict:
     out.update(dict(state or {}))
     if out["day"] != day:
         out.update(day=day, assigned=[], progress={}, paid=[], earned=0, opened=False, payday=False,
-                   xp=0, rerolls=0, swapped=[], notes=[])
-    out["progress"] = dict(out["progress"])
+                   xp=0, rerolls=0, swapped=[], notes=[], base={})
+    out["progress"], out["base"] = dict(out["progress"]), dict(out["base"])
     out["last_done"] = dict(out["last_done"])
     out["notes"], out["ms_given"], out["swapped"] = list(out["notes"]), list(out["ms_given"]), list(out["swapped"])
     out["week"] = {"key": out["week"].get("key", ""), "days": list(out["week"].get("days", []))}

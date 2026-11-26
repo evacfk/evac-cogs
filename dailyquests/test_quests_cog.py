@@ -856,3 +856,115 @@ async def test_admin_specs_save_and_reject_bad_input(world):
     member(g, 77)
     estimate = await cog._q_estimate(g)
     assert "weekly prize" in estimate and "Rerolls" in estimate
+
+
+# ------------------------------------------------------------------ heist quests (read off the Heist cog's tallies)
+
+class HeistFake:
+    """maxcogs' Heist: lifetime stats {success, caught, fail} per user, jail and debt, no events."""
+
+    def __init__(self):
+        self.users = {}
+        fake = self
+
+        class User:
+            def __init__(self, uid):
+                self.uid = uid
+
+            def _d(self):
+                return fake.users.setdefault(self.uid, {"stats": {"success": 0, "caught": 0, "fail": 0}, "jail": None, "debt": 0})
+
+            def stats(self):
+                return _ret(self._d()["stats"])
+
+            def jail(self):
+                return _ret(self._d()["jail"])
+
+            def debt(self):
+                return _ret(self._d()["debt"])
+        self.config = SimpleNamespace(user=lambda m: User(m.id))
+
+    def end(self, uid, outcome):
+        stats = self.users.setdefault(uid, {"stats": {"success": 0, "caught": 0, "fail": 0}, "jail": None, "debt": 0})["stats"]
+        stats[outcome] += 1
+
+
+async def heist_world(world, monkeypatch, quests=("heist", "getaway")):
+    world.cog._cogs["Heist"] = heist = HeistFake()
+    world.cog._commands.add("heist start")
+    monkeypatch.setattr(Q, "today", lambda *a, **k: "2026-11-02")
+    await switch_on(world, keep_off=[k for k in ("guide", "star", "heist", "getaway") if k not in quests])
+    m = member(world.guild, 1)
+    return heist, m
+
+
+async def test_heist_quests_are_offered_only_when_the_member_can_start_one(world, monkeypatch):
+    heist, m = await heist_world(world, monkeypatch)
+    conf = await world.cog._q_conf(world.guild)
+    assert (await world.cog._q_status("heist", m, conf))[0] == QC.OPEN
+    heist.users[1] = {"stats": {}, "jail": {"end_time": 9e12}, "debt": 0}
+    assert (await world.cog._q_status("getaway", m, conf))[1:] == (None, "in jail")
+    heist.users[1]["jail"], heist.users[1]["debt"] = None, 500
+    assert (await world.cog._q_status("heist", m, conf))[2] == "owes a debt"
+    heist.users[1]["debt"] = 0
+    world.cog._commands.discard("heist start")
+    assert (await world.cog._q_status("heist", m, conf))[0] == QC.OFF
+    world.cog._cogs.pop("Heist")
+    assert (await world.cog._q_status("heist", m, conf))[2] == "Heist not loaded"
+
+
+async def test_a_heist_that_ended_before_the_quest_was_dealt_does_not_count(world, monkeypatch):
+    heist, m = await heist_world(world, monkeypatch)
+    heist.end(1, "success")                                   # yesterday's heist: part of the baseline
+    await world.cog._q_panel_embed(m)
+    state(world, m)["assigned"] = ["heist", "getaway", "card"]
+    await world.cog._q_panel_embed(m)
+    assert state(world, m)["paid"] == [] and state(world, m)["base"] == {"heist": 1, "getaway": 1}
+
+
+async def test_any_ended_heist_finishes_heist_and_only_a_clean_win_makes_the_getaway(world, monkeypatch):
+    heist, m = await heist_world(world, monkeypatch)
+    await world.cog._q_panel_embed(m)
+    state(world, m)["assigned"] = ["heist", "getaway", "card"]
+    await world.cog._q_panel_embed(m)                         # baselines are set when the quests are first seen
+    heist.end(1, "caught")                                    # police got them: the heist ended, no getaway
+    await world.cog._q_panel_embed(m, count_open=False)
+    assert state(world, m)["paid"] == ["heist"] and world.balances[1] == 1000
+    heist.end(1, "success")
+    await world.cog._q_panel_embed(m, count_open=False)
+    assert sorted(state(world, m)["paid"]) == ["getaway", "heist"] and world.balances[1] == 2000
+
+
+async def test_a_failed_heist_counts_as_finished_but_not_as_a_getaway(world, monkeypatch):
+    heist, m = await heist_world(world, monkeypatch)
+    await world.cog._q_panel_embed(m)
+    state(world, m)["assigned"] = ["heist", "getaway", "card"]
+    await world.cog._q_panel_embed(m)
+    heist.end(1, "fail")
+    await world.cog._q_panel_embed(m, count_open=False)
+    assert state(world, m)["paid"] == ["heist"]
+
+
+async def test_a_heist_quest_cannot_be_counted_by_a_hook_or_command(world, monkeypatch):
+    heist, m = await heist_world(world, monkeypatch)
+    for source in (Q.HOOK, Q.COMMAND, Q.CHAT):
+        assert await world.cog._q_record(m, "heist", 1, source=source) is None
+
+
+async def test_a_rerolled_in_heist_quest_counts_from_the_reroll(world, monkeypatch):
+    heist, m = await heist_world(world, monkeypatch, quests=("heist",))
+    await world.cog._q_panel_embed(m)
+    st = state(world, m)
+    st["assigned"] = ["card", "chat", "fish"]
+    st["base"] = {}
+
+    async def withdraw(who, amount):
+        world.balances[who.id] = world.balances.get(who.id, 0) - amount
+    monkeypatch.setattr(bank, "withdraw_credits", withdraw)
+    world.balances[1] = 100_000
+    monkeypatch.setattr(Q, "deal", lambda candidates, *a, **k: ["heist"] if "heist" in candidates else [])
+    await world.cog._q_reroll(m, "fish")
+    assert state(world, m)["base"] == {"heist": 0}
+    heist.end(1, "success")
+    await world.cog._q_panel_embed(m, count_open=False)
+    assert "heist" in state(world, m)["paid"]
