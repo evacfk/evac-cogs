@@ -351,7 +351,30 @@ class QuestsMixin:
         except Exception:
             log.exception("quests: showing a quest pack to %s failed", member.id)
             return "Your pack was opened. Check `.card` to see the new cards.", None
-        return text.replace("opened today's pack:", "opened a quest-reward pack:", 1), file
+        who = member.mention
+        price = int(result.get("price", 0)) if isinstance(result, dict) else 0
+        if kind == "voucher":
+            line = f"\U0001f381 {who} earned a free pack from their daily-quest streak:"
+        elif price:
+            line = f"\U0001f381 {who} finished all of their daily quests and bought a pack with it for {price:,} wondercoin:"
+        else:
+            line = f"\U0001f381 {who} finished all of their daily quests and got a free pack:"
+        text = line + "\n" + text.split("\n", 1)[1] if "\n" in text else line
+        channel = guild.get_channel(conf.get("commands_channel_id") or 0)
+        if channel is not None:
+            try:
+                kw = {"file": file} if file is not None else {}
+                await channel.send(content=text, allowed_mentions=discord.AllowedMentions.none(), **kw)
+            except (discord.HTTPException, AttributeError):
+                log.exception("quests: couldn't post %s's quest pack in the commands channel", member.id)
+            else:
+                try:
+                    if hasattr(cog, "announce_pack_hits"):
+                        await cog.announce_pack_hits(guild, member, result, channel.id)
+                except Exception:
+                    log.exception("quests: announcing a quest pack's hits failed")
+                return f"Pack opened! The cards are in {channel.mention}.", None
+        return text, file
 
     async def _q_reroll_options(self, member) -> tuple:
         """([quest keys that can be swapped], message). A quest can be swapped before it has any progress."""

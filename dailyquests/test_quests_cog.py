@@ -99,6 +99,10 @@ class Channel:
         self.id, self.name, self.public, self.can_send, self.hidden = cid, name, public, can_send, set(members_hidden)
         self.everyone = True        # False: a role-gated channel (Pillow Talk style) members can see, @everyone can't
         self.mention = f"<#{cid}>"
+        self.sent = []
+
+    async def send(self, content=None, **kw):
+        self.sent.append((content, kw))
 
     def permissions_for(self, who):
         if getattr(who, "is_default", False):
@@ -769,7 +773,8 @@ async def test_a_voucher_pack_opens_through_cardcollect_and_is_used_up(world, mo
             return "🎁 opened a quest pack:", None
     world.cog._cogs["CardCollect"] = CC()
     text, _file = await world.cog._q_open_pack(m, "voucher")
-    assert calls == [0] and state(world, m)["packs"] == 0 and "quest pack" in text
+    assert calls == [0] and state(world, m)["packs"] == 0 and "<#" in text
+    assert "daily-quest streak" in world.guild.get_channel(QC.BOT_COMMANDS_CHANNEL_ID).sent[0][0]
     again, _ = await world.cog._q_open_pack(m, "voucher")
     assert "no free packs" in again and calls == [0]
 
@@ -939,3 +944,74 @@ async def test_a_rerolled_in_heist_quest_counts_from_the_reroll(world, monkeypat
     heist.end(1, "success")
     await world.cog._q_panel_embed(m, count_open=False)
     assert "heist" in state(world, m)["paid"]
+
+
+class PackCC(Cards):
+    config = SimpleNamespace(guild=lambda g: SimpleNamespace(pack_price=lambda: _ret(10000)))
+
+    def __init__(self, price=5000):
+        super().__init__()
+        self.price, self.hits = price, []
+
+    async def open_bonus_pack(self, guild, who, price=0):
+        return {"entries": [], "bonus": True, "price": price}
+
+    async def pack_result_message(self, guild, who, result):
+        return f"\U0001f381 {who.mention} opened a quest pack:\nCard A\nCard B", "FILE"
+
+    async def announce_pack_hits(self, guild, who, result, posted_in_id):
+        self.hits.append(posted_in_id)
+
+
+async def test_a_full_set_pack_is_posted_in_bot_commands_with_its_own_wording(world, monkeypatch):
+    await switch_on(world, keep_off=["guide", "star"])
+    m = member(world.guild, 1)
+    monkeypatch.setattr(Q, "today", lambda *a, **k: "2026-11-02")
+    await world.cog._q_panel_embed(m)
+    st = state(world, m)
+    st["paid"] = list(st["assigned"])
+    cards = PackCC()
+    world.cog._cogs["CardCollect"] = cards
+    private, file = await world.cog._q_open_pack(m, "set")
+    cmds = world.guild.get_channel(QC.BOT_COMMANDS_CHANNEL_ID)
+    assert len(cmds.sent) == 1
+    posted, kw = cmds.sent[0]
+    assert posted.splitlines()[0] == "\U0001f381 <@1> finished all of their daily quests and bought a pack with it for 5,000 wondercoin:"
+    assert "Card A" in posted and "Card B" in posted and kw["file"] == "FILE"
+    assert cards.hits == [QC.BOT_COMMANDS_CHANNEL_ID]
+    assert cmds.mention in private and file is None
+
+
+async def test_a_free_set_pack_and_a_streak_voucher_have_their_own_wording(world, monkeypatch):
+    await switch_on(world, keep_off=["guide", "star"])
+    m = member(world.guild, 1)
+    monkeypatch.setattr(Q, "today", lambda *a, **k: "2026-11-02")
+    await world.cog._q_panel_embed(m)
+    st = state(world, m)
+    st["paid"] = list(st["assigned"])
+    st["packs"] = 1
+    world.cog._cogs["CardCollect"] = PackCC()
+    await QC.QuestsMixin._q_open_pack(world.cog, m, "voucher")
+    cmds = world.guild.get_channel(QC.BOT_COMMANDS_CHANNEL_ID)
+    assert cmds.sent[0][0].splitlines()[0] == "\U0001f381 <@1> earned a free pack from their daily-quest streak:"
+    conf = await world.cog._q_conf(world.guild)
+    await world.cog.config.guild(world.guild).quests.set({**conf, "set_pack": "free"})
+    await world.cog._q_open_pack(m, "set")
+    assert cmds.sent[1][0].splitlines()[0] == "\U0001f381 <@1> finished all of their daily quests and got a free pack:"
+
+
+async def test_a_pack_that_cannot_post_falls_back_to_the_private_reply(world, monkeypatch):
+    await switch_on(world, keep_off=["guide", "star"])
+    m = member(world.guild, 1)
+    monkeypatch.setattr(Q, "today", lambda *a, **k: "2026-11-02")
+    await world.cog._q_panel_embed(m)
+    st = state(world, m)
+    st["paid"] = list(st["assigned"])
+    world.cog._cogs["CardCollect"] = PackCC()
+    cmds = world.guild.get_channel(QC.BOT_COMMANDS_CHANNEL_ID)
+
+    async def boom(*a, **k):
+        raise discord.HTTPException(SimpleNamespace(status=403, reason="no"), "Missing Access")
+    cmds.send = boom
+    private, file = await world.cog._q_open_pack(m, "set")
+    assert "bought a pack" in private and "Card A" in private and file == "FILE"
