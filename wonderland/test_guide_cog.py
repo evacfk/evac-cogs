@@ -413,7 +413,7 @@ async def test_map_shows_the_gated_channel_to_a_member_who_has_access(mod):
 
 async def test_map_drops_a_section_with_nothing_visible(mod):
     everything = [FakeChannel(i, name, hidden_from={5}) for i, name in
-                  enumerate(["🔐・verify", "❓・qotd", "🗝️・hall-of-secrets", "📸・selfies", "🖼️・share-your-pics",
+                  enumerate(["🔐・verify", "❓・qotd", "📸・selfies", "🖼️・share-your-pics",
                              "🌗・gm-and-gn-only", "🔢・counting"], start=100)]
     text = _map_text(mod, FakeGuild(everything), member=types.SimpleNamespace(id=5))
     assert "**OTHER**" not in text

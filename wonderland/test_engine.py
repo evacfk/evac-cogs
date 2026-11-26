@@ -123,7 +123,7 @@ def test_no_removed_commands_are_advertised():
 
 
 def test_map_blocks_skips_hidden_channels_and_drops_empty_sections():
-    blocks = dict(engine.map_blocks(lambda ch: engine.HIDDEN if ch.slug in {"verify", "qotd", "hall-of-secrets", "selfies",
+    blocks = dict(engine.map_blocks(lambda ch: engine.HIDDEN if ch.slug in {"verify", "qotd", "selfies",
                                                                         "share-your-pics", "gm-and-gn-only", "counting"} else None))
     assert "other" not in blocks
     assert "important" in blocks and "chat" in blocks

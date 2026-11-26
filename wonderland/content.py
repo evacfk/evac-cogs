@@ -125,7 +125,6 @@ PAGES = (
               "that opens at 10am Pacific, an hour after the daily question: tap Submit before ~2pm and write one word per letter in "
               "order, then vote for your favourite until ~6pm (never your own). The winner takes the wondercoin prize", requires=("verdict top",)),
         Entry("/verdict suggest <question> | <a> | <b>", "suggest a daily question, privately (2-4 options)", requires=("verdict suggest",)),
-        Entry(".secrets [@user]", "the secrets someone has found", requires=("secrets",)),
         Entry(".bumpreward top", "top server bumpers", requires=("bumpreward top",)),
         Entry(".star / .unstar", "add or remove a message from the starboard", requires=("star", "unstar")),
     )),
@@ -145,7 +144,6 @@ PAGES = (
         Entry(".introcleanup sweep", "clean intros left by members who left", requires=("introcleanup",)),
         Entry(".pulse", "server activity: day, week, month, heatmap; `.pulse settings` for setup", requires=("pulse",)),
         Entry(".afterdark", "Rabbit Hole access: opens its settings panel", requires=("afterdark",)),
-        Entry(".secrethunt", "secret hunt setup and status", requires=("secrethunt",)),
         Entry(".event create <kind>", "schedule a movie or game night", requires=("event create",)),
         Entry("{cmds}", "open a settings panel (needs Manage Server)",
               expand=("lurkerset", "minigamehub", "rejoinwatch", "celebrations", "puzzle", "introform", "introcleanup",
@@ -187,7 +185,6 @@ MAP = (
     Section("other", (
         Channel("verify", "🔐", "become a verified Wonderlandian!", public_link=False),
         Channel("qotd", "❓", "question of the day"),
-        Channel("hall-of-secrets", "🗝️", "secret hunting"),
         Channel("selfies", "📸", "selfie sharing"),
         Channel("share-your-pics", "🖼️", "photo sharing"),
         Channel("gm-and-gn-only", "🌗", "good morning and good night only"),

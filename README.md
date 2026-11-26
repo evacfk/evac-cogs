@@ -15,7 +15,6 @@ reports, previews, testing, member commands) stay typed.
 | Cog | What it does | Settings panel | Version probe |
 |---|---|---|---|
 | `afterdark` | Gated Rabbit Hole access: rules panel with interest buttons, mod-approved invitations, one permanent pinnable rabbit message, inactivity cleanup, exclude list. | `.afterdark` | `.afterdark version` |
-| `secrethunt` | WoW-style secret hunts: personalised puzzles in forum posts, Hall of Secrets, tier badge roles. Members use `.secrets`. | `.secrethunt` | `.secrethunt version` |
 | `lurker` | Auto-hides inactive members behind a Lurker role; mod reports; year-club roles moved to `celebrations`. | `.lurkerset` | `.lurkerversion` |
 | `rejoinwatch` | Tracks voluntary leaves, warns rejoiners, flags repeat leavers to mods with a ban button. | `.rejoinwatch` | `.rejoinwatch settings` |
 | `celebrations` | Birthdays (role, coin gift, posts), join-anniversary shout-outs and the year club roles (`.yearclub`). Members use `.birthday`. | `.celebrations` | `.celebrations version` |
