@@ -349,6 +349,37 @@ def weekly_embed(report: dict) -> discord.Embed:
     return embed
 
 
+def live_embed(service: CanvasService) -> discord.Embed:
+    """The pinned, constantly refreshed canvas in #cuddle. No pixel text, ever."""
+    embed = discord.Embed(
+        title="🎨 Wonderland Canvas — live", color=COLOR,
+        description=f"Updated <t:{int(service.clock())}:R>. Every paint makes that pixel 1.2× dearer, the previous owner "
+                    f"gets nothing, and the coins are destroyed. A blank pixel is {coins(BASE_PRICE)}.\n"
+                    f"Press **Open canvas** to zoom, inspect and paint. Only you see it.")
+    embed.set_image(url="attachment://canvas.png")
+    embed.set_footer(text=f"{service.store.painted_count():,} of {GRID_W * GRID_H:,} pixels painted · "
+                          f"{coins(service.store.burned())} destroyed so far")
+    return embed
+
+
+class LiveView(discord.ui.View):
+    """The button under the live message. Persistent: fixed custom_id, registered once at cog load."""
+
+    def __init__(self, cog):
+        super().__init__(timeout=None)
+        self.cog = cog
+
+    @discord.ui.button(label="Open canvas", emoji="🎨", style=discord.ButtonStyle.primary,
+                       custom_id="wonderland:canvas:open")
+    async def open(self, interaction: discord.Interaction, button):
+        service = self.cog._canvas(interaction.guild)
+        try:
+            service.count_open()
+        except Exception:
+            log.exception("canvas: counting an Open canvas press failed")
+        await open_canvas(interaction, service)
+
+
 async def open_canvas(interaction: discord.Interaction, service: CanvasService) -> None:
     """The hub entry point: the canvas, privately, with its buttons."""
     await interaction.response.defer(ephemeral=True)
@@ -375,7 +406,8 @@ def mod_embed(service: CanvasService, note: str = "") -> discord.Embed:
     embed.add_field(name="Coins burned per week", value="\n".join(
         f"{label}: {coins(c)}" for label, (_, c) in zip(labels, now_weeks)) + f"\n**Total: {coins(u['burned_total'])}**")
     embed.add_field(name="Canvas", value=f"{u['painted']:,} of {GRID_W * GRID_H:,} pixels painted\n"
-                                         f"{len(u['banned'])} painter(s) banned")
+                                         f"{len(u['banned'])} painter(s) banned\n"
+                                         f"{u['live_opens']:,} presses of the live message's Open canvas button")
     verdict = (f"Review on <t:{int(u['review_at'])}:D> (3 weeks after launch): compare coins burned with `.wld economy`."
                if not u["review_due"] else
                "**Review is due.** Compare coins burned with `.wld economy`. " + (
@@ -388,9 +420,10 @@ def mod_embed(service: CanvasService, note: str = "") -> discord.Embed:
 
 
 class ModPanelView(discord.ui.View):
-    def __init__(self, service: CanvasService, mod, is_mod: Callable[[object], Awaitable[bool]]):
+    def __init__(self, service: CanvasService, mod, is_mod: Callable[[object], Awaitable[bool]],
+                 repost: Optional[Callable[..., Awaitable[str]]] = None):
         super().__init__(timeout=VIEW_TIMEOUT)
-        self.service, self.mod, self.is_mod = service, mod, is_mod
+        self.service, self.mod, self.is_mod, self.repost_live = service, mod, is_mod, repost
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
         if interaction.user.id != self.mod.id or not await self.is_mod(interaction.user):
@@ -399,7 +432,7 @@ class ModPanelView(discord.ui.View):
         return True
 
     def _again(self) -> "ModPanelView":
-        return ModPanelView(self.service, self.mod, self.is_mod)
+        return ModPanelView(self.service, self.mod, self.is_mod, self.repost_live)
 
     @discord.ui.button(label="Clear a pixel's text", style=discord.ButtonStyle.secondary, row=0)
     async def clear_text(self, interaction: discord.Interaction, button):
@@ -426,6 +459,19 @@ class ModPanelView(discord.ui.View):
             f"the record of coins burned and the leaderboards stay. Nothing has changed yet."))
         await interaction.response.edit_message(embed=embed, view=ConfirmDestructive(self, "Yes, reset everything",
                                                                                      self._do_reset))
+
+    @discord.ui.button(label="Repost live canvas", style=discord.ButtonStyle.secondary, row=1)
+    async def repost(self, interaction: discord.Interaction, button):
+        if self.repost_live is None:
+            await interaction.response.send_message("Reposting isn't wired up here.", ephemeral=True)
+            return
+        await interaction.response.defer()
+        try:
+            note = await self.repost_live(interaction)
+        except Exception:
+            log.exception("canvas: reposting the live message failed")
+            note = "Reposting failed; see the bot log."
+        await interaction.edit_original_response(embed=mod_embed(self.service, note), view=self._again())
 
     @discord.ui.button(label="Refresh counts", style=discord.ButtonStyle.secondary, row=2)
     async def refresh(self, interaction: discord.Interaction, button):
@@ -506,9 +552,10 @@ class MemberModal(discord.ui.Modal):
 class OpenModPanel(discord.ui.View):
     """The one-line stub `.gamblehub canvas` leaves in the channel (a prefix command can't reply privately)."""
 
-    def __init__(self, service: CanvasService, is_mod: Callable[[object], Awaitable[bool]]):
+    def __init__(self, service: CanvasService, is_mod: Callable[[object], Awaitable[bool]],
+                 repost: Optional[Callable[..., Awaitable[str]]] = None):
         super().__init__(timeout=300)
-        self.service, self.is_mod = service, is_mod
+        self.service, self.is_mod, self.repost = service, is_mod, repost
         self.message: Optional[discord.Message] = None
 
     @discord.ui.button(label="Open canvas mod panel (only you will see it)", emoji="🎨", style=discord.ButtonStyle.primary)
@@ -517,7 +564,8 @@ class OpenModPanel(discord.ui.View):
             await interaction.response.send_message("Mods only.", ephemeral=True)
             return
         await interaction.response.send_message(embed=mod_embed(self.service),
-                                                view=ModPanelView(self.service, interaction.user, self.is_mod),
+                                                view=ModPanelView(self.service, interaction.user, self.is_mod,
+                                                                  self.repost),
                                                 ephemeral=True)
 
     async def on_timeout(self):

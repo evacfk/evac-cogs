@@ -18,7 +18,7 @@ from .settings_panel import PanelError, open_panel
 
 log = logging.getLogger("red.evac-cogs.gamble")
 
-COG_VERSION = "1.7.1"
+COG_VERSION = "1.8.0"
 
 # The pixel canvas (canvas_*.py) is built into this cog: no commands of its own. Members open it from the
 # hub's "More…" dropdown (a "canvas" mode entry, handled here instead of resolving a command); mods use
@@ -494,6 +494,7 @@ class GambleThreads(commands.Cog):
         self._bg_tasks: set = set()
         self._canvases: dict = {}        # guild id -> CanvasService
         self._canvas_retry: dict = {}    # guild id -> unix time before which the weekly post isn't retried
+        self._canvas_live_retry: dict = {}   # guild id -> unix time before which the live message isn't retried
         self._cleanup_task = self.bot.loop.create_task(self._cleanup_loop())
 
     async def cog_load(self):
@@ -503,6 +504,7 @@ class GambleThreads(commands.Cog):
         self.bot.add_view(HubView(self))
         self.bot.add_view(QuestsRouteView(self))
         self.bot.add_view(CloseTableView(self))
+        self.bot.add_view(canvas_ui.LiveView(self))
         self._seed_task = self.bot.loop.create_task(self._seed_flagship_games())
 
     def cog_unload(self):
@@ -586,6 +588,10 @@ class GambleThreads(commands.Cog):
 
     async def _check_all_guilds(self):
         for guild in self.bot.guilds:
+            try:
+                await self._canvas_live_tick(guild)
+            except Exception:
+                log.exception("gamble: canvas live message failed for guild %s", guild.id)
             try:
                 await self._canvas_weekly_tick(guild)
             except Exception:
@@ -1473,6 +1479,74 @@ class GambleThreads(commands.Cog):
                 return sorted(pool, key=lambda c: getattr(c, "position", 0))[0]
         return None
 
+    async def _canvas_live_update(self, guild: discord.Guild, force_new: bool = False) -> str:
+        """Edit the pinned live canvas message in place, or post (and pin) a fresh one in #cuddle when there is
+        none, it was deleted, or `force_new` is set. Returns a one-line status. Raises on unexpected errors."""
+        service = self._canvas(guild)
+        rev = service.store.revision
+        data = await service.image()
+        embed = canvas_ui.live_embed(service)
+        ref = service.live_ref()
+        if ref and force_new:
+            channel = guild.get_channel(ref[0])
+            if channel is not None:
+                try:
+                    await channel.get_partial_message(ref[1]).delete()
+                except discord.HTTPException:
+                    pass
+            service.clear_live_ref()
+            ref = None
+        if ref:
+            channel = guild.get_channel(ref[0])
+            if channel is not None:
+                try:
+                    await channel.get_partial_message(ref[1]).edit(
+                        embed=embed, attachments=[canvas_ui._file(data, "canvas.png")], view=canvas_ui.LiveView(self))
+                    service.live_rev = rev
+                    return "edited"
+                except discord.NotFound:
+                    log.info("gamble: live canvas message %s is gone; posting a new one", ref[1])
+            service.clear_live_ref()
+        channel = self._find_cuddle(guild)
+        if channel is None:
+            raise RuntimeError("no #cuddle channel found")
+        message = await channel.send(embed=embed, file=canvas_ui._file(data, "canvas.png"),
+                                     view=canvas_ui.LiveView(self), allowed_mentions=discord.AllowedMentions.none())
+        service.set_live_ref(channel.id, message.id)
+        service.live_rev = rev
+        try:
+            await message.pin(reason="Wonderland live canvas")
+        except discord.HTTPException as e:
+            log.warning("gamble: couldn't pin the live canvas in %s: %s", channel.id, e)
+            return "posted, but I couldn't pin it (needs Manage Messages in #cuddle)"
+        return "posted and pinned"
+
+    async def _canvas_live_tick(self, guild: discord.Guild) -> None:
+        """Refresh the live message when the canvas changed since it was last drawn. Runs on the cleanup loop's
+        minute tick, so any burst of paints inside a minute becomes one edit."""
+        if not self._canvas_path(guild).exists():
+            return
+        service = self._canvas(guild)
+        if service.live_rev == service.store.revision:
+            return                                           # nothing changed
+        if service.live_ref() is None and service.store.revision == 0:
+            return                                           # no message yet and nothing painted this run: don't post an empty canvas
+        now = time.time()
+        if self._canvas_live_retry.get(guild.id, 0) > now:
+            return
+        try:
+            await self._canvas_live_update(guild)
+        except Exception:
+            log.exception("gamble: live canvas update failed for guild %s; retrying in 5 minutes", guild.id)
+            self._canvas_live_retry[guild.id] = now + 300
+
+    async def _canvas_repost(self, interaction: discord.Interaction) -> str:
+        """Mod panel: delete the live message and post a fresh pinned one."""
+        try:
+            return "Live canvas " + await self._canvas_live_update(interaction.guild, force_new=True) + "."
+        except RuntimeError as e:
+            return f"Couldn't repost: {e}."
+
     async def _canvas_weekly_tick(self, guild: discord.Guild) -> None:
         """Sunday 6 PM PT: snapshot of the canvas to #cuddle. Runs on the cleanup loop's minute tick; the last
         post time is stored in the canvas database, so a restart neither double-posts nor skips a week."""
@@ -1595,7 +1669,7 @@ class GambleThreads(commands.Cog):
     async def gamblehub_canvas(self, ctx: commands.Context):
         """Pixel canvas mod panel: usage counts, clear text, wipe or ban a painter, reset the canvas."""
         service = self._canvas(ctx.guild)
-        view = canvas_ui.OpenModPanel(service, self._is_mod)
+        view = canvas_ui.OpenModPanel(service, self._is_mod, self._canvas_repost)
         view.message = await ctx.send("🎨 Canvas mod panel:", view=view)
 
     @gamblehub.command(name="addgame")

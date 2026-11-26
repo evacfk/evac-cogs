@@ -508,7 +508,7 @@ class Chan(SimpleNamespace):
 
 def make_cog(tmp_path, env, channels):
     cog = object.__new__(GambleThreads)
-    cog._canvases, cog._canvas_retry, cog._bg_tasks = {}, {}, set()
+    cog._canvases, cog._canvas_retry, cog._canvas_live_retry, cog._bg_tasks = {}, {}, {}, set()
     guild = SimpleNamespace(id=5, text_channels=channels, get_channel=lambda cid: next((c for c in channels if c.id == cid), None))
     path = tmp_path / "canvas-5.sqlite"
     cog._canvas_path = lambda g: path
@@ -646,3 +646,159 @@ async def test_is_mod_accepts_manage_guild_or_red_mods(tmp_path, env):
     assert await cog._is_mod(user(1, manage_guild=True)) is True
     assert await cog._is_mod(user(6)) is True
     assert await cog._is_mod(user(7)) is False
+
+
+# ------------------------------------------------------------------ the pinned live message
+
+def not_found():
+    return discord.NotFound(SimpleNamespace(status=404, reason="gone"), "Unknown Message")
+
+
+class Msg:
+    def __init__(self, chan, id):
+        self.chan, self.id, self.edits, self.pinned, self.deleted = chan, id, [], False, False
+
+    async def edit(self, **kw):
+        if self.deleted:
+            raise not_found()
+        self.edits.append(kw)
+
+    async def delete(self):
+        if self.deleted:
+            raise not_found()
+        self.deleted = True
+
+    async def pin(self, reason=None):
+        if self.chan.pin_fails:
+            raise discord.Forbidden(SimpleNamespace(status=403, reason="no"), "Missing Permissions")
+        self.pinned = True
+
+
+class LiveChan(Chan):
+    def __init__(self, id, name):
+        super().__init__(id, name)
+        self.messages, self.pin_fails, self.next_id = {}, False, 5000
+
+    async def send(self, content=None, **kw):
+        msg = Msg(self, self.next_id)
+        self.next_id += 1
+        self.messages[msg.id] = msg
+        self.sent.append({"content": content, "message": msg, **kw})
+        return msg
+
+    def get_partial_message(self, mid):
+        if mid not in self.messages:                              # an id we never posted behaves like a deleted message
+            self.messages[mid] = Msg(self, mid)
+            self.messages[mid].deleted = True
+        return self.messages[mid]
+
+
+def live_setup(tmp_path, env):
+    cuddle = LiveChan(77, "🧸・cuddle")
+    cog, guild = make_cog(tmp_path, env, [Chan(1, "general"), cuddle])
+    guild.get_channel = lambda cid: next((c for c in [cuddle] if c.id == cid), None)
+    return cog, guild, cuddle
+
+
+async def paint_one(env, uid=1, xy=(0, 0)):
+    env.bank.balances.setdefault(uid, 10_000_000)
+    return await env.svc.paint(user(uid), [xy], "#ff0000", "", env.store.quote([xy]))
+
+
+async def test_the_first_change_posts_and_pins_one_live_message_in_cuddle(tmp_path, env):
+    cog, guild, cuddle = live_setup(tmp_path, env)
+    await cog._canvas_live_tick(guild)
+    assert cuddle.sent == []                                     # nothing painted yet: no empty canvas posted
+    await paint_one(env)
+    await cog._canvas_live_tick(guild)
+    post = cuddle.sent[0]
+    assert post["file"].filename == "canvas.png" and post["message"].pinned
+    assert post["view"].timeout is None and post["view"].children[0].custom_id == "wonderland:canvas:open"
+    assert "1 of 5,000" in post["embed"].footer.text or "1 of 5000" in post["embed"].footer.text.replace(",", "")
+    assert env.svc.live_ref() == (77, post["message"].id)
+    assert "SECRET" not in embed_text(post["embed"])
+
+
+async def test_changes_edit_the_same_message_once_per_tick_and_idle_ticks_do_nothing(tmp_path, env):
+    cog, guild, cuddle = live_setup(tmp_path, env)
+    await paint_one(env)
+    await cog._canvas_live_tick(guild)
+    msg = cuddle.sent[0]["message"]
+    await cog._canvas_live_tick(guild)                           # nothing changed
+    assert msg.edits == [] and len(cuddle.sent) == 1
+    for xy in [(1, 0), (2, 0), (3, 0)]:                          # a burst inside one minute...
+        await paint_one(env, xy=xy)
+    await cog._canvas_live_tick(guild)
+    assert len(msg.edits) == 1 and len(cuddle.sent) == 1         # ...is one edit, not three posts
+    assert msg.edits[0]["attachments"][0].filename == "canvas.png" and msg.edits[0]["view"].timeout is None
+    await cog._canvas_live_tick(guild)
+    assert len(msg.edits) == 1
+
+
+async def test_a_deleted_live_message_is_replaced_at_the_next_change(tmp_path, env):
+    cog, guild, cuddle = live_setup(tmp_path, env)
+    await paint_one(env)
+    await cog._canvas_live_tick(guild)
+    cuddle.sent[0]["message"].deleted = True
+    await paint_one(env, xy=(1, 0))
+    await cog._canvas_live_tick(guild)
+    assert len(cuddle.sent) == 2 and cuddle.sent[1]["message"].pinned
+    assert env.svc.live_ref() == (77, cuddle.sent[1]["message"].id)
+
+
+async def test_a_restart_with_no_change_does_not_repost_but_does_refresh_an_existing_message(tmp_path, env):
+    cog, guild, cuddle = live_setup(tmp_path, env)
+    await paint_one(env)
+    await cog._canvas_live_tick(guild)
+    msg = cuddle.sent[0]["message"]
+    env.svc.live_rev = None                                       # what a restart does to the in-memory marker
+    env.store.revision = 0
+    await cog._canvas_live_tick(guild)
+    assert len(cuddle.sent) == 1 and len(msg.edits) == 1          # refreshed in place, not reposted
+    env.svc.clear_live_ref()
+    env.svc.live_rev = None
+    await cog._canvas_live_tick(guild)
+    assert len(cuddle.sent) == 1                                  # ref gone and nothing changed: stay quiet
+
+
+async def test_a_failing_pin_still_posts_and_a_missing_cuddle_retries_in_5_minutes(tmp_path, env, monkeypatch):
+    cog, guild, cuddle = live_setup(tmp_path, env)
+    cuddle.pin_fails = True
+    await paint_one(env)
+    await cog._canvas_live_tick(guild)
+    assert len(cuddle.sent) == 1 and not cuddle.sent[0]["message"].pinned and env.svc.live_ref() is not None
+    env.svc.clear_live_ref()
+    guild.text_channels[:] = [Chan(1, "general")]
+    await paint_one(env, xy=(5, 5))
+    now = time.time()
+    await cog._canvas_live_tick(guild)
+    assert cog._canvas_live_retry[5] >= now + 299
+    await cog._canvas_live_tick(guild)                            # inside the retry window: no second attempt
+    assert len(cuddle.sent) == 1
+
+
+async def test_the_open_canvas_button_opens_the_canvas_privately_and_is_counted(tmp_path, env):
+    cog, guild, cuddle = live_setup(tmp_path, env)
+    inter = Inter(user(1), guild=guild)
+    await ui.LiveView(cog).open.callback(inter)
+    assert inter.followups[0]["ephemeral"] is True and inter.followups[0]["view"].children[0].label == "Zoom"
+    await ui.LiveView(cog).open.callback(Inter(user(2), guild=guild))
+    assert env.svc.live_opens() == 2
+    assert "2 presses" in embed_text(ui.mod_embed(env.svc))
+
+
+async def test_the_mod_panel_can_repost_the_live_message(tmp_path, env):
+    cog, guild, cuddle = live_setup(tmp_path, env)
+    await paint_one(env)
+    await cog._canvas_live_tick(guild)
+    old = cuddle.sent[0]["message"]
+    view = ui.ModPanelView(env.svc, user(9), is_mod, cog._canvas_repost)
+    click = Inter(user(9), guild=guild)
+    await view.repost.callback(click)
+    assert old.deleted and len(cuddle.sent) == 2 and cuddle.sent[1]["message"].pinned
+    assert "posted and pinned" in click.original[0]["embed"].description
+    assert env.svc.live_ref() == (77, cuddle.sent[1]["message"].id)
+    guild.text_channels[:] = []
+    click = Inter(user(9), guild=guild)
+    await view.repost.callback(click)
+    assert "Couldn't repost" in click.original[0]["embed"].description

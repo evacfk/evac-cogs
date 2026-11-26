@@ -62,6 +62,7 @@ class CanvasService:
         self._render_lock = asyncio.Lock()
         self._image: Optional[bytes] = None
         self._image_rev = -1
+        self.live_rev: Optional[int] = None   # store revision the pinned live message last showed (None: not since start)
 
     # ------------------------------------------------------------------ eligibility
 
@@ -225,6 +226,7 @@ class CanvasService:
             "burned_total": self.store.burned(),
             "painted": self.store.painted_count(),
             "banned": self.store.banned_ids(),
+            "live_opens": self.live_opens(),
             "launched": launched,
             "review_at": review_at,
             "review_due": now >= review_at,
@@ -247,6 +249,32 @@ class CanvasService:
 
     def weekly_mark_posted(self, boundary: float) -> None:
         self.store.meta_set("weekly_posted", str(boundary))
+
+    # ------------------------------------------------------------------ the live message
+
+    def live_ref(self) -> Optional[tuple]:
+        """(channel_id, message_id) of the pinned live canvas message, or None."""
+        raw = self.store.meta_get("live_message")
+        if not raw:
+            return None
+        try:
+            channel_id, message_id = raw.split(":")
+            return int(channel_id), int(message_id)
+        except ValueError:
+            return None
+
+    def set_live_ref(self, channel_id: int, message_id: int) -> None:
+        self.store.meta_set("live_message", f"{channel_id}:{message_id}")
+
+    def clear_live_ref(self) -> None:
+        self.store.meta_delete("live_message")
+
+    def count_open(self) -> None:
+        """One press of the live message's Open canvas button (shown in the mod panel)."""
+        self.store.meta_set("live_opens", str(self.live_opens() + 1))
+
+    def live_opens(self) -> int:
+        return int(self.store.meta_get("live_opens") or 0)
 
     # ------------------------------------------------------------------ moderation
 

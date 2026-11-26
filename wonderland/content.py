@@ -75,8 +75,8 @@ PAGES = (
         Entry(".payouts", "what the slot machine pays", requires=("payouts",)),
         Entry(".duel @user <bet>", "challenge someone to a best-of-3 duel", requires=("duel",)),
         Entry(".duelstats [@user]", "a duel record", requires=("duelstats",)),
-        Entry("Pixel Canvas", "pick it in the #wondercasino dropdown to paint a shared canvas; every paint makes that pixel "
-              "pricier and the coins are burned", requires=("gamble",)),
+        Entry("Pixel Canvas", "the live canvas is pinned in #cuddle (press Open canvas), or pick it in the #wondercasino "
+              "dropdown; every paint makes that pixel pricier and the coins are burned", requires=("gamble",)),
     )),
     Page("games", "🎮", "Games & Activities", "Things to do when you want to play.", (
         Entry(".fish", "go fishing", requires=("fish",)),

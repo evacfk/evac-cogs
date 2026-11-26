@@ -15,7 +15,7 @@ Use it to answer "does a cog already cover this?" and "what depends on this cog?
 - **celebrations** 1.2.1: Birthdays (hoisted role, wondercoin gift, posts), join-anniversary shout-outs and year club roles.
 - **dailyquests** 1.1.1: Daily quests with streak badges, XP and weekly prizes
 - **duel** 1.2.1: 1v1 best-of-3 wagered duels
-- **gamble** 1.7.1: Per-user gambling threads plus the Wondercasino hub menu.
+- **gamble** 1.8.0: Per-user gambling threads plus the Wondercasino hub menu.
 - **hungergames** 1.2.1: A weekly Hunger Games: Reaping, training challenges, live arena broadcasts and Wondercoin sponsorship.
 - **lurker** 2.7.0: Auto-hide inactive members behind a Lurker role.
 - **minigamehub** 1.4.0: Unified, config-driven minigame spawner (pet/mathdrop/hunt/lootdrop/reacttowin/boss).
@@ -27,7 +27,7 @@ Use it to answer "does a cog already cover this?" and "what depends on this cog?
 - **tgfeed** tg-v4: Telegram forum group photos/videos -> Discord channels, media only, read-only and throttled.
 - **verdict** 1.6.2: A daily crowd question (pick, then guess the crowd) and Acrophobia, a quick acronym game twice a day.
 - **wonderevents** 1.4.2: Movie and game nights: RSVP buttons, Discord scheduled events, votes, reminders and attendance.
-- **wonderland** 1.10.0: The Wonderland guidebook: .wld command guide, server map and mod cheat sheet, plus the intro form and member stats.
+- **wonderland** 1.10.1: The Wonderland guidebook: .wld command guide, server map and mod cheat sheet, plus the intro form and member stats.
 - **wonderpet** 1.3.3: One server pet raised together in #cuddle: daily free care, coin treats, weekly top carers, evolution.
 
 ## Cogs
@@ -92,7 +92,7 @@ Links: called by wonderland
 Needs: no extra pip packages · Config scopes: guild, member
 
 ### gamble
-v1.7.1 · GambleThreads · 3231 lines · 125 tests
+v1.8.0 · GambleThreads · 3381 lines · 132 tests
 Commands:
 - `.gamblehub`: addgame, addmodalgame, canvas, listgames, lockdown, notifyrecipient, removegame, setup
 - `.gambleset`: settings, version
@@ -192,7 +192,7 @@ Needs: no extra pip packages · Config scopes: guild, member
 Data: This cog stores, per event, the user IDs of members who RSVP'd and how many minutes each member spent in voice while the event ran, plus a staff member's chosen timezone…
 
 ### wonderland
-v1.10.0 · IntroCleanup, IntroForm, MyStats, Wonderland · 3675 lines · 255 tests
+v1.10.1 · IntroCleanup, IntroForm, MyStats, Wonderland · 3675 lines · 255 tests
 Commands:
 - `.introcleanup|ic`: settings, sweep
 - `.introform`: panel, prune, settings
