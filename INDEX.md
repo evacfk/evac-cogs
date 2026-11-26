@@ -8,7 +8,7 @@ Use it to answer "does a cog already cover this?" and "what depends on this cog?
 
 ## At a glance
 
-- **afterdark** 1.8.2: Gated Rabbit Hole access: button + invitations, interest opt-ins, inactivity cleanup, exclude list.
+- **afterdark** 1.9.0: Gated Rabbit Hole access: permanent rabbit button + invitations, interest opt-ins, inactivity cleanup, exclude list.
 - **blackjacktable** 1.1.0: Multiplayer blackjack table (.wonderjack)
 - **bumpreward** 1.1.0: Currency rewards, streaks, auto reminders and a daily board for Disboard bumps.
 - **cardcollect** 2.16.0: Ambient anime-character card collecting: pick the card you want from each drop and the draw decides.
@@ -32,7 +32,7 @@ Use it to answer "does a cog already cover this?" and "what depends on this cog?
 ## Cogs
 
 ### afterdark
-v1.8.2 · AfterDark · 3514 lines · 221 tests
+v1.9.0 · AfterDark · 3248 lines · 208 tests
 Commands:
 - `.afterdark`: check, clear, exclude, excluded, grant, grantinterest, interest{list, members}, invite{list, now, stop}, panel, post, revoke, revokeinterest, status, sweep, unexclude, version
 Links: calls lurker, redditfeed, tgfeed; optional/external LevelUp

@@ -64,34 +64,6 @@ async def _get_per_day(cog, guild):
     return {"low": await conf.invite_min(), "high": await conf.invite_max()}
 
 
-async def _get_timing(cog, guild):
-    conf = cog.config.guild(guild)
-    return {"min": await conf.drop_min_minutes(), "max": await conf.drop_max_minutes(),
-            "life": await conf.drop_life_minutes(), "slots": await conf.drop_max_claims()}
-
-
-async def _get_next(cog, guild):
-    cfg = await cog.config.guild(guild).all()
-    state = cfg["drop_state"]
-    nxt = state.get("next_ts")
-    mins = max(0, int(round((nxt - cog._clock()) / 60))) if cfg["drop_enabled"] and nxt else None
-    return {"minutes": mins, "live": bool(state.get("message_id"))}
-
-
-def _fmt_next(value, guild):
-    if value is None:
-        return "off"
-    live = " (a drop is live now)" if value.get("live") else ""
-    if value.get("minutes") is None:
-        return "nothing scheduled" + live
-    return f"in about {value['minutes']} min" + live
-
-
-def _fmt_timing(v, guild):
-    slots = v["slots"] if v["slots"] else "unlimited"
-    return f"every {v['min']}-{v['max']} min, stays {v['life']} min, {slots} slot(s)"
-
-
 async def _get_interests(cog, guild):
     cfg = await cog.config.guild(guild).all()
     out = []
@@ -150,14 +122,6 @@ async def _apply_mode(cog, guild, member, value):
 
 async def _apply_sweep_mode(cog, guild, member, value):
     return await cog._apply_dry_run(guild, member, value)
-
-
-async def _drops_enabled(cog, guild, member, value):
-    return await cog._apply_drops_enabled(guild, member, value)
-
-
-async def _drop_now(cog, guild, member, _value):
-    return await cog._apply_drop_now(guild, member)
 
 
 async def _invite_now(cog, guild, member, _value):
@@ -231,7 +195,7 @@ def build_specs():
         _role("verified_role_id", "Age Verified role", clearable=True,
               help="Members with it are invited first. Clear it to go by level only."),
         _channel("log_channel_id", "Log channel", help="Where grants, revokes, sweeps and review prompts are posted."),
-        _channel("clue_channel_id", "Clue channel", help="Where `.afterdark post` puts the rabbit button by default."),
+        _channel("clue_channel_id", "Clue channel", help="Where `.afterdark post` puts the permanent rabbit message by default."),
         # ---------------------------------------------------------------- access & sweep
         Spec("sweep_mode", "Hourly sweep", "Access & sweep", "choice", get=_get_access, apply=_apply_sweep_mode,
              choices=(("Dry run: only report", "dry"), ("Live: remove access from members who fail", "live")),
@@ -243,7 +207,7 @@ def build_specs():
                   "and `.afterdark sweep` still reports. A dry run only repeats itself when the findings change."),
         _modal("min_level", "Minimum level to be admitted", "Access & sweep", _cfg("min_level"), "_apply_min_level",
                (Field("level", "LevelUp level", value=lambda v: str(v), max_length=4),), lambda v, g: f"level {v}",
-               help="Only needed to get in, never to stay."),
+               help="Only needed to get in, never to stay. Members already in are not affected."),
         _modal("sweep_max", "Sweep circuit breaker", "Access & sweep", _cfg("sweep_max"), "_apply_sweep_max",
                (Field("count", "Most members a live sweep may act on", value=lambda v: str(v), max_length=5),),
                lambda v, g: f"{v} members",
@@ -266,23 +230,6 @@ def build_specs():
              help="Ignores the once-a-day limit. The first candidate appears in the log channel."),
         Spec("invite_stop", "Stop today's invitations", "Invitations", "action", apply=_invite_stop, button="Stop for today",
              confirm="Stop today's invitations and close any waiting prompt?"),
-        # ---------------------------------------------------------------- drops
-        Spec("drops", "Random rabbit drops", "Drops", "toggle", get=_cfg("drop_enabled"), apply=_drops_enabled,
-             confirm="Turning drops on deletes the permanent rabbit message and starts the schedule. Continue?",
-             help="Replaces the permanent rabbit message with one that appears now and then and vanishes."),
-        _channel("drop_channel_id", "Drop channel", clearable=True, tab="Drops",
-                 fmt=lambda v, g: _channel_fmt(v, g) if v else "the clue channel", help="Empty means the clue channel."),
-        _modal("drop_timing", "Timing", "Drops", _get_timing, "_apply_drop_timing",
-               (Field("min", "Shortest gap (minutes)", value=lambda v: str(v["min"]), max_length=5),
-                Field("max", "Longest gap (minutes)", value=lambda v: str(v["max"]), max_length=5),
-                Field("life", "How long a drop stays (minutes)", value=lambda v: str(v["life"]), max_length=5),
-                Field("slots", "People let in per drop (0 = unlimited)", value=lambda v: str(v["slots"]), max_length=3)),
-               _fmt_timing),
-        _modal("drop_next", "Next drop", "Drops", _get_next, "_apply_drop_next",
-               (Field("minutes", "Next drop in (minutes)", value=lambda v: str(v.get("minutes") or ""), max_length=5),),
-               _fmt_next, help="Set exactly when the next drop happens. Later gaps stay random."),
-        Spec("drop_now", "Drop one right now", "Drops", "action", apply=_drop_now, button="Drop now",
-             help="A test drop. It still disappears after its lifetime."),
         # ---------------------------------------------------------------- interests and feeds
         Spec("interests", "Interests", TAB_INTERESTS, "collection", get=_get_interests, item_get=_interest_get,
              save=_interest_save, remove=_interest_remove, fields=interest_fields,

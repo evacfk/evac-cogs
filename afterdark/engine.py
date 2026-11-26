@@ -245,48 +245,6 @@ def validate_warn_remove(warn_days: float, remove_days: float) -> Optional[str]:
     return None
 
 
-# ----------------------------------------------------------- rabbit drops
-
-def next_drop_gap_seconds(lo_minutes: float, hi_minutes: float, rng) -> float:
-    """A random gap in [lo, hi] minutes, in seconds."""
-    lo, hi = float(lo_minutes), float(max(lo_minutes, hi_minutes))
-    return rng.uniform(lo, hi) * 60.0
-
-
-def pick_variant(count: int, last, rng) -> int:
-    """A random variant index, never the same one twice in a row (when there is a choice)."""
-    if count <= 1:
-        return 0
-    choices = [i for i in range(count) if i != last]
-    return rng.choice(choices)
-
-
-def drop_action(state: dict, enabled: bool, now: float) -> Optional[str]:
-    """What the drop loop should do for one guild right now: "delete" (a live drop
-    has outlived its lifetime), "schedule" (enabled but nothing planned), "post",
-    or None. Deleting always comes first and works even when drops are switched off."""
-    if state.get("message_id") and now >= float(state.get("delete_ts") or 0):
-        return "delete"
-    if not enabled or state.get("message_id"):
-        return None
-    if not state.get("next_ts"):
-        return "schedule"
-    return "post" if now >= float(state["next_ts"]) else None
-
-
-def validate_drop_timing(lo: int, hi: int, life: int, max_gap: int = 24 * 60) -> Optional[str]:
-    """An error message for impossible settings, else None."""
-    if life < 1 or life > 120:
-        return "Lifetime must be between 1 and 120 minutes."
-    if lo <= life:
-        return "The shortest gap must be longer than the lifetime, or drops would overlap."
-    if hi < lo:
-        return "The longest gap can't be shorter than the shortest."
-    if hi > max_gap:
-        return f"The longest gap can't be more than {max_gap} minutes."
-    return None
-
-
 def chunk_text(lines: Sequence[str], limit: int = 1900) -> List[str]:
     """Pack lines into messages no longer than `limit`; a single over-long line is split."""
     out: List[str] = []

@@ -96,9 +96,8 @@ def test_spec_keys_are_unique_and_every_tab_fits_a_dropdown():
     tabs = {}
     for s in specs:
         tabs.setdefault(s.tab, []).append(s)
-    assert set(tabs) == {"Roles & channels", "Access & sweep", "Invitations", "Drops", "Interests & feeds"}
+    assert set(tabs) == {"Roles & channels", "Access & sweep", "Invitations", "Interests & feeds"}
     assert all(len(v) <= 25 for v in tabs.values())
-    assert {x.key for x in tabs["Drops"]} == {"drops", "drop_channel_id", "drop_timing", "drop_next", "drop_now"}
     assert {x.key for x in tabs["Roles & channels"]} == {"rabbit_role_id", "adult_role_id", "verified_role_id", "log_channel_id", "clue_channel_id"}
     for s in specs:
         assert len(s.fields) <= 5
@@ -194,18 +193,6 @@ async def test_modal_settings_validate_through_the_cog(w):
     good = Click(admin)
     await modal.on_submit(good)
     assert await w.cog.config.guild(w.guild).warn_days() == 3 and "✅" in last_note(good)
-
-
-async def test_drops_toggle_confirms_then_schedules(w):
-    w.guild.add_channel(C.DEFAULT_CLUE_CHANNEL_ID, "pillow-talk")
-    p, admin = await open_it(w)
-    await go(p, admin, "Drops", "drops")
-    await p._make_toggle(True)(Click(admin))
-    assert p.mode == "confirm" and await w.cog.config.guild(w.guild).drop_enabled() is False
-    await p._on_confirm(Click(admin))
-    assert await w.cog.config.guild(w.guild).drop_enabled() is True
-    await p._make_toggle(False)(Click(admin))
-    assert await w.cog.config.guild(w.guild).drop_enabled() is False
 
 
 async def test_action_buttons_run_the_cog(w):

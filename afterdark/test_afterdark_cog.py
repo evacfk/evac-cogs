@@ -15,7 +15,7 @@ import pytest
 
 from afterdark import afterdark as ad
 from afterdark import constants as C
-from afterdark import engine
+from afterdark import embeds, engine
 from afterdark.models import Invite
 
 DAY = C.DAY
@@ -374,7 +374,7 @@ async def test_cog_load_registers_persistent_views_and_unload_cleans_up(w):
 # ------------------------------------------------------ rabbit button
 
 async def test_button_admits_eligible_member(w):
-    m = w.member("alice", level=3)
+    m = w.member("alice", level=5)
     inter = FakeInteraction(m, w.guild)
     await w.cog.handle_rabbit_claim(inter)
     assert w.rabbit in m.roles
@@ -1232,7 +1232,7 @@ async def test_dryrun_toggle_is_logged(w):
 
 async def test_defaults_match_the_agreed_design(w):
     cfg = await w.cog.config.guild(w.guild).all()
-    assert cfg["min_level"] == 3 and cfg["warn_days"] == 7 and cfg["remove_days"] == 14
+    assert cfg["min_level"] == 5 and cfg["warn_days"] == 7 and cfg["remove_days"] == 14
     assert cfg["dry_run"] is True and cfg["invites_enabled"] is False
     assert (cfg["invite_min"], cfg["invite_max"], cfg["invite_ttl_days"]) == (3, 4, 30)
     assert cfg["access_mode"] == "overwrites"
@@ -1551,242 +1551,72 @@ async def test_join_message_survives_adding_channels(w):
     assert (await w.cog.config.guild(w.guild).interests())["feet"]["join_message"] == "hi"
 
 
-# ------------------------------------------------------------- random rabbit drops
+# ------------------------------------------- one permanent rabbit message (drops retired)
 
-import random as _random
-
-from afterdark import engine as _engine
-
-
-def test_drop_gap_stays_inside_the_range_and_variants_never_repeat():
-    rng = _random.Random(1)
-    gaps = [_engine.next_drop_gap_seconds(60, 180, rng) for _ in range(500)]
-    assert min(gaps) >= 3600 and max(gaps) <= 10800 and max(gaps) - min(gaps) > 3000     # actually random
-    assert _engine.next_drop_gap_seconds(90, 30, rng) == 90 * 60                          # inverted range collapses
-    last = None
-    for _ in range(300):
-        v = _engine.pick_variant(len(C.DROP_VARIANTS), last, rng)
-        assert v != last
-        last = v
-    assert _engine.pick_variant(1, 0, rng) == 0
+async def test_default_minimum_level_is_five_and_the_button_enforces_it(w):
+    assert (await w.cog.config.guild(w.guild).all())["min_level"] == 5
+    low, ok = w.member("four", level=4), w.member("five", level=5)
+    for m in (low, ok):
+        await w.cog.handle_rabbit_claim(FakeInteraction(m, w.guild))
+    assert w.rabbit not in low.roles and w.rabbit in ok.roles
 
 
-def test_drop_action_table():
-    a = _engine.drop_action
-    live = {"message_id": 5, "delete_ts": 100.0, "next_ts": 9999.0}
-    assert a(live, True, 99.0) is None and a(live, True, 100.0) == "delete"
-    assert a(live, False, 100.0) == "delete"                      # deleting works even when switched off
-    assert a({}, False, 1e12) is None
-    assert a({}, True, 5.0) == "schedule"
-    assert a({"next_ts": 50.0}, True, 49.0) is None and a({"next_ts": 50.0}, True, 50.0) == "post"
-    assert a({"message_id": 5, "delete_ts": 100.0, "next_ts": 1.0}, True, 50.0) is None   # never two at once
-
-
-def test_drop_timing_validation():
-    v = _engine.validate_drop_timing
-    assert v(60, 180, 10) is None
-    assert "longer than the lifetime" in v(10, 180, 10)
-    assert "shorter" in v(60, 30, 10)
-    assert "more than" in v(60, 99999, 10)
-    assert "Lifetime" in v(60, 180, 0) and "Lifetime" in v(60, 180, 500)
-
-
-async def drop_world(w, enabled=True):
-    w.fight = w.guild.add_channel(910001, "pillow-fight")
-    await set_cfg(w, drop_enabled=enabled, drop_channel_id=910001)
-    return w.fight
-
-
-async def test_enabled_with_nothing_planned_schedules_the_first_drop_and_does_not_post(w):
-    fight = await drop_world(w)
-    await w.cog._drop_tick(w.guild)
-    state = await w.cog.config.guild(w.guild).drop_state()
-    assert NOW + 3600 <= state["next_ts"] <= NOW + 10800 and fight.messages == {}
-
-
-async def test_a_due_drop_posts_then_is_deleted_after_its_lifetime(w):
-    fight = await drop_world(w)
-    await set_cfg(w, drop_state={"next_ts": NOW - 1})
-    await w.cog._drop_tick(w.guild)
-    state = await w.cog.config.guild(w.guild).drop_state()
-    assert len(fight.messages) == 1 and state["message_id"] in fight.messages
-    assert state["delete_ts"] == NOW + 600 and NOW + 3600 <= state["next_ts"] <= NOW + 10800
-    assert fight.messages[state["message_id"]].view is not None
-    w.clock[0] = NOW + 599
-    await w.cog._drop_tick(w.guild)
-    assert len(fight.messages) == 1
-    w.clock[0] = NOW + 601
-    await w.cog._drop_tick(w.guild)
-    state = await w.cog.config.guild(w.guild).drop_state()
-    assert fight.messages == {} and "message_id" not in state
-
-
-async def test_only_one_drop_at_a_time_and_the_next_waits_for_its_gap(w):
-    fight = await drop_world(w)
-    await set_cfg(w, drop_state={"next_ts": NOW - 1})
-    await w.cog._drop_tick(w.guild)
-    await w.cog._drop_tick(w.guild)
-    assert len(fight.messages) == 1
-    w.clock[0] = NOW + 700                       # deleted, but the next gap is at least an hour away
-    await w.cog._drop_tick(w.guild)
-    await w.cog._drop_tick(w.guild)
-    assert fight.messages == {}
-
-
-async def test_wording_changes_from_one_drop_to_the_next(w):
-    fight = await drop_world(w)
-    seen = []
-    for i in range(6):
-        w.clock[0] = NOW + i * 20000
-        await set_cfg(w, drop_state={**(await w.cog.config.guild(w.guild).drop_state()), "next_ts": w.clock[0] - 1})
-        await w.cog._drop_tick(w.guild)
-        msg = list(fight.messages.values())[-1]
-        seen.append(msg.embeds[0].description)
-        w.clock[0] += 700
-        await w.cog._drop_tick(w.guild)           # delete it
-    assert all(a != b for a, b in zip(seen, seen[1:])) and len(set(seen)) > 2
-
-
-async def test_an_expired_drop_is_deleted_after_a_restart_even_if_drops_are_off(w):
-    fight = await drop_world(w, enabled=False)
-    msg = await fight.send(embed=embeds_rabbit())
-    await set_cfg(w, drop_state={"message_id": msg.id, "channel_id": fight.id, "delete_ts": NOW - 5})
-    await w.cog._drop_tick(w.guild)               # a fresh cog reads the stored state
-    assert fight.messages == {}
-
-
-def embeds_rabbit():
-    from afterdark import embeds
-    return embeds.rabbit_embed(2)
-
-
-async def test_a_failed_drop_logs_once_and_still_plans_the_next_one(w):
-    fight = await drop_world(w)
-    async def boom(*a, **k):
-        raise discord.Forbidden("no")
-    fight.send = boom
-    await set_cfg(w, drop_state={"next_ts": NOW - 1})
-    await w.cog._drop_tick(w.guild)
-    state = await w.cog.config.guild(w.guild).drop_state()
-    assert state["next_ts"] > NOW + 3000 and "message_id" not in state
-    assert "Rabbit drop failed" in log_text(w)
-
-
-async def test_drop_on_replaces_the_permanent_message_and_needs_a_channel(w):
-    admin = w.member("admin")
-    clue = w.guild.get_channel(C.DEFAULT_CLUE_CHANNEL_ID) or w.guild.add_channel(C.DEFAULT_CLUE_CHANNEL_ID, "pillow-talk")
-    permanent = await clue.send(embed=embeds_rabbit())
-    await set_cfg(w, rabbit_post={"channel_id": clue.id, "message_id": permanent.id})
-    msg = await w.cog._apply_drops_enabled(w.guild, admin, True)                      # falls back to the clue channel
-    assert permanent.id not in clue.messages and await w.cog.config.guild(w.guild).rabbit_post() == {}
-    assert await w.cog.config.guild(w.guild).drop_enabled() is True
-    assert "permanent" in msg and (await w.cog.config.guild(w.guild).drop_state())["next_ts"] > NOW
-    await set_cfg(w, drop_enabled=False, drop_channel_id=0, clue_channel_id=0)
-    await expect_refused(w.cog._apply_drops_enabled(w.guild, admin, True), "drop channel")
-
-
-async def test_drop_off_deletes_the_live_drop_and_stops_the_schedule(w):
-    fight = await drop_world(w)
-    await set_cfg(w, drop_state={"next_ts": NOW - 1})
-    await w.cog._drop_tick(w.guild)
-    await w.cog._apply_drops_enabled(w.guild, w.member("admin"), False)
-    state = await w.cog.config.guild(w.guild).drop_state()
-    assert fight.messages == {} and "next_ts" not in state and await w.cog.config.guild(w.guild).drop_enabled() is False
-    await w.cog._drop_tick(w.guild)
-    assert fight.messages == {}
-
-
-async def test_drop_now_posts_for_a_test_without_starting_a_schedule(w):
-    fight = await drop_world(w, enabled=False)
-    admin = w.member("admin")
-    msg = await w.cog._apply_drop_now(w.guild, admin)
-    state = await w.cog.config.guild(w.guild).drop_state()
-    assert len(fight.messages) == 1 and "next_ts" not in state and msg.startswith("Dropped")
-    await expect_refused(w.cog._apply_drop_now(w.guild, admin), "already live")
-    w.clock[0] = NOW + 601
-    await w.cog._drop_tick(w.guild)
-    assert fight.messages == {}
-
-
-async def test_drop_settings_are_validated(w):
-    admin = w.member("admin")
-    ok = {"min": "60", "max": "180", "life": "10", "slots": "4"}
-    await expect_refused(w.cog._apply_drop_timing(w.guild, admin, {**ok, "min": "5", "max": "30"}), "longer than the lifetime")
-    assert await w.cog.config.guild(w.guild).drop_min_minutes() == 60
-    await w.cog._apply_drop_timing(w.guild, admin, {**ok, "min": "30", "max": "90"})
-    assert await w.cog.config.guild(w.guild).drop_max_minutes() == 90
-    await expect_refused(w.cog._apply_drop_timing(w.guild, admin, {**ok, "min": "30", "max": "90", "life": "45"}), "longer than the lifetime")
-    assert await w.cog.config.guild(w.guild).drop_life_minutes() == 10
-    await w.cog._apply_drop_timing(w.guild, admin, {**ok, "min": "30", "max": "90", "life": "15"})
-    assert await w.cog.config.guild(w.guild).drop_life_minutes() == 15
-    await expect_refused(w.cog._apply_drop_timing(w.guild, admin, {**ok, "life": "ten"}), "whole number")
-    assert await w.cog.config.guild(w.guild).drop_life_minutes() == 15           # a bad value saves nothing at all
-
-
-async def test_a_drop_enforces_the_same_criteria_when_someone_taps_it(w):
-    """Every tap runs the full eligibility check (level, Adult Chat, age role, not excluded)."""
-    fight = await drop_world(w)
-    await set_cfg(w, drop_state={"next_ts": NOW - 1}, min_level=3)
-    await w.cog._drop_tick(w.guild)
-    low = w.member("low", level=1)
-    no_adult = w.member("noadult", roles=[w.age])
-    excluded = w.member("excl")
-    await set_cfg(w, excluded={str(excluded.id): {"by": 1, "reason": "x", "ts": 1}})
-    good = w.member("good", level=9)
-    live = list(fight.messages.values())[0]
-    for m in (low, no_adult, excluded):
-        inter = FakeInteraction(m, w.guild)
-        inter.message = live
-        await w.cog.handle_rabbit_claim(inter)
-        assert w.rabbit not in m.roles and inter.replies
-    inter = FakeInteraction(good, w.guild)
-    inter.message = live
-    await w.cog.handle_rabbit_claim(inter)
-    assert w.rabbit in good.roles
-
-
-async def test_only_four_people_get_in_per_drop_and_failed_taps_do_not_use_a_slot(w):
-    fight = await drop_world(w)
-    await set_cfg(w, drop_state={"next_ts": NOW - 1}, min_level=3)
-    await w.cog._drop_tick(w.guild)
-    live = list(fight.messages.values())[0]
-    low = w.member("low", level=1)
-    inter = FakeInteraction(low, w.guild)
-    inter.message = live
-    await w.cog.handle_rabbit_claim(inter)
-    assert (await w.cog.config.guild(w.guild).drop_state())["claims"] == []
-    members = [w.member(f"ok{i}", level=9) for i in range(5)]
-    results = []
-    for i, m in enumerate(members):
-        inter = FakeInteraction(m, w.guild)
-        inter.message = live
-        await w.cog.handle_rabbit_claim(inter)
-        results.append(w.rabbit in m.roles)
-        if i == 3:
-            assert fight.messages == {}          # full: the drop is taken down at once
-    assert results == [True, True, True, True, False]
-    assert "Too slow" in inter.replies[-1]
-
-
-async def test_slots_setting_and_unlimited_and_permanent_message_is_uncapped(w):
-    fight = await drop_world(w)
-    admin = w.member("admin")
-    timing = {"min": "60", "max": "180", "life": "10"}
-    await w.cog._apply_drop_timing(w.guild, admin, {**timing, "slots": "2"})
-    assert await w.cog.config.guild(w.guild).drop_max_claims() == 2
-    await expect_refused(w.cog._apply_drop_timing(w.guild, admin, {**timing, "slots": "500"}), "0 to 100")
-    assert await w.cog.config.guild(w.guild).drop_max_claims() == 2
-    await w.cog._apply_drop_timing(w.guild, admin, {**timing, "slots": "0"})
-    await set_cfg(w, drop_state={"next_ts": NOW - 1})
-    await w.cog._drop_tick(w.guild)
-    live = list(fight.messages.values())[0]
-    for i in range(6):
+async def test_the_permanent_message_is_uncapped_and_never_deleted_by_the_bot(w):
+    clue = w.guild.add_channel(C.DEFAULT_CLUE_CHANNEL_ID, "pillow-talk")
+    msg = await clue.send(embed=embeds.rabbit_embed(), view=object())
+    await set_cfg(w, rabbit_post={"channel_id": clue.id, "message_id": msg.id})
+    for i in range(8):
         m = w.member(f"u{i}", level=9)
         inter = FakeInteraction(m, w.guild)
-        inter.message = live
+        inter.message = msg
         await w.cog.handle_rabbit_claim(inter)
         assert w.rabbit in m.roles
-    assert len(fight.messages) == 1
+    assert msg.id in clue.messages                      # still there, so it can stay pinned
+
+
+async def test_post_twice_edits_the_same_message_instead_of_posting_another(w):
+    clue = w.guild.add_channel(C.DEFAULT_CLUE_CHANNEL_ID, "pillow-talk")
+    ctx = FakeCtx(w.guild, w.member("admin"))
+    await w.cog.afterdark_post.func(w.cog, ctx, None)
+    first = (await w.cog.config.guild(w.guild).rabbit_post())["message_id"]
+    await w.cog.afterdark_post.func(w.cog, ctx, None)
+    assert (await w.cog.config.guild(w.guild).rabbit_post())["message_id"] == first
+    assert len(clue.messages) == 1
+    assert "pin it" in ctx.sent[-1].lower() if ctx.sent and isinstance(ctx.sent[-1], str) else True
+
+
+def test_drops_are_gone_from_the_engine_the_panel_and_the_defaults():
+    from afterdark import engine as _engine, panel as _panel
+    assert not hasattr(_engine, "drop_action") and not hasattr(_engine, "next_drop_gap_seconds")
+    assert not any("drop" in s.key or s.tab == "Drops" for s in _panel.build_specs())
+    assert not any(k.startswith("drop_") and k != "drop_state" for k in C.GUILD_DEFAULTS)
+    assert not hasattr(w_cog_class(), "_drop_tick")
+
+
+def w_cog_class():
+    from afterdark.afterdark import AfterDark
+    return AfterDark
+
+
+async def test_migration_deletes_a_leftover_drop_raises_level_once_and_logs(w):
+    fight = w.guild.add_channel(910001, "pillow-fight")
+    leftover = await fight.send(embed=embeds.rabbit_embed())
+    await set_cfg(w, min_level=3, drop_state={"message_id": leftover.id, "channel_id": fight.id, "delete_ts": NOW + 99})
+    await w.cog._migrate_guild(w.guild)
+    cfg = await w.cog.config.guild(w.guild).all()
+    assert fight.messages == {} and cfg["drop_state"] == {} and cfg["min_level"] == 5
+    assert cfg["schema_version"] == C.SCHEMA_VERSION
+    assert "minimum level is now 5" in log_text(w) and ".afterdark post" in log_text(w)
+    await set_cfg(w, min_level=4)                      # a later, deliberate change must survive a restart
+    await w.cog._migrate_guild(w.guild)
+    assert await w.cog.config.guild(w.guild).min_level() == 4
+
+
+async def test_migration_never_lowers_a_higher_level_and_survives_a_missing_drop_message(w):
+    await set_cfg(w, min_level=8, drop_state={"message_id": 123, "channel_id": 999999})
+    await w.cog._migrate_guild(w.guild)
+    cfg = await w.cog.config.guild(w.guild).all()
+    assert cfg["min_level"] == 8 and cfg["drop_state"] == {}
 
 
 # ------------------------------------------------- members report + leave button
@@ -1870,26 +1700,6 @@ def test_panel_mentions_leave_button_but_the_final_warning_lives_in_the_confirm_
     from . import embeds
     emb = embeds.panel_embed([], 7, 14, rules="x")
     assert "Leave Rabbit Hole" in emb.fields[0].value and "let back in" not in emb.fields[0].value
-
-
-async def test_drop_next_sets_an_exact_time_and_the_panel_shows_minutes(w):
-    fight = await drop_world(w)
-    admin = w.member("admin")
-    await w.cog._apply_drop_next(w.guild, admin, {"minutes": "25"})
-    assert (await w.cog.config.guild(w.guild).drop_state())["next_ts"] == NOW + 25 * 60
-    from afterdark import panel as panel_mod
-    shown = panel_mod._fmt_next(await panel_mod._get_next(w.cog, w.guild), w.guild)
-    assert "25 min" in shown
-    await expect_refused(w.cog._apply_drop_next(w.guild, admin, {"minutes": "0"}), "Pick 1 to")
-    w.clock[0] = NOW + 25 * 60 + 1
-    await w.cog._drop_tick(w.guild)
-    assert len(fight.messages) == 1
-
-
-async def test_drop_next_refuses_while_drops_are_off(w):
-    await drop_world(w, enabled=False)
-    await expect_refused(w.cog._apply_drop_next(w.guild, w.member("admin"), {"minutes": "10"}), "off")
-    assert "next_ts" not in await w.cog.config.guild(w.guild).drop_state()
 
 
 # --------------------------------------------- verified-first invitations + stop

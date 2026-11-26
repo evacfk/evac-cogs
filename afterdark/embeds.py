@@ -8,11 +8,9 @@ from . import engine
 from .models import Interest
 
 
-def rabbit_embed(variant: Optional[int] = None) -> "discord.Embed":
-    """The cryptic rabbit message. Deliberately says very little. `variant`
-    picks one of C.DROP_VARIANTS (random drops); None is the original text."""
-    index = 0 if variant is None else int(variant) % len(C.DROP_VARIANTS)
-    description, footer = C.DROP_VARIANTS[index]
+def rabbit_embed() -> "discord.Embed":
+    """The cryptic rabbit message. Deliberately says very little."""
+    description, footer = C.RABBIT_TEXT
     embed = discord.Embed(title="\U0001F407", description=description, color=discord.Color.dark_grey())
     embed.set_footer(text=footer)
     return embed

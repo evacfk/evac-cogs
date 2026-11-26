@@ -48,8 +48,6 @@ class AfterDark(commands.Cog):
         self._dirty: set = set()
         self._interest_views: Dict[int, InterestView] = {}
         self._task: Optional[asyncio.Task] = None
-        self._drop_task: Optional[asyncio.Task] = None
-        self._drop_locks: Dict[int, asyncio.Lock] = {}
 
     # ------------------------------------------------------------ lifecycle
 
@@ -58,17 +56,39 @@ class AfterDark(commands.Cog):
         self.bot.add_view(InviteView(self))
         self.bot.add_view(ReviewView(self))
         self._task = asyncio.create_task(self._sweep_loop())
-        self._drop_task = asyncio.create_task(self._drop_loop())
 
     async def cog_unload(self):
         if self._task:
             self._task.cancel()
-        if self._drop_task:
-            self._drop_task.cancel()
         for view in self._interest_views.values():
             view.stop()
         self._interest_views.clear()
         await self._flush_all()
+
+    async def _migrate_guild(self, guild) -> None:
+        """One-time upgrade steps, tracked by `schema_version`. 1.9.0: the timed rabbit drops are gone
+        (delete a drop that was live when the bot stopped) and the minimum level is raised to
+        C.MIN_LEVEL if it was lower. Members already in are not touched."""
+        conf = self.config.guild(guild)
+        if await conf.schema_version() >= C.SCHEMA_VERSION:
+            return
+        notes = []
+        state = await conf.drop_state() or {}
+        channel = guild.get_channel(state.get("channel_id") or 0)
+        if channel is not None and state.get("message_id"):
+            try:
+                await (await channel.fetch_message(state["message_id"])).delete()
+                notes.append("deleted a leftover timed rabbit drop")
+            except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+                pass
+        await conf.drop_state.set({})
+        if int(await conf.min_level()) < C.MIN_LEVEL:
+            await conf.min_level.set(C.MIN_LEVEL)
+            notes.append(f"minimum level is now {C.MIN_LEVEL}")
+        if not (await conf.rabbit_post() or {}).get("message_id"):
+            notes.append("there is no permanent rabbit message yet: run `.afterdark post`")
+        await conf.schema_version.set(C.SCHEMA_VERSION)
+        await self._log(guild, f"\U0001F407 afterdark {C.VERSION}: timed drops retired; " + "; ".join(notes or ["nothing to change"]) + ".")
 
     async def _sweep_loop(self):
         """Hourly maintenance. Wrapped per guild so one bad guild (or one bad
@@ -76,6 +96,10 @@ class AfterDark(commands.Cog):
         try:
             await self.bot.wait_until_ready()
             for guild in self.bot.guilds:
+                try:
+                    await self._migrate_guild(guild)
+                except Exception:
+                    log.exception("afterdark: migration failed for guild %s", guild.id)
                 try:
                     await self._register_interest_view(guild)
                 except Exception:
@@ -100,88 +124,6 @@ class AfterDark(commands.Cog):
                 await asyncio.sleep(interval * 60)
             except asyncio.CancelledError:
                 return
-
-    # ------------------------------------------------------------ rabbit drops
-
-    async def _drop_loop(self):
-        """Every half minute: delete drops that have expired, post drops that are
-        due. Cheap (one config read per guild) and wrapped so it never dies."""
-        try:
-            await self.bot.wait_until_ready()
-        except asyncio.CancelledError:
-            return
-        while True:
-            for guild in list(self.bot.guilds):
-                try:
-                    await self._drop_tick(guild)
-                except asyncio.CancelledError:
-                    return
-                except Exception:
-                    log.exception("afterdark: rabbit drop tick failed for guild %s", guild.id)
-            try:
-                await asyncio.sleep(C.DROP_TICK_SECONDS)
-            except asyncio.CancelledError:
-                return
-
-    def _drop_lock(self, guild) -> asyncio.Lock:
-        return self._drop_locks.setdefault(guild.id, asyncio.Lock())
-
-    def _drop_channel(self, guild, cfg: dict):
-        return guild.get_channel(cfg.get("drop_channel_id") or cfg["clue_channel_id"])
-
-    def _schedule_next_drop(self, cfg: dict, state: dict, base: float) -> None:
-        state["next_ts"] = base + engine.next_drop_gap_seconds(cfg["drop_min_minutes"], cfg["drop_max_minutes"], self._rng)
-
-    async def _drop_tick(self, guild):
-        async with self._drop_lock(guild):
-            cfg = await self.config.guild(guild).all()
-            state = dict(cfg["drop_state"])
-            now = self._clock()
-            action = engine.drop_action(state, cfg["drop_enabled"], now)
-            if action is None:
-                return
-            if action == "delete":
-                await self._drop_delete(guild, state)
-            elif action == "schedule":
-                self._schedule_next_drop(cfg, state, now)
-            else:
-                await self._drop_post(guild, cfg, state, now)
-            await self.config.guild(guild).drop_state.set(state)
-
-    async def _drop_delete(self, guild, state: dict) -> None:
-        """Remove the live drop (if it is already gone, that is fine) and forget it."""
-        channel = guild.get_channel(state.get("channel_id") or 0)
-        message_id = state.get("message_id")
-        if channel is not None and message_id:
-            try:
-                message = await channel.fetch_message(message_id)
-                await message.delete()
-            except (discord.NotFound, discord.Forbidden, discord.HTTPException):
-                log.info("afterdark: could not delete rabbit drop %s (already gone or no permission)", message_id)
-        state.pop("message_id", None)
-        state.pop("channel_id", None)
-        state.pop("delete_ts", None)
-        state.pop("claims", None)
-
-    async def _drop_post(self, guild, cfg: dict, state: dict, now: float) -> bool:
-        """Post one drop and plan the next. The next drop is always planned, even
-        if this one failed, so a permission problem can't make the loop retry every tick."""
-        channel = self._drop_channel(guild, cfg)
-        self._schedule_next_drop(cfg, state, now)
-        if channel is None:
-            await self._log(guild, "⚠️ Rabbit drop skipped: no drop channel is set (open `.afterdark`, Drops).")
-            return False
-        variant = engine.pick_variant(len(C.DROP_VARIANTS), state.get("last_variant"), self._rng)
-        try:
-            message = await channel.send(embed=embeds.rabbit_embed(variant), view=RabbitView(self))
-        except (discord.Forbidden, discord.HTTPException) as exc:
-            await self._log(guild, f"⚠️ Rabbit drop failed in {channel.mention}: {exc}")
-            return False
-        state["message_id"], state["channel_id"] = message.id, channel.id
-        state["delete_ts"] = now + cfg["drop_life_minutes"] * 60
-        state["last_variant"] = variant
-        state["claims"] = []
-        return True
 
     # ------------------------------------------------------------- plumbing
 
@@ -450,25 +392,7 @@ class AfterDark(commands.Cog):
         role = guild.get_role(cfg["rabbit_role_id"])
         if role is not None and role in member.roles:
             return await self._reply(interaction, "You're already through. \U0001F407")
-        message = getattr(interaction, "message", None)
-        state = cfg["drop_state"]
-        permanent = (cfg.get("rabbit_post") or {}).get("message_id")
-        is_drop = message is not None and message.id != permanent      # any other 🐇 message is a drop
-        if not is_drop:
-            return await self._claim_rabbit(interaction, cfg)
-        async with self._drop_lock(guild):          # slots are counted under a lock so the last one can't be double-taken
-            state = dict(await self.config.guild(guild).drop_state())
-            cap = cfg.get("drop_max_claims", 0)
-            claims = list(state.get("claims", []))
-            if state.get("message_id") != message.id or (cap and len(claims) >= cap):
-                return await self._reply(interaction, "Too slow. The rabbit is gone.")
-            if not await self._claim_rabbit(interaction, cfg):
-                return
-            claims.append(member.id)
-            state["claims"] = claims
-            if cap and len(claims) >= cap:
-                await self._drop_delete(guild, state)      # full: take it down now
-            await self.config.guild(guild).drop_state.set(state)
+        await self._claim_rabbit(interaction, cfg)
 
     async def _claim_rabbit(self, interaction, cfg: dict) -> bool:
         """Run the eligibility check and grant the role. True only if the member got in."""
@@ -504,7 +428,7 @@ class AfterDark(commands.Cog):
     async def handle_rabbit_leave_confirm(self, interaction, member):
         if interaction.user.id != member.id:
             return await self._reply(interaction, "That's not yours.")
-        # Leaving is final: record it like an exclusion so no route (button, drop, invite) lets them back in.
+        # Leaving is final: record it like an exclusion so no route (button, invite) lets them back in.
         excluded = dict(await self.config.guild(member.guild).excluded())
         excluded[str(member.id)] = ExcludeEntry(by=member.id, reason="left by choice", ts=self._clock()).to_dict()
         await self.config.guild(member.guild).excluded.set(excluded)
@@ -1468,84 +1392,8 @@ class AfterDark(commands.Cog):
             ctx.guild, channel, cfg["rabbit_post"], embed=embeds.rabbit_embed(), view=RabbitView(self)
         )
         await self.config.guild(ctx.guild).rabbit_post.set({"channel_id": channel.id, "message_id": message.id})
-        await ctx.send(f"Posted in {channel.mention}. Pin it if you want it to stay visible.")
-
-    # ------------------------------------------------ rabbit drops (used by the panel)
-
-    async def _apply_drops_enabled(self, guild, member, on: bool) -> str:
-        if on:
-            async with self._drop_lock(guild):
-                cfg = await self.config.guild(guild).all()
-                channel = self._drop_channel(guild, cfg)
-                if channel is None:
-                    raise PanelError("Set a drop channel (or the clue channel) first.")
-                removed = ""
-                saved = cfg["rabbit_post"]
-                if saved and saved.get("message_id"):
-                    old = guild.get_channel(saved.get("channel_id") or 0)
-                    try:
-                        message = await old.fetch_message(saved["message_id"]) if old is not None else None
-                        if message is not None:
-                            await message.delete()
-                            removed = " The permanent \U0001F407 message was deleted."
-                    except (discord.NotFound, discord.Forbidden, discord.HTTPException):
-                        removed = " (Couldn't delete the old permanent \U0001F407 message; remove it by hand.)"
-                    await self.config.guild(guild).rabbit_post.set({})
-                state = dict(cfg["drop_state"])
-                self._schedule_next_drop(cfg, state, self._clock())
-                await self.config.guild(guild).drop_state.set(state)
-                await self.config.guild(guild).drop_enabled.set(True)
-            return f"Drops are on in {channel.mention}. The first one is <t:{int(state['next_ts'])}:R>.{removed}"
-        async with self._drop_lock(guild):
-            state = dict(await self.config.guild(guild).drop_state())
-            await self._drop_delete(guild, state)
-            state.pop("next_ts", None)
-            await self.config.guild(guild).drop_state.set(state)
-            await self.config.guild(guild).drop_enabled.set(False)
-        return "Drops are off."
-
-    async def _apply_drop_now(self, guild, member, _value=None) -> str:
-        async with self._drop_lock(guild):
-            cfg = await self.config.guild(guild).all()
-            state = dict(cfg["drop_state"])
-            if state.get("message_id"):
-                raise PanelError("A drop is already live.")
-            ok = await self._drop_post(guild, cfg, state, self._clock())
-            if not cfg["drop_enabled"]:
-                state.pop("next_ts", None)       # a test must not start a schedule
-            await self.config.guild(guild).drop_state.set(state)
-        if not ok:
-            raise PanelError("Couldn't drop (see the log channel).")
-        return "Dropped. It disappears after its lifetime."
-
-    async def _apply_drop_timing(self, guild, member, values: dict) -> str:
-        minimum, maximum = self._whole(values, "min", "Shortest gap"), self._whole(values, "max", "Longest gap")
-        lifetime, slots = self._whole(values, "life", "Lifetime"), self._whole(values, "slots", "Slots")
-        error = engine.validate_drop_timing(minimum, maximum, lifetime, C.DROP_MAX_GAP_MINUTES)
-        if error:
-            raise PanelError(error)
-        if not 0 <= slots <= 100:
-            raise PanelError("Slots: pick a number from 0 to 100 (0 = unlimited).")
-        conf = self.config.guild(guild)
-        await conf.drop_min_minutes.set(minimum)
-        await conf.drop_max_minutes.set(maximum)
-        await conf.drop_life_minutes.set(lifetime)
-        await conf.drop_max_claims.set(slots)
-        return (f"Drops come every {minimum}-{maximum} minutes, stay {lifetime} minutes and let in "
-                f"{slots if slots else 'unlimited'} people (gaps and lifetime apply from the next drop; slots apply to the live one too).")
-
-    async def _apply_drop_next(self, guild, member, values: dict) -> str:
-        minutes = self._whole(values, "minutes", "Minutes")
-        if not 1 <= minutes <= C.DROP_MAX_GAP_MINUTES:
-            raise PanelError(f"Pick 1 to {C.DROP_MAX_GAP_MINUTES} minutes.")
-        if not await self.config.guild(guild).drop_enabled():
-            raise PanelError("Drops are off. Turn them on first.")
-        async with self._drop_lock(guild):
-            state = dict(await self.config.guild(guild).drop_state())
-            state["next_ts"] = self._clock() + minutes * 60
-            await self.config.guild(guild).drop_state.set(state)
-        return f"Next drop in {minutes} minutes (<t:{int(state['next_ts'])}:t>). Later gaps stay random."
-
+        await ctx.send(f"Posted in {channel.mention}. The bot never deletes it: pin it if you want it to stay visible. "
+                       "Running this again edits that same message instead of posting a second one.")
 
     @afterdark.command(name="panel")
     @commands.admin_or_permissions(manage_guild=True)
@@ -2353,12 +2201,12 @@ class AfterDark(commands.Cog):
         return f"{low}-{high} invitations per day."
 
     async def _apply_channel(self, guild, member, key: str, channel) -> str:
-        """Set one of the channel settings (log_channel_id, clue_channel_id, drop_channel_id); None clears it."""
-        if key not in ("log_channel_id", "clue_channel_id", "drop_channel_id"):
+        """Set one of the channel settings (log_channel_id, clue_channel_id); None clears it."""
+        if key not in ("log_channel_id", "clue_channel_id"):
             raise PanelError("Unknown setting.")
         await getattr(self.config.guild(guild), key).set(channel.id if channel is not None else 0)
         if channel is None:
-            return "Cleared (drops use the clue channel)." if key == "drop_channel_id" else "Cleared."
+            return "Cleared."
         return f"Set to {channel.mention}."
 
     async def _apply_role(self, guild, member, key: str, role) -> str:
