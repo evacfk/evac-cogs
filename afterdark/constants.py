@@ -1,6 +1,6 @@
 """All defaults and lookup tables for afterdark -- no discord/redbot imports."""
 
-VERSION = "1.9.0"
+VERSION = "1.9.1"
 CHANNEL_PREFIX = "🤖・"   # every bot-made channel starts like this, matching the other bot channels
 BUILD = "afterdark build: permanent-rabbit-v1 (one permanent pinnable rabbit message, drops retired, level 5)"
 
@@ -13,8 +13,8 @@ LA_TZ = "America/Los_Angeles"
 RABBIT_CLAIM_ID = "afterdark:rabbit:claim"
 # The rabbit message: (description, footer). Posted once with `.afterdark post`, never deleted by the bot.
 RABBIT_TEXT = (
-    "*I'm late, I'm late.*\n\nThere is a door that only regulars ever find. Tap the rabbit and see whether it opens for you.",
-    "Curiouser and curiouser.",
+    "*There is a little door in the corner of Wonderland.*\n\nIt leads to the adult image channels, and it only opens for active members who are 18+. Tap the rabbit to try the handle.",
+    "Not everyone gets in.",
 )
 MIN_LEVEL = 5
 SCHEMA_VERSION = 1       # bump when a one-time per-guild migration is added
