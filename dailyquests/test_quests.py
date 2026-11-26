@@ -1,11 +1,11 @@
-"""Daily quests: pure rules (wonderland/quests.py)."""
+"""Daily quests: pure rules (dailyquests/quests.py)."""
 import random
 from datetime import datetime
 from types import SimpleNamespace
 
 import pytest
 
-from wonderland import quests as Q
+from dailyquests import quests as Q
 
 
 # ------------------------------------------------------------------ ExtendedEconomy's payday, copied verbatim
@@ -194,9 +194,9 @@ def test_set_pack_price_modes():
     assert Q.set_pack_price("off", 10000) is None
 
 
-def test_post_quests_need_a_channel_and_the_heist_command_is_configurable():
+def test_post_quests_need_a_channel():
     assert Q.BY_KEY["selfie"].source == Q.POST and Q.BY_KEY["selfie"].channel == "selfie"
-    assert Q.BY_KEY["counting"].source == Q.POST and Q.BY_KEY["heist"].command == "{heist}"
+    assert Q.BY_KEY["counting"].source == Q.POST and "heist" not in Q.BY_KEY
     assert Q.valid_day("2026-12-25") and not Q.valid_day("2026-13-01") and not Q.valid_day("tomorrow")
 
 
@@ -257,20 +257,6 @@ def test_day_line_shows_the_share_of_payday_users_who_opened():
 
 def test_faucet():
     assert Q.faucet(100, 2500, 1.0) == 250_000 and Q.faucet(100, 2500, 0.75) == 187_500
-
-
-# ------------------------------------------------------------------ the .wld guide
-
-def test_start_page_mentions_daily_quests_only_while_they_are_on():
-    from wonderland import content, engine
-    start = next(p for p in content.PAGES if p.key == "start")
-    assert "**Your daily loop**" in start.body
-    off = engine.gate_body(start, lambda name: False).body
-    on = engine.gate_body(start, lambda name: name == "@quests").body
-    assert "Daily Quests" not in off and "[[" not in off and "Payday" in off
-    assert "📜 **Daily Quests**: three small quests a day; each pays a third of your payday plus XP." in on
-    assert "streak with badges and prizes" in on
-    assert off.endswith("**When you have a minute**") and on.endswith("**When you have a minute**")
 
 
 def test_a_quest_removed_from_the_pool_drops_out_of_a_set_dealt_before_the_removal():

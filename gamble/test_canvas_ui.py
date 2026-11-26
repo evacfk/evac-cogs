@@ -280,11 +280,11 @@ def test_daily_quests_button_sits_after_payday_only_when_quests_are_on():
     assert route.is_persistent() and route.children[0].custom_id == QUESTS_CUSTOM_ID
 
 
-async def test_daily_quests_click_hands_off_to_wonderland_or_says_unavailable():
+async def test_daily_quests_click_hands_off_to_dailyquests_or_says_unavailable():
     cog = object.__new__(GambleThreads)
     opened = []
 
-    class Wonderland:
+    class DailyQuests:
         on = True
 
         async def quests_open(self, guild):
@@ -293,8 +293,8 @@ async def test_daily_quests_click_hands_off_to_wonderland_or_says_unavailable():
         async def open_quest_panel(self, interaction):
             opened.append(interaction)
 
-    wl = Wonderland()
-    cog.bot = SimpleNamespace(get_cog=lambda name: wl if name == "Wonderland" else None)
+    wl = DailyQuests()
+    cog.bot = SimpleNamespace(get_cog=lambda name: wl if name == "DailyQuests" else None)
     inter = Inter(user(1), guild=SimpleNamespace(id=5))
     await cog.handle_quests_click(inter)
     assert opened == [inter]

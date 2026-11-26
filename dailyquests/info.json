@@ -1,0 +1,14 @@
+{
+    "author": ["evacfk"],
+    "min_bot_version": "3.5.0",
+    "name": "DailyQuests",
+    "short": "Daily quests with streak badges, XP and weekly prizes",
+    "description": "Three small quests a day for every active member, opened from the Daily Quests button on the casino hub. Each finished quest pays a share of the member's payday plus XP through LevelUp (never counted toward its weekly board). Doing one quest a day builds a streak with badges and prizes, quests on 5 of 7 days earn a weekly prize, and members can reroll a quest for coins (each reroll that day costs more). `.dailyquests` opens the mods' panel: on/off switch, rewards, XP weekend, quest pool, channels and usage counts. Ships switched off.",
+    "end_user_data_statement": "Daily quests store, per member, today's quests and progress, coins and XP earned today, their streak, best streak, full-set count, this week's active days and the last day they did each quest; per server, daily usage counts with no member IDs. A data deletion request removes that member's quest data.",
+    "install_msg": "DailyQuests installed. If you had quests in the Wonderland cog, your settings and streaks carry over. Run `[p]dailyquests` to open the mods' panel; it ships switched off. `[p]dailyquests version` confirms the build.",
+    "requirements": [],
+    "tags": ["quests", "economy", "daily", "streak"],
+    "hidden": false,
+    "disabled": false,
+    "type": "COG"
+}

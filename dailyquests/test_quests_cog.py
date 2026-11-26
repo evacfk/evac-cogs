@@ -1,4 +1,4 @@
-"""Daily quests: the cog side (wonderland/quests_cog.py) against fake Config, bank, cogs and channels."""
+"""Daily quests: the cog side (dailyquests/quests_cog.py) against fake Config, bank, cogs and channels."""
 import copy
 import sys
 from datetime import datetime, timedelta, timezone
@@ -17,8 +17,8 @@ if not _real_red:
 import discord
 from redbot.core import bank
 
-from wonderland import quests as Q
-from wonderland import quests_cog as QC
+from dailyquests import quests as Q
+from dailyquests import quests_cog as QC
 
 GUILD_ID, LURKER, BOOSTER = 5, 900, 901
 
@@ -546,7 +546,7 @@ async def test_a_duel_is_offered_only_with_coins_for_the_smallest_wager_and_no_c
     assert (await status())[2] == "on duel cooldown"
 
 
-async def test_the_guide_quest_counts_a_real_lookup_once_and_only_from_its_own_helper(world):
+async def test_the_guide_quest_counts_a_real_lookup_through_its_hook(world):
     await switch_on(world, keep_off=[])
     m = member(world.guild, 1)
     conf = await world.cog._q_conf(world.guild)
@@ -555,13 +555,11 @@ async def test_the_guide_quest_counts_a_real_lookup_once_and_only_from_its_own_h
     assert (await world.cog._q_status("guide", m, conf))[0] == QC.OFF          # #bot-commands private: never a quest
     world.cmds.everyone = True
     await world.cog._q_set(world.guild, targets={})
-    assert await world.cog._q_record(m, "guide", 1, source=Q.HOOK) is None     # a hook or a command can't count it
-    assert await world.cog._q_record(m, "guide", 1, source=Q.COMMAND) is None
+    assert await world.cog._q_record(m, "guide", 1, source=Q.COMMAND) is None   # a command can't count it
     await world.cog._q_panel_embed(m)
     state(world, m)["assigned"] = ["guide", "card", "chat"]
-    await world.cog._q_guide_lookup(m)
+    await world.cog._q_record(m, "guide", 1, source=Q.HOOK)                      # the guide's wonderland_quest hook
     assert state(world, m)["progress"]["guide"] == 1 and "guide" in state(world, m)["paid"]
-    await world.cog._q_guide_lookup(m)
     assert state(world, m)["progress"]["guide"] == 1
     assert world.balances[1] > 0
 
@@ -765,17 +763,6 @@ async def test_counting_ignores_words_and_wrong_counts_that_get_deleted(world, m
     assert "counting" in state(world, m)["paid"]
 
 
-async def test_heist_quest_stays_off_until_a_real_command_is_set(world):
-    await switch_on(world, keep_off=[])
-    m = member(world.guild, 1)
-    status = (await world.cog._q_status("heist", m, await world.cog._q_conf(world.guild)))[0]
-    assert status == QC.OFF
-    world.cog._commands.add("heist play")
-    await world.cog._q_set(world.guild, heist_command="heist play")
-    status = (await world.cog._q_status("heist", m, await world.cog._q_conf(world.guild)))[0]
-    assert status == QC.OPEN
-
-
 async def test_the_panel_shows_streak_week_xp_and_packs(world, monkeypatch):
     await switch_on(world, keep_off=["guide", "star"], multiplier=1.0, xp_boost={"start": "2026-11-02", "end": "2026-11-09", "multiplier": 2.0})
     m = member(world.guild, 1)
@@ -842,8 +829,8 @@ async def test_a_full_set_pack_is_half_price_by_default_once_a_day_and_can_be_of
 
 
 async def test_admin_specs_save_and_reject_bad_input(world):
-    from wonderland import quests_panel as QP
-    from wonderland.settings_panel import PanelError
+    from dailyquests import quests_panel as QP
+    from dailyquests.settings_panel import PanelError
     await switch_on(world)
     g, cog = world.guild, world.cog
     assert "XP" in await QP._apply_xp(cog, g, None, {"xp": "75"}) and (await cog._q_conf(g))["xp_per_quest"] == 75
@@ -865,11 +852,6 @@ async def test_admin_specs_save_and_reject_bad_input(world):
     assert Q.prize_for((await cog._q_conf(g))["milestones"], 7) == {"coins": 2.0, "xp": 10, "pack": False}
     await QP._apply_set_pack(cog, g, None, "free")
     assert (await cog._q_conf(g))["set_pack"] == "free"
-    with pytest.raises(PanelError):
-        await QP._apply_heist(cog, g, None, {"command": "nosuchcmd"})
-    world.cog._commands.add("heist play")
-    await QP._apply_heist(cog, g, None, {"command": ".heist play"})
-    assert cog._q_heist == "heist play"
     assert len(QP.build_specs()) >= 15
     member(g, 77)
     estimate = await cog._q_estimate(g)

@@ -20,7 +20,6 @@ from .constants import (
 from .content import HOME_KEY, MAP_KEY, PAGES
 from .economy_cog import EconomyMixin
 from .ledger_cog import LedgerMixin
-from .quests_cog import DEFAULT_GUILD_QUESTS, QuestsMixin
 from .roomperms_cog import RoomPermsMixin
 
 log = logging.getLogger("red.evac-cogs.wonderland")
@@ -117,33 +116,35 @@ class OpenView(discord.ui.View):
                 pass
 
 
-class Wonderland(QuestsMixin, EconomyMixin, LedgerMixin, RoomPermsMixin, commands.Cog):
+class Wonderland(EconomyMixin, LedgerMixin, RoomPermsMixin, commands.Cog):
     """A compact guidebook to everything Wonderland's bots can do."""
 
     def __init__(self, bot):
         self.bot = bot
         self.config = Config.get_conf(self, identifier=CONFIG_ID, force_registration=True)
         self.config.register_guild(publish={"channel_id": None, "messages": {}}, roomperms={"enabled": True},
-                                   economy={"snapshots": []}, quests=DEFAULT_GUILD_QUESTS)
-        self.config.register_member(quests={})
+                                   economy={"snapshots": []})
         self._rp_setup()
         self._ledger_setup()
-        self._q_setup()
 
     async def red_delete_data_for_user(self, *, requester=None, user_id: int = 0):
         await self._ledger_delete_user(int(user_id))   # coin ledger history
-        await self._q_delete_member(int(user_id))      # daily quest progress and streak
 
     # ------------------------------------------------------------------ helpers
 
     def _exists(self, name: str) -> bool:
         if name.startswith("@"):   # a feature switch, not a command: "@quests" = daily quests are on
-            return name == "@quests" and bool(getattr(self, "_q_live", False))
+            return name == "@quests" and bool(getattr(self.bot.get_cog("DailyQuests"), "_q_live", False))
         try:
             cmd = self.bot.get_command(name)
         except Exception:
             return False
         return cmd is not None and getattr(cmd, "enabled", True)
+
+    def _quest_hook(self, member) -> None:
+        """A real guide lookup (`.wld search` with a hit, `.wld page`): the daily quest "look something up" hook."""
+        if hasattr(member, "roles") and getattr(member, "guild", None) is not None:
+            self.bot.dispatch("wonderland_quest", member, "guide", 1)
 
     async def _is_mod(self, member) -> bool:
         try:
@@ -245,7 +246,7 @@ class Wonderland(QuestsMixin, EconomyMixin, LedgerMixin, RoomPermsMixin, command
     async def wonderland_page(self, ctx: commands.Context, topic: Topic):
         """Jump straight to one topic."""
         await self._open(ctx, topic)
-        await self._q_guide_lookup(ctx.author)
+        self._quest_hook(ctx.author)
 
     @wonderland.command(name="map")
     async def wonderland_map(self, ctx: commands.Context):
@@ -264,7 +265,7 @@ class Wonderland(QuestsMixin, EconomyMixin, LedgerMixin, RoomPermsMixin, command
             async def make(user):
                 hits = engine.search(word, self._exists, await self._is_mod(user))
                 if hits:
-                    await self._q_guide_lookup(user)
+                    self._quest_hook(user)
                 return embeds.search_embed(word, hits), None
             return await self._deliver(ctx, make)
         # Prefix: the answer is just command names and what they do, so show it straight away (no "tap to
@@ -272,7 +273,7 @@ class Wonderland(QuestsMixin, EconomyMixin, LedgerMixin, RoomPermsMixin, command
         # channel can see it; a mod is told when mod-only matches were left out. It cleans itself up.
         hits = engine.search(word, self._exists, False)
         if hits:
-            await self._q_guide_lookup(ctx.author)
+            self._quest_hook(ctx.author)
         hidden = False
         if await self._is_mod(ctx.author):
             hidden = len(engine.search(word, self._exists, True)) > len(hits)
@@ -331,14 +332,6 @@ class Wonderland(QuestsMixin, EconomyMixin, LedgerMixin, RoomPermsMixin, command
         await ctx.send(embed=embed, ephemeral=True, allowed_mentions=discord.AllowedMentions.none())
         if flow is not None:
             await ctx.send(embed=flow, ephemeral=True, allowed_mentions=discord.AllowedMentions.none())
-
-    @wonderland.command(name="quests")
-    @commands.mod_or_permissions(manage_guild=True)
-    async def wonderland_quests(self, ctx: commands.Context):
-        """Mods: daily quests. On/off switch, reward multiplier, quest pool, channels and usage counts."""
-        from . import quests_panel
-        from .settings_panel import open_panel
-        await open_panel(ctx, self, quests_panel.build_specs(), title="Daily quests", intro=quests_panel.INTRO)
 
     @wonderland.command(name="publish")
     @commands.mod_or_permissions(manage_guild=True)

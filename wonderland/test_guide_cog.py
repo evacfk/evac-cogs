@@ -100,11 +100,11 @@ def mod(monkeypatch):
     root.core = core
     for name, m in (("redbot", root), ("redbot.core", core), ("redbot.core.commands", commands_ns)):
         monkeypatch.setitem(sys.modules, name, m)
-    for name in ("wonderland.guide", "wonderland.embeds", "wonderland.economy_cog", "wonderland.ledger_cog", "wonderland.quests_cog"):
+    for name in ("wonderland.guide", "wonderland.embeds", "wonderland.economy_cog", "wonderland.ledger_cog"):
         monkeypatch.delitem(sys.modules, name, raising=False)
     m = importlib.import_module("wonderland.guide")
     yield m
-    for name in ("wonderland.guide", "wonderland.embeds", "wonderland.economy_cog", "wonderland.ledger_cog", "wonderland.quests_cog"):
+    for name in ("wonderland.guide", "wonderland.embeds", "wonderland.economy_cog", "wonderland.ledger_cog"):
         sys.modules.pop(name, None)
 
 
@@ -954,10 +954,7 @@ async def test_retired_commands_never_appear_even_when_live(mod):
 async def test_a_search_with_a_hit_or_a_page_counts_as_a_guide_lookup_and_a_miss_does_not(mod):
     cog = make(mod, commands={"fish", "fishinfo", "leaderboard", "shop"})
     seen = []
-
-    async def lookup(member):
-        seen.append(member)
-    cog._q_guide_lookup = lookup
+    cog._quest_hook = seen.append
     ctx = FakeCtx()
     await search(cog, ctx, "zzzz")
     assert seen == []                                          # nothing found: no credit
@@ -969,3 +966,22 @@ async def test_a_search_with_a_hit_or_a_page_counts_as_a_guide_lookup_and_a_miss
     assert len(seen) == 2
     await cog.wonderland.subs["page"].callback(cog, FakeCtx(), "economy")
     assert len(seen) == 3
+
+
+async def test_the_guide_hook_sends_the_daily_quest_event_only_for_a_server_member(mod):
+    cog = make(mod)
+    sent = []
+    cog.bot.dispatch = lambda *args: sent.append(args)
+    cog._quest_hook(types.SimpleNamespace(id=1))                                    # no roles or guild: ignored
+    assert sent == []
+    member = types.SimpleNamespace(id=1, roles=[], guild=object())
+    cog._quest_hook(member)
+    assert sent == [("wonderland_quest", member, "guide", 1)]
+
+
+async def test_the_guide_line_for_daily_quests_follows_the_dailyquests_cog(mod):
+    cog = make(mod)
+    cog.bot.get_cog = lambda name: types.SimpleNamespace(_q_live=True) if name == "DailyQuests" else None
+    assert cog._exists("@quests") is True
+    cog.bot.get_cog = lambda name: None
+    assert cog._exists("@quests") is False

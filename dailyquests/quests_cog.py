@@ -1,7 +1,7 @@
-"""Discord side of daily quests, mixed into the Wonderland cog (no new cog, no new top-level command).
+"""Discord side of daily quests (the DailyQuests cog).
 
 Members open it from the Daily Quests button on the #wondercasino hub (the gamble cog calls
-`open_quest_panel`). Mods get `.wld quests`: the on/off switch, the reward multiplier, the quest pool
+`open_quest_panel`). Mods get `.dailyquests`: the on/off switch, the reward multiplier, the quest pool
 and the usage counts. Ships switched off: the hub button stays hidden and nothing is tracked or paid
 until a mod turns it on.
 
@@ -11,7 +11,6 @@ Tracking. Each quest key has one source, so an action counts once:
            already-answered Verdict and a lost minigame fire the same events).
   command  on_command_completion for third-party commands (`.fish`, LevelUp `.stars`), checked
            against the cog's own state where it keeps one (stars: LevelUp's cooldown stamp).
-  call     our own `.wld search` / `.wld page` call _q_record when a member really looked something up.
   chat     on_message in the chat channel (#cuddle), at most one counted message per 15 seconds.
 Payday claims (for the "share of Payday users who open quests" number) come from ExtendedEconomy's
 `red_economy_payday_claim` event, which only fires on a real claim.
@@ -31,15 +30,15 @@ from redbot.core import commands
 
 from . import quests as Q
 
-log = logging.getLogger("red.evac-cogs.wonderland.quests")
+log = logging.getLogger("red.evac-cogs.dailyquests")
 
-BOT_COMMANDS_CHANNEL_ID = 1546909458582474772   # #bot-commands (stack-and-ids.md); editable in `.wld quests`
+BOT_COMMANDS_CHANNEL_ID = 1546909458582474772   # #bot-commands (stack-and-ids.md); editable in `.dailyquests`
 QUEST_COLOR = 0xF6C177
 PANEL_TIMEOUT = 600
 COUNT_CHECK_SECONDS = 5   # a counting bot deletes a wrong number within this long
 
 DEFAULT_GUILD_QUESTS = {
-    "enabled": False,            # ships off: switched on in `.wld quests` once the coin ledger is live
+    "enabled": False,            # ships off: switched on in `.dailyquests` once the coin ledger is live
     "multiplier": Q.DEFAULT_MULTIPLIER,
     "disabled": [],              # quest keys taken out of the pool
     "targets": {},               # key -> custom target (count quests)
@@ -52,7 +51,6 @@ DEFAULT_GUILD_QUESTS = {
     "weekly": dict(Q.DEFAULT_WEEKLY),            # quests on N of 7 days
     "reroll_costs": list(Q.DEFAULT_REROLL_COSTS),  # coins for the 1st, 2nd, 3rd reroll of a day; then it doubles (a sink)
     "post_channels": {},                         # "selfie" / "counting" -> channel id; blank = found by name
-    "heist_command": "",                         # the heist cog's command (e.g. "heist play"); the heist quest is off until set
     "set_pack": Q.DEFAULT_SET_PACK,              # a full set's card pack: off | half | free
 }
 
@@ -176,15 +174,12 @@ class QuestsMixin:
         self._q_chat_cache: dict = {}    # guild -> (channel id, expires)
         self._q_live = False             # quests switched on? Gates the guide's Daily Quests line (`@quests`)
         self._q_post_cache: dict = {}    # guild -> (expires, {channel id: quest key}) for the selfie / counting quests
-        self._q_heist = ""               # the heist command's qualified name (set in `.wld quests`)
 
     async def cog_load(self) -> None:
         await super().cog_load()
         try:
             saved = await self.config.all_guilds()
             self._q_live = any((data.get("quests") or {}).get("enabled") for data in saved.values())
-            self._q_heist = next(((d.get("quests") or {}).get("heist_command", "") for d in saved.values()
-                                  if (d.get("quests") or {}).get("heist_command")), "")
         except Exception:
             log.exception("quests: reading the on/off switch failed")
 
@@ -412,17 +407,17 @@ class QuestsMixin:
         cached = self._q_chat_cache.get(guild.id)
         if cached and cached[1] > time.monotonic():
             return guild.get_channel(cached[0])
-        from .engine import match_channel
+        match_channel = Q.match_channel
         channel_id = match_channel("cuddle", {c.id: c.name for c in getattr(guild, "text_channels", [])})
         self._q_chat_cache[guild.id] = (channel_id or 0, time.monotonic() + 600)
         return guild.get_channel(channel_id) if channel_id else None
 
     async def _q_post_channel(self, guild, key: str, conf: dict):
-        """The channel a POST quest (selfie, counting) counts in: the one set in `.wld quests`, else found by name."""
+        """The channel a POST quest (selfie, counting) counts in: the one set in `.dailyquests`, else found by name."""
         set_id = (conf.get("post_channels") or {}).get(key)
         if set_id:
             return guild.get_channel(int(set_id))
-        from .engine import match_channel
+        match_channel = Q.match_channel
         found = match_channel(Q.BY_KEY[key].channel, {c.id: c.name for c in getattr(guild, "text_channels", [])})
         return guild.get_channel(found) if found else None
 
@@ -547,13 +542,6 @@ class QuestsMixin:
             return ok(await self._q_hub_channel(guild), threads=True)
         if key in ("selfie", "counting"):
             return ok(await self._q_post_channel(guild, key, conf), send=True)
-        if key == "heist":
-            cmd = (conf.get("heist_command") or "").strip()
-            if not cmd:
-                return OFF, None, "the heist command isn't set in .wld quests"
-            if not self._exists(cmd):
-                return OFF, None, f"`.{cmd}` not available"
-            return ok(guild.get_channel(conf.get("commands_channel_id") or 0), send=True)
         if key == "duel":
             cog = get("Duel")
             if cog is None or not self._exists("duel"):
@@ -646,7 +634,7 @@ class QuestsMixin:
         out = {}
         for quest in Q.QUESTS:
             if quest.key in conf["disabled"]:
-                out[quest.key] = (OFF, None, "turned off in .wld quests")
+                out[quest.key] = (OFF, None, "turned off in .dailyquests")
                 continue
             try:
                 out[quest.key] = await self._q_status(quest.key, member, conf)
@@ -728,7 +716,7 @@ class QuestsMixin:
     # ------------------------------------------------------------------ member panel
 
     def _q_link(self, guild, text: str) -> str:
-        from .engine import match_channel
+        match_channel = Q.match_channel
         names = {c.id: c.name for c in getattr(guild, "channels", [])}
         out = text
         while "{#" in out:
@@ -778,7 +766,7 @@ class QuestsMixin:
             head = f"⬜ **{title}** · +{reward:,} {currency}{xp_text}"
             if target > 1:
                 head += f"\n`{Q.bar(progress, target)}` {progress}/{target}"
-            how = self._q_link(guild, Q.BY_KEY[key].how.replace("{heist}", conf.get("heist_command") or "heist"))
+            how = self._q_link(guild, Q.BY_KEY[key].how)
             if key in ("verdict", "pet", "treat", "pick", "puzzle", "acro", "sponsor"):   # say where, when the cog knows
                 channel = (await self._q_status(key, member, conf))[1]
                 if channel is not None:
@@ -877,20 +865,11 @@ class QuestsMixin:
         if name == "payday" and self.bot.get_cog("ExtendedEconomy") is None:
             return await self._q_payday_claim(member, ctx.message)
         for quest in Q.QUESTS:
-            wanted = self._q_heist if quest.command == "{heist}" else quest.command
-            if quest.source == Q.COMMAND and wanted and wanted == name:
+            if quest.source == Q.COMMAND and quest.command == name:
                 if quest.key == "star" and not self._q_star_given(ctx):
                     return
                 await self._q_record(member, quest.key, 1, source=Q.COMMAND)
                 return
-
-    async def _q_guide_lookup(self, member) -> None:
-        """`.wld search` found something, or `.wld page` opened a topic: that is the guide quest."""
-        try:
-            if hasattr(member, "roles") and getattr(member, "guild", None) is not None:
-                await self._q_record(member, "guide", 1, source=Q.CALL)
-        except Exception:
-            log.exception("quests: counting a guide lookup failed")
 
     def _q_star_given(self, ctx) -> bool:
         """LevelUp stamps the giver's cooldown only when a star actually went out (see its give_stars)."""
@@ -1001,8 +980,6 @@ class QuestsMixin:
                 saved[name] = value
         if "enabled" in changes:
             self._q_live = bool(changes["enabled"])
-        if "heist_command" in changes:
-            self._q_heist = str(changes["heist_command"] or "")
         self._q_post_cache.clear()
 
     async def _q_refresh_hub(self, guild) -> str:

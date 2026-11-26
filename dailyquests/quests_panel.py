@@ -1,4 +1,4 @@
-"""`.wld quests`: the mods' panel for daily quests. Switch, rewards, quest pool, channels and usage counts."""
+"""`.dailyquests`: the mods' panel for daily quests. Switch, rewards, quest pool, channels and usage counts."""
 from __future__ import annotations
 
 from . import quests as Q
@@ -75,7 +75,7 @@ def _fmt_channel(value, guild):
     return channel.mention if channel is not None else f"MISSING (id {value})"
 
 
-# ---- XP, XP weekend, streak prizes, weekly prize, reroll costs, set pack, heist, post channels
+# ---- XP, XP weekend, streak prizes, weekly prize, reroll costs, set pack, post channels
 
 def _int(values, name, low, high, what):
     try:
@@ -190,18 +190,6 @@ async def _apply_set_pack(cog, guild, member, value):
     await cog._q_set(guild, set_pack=value)
     return {"off": "A full set no longer earns a pack.", "half": "A full set earns a pack at half price.",
             "free": "A full set earns a free pack."}[value]
-
-
-async def _apply_heist(cog, guild, member, values):
-    command = str(values.get("command", "")).strip().lstrip(".").lower()
-    if command and not cog._exists(command):
-        raise PanelError(f"`.{command}` isn't a command on this bot. Use the full name, like `heist play`.")
-    await cog._q_set(guild, heist_command=command)
-    return f"Heist quest runs on `.{command}`." if command else "Heist quest off (no command set)."
-
-
-def _fmt_heist(value, guild):
-    return f"`.{value}`" if value else "not set (quest off)"
 
 
 def _post_channel_spec(key):
@@ -367,10 +355,6 @@ def build_specs():
         Spec("counting_channel", "Counting quest channel", "Channels", "channel", get=_post_channel_spec("counting")[0],
              apply=_post_channel_spec("counting")[1], fmt=_post_channel_spec("counting")[2], channel_types=("text",),
              clearable=True, help="A number posted here counts (deleted wrong counts don't). Clear = #counting by name."),
-        Spec("heist", "Heist command", "Channels", "modal", get=_get("heist_command"), apply=_apply_heist,
-             fmt=_fmt_heist, button="Set…",
-             fields=(Field("command", "Command to count (no dot)", value=lambda v: v or "", max_length=40),),
-             help="The quest stays off until a real command is set. Find it with `.findcog heist`."),
         Spec("usage", "Usage by day", "Usage", "collection", get=_usage, item_get=_usage_item, can_add=False,
              help="Opened = unique members. Payday users = members who claimed payday; the share is how many opened quests."),
     ]

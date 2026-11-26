@@ -169,7 +169,7 @@ QUESTS_CUSTOM_ID = "gamblehub:flagship:quests"
 
 
 class QuestsButton(discord.ui.Button):
-    """Daily Quests (wonderland cog). Only on the hub while quests are switched on in `.wld quests`."""
+    """Daily Quests (DailyQuests cog). Only on the hub while quests are switched on in `.dailyquests`."""
 
     def __init__(self, cog: "GambleThreads"):
         super().__init__(label="Daily Quests", emoji="\U0001F4DC", style=discord.ButtonStyle.primary,
@@ -1358,19 +1358,19 @@ class GambleThreads(commands.Cog):
         return view
 
     async def _quests_on(self, guild: discord.Guild) -> bool:
-        wonderland = self.bot.get_cog("Wonderland")
-        check = getattr(wonderland, "quests_open", None)
+        quests = self.bot.get_cog("DailyQuests")
+        check = getattr(quests, "quests_open", None)
         if check is None:
             return False
         try:
             return bool(await check(guild))
         except Exception:
-            log.exception("gamble: asking wonderland whether daily quests are on failed")
+            log.exception("gamble: asking DailyQuests whether daily quests are on failed")
             return False
 
     async def handle_quests_click(self, interaction: discord.Interaction) -> None:
-        wonderland = self.bot.get_cog("Wonderland")
-        opener = getattr(wonderland, "open_quest_panel", None)
+        quests = self.bot.get_cog("DailyQuests")
+        opener = getattr(quests, "open_quest_panel", None)
         if opener is None or interaction.guild is None or not await self._quests_on(interaction.guild):
             await interaction.response.send_message("Daily quests aren't available right now.", ephemeral=True)
             return

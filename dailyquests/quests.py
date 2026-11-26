@@ -32,7 +32,7 @@ REVIEW_DAYS = 21
 LOW_COMPLETION = 0.20   # under this after the review: propose removing the quest
 BAR_WIDTH = 10
 
-# ---- streak milestones, weekly prize, XP, packs, reroll (all editable in `.wld quests`)
+# ---- streak milestones, weekly prize, XP, packs, reroll (all editable in `.dailyquests`)
 DEFAULT_XP_PER_QUEST = 50
 DEFAULT_REROLL_COSTS = (1000, 5000, 10000)   # then it doubles for every further reroll in the same day
 DEFAULT_SET_PACK = "half"            # what a full set earns from CardCollect: off | half (half price) | free
@@ -61,8 +61,8 @@ class Quest:
     how: str          # one line: where and how. "{#slug}" becomes a channel link when it resolves
     source: str       # HOOK | COMMAND | CHAT
     target: int = 1
-    command: str = ""  # COMMAND quests: the qualified command name that is listened for ("" = set in `.wld quests`)
-    channel: str = ""  # POST quests: the channel (found by name, or set in `.wld quests`) where a message counts
+    command: str = ""  # COMMAND quests: the qualified command name that is listened for
+    channel: str = ""  # POST quests: the channel (found by name, or set in `.dailyquests`) where a message counts
 
 
 QUESTS = (
@@ -84,9 +84,8 @@ QUESTS = (
     Quest("canvas", "Paint a canvas pixel", "Pick **Pixel Canvas** in the More… menu in {#wondercasino}.", HOOK),
     Quest("selfie", "Post a selfie in {#selfie}", "Share a photo of yourself in {#selfie}.", POST, channel="selfie"),
     Quest("counting", "Count in {#counting}", "Add the next number in {#counting}.", POST, channel="counting"),
-    Quest("heist", "Run a heist", "Start or join a heist: `.{heist}` in {#bot-commands}.", COMMAND, command="{heist}"),
     Quest("duel", "Play a duel", "Challenge someone with `.duel @them <wager>` and see the fight through.", HOOK),
-    Quest("guide", "Look something up in the guide", "Type `.wld search card` (or any word) in {#bot-commands}.", CALL),
+    Quest("guide", "Look something up in the guide", "Type `.wld search card` (or any word) in {#bot-commands}.", HOOK),
     Quest("acro", "Play Acrophobia", "Enter an acronym or vote on one when a round pops up. Rounds run twice a day at busy hours.",
           HOOK),
     Quest("plant", "Drop coins in {#cuddle}", "Pick **Drop coins in #cuddle** in the More… menu in {#wondercasino}. 10% is burned.",
@@ -430,3 +429,17 @@ def day_line(entry: dict) -> str:
 def faucet(completers: int, average_payday: int, multiplier: float) -> int:
     """Daily coins created if `completers` members finish a full set."""
     return max(0, round(completers * average_payday * multiplier))
+
+
+def match_channel(slug: str, names: dict) -> Optional[int]:
+    """Find a channel id by name. Names carry decoration ("🧸・cuddle"), so match the tail and require a
+    non-word character before it, so "shop" never matches "wondershop"."""
+    target = slug.lower()
+    for channel_id, name in names.items():
+        lowered = name.lower().strip()
+        if not lowered.endswith(target):
+            continue
+        head = lowered[: len(lowered) - len(target)]
+        if head == "" or not (head[-1].isalnum() or head[-1] == "-"):
+            return channel_id
+    return None

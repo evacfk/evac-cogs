@@ -78,7 +78,7 @@ async def _lottery(bot, member) -> Optional[dict]:
 
 
 async def _quests(bot, member) -> Optional[dict]:
-    cog = bot.get_cog("Wonderland")
+    cog = bot.get_cog("DailyQuests")
     summary = getattr(cog, "quest_summary", None)
     return None if summary is None else await summary(member)
 

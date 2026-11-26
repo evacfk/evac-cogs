@@ -144,3 +144,17 @@ def test_the_three_gated_channels_are_flagged():
     assert by["verify"].unlock == ""                 # vanishes for verified members
     assert by["verified-chat"].unlock and by["pillow-talk"].unlock
     assert by["cuddle"].public_link is True
+
+
+# ---- the Start page's daily-quests line is gated on the DailyQuests switch
+
+def test_start_page_mentions_daily_quests_only_while_they_are_on():
+    from wonderland import content, engine
+    start = next(p for p in content.PAGES if p.key == "start")
+    assert "**Your daily loop**" in start.body
+    off = engine.gate_body(start, lambda name: False).body
+    on = engine.gate_body(start, lambda name: name == "@quests").body
+    assert "Daily Quests" not in off and "[[" not in off and "Payday" in off
+    assert "📜 **Daily Quests**: three small quests a day; each pays a third of your payday plus XP." in on
+    assert "streak with badges and prizes" in on
+    assert off.endswith("**When you have a minute**") and on.endswith("**When you have a minute**")
