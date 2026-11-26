@@ -1,7 +1,7 @@
 """Config defaults and lookup tables for hungergames. No discord/redbot imports here."""
 from zoneinfo import ZoneInfo
 
-COG_VERSION = "1.0.3"
+COG_VERSION = "1.1.0"
 CONFIG_IDENTIFIER = 0x48474D31
 HOME_TZ = ZoneInfo("America/Los_Angeles")
 
@@ -12,8 +12,19 @@ STAFF_ROLE_IDS = (            # may open `.hg admin` (as may anyone with Manage 
 )
 
 TICK_SECONDS = 5              # the phase loop; also paces the live broadcast posts
-POST_GAP = (20, 40)           # seconds between broadcast lines
-TEST_POST_GAP = (2, 4)
+POST_GAP = (180, 300)         # seconds between two story lines in a scene (3 to 5 minutes)
+SCENE_GAP = (20, 40)          # a scene header to its first line, the last line to the cannons, the cannons to the Crowning
+TEST_POST_GAP = (2, 4)        # test runs post everything fast
+NEXT_FLAVOR = (
+    "The cameras swing toward the next tribute.",
+    "The Gamemakers confer.",
+    "Somewhere in the arena, a twig snaps.",
+    "The Capitol holds its breath.",
+    "The sponsors lean in.",
+    "The arena is quiet. Too quiet.",
+    "A hovercraft hums far overhead.",
+    "The mockingjays have stopped singing.",
+)
 
 # --- the week (Pacific). day offsets are from the edition's Sunday ---------------------------------------
 # (step, day offset, hour, minute)

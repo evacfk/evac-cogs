@@ -395,11 +395,14 @@ class Arena:
     def name(self, uid: str) -> str:
         return f"**{self.roster[uid]['name']}**"
 
-    def say(self, text: str, names=()):
-        self.lines.append({"t": "line", "text": _render(text, [self.name(u) for u in names])})
+    def say(self, text: str, names=(), kind: str = "calm"):
+        """One arena line. `uids` is who it is about (the first is the one an avatar is shown for) and `kind`
+        drives its icon: calm, death, save, boost, gift, find or victor. A later kill() upgrades the line to death."""
+        self.lines.append({"t": "line", "text": _render(text, [self.name(u) for u in names]),
+                           "uids": [str(u) for u in names], "kind": kind})
 
-    def header(self, title: str, desc: str = ""):
-        self.lines.append({"t": "header", "title": title, "desc": desc})
+    def header(self, title: str, desc: str = "", scene: str = ""):
+        self.lines.append({"t": "header", "title": title, "desc": desc, "scene": scene})
 
     def pick_line(self, key: str, sub: str | None = None) -> str:
         src = self.text[key]
@@ -444,6 +447,13 @@ class Arena:
             if k in self.roster:
                 self.roster[k]["kills"] += 1
         self.dead_now.append(victim)
+        if self.lines and self.lines[-1]["t"] == "line":   # the line just said is this death (a fight can kill two)
+            last = self.lines[-1]
+            if last["kind"] != "death":
+                last["uids"] = [str(k) for k in killers] + [u for u in last["uids"] if u not in map(str, killers)]
+                last["kind"] = "death"
+            if victim not in last["uids"]:
+                last["uids"].append(victim)
         for group in self.ed["alliances"]:
             if victim in group:
                 group.remove(victim)
@@ -493,7 +503,7 @@ class Arena:
     def spend_boosts(self, uids):
         for uid in uids:
             if self.consume(uid, "stew"):
-                self.say(self.pick_line("boost", "stew"), [uid])
+                self.say(self.pick_line("boost", "stew"), [uid], "boost")
             self.roster[uid]["finale_bonus"] = 0
 
     def survival_chance(self, uid: str, stat: str) -> float:
@@ -504,7 +514,7 @@ class Arena:
             raw += HIDE_BONUS
         if self.consume(uid, "bread"):
             raw += BREAD_BONUS
-            self.say(self.pick_line("boost", "bread"), [uid])
+            self.say(self.pick_line("boost", "bread"), [uid], "boost")
         raw += t.get("finale_bonus") or 0
         t["finale_bonus"] = 0
         return soft_cap(raw)
@@ -517,12 +527,12 @@ class Arena:
         specific = HAZARD_SAVE.get(hazard or "")
         if specific and self.consume(uid, specific):
             if narrate:
-                self.say(self.pick_line("save", specific), [uid])
+                self.say(self.pick_line("save", specific), [uid], "save")
             return True
         if self.consume(uid, "med_kit"):
             if self.rng.random() < MED_KIT_SAVE:
                 if narrate:
-                    self.say(self.pick_line("save", "med_kit"), [uid])
+                    self.say(self.pick_line("save", "med_kit"), [uid], "save")
                 return True
             self.say(self.pick_line("medkit_fail"), [uid])
         return False
@@ -595,7 +605,7 @@ class Arena:
         self.spend_boosts(group)
         saved = [v for v in victims if self.try_save(v, "combat", narrate=False)]
         if saved:
-            self.say(self.pick_line("combat_saved"), [killers[0], saved[0]])
+            self.say(self.pick_line("combat_saved"), [killers[0], saved[0]], "save")
             return 0
         self.say(tmpl["text"], roles)
         for v in victims:
@@ -639,7 +649,7 @@ class Arena:
             remaining.remove(b)
             self.spend_boosts([a, b])
             if self.try_save(victim, "combat", narrate=False):
-                self.say(self.pick_line("combat_saved"), [killer, victim])
+                self.say(self.pick_line("combat_saved"), [killer, victim], "save")
                 self.split(a, b)
                 return 0
             self.say(tmpl["text"], [killer, victim])
@@ -728,11 +738,11 @@ class Arena:
         if "forage" in tmpl.get("tags", []) and self.rng.random() < FORAGE_FIND_CHANCE:
             item = self.rng.choice(GIFT_ITEMS)
             self.inv(first)["consumables"].append(item)
-            self.say(self.pick_line("forage_find").replace("{item}", ITEMS[item][0]), [first])
+            self.say(self.pick_line("forage_find").replace("{item}", ITEMS[item][0]), [first], "find")
         if phase == "feast" and "feast" in tmpl.get("tags", []):
             item = self.most_needed(first)
             self.inv(first)["consumables"].append(item)
-            self.say(self.pick_line("feast_find").replace("{item}", ITEMS[item][0]), [first])
+            self.say(self.pick_line("feast_find").replace("{item}", ITEMS[item][0]), [first], "find")
 
     def most_needed(self, uid: str) -> str:
         have = set(self.inv(uid)["consumables"])
@@ -785,7 +795,7 @@ class Arena:
             if self.rng.random() < chance:
                 item = self.rng.choice(GIFT_ITEMS)
                 self.inv(uid)["consumables"].append(item)
-                self.say(self.pick_line("gift").replace("{item}", f"{ITEMS[item][1]} {ITEMS[item][0]}"), [uid])
+                self.say(self.pick_line("gift").replace("{item}", f"{ITEMS[item][1]} {ITEMS[item][0]}"), [uid], "gift")
 
     def broadcast(self, index: int) -> list:
         """Tue-Fri broadcast `index` (1-4): returns the queue of lines to post."""
@@ -793,7 +803,7 @@ class Arena:
         alive = len(self.alive())
         n = ed["broadcasts_done"] + 1
         if index == 1:
-            self.header("🔔 The Bloodbath", self.pick_line("bloodbath_intro"))
+            self.header("🔔 The Bloodbath", self.pick_line("bloodbath_intro"), "bloodbath")
             plan = [("bloodbath", bloodbath_quota(alive, self.rng))]
             budget = broadcast_budget(alive, BROADCASTS - index + 1, self.rng)
             plan.append(("night", max(0, min(budget - plan[0][1], 1))))
@@ -812,20 +822,23 @@ class Arena:
                 plan.append((p, share))
                 left -= share
         self.last_before_finale = index == BROADCASTS
-        self.gifts()
+        gifted = False
         carry = 0
         for p, quota in plan:
             if p == "day":
-                self.header(f"☀️ Day {n}", self.pick_line("day_intro"))
+                self.header(f"☀️ Day {n}", self.pick_line("day_intro"), "day")
             elif p == "night":
-                self.header(f"🌙 Night {n}", self.pick_line("night_intro"))
+                self.header(f"🌙 Night {n}", self.pick_line("night_intro"), "night")
             elif p == "feast":
-                self.header("🍖 The Feast", self.pick_line("feast_intro"))
+                self.header("🍖 The Feast", self.pick_line("feast_intro"), "feast")
             elif p == "arena":
                 kind = ed["arena_kind"]
-                self.header("⚠️ The Gamemakers intervene", self.pick_line("arena_intro", kind))
+                self.header("⚠️ The Gamemakers intervene", self.pick_line("arena_intro", kind), "arena")
                 if kind == "rule_change":
                     p = "day"
+            if not gifted:   # the Capitol's gifts open the first scene, under its header (not loose above it)
+                gifted = True
+                self.gifts()
             want = quota + carry
             got = self.phase(p, want, hazard_kind=ed["arena_kind"] if p == "arena" else None)
             carry = max(0, want - got)
@@ -835,7 +848,7 @@ class Arena:
 
     def finale(self) -> list:
         ed = self.ed
-        self.header("🏟️ The Finale", self.pick_line("finale_intro"))
+        self.header("🏟️ The Finale", self.pick_line("finale_intro"), "finale")
         for uid in self.alive():
             cons = self.inv(uid)["consumables"]
             if cons:
@@ -864,7 +877,7 @@ class Arena:
                 self.hazard(remaining, "finale", self.rng.choice(("fire", "flood", "mutt", None)))
         victor = self.alive()[0]
         ed["victor"] = victor
-        self.say(self.pick_line("victor").replace("{edition}", edition_title(ed)), [victor])
+        self.say(self.pick_line("victor").replace("{edition}", edition_title(ed)), [victor], "victor")
         self.lines.append({"t": "fallen", "uids": list(self.dead_now), "night": None})
         self.lines.append({"t": "victor", "uid": victor})
         ed["used"] = sorted(self.used)
@@ -876,6 +889,23 @@ class Arena:
                 self.say(self.pick_line("dq"), [uid])
                 self.kill(uid, (), "dq")
         return self.lines
+
+
+def pending_deaths(ed: dict) -> set:
+    """Tributes who die in the broadcast that is still being posted. The whole night is simulated up front,
+    so anything that shows who is alive (status, plans) must treat these as still standing until the
+    broadcast has finished posting, or a slow broadcast spoils its own deaths."""
+    b = ed.get("broadcast")
+    if not b or b["pos"] >= len(b["queue"]):
+        return set()
+    n = ed["broadcasts_done"]
+    return {u for u, t in ed["roster"].items() if not t["alive"] and (t.get("death") or {}).get("broadcast") == n}
+
+
+def shown_kills(ed: dict, uid: str, hidden: set) -> int:
+    """Kills as the audience has seen them: not counting the pending deaths."""
+    return ed["roster"][uid]["kills"] - sum(
+        1 for v in hidden if uid in (ed["roster"][v].get("death") or {}).get("by", ()))
 
 
 def run_broadcast(ed: dict, pool: dict, rng: random.Random, *, gone=()) -> list:

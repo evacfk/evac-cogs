@@ -24,8 +24,8 @@ from . import panel as panel_specs
 from . import views as ui
 from .constants import (
     CHALLENGES, COG_VERSION, CONFIG_IDENTIFIER, DEFAULT_GUILD, DEFAULT_MEMBER, DRAW_AT_REAPING, ITEMS, MAX_TRIBUTES,
-    MIN_MESSAGES_7D, MIN_TRIBUTES, POST_GAP, REPORTS_KEPT, STAFF_ROLE_IDS, STRATEGIES, TEST_POST_GAP, TICK_SECONDS,
-    TOPUP_TARGET,
+    MIN_MESSAGES_7D, MIN_TRIBUTES, NEXT_FLAVOR, POST_GAP, REPORTS_KEPT, SCENE_GAP, STAFF_ROLE_IDS, STRATEGIES,
+    TEST_POST_GAP, TICK_SECONDS, TOPUP_TARGET,
 )
 from .settings_panel import PanelError, open_panel
 
@@ -293,7 +293,9 @@ class HungerGames(commands.Cog):
                 if now >= b["next_ts"]:
                     item = b["queue"][b["pos"]]
                     b["pos"] += 1
-                    gap = TEST_POST_GAP if ed.get("test") else POST_GAP
+                    nxt = b["queue"][b["pos"]] if b["pos"] < len(b["queue"]) else None
+                    slow = item["t"] == "line" and nxt is not None and nxt["t"] == "line"
+                    gap = TEST_POST_GAP if ed.get("test") else (POST_GAP if slow else SCENE_GAP)
                     b["next_ts"] = now + self.rng.uniform(*gap)
                     await gconf.current.set(ed)   # mark it posted first: never double-post after a crash
                     await self._post_item(guild, s, ed, item)
@@ -481,17 +483,87 @@ class HungerGames(commands.Cog):
 
     _step_finale = _step_broadcast
 
+    def _avatar_for(self, guild, ed):
+        def url(uid):
+            t = ed["roster"].get(str(uid))
+            if not t or t.get("fake") or not str(uid).isdigit():
+                return None
+            member = guild.get_member(int(uid))
+            avatar = getattr(member, "display_avatar", None)
+            return avatar.url if avatar is not None else None
+        return url
+
+    @staticmethod
+    def _next_update(b: dict) -> tuple:
+        """(when the next post is due, a flavour line) for the card's countdown; none after the last post."""
+        if b["pos"] >= len(b["queue"]):
+            return None, ""
+        return b["next_ts"], NEXT_FLAVOR[b["pos"] % len(NEXT_FLAVOR)]
+
+    async def _edit_card(self, channel, message_id, embed) -> bool:
+        if channel is None or not message_id:
+            return False
+        try:
+            await channel.get_partial_message(message_id).edit(embed=embed)
+            return True
+        except _DISCORD_ERRORS:
+            log.debug("hungergames: could not edit scene card %s", message_id, exc_info=True)
+            return False
+
+    async def _close_card(self, guild, channel, ed):
+        """The scene is over: redraw its card without the "next update" countdown, which would go stale."""
+        b = ed["broadcast"]
+        card = b.get("card")
+        if not card or not card.get("id"):
+            return
+        queue = b["queue"]
+        head = queue[card["head"]] if card["head"] is not None else {"title": "📺 Live from the arena", "scene": ""}
+        lines = [i for i in queue[card["start"]:b["pos"] - 1] if i["t"] == "line"]
+        await self._edit_card(channel, card["id"], embeds.scene_embed(head, lines, self._avatar_for(guild, ed)))
+
+    async def _post_scene_line(self, guild, channel, ed, item):
+        """A broadcast line goes into the current scene card (one message per phase, edited as lines arrive).
+        The card is rebuilt from the saved queue each time, so a restart or a deleted card never loses a line."""
+        b = ed["broadcast"]
+        queue, idx = b["queue"], b["pos"] - 1
+        avatar = self._avatar_for(guild, ed)
+        card = b.get("card")
+        if card is None:
+            card = {"id": None, "start": idx, "head": None}
+        head = queue[card["head"]] if card["head"] is not None else {"title": "📺 Live from the arena", "scene": ""}
+        lines = [i for i in queue[card["start"]:idx + 1] if i["t"] == "line"]
+        if card["id"] and embeds.scene_text_len(head, lines) > embeds.CARD_LIMIT:
+            card = {"id": None, "start": idx, "head": card["head"]}   # full: carry on in a fresh card, same header
+            head = queue[card["head"]] if card["head"] is not None else head
+            lines = [item]
+        embed = embeds.scene_embed(head, lines, avatar, *self._next_update(b))
+        if card["id"] and await self._edit_card(channel, card["id"], embed):
+            b["card"] = card
+            return
+        msg = await self._send(channel, embed=embed)
+        if msg is not None:
+            card["id"] = msg.id
+            b["card"] = card
+
     async def _post_item(self, guild, s, ed, item):
         channel = self._channel(guild, s, ed)
         kind = item["t"]
+        b = ed["broadcast"]
+        if kind != "line":
+            await self._close_card(guild, channel, ed)
         if kind == "header":
-            await self._send(channel, embed=embeds.header_embed(item))
+            avatar = self._avatar_for(guild, ed)
+            msg = await self._send(channel, embed=embeds.scene_embed(item, [], avatar, *self._next_update(b)))
+            b["card"] = {"id": msg.id if msg is not None else None, "start": b["pos"], "head": b["pos"] - 1}
         elif kind == "line":
-            await self._send(channel, item["text"])
+            await self._post_scene_line(guild, channel, ed, item)
         elif kind == "fallen":
+            b["card"] = None
             final = item.get("night") is None
-            await self._send(channel, embed=embeds.fallen_embed(ed, item), view=None if final else ui.ArenaView(self))
+            await self._send(channel, embed=embeds.fallen_embed(ed, item, self._avatar_for(guild, ed)),
+                             view=None if final else ui.ArenaView(self))
         elif kind == "victor":
+            b["card"] = None
             await self._crown(guild, s, ed)
 
     async def _crown(self, guild, s, ed):
@@ -1020,7 +1092,7 @@ class HungerGames(commands.Cog):
             await ui.say(interaction, "Plans are for living tributes, between the Training Scores and the Finale.")
             return
         t = ed["roster"][uid]
-        if not t["alive"]:
+        if not t["alive"] and uid not in engine.pending_deaths(ed):
             await ui.say(interaction, "You've fallen. Watch the rest from the stands. 🍿")
             return
         arena = engine.Arena(ed, {"templates": [], "lines": {}}, self.rng)

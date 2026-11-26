@@ -12,6 +12,7 @@ pins, persistent views after a real restart, or the bank against the live curren
 import importlib
 import sys
 import types
+
 from datetime import datetime
 
 import pytest
@@ -415,7 +416,7 @@ async def test_restart_mid_broadcast_resumes_without_rerolling(mod):
     assert 0 < pos < len(queue)
     cog2 = mod.HungerGames(cog.bot)                              # "restart": same Config, new cog
     cog2.config = cog.config
-    await cog2._tick(guild, now=t + 45 * 5)
+    await cog2._tick(guild, now=t + 45 * 8)                      # past the 3-5 minute line gap
     ed2 = await cog2.config.guild(guild).current()
     assert ed2["broadcast"]["queue"] == queue and ed2["broadcast"]["pos"] == pos + 1
 
@@ -469,3 +470,108 @@ async def test_panel_specs_match_cog_methods(mod):
     assert all(hasattr(cog, n) for n in names)
     assert "Turned on" in await cog._apply_enabled(guild, people[0], True)
     assert "15%" in await cog._apply_prize(guild, people[0], {"share": "15", "floor": "10,000"})
+
+
+async def _first_broadcast(mod, *, avatars=False):
+    import types
+    cog, guild, people, _ = world(mod, members=20)
+    if avatars:
+        for p in people:
+            p.display_avatar = types.SimpleNamespace(url=f"https://cdn.example/{p.id}.png")
+    await enable(cog, guild)
+    await full_week_to_scores(cog, guild, people)
+    await cog._tick(guild, now=SUNDAY + 38 * H)
+    await cog._tick(guild, now=SUNDAY + 50 * H)
+    return cog, guild, people, SUNDAY + 57 * H
+
+
+def _cards(guild):
+    return [m for m in ch(guild).sent if m.embed is not None and "is starting now" not in (m.content or "")]
+
+
+async def test_a_broadcast_is_a_few_edited_scene_cards_not_a_message_per_line(mod):
+    cog, guild, people, t = await _first_broadcast(mod)
+    start = len(ch(guild).sent)
+    queue = []
+    for k in range(0, 4 * H, 30):
+        await cog._tick(guild, now=t + k)
+        b = (await cog.config.guild(guild).current()).get("broadcast")
+        if b:
+            queue = b["queue"]
+    assert queue                                                 # captured before the cog cleared it
+    new = ch(guild).sent[start:]
+    plain = [m for m in new if not m.embed and "is starting now" not in (m.content or "")]
+    assert plain == []                                           # no loose one-line messages any more
+    posted = [m for m in new if m.embed is not None]
+    n_lines = sum(1 for i in queue if i["t"] == "line")
+    assert n_lines >= 6 and len(posted) <= 5                     # a few cards plus the fallen, not a post per line
+    assert any(m.edits for m in posted)                          # the cards were edited as lines arrived
+    assert all("Next update" not in (m.embed.description or "") for m in posted)   # finished cards drop the countdown
+    body = "\n".join(m.embed.description or "" for m in posted)
+    assert all(i["text"] in body for i in queue if i["t"] == "line")               # every line made it into a card
+
+
+async def test_mid_scene_card_shows_the_lines_so_far_and_a_live_countdown(mod):
+    cog, guild, people, t = await _first_broadcast(mod)
+    await cog._tick(guild, now=t)                                # generates the broadcast
+    await run_until(cog, guild, t + 10, t + 700, step=10)
+    ed = await cog.config.guild(guild).current()
+    b = ed["broadcast"]
+    assert 2 < b["pos"] < len(b["queue"])
+    card = next(m for m in reversed(ch(guild).sent) if m.embed is not None)
+    d = card.embed.description
+    assert f"<t:{int(b['next_ts'])}:R>" in d and "Next update" in d and "⏳" in d
+    lines = [i for i in b["queue"][:b["pos"]] if i["t"] == "line"]
+    assert lines and lines[0]["text"] in d or lines[-1]["text"] in d
+
+
+async def test_story_lines_wait_three_to_five_minutes_between_each_other(mod):
+    cog, guild, people, t = await _first_broadcast(mod)
+    await cog._tick(guild, now=t)
+    await run_until(cog, guild, t + 10, t + 400, step=5)
+    b = (await cog.config.guild(guild).current())["broadcast"]
+    assert b["pos"] <= 4                                         # ~6 minutes in: a header and two or three lines
+    ed = await cog.config.guild(guild).current()
+    nxt_gap = ed["broadcast"]["next_ts"] - (t + 400)
+    assert nxt_gap <= 300
+
+
+async def test_a_deleted_card_is_replaced_and_no_line_is_lost(mod):
+    cog, guild, people, t = await _first_broadcast(mod)
+    await cog._tick(guild, now=t)
+    await run_until(cog, guild, t + 10, t + 200, step=5)
+    card = next(m for m in reversed(ch(guild).sent) if m.embed is not None)
+    ch(guild).sent.remove(card)                                  # a mod deletes the live card
+    real = ch(guild).get_partial_message
+    ch(guild).get_partial_message = lambda mid: (_ for _ in ()).throw(mod.discord.NotFound(
+        types.SimpleNamespace(status=404, reason="x"), "gone")) if mid == card.id else real(mid)
+    before = len(ch(guild).sent)
+    await run_until(cog, guild, t + 205, t + 700, step=5)
+    assert len(ch(guild).sent) > before                          # the next line made a fresh card
+    new = ch(guild).sent[before]
+    ed = await cog.config.guild(guild).current()
+    b = ed["broadcast"]
+    done = [i["text"] for i in b["queue"][:b["pos"]] if i["t"] == "line"]
+    assert done and done[-1] in "".join(m.embed.description or "" for m in ch(guild).sent[before:] if m.embed)
+
+
+async def test_the_big_moments_show_the_tributes_avatar(mod):
+    cog, guild, people, t = await _first_broadcast(mod, avatars=True)
+    await run_until(cog, guild, t, t + 6 * H, step=30)
+    thumbs = [m.embed.thumbnail.url for m in ch(guild).sent if m.embed is not None and getattr(m.embed, "thumbnail", None)
+              and m.embed.thumbnail.url]
+    assert thumbs and all(u.startswith("https://cdn.example/") for u in thumbs)
+
+
+async def test_status_does_not_spoil_deaths_from_a_broadcast_still_posting(mod):
+    cog, guild, people, t = await _first_broadcast(mod)
+    await cog._tick(guild, now=t)
+    ed = await cog.config.guild(guild).current()
+    from hungergames import engine as eng, embeds as emb
+    assert eng.pending_deaths(ed) and all(ed["roster"][u]["alive"] is False for u in eng.pending_deaths(ed))
+    shown = emb.status_embed(ed, [], t, None, False)
+    marks = shown.fields[0].value
+    assert "💀" not in marks                                     # nobody visibly dead mid-broadcast
+    ed["broadcast"]["pos"] = len(ed["broadcast"]["queue"])       # the broadcast finished posting
+    assert eng.pending_deaths(ed) == set()
+    assert "💀" in emb.status_embed(ed, [], t, None, False).fields[0].value

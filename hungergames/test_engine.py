@@ -393,3 +393,43 @@ def test_event_pool_shape():
     assert len(POOL["templates"]) >= 300
     assert len(CIPHERS["words"]) * 2 + len(CIPHERS["riddles"]) >= 60
     assert all(k in ITEMS for k in ("water", "med_kit", "weapon"))
+
+
+# ---------------------------------------------------------------- structured broadcast lines
+
+
+def test_lines_know_who_they_are_about_and_what_kind_of_event_they_are():
+    seen_kinds = set()
+    for seed in range(60):
+        ed, rng = make_edition(12, seed)
+        for _ in range(4):
+            queue = engine.run_broadcast(ed, POOL, rng)
+            for item in queue:
+                if item["t"] != "line":
+                    continue
+                assert item["kind"] in ("calm", "death", "save", "boost", "gift", "find", "victor")
+                assert all(u in ed["roster"] for u in item["uids"])
+                seen_kinds.add(item["kind"])
+    assert {"calm", "death", "save", "gift"} <= seen_kinds
+
+
+def test_every_death_line_is_marked_and_names_the_dead():
+    for seed in range(40):
+        ed, rng = make_edition(12, seed)
+        before = set(engine.alive_ids(ed))
+        queue = engine.run_broadcast(ed, POOL, rng)
+        died = before - set(engine.alive_ids(ed))
+        marked = {u for i in queue if i["t"] == "line" and i["kind"] == "death" for u in i["uids"]}
+        assert died <= marked, seed
+
+
+def test_headers_carry_a_scene_and_gifts_sit_under_the_first_header():
+    for seed in range(60):
+        ed, rng = make_edition(12, seed)
+        for n in range(1, 5):
+            queue = engine.run_broadcast(ed, POOL, rng)
+            heads = [i for i in queue if i["t"] == "header"]
+            assert heads and all(h["scene"] for h in heads), (seed, n)
+            gift_pos = [k for k, i in enumerate(queue) if i["t"] == "line" and i["kind"] == "gift"]
+            first_head = next(k for k, i in enumerate(queue) if i["t"] == "header")
+            assert all(k > first_head for k in gift_pos), (seed, n)
