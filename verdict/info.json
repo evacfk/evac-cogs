@@ -1,14 +1,15 @@
 {
     "name": "Verdict",
-    "short": "A daily crowd question: pick your answer, then guess what everyone else picks.",
-    "description": "Posts one question a day with 2-4 buttons. Members tap their own answer, then guess what most people will pick. The next post carries yesterday's result, and the old post becomes a final tally showing who picked what, who read the crowd and the lone wolves. Keeps streaks, awards a monthly Mind Reader role, and opens a voters-only private discussion thread that members are added to once their answer and guess are in (locked and archived with the next post, when its discussion is copied to a public thread for everyone). Members can suggest questions that wait for the owner's tick or cross in a private channel.",
-    "end_user_data_statement": "This cog stores each member's answers and guesses to the open question (answers are shown by name in the final result post), their streak and counts, and monthly scores. Suggested questions are stored with the submitter's user ID until reviewed. It is deleted on a Red data-deletion request.",
-    "install_msg": "Run `.verdict settings` (needs Manage Server) to open the settings panel: pick the daily question channel (#cuddle), a private review channel for member suggestions, optionally the Mind Reader role, then switch Daily question on. Test with `.verdict post`.",
+    "short": "A daily crowd question (pick, then guess the crowd) and Acrophobia, a quick acronym game twice a day.",
+    "description": "Posts one question a day with 2-4 buttons. Members tap their own answer, then guess what most people will pick. The next post carries yesterday's result, and the old post becomes a final tally showing who picked what, who read the crowd and the lone wolves. Keeps streaks, awards a monthly Mind Reader role, and opens a voters-only private discussion thread that members are added to once their answer and guess are in (locked and archived with the next post, when its discussion is copied to a public thread for everyone). Members can suggest questions that wait for the owner's tick or cross in a private channel. Also runs Acrophobia, a second round type: the bot posts 3-5 random letters, members tap Submit and write one word per letter in order (anonymously, 90 seconds), then everyone votes on the numbered entries (45 seconds, one vote each, never for your own) and the winner gets a wondercoin prize from a capped daily faucet. Rounds start automatically at the busiest ServerPulse hours before 7pm Pacific; mods can start or cancel one and remove an entry from a vote with the Mod button. Lurkers can't play. Wins show as an Acro wins column in `.verdict top`.",
+    "end_user_data_statement": "This cog stores each member's answers and guesses to the open question (answers are shown by name in the final result post), their streak and counts, and monthly scores. Suggested questions are stored with the submitter's user ID until reviewed. For Acrophobia it stores each member's entry and vote only while a round is open (entries are shown by name in the results post), then keeps counts per round, each member's win and round counts, and monthly win totals. It is deleted on a Red data-deletion request.",
+    "install_msg": "Run `.verdict settings` (needs Manage Server) to open the settings panel: pick the daily question channel (#cuddle), a private review channel for member suggestions, optionally the Mind Reader role, then switch Daily question on. Test with `.verdict post`. For Acrophobia, open the Acrophobia tab in the same panel, check the prize and daily cap, and switch it on (it posts in the same channel and pays from the bank).",
     "author": [
         "evacfk"
     ],
     "requirements": [],
     "tags": [
+        "acrophobia",
         "daily",
         "poll",
         "community",

@@ -7,7 +7,8 @@
   so reading it can't spoil a guess. The next post locks and archives it and copies the discussion into a public thread
   (Discord cannot turn a private thread public);
 - streaks, a monthly Mind Reader role, member-submitted questions that wait for the owner's
-  tick or cross in a private channel.
+  tick or cross in a private channel;
+- Acrophobia, a second round type (see acro.py): a quick acronym game that runs twice a day at the busiest hours.
 """
 from __future__ import annotations
 
@@ -21,8 +22,9 @@ import discord
 from discord import app_commands
 from redbot.core import Config, commands
 
-from . import embeds, engine
+from . import acro_engine, embeds, engine
 from . import panel as panel_specs
+from .acro import AcroMixin
 from .settings_panel import PanelError, open_panel
 from .constants import (
     COG_VERSION, CONFIG_IDENTIFIER, CROSS, DEFAULT_GUILD, DEFAULT_MEMBER, KEEP_HISTORY, KEEP_MONTHS, MAX_PENDING_PER_USER,
@@ -46,7 +48,7 @@ def build_view(kind: str, qid: str, options: list[str]):
     return view
 
 
-class Verdict(commands.Cog):
+class Verdict(AcroMixin, commands.Cog):
     """A daily crowd question: pick your answer, then guess what everyone else picks."""
 
     def __init__(self, bot):
@@ -55,6 +57,7 @@ class Verdict(commands.Cog):
         self.config.register_guild(**DEFAULT_GUILD)
         self.config.register_member(**DEFAULT_MEMBER)
         self._locks: dict[int, asyncio.Lock] = {}
+        self._acro_init()
         self._task = self.bot.loop.create_task(self._loop())
 
     def cog_unload(self):
@@ -86,6 +89,7 @@ class Verdict(commands.Cog):
                     for q in pending.values():
                         if q.get("submitter_id") == user_id:
                             q["submitter_id"] = None
+            await self._acro_forget_user(guild, uid)
 
     # -- permissions ------------------------------------------------------
 
@@ -123,7 +127,14 @@ class Verdict(commands.Cog):
                     raise
                 except Exception:
                     log.exception("verdict: tick failed for guild %s", guild.id)
-            await asyncio.sleep(TICK_SECONDS)
+                try:
+                    await self._acro_tick(guild)
+                except asyncio.CancelledError:
+                    raise
+                except Exception:
+                    log.exception("verdict: Acrophobia tick failed for guild %s", guild.id)
+            # an open Acrophobia round has 45-90 second phases, so look more often while one is running
+            await asyncio.sleep(2 if self._acro_active else TICK_SECONDS)
 
     async def _tick(self, guild, now_ts: float | None = None) -> None:
         now_ts = now_ts or time.time()
@@ -419,8 +430,9 @@ class Verdict(commands.Cog):
         cid = data.get("custom_id") if isinstance(data, dict) else None
         if not cid or not str(cid).startswith("verdict:") or interaction.guild is None:
             return
+        handler = self.handle_acro if str(cid).startswith("verdict:acro:") else self.handle_click
         try:
-            await self.handle_click(interaction, str(cid))
+            await handler(interaction, str(cid))
         except Exception:
             log.exception("verdict: button handler failed")
             try:
@@ -530,10 +542,13 @@ class Verdict(commands.Cog):
         m = self.config.member(member)
         played, correct = await m.played(), await m.correct()
         acc = f"{engine.percent(correct, played)}%" if played else "n/a"
+        acro = ""
+        if await m.acro_rounds():
+            acro = f"\n\N{INPUT SYMBOL FOR LATIN CAPITAL LETTERS} Acrophobia: {await m.acro_wins()} wins in {await m.acro_rounds()} rounds"
         await ctx.send(
             f"\N{BALLOT BOX WITH BALLOT} **{member.display_name}**\n"
             f"\N{FIRE} Streak: {await m.streak()} (best {await m.best_streak()})\n"
-            f"\N{BRAIN} Crowd guesses right: {correct}/{played} ({acc})",
+            f"\N{BRAIN} Crowd guesses right: {correct}/{played} ({acc})" + acro,
             allowed_mentions=discord.AllowedMentions.none())
 
     @verdict.command(name="version", with_app_command=False)
@@ -543,13 +558,19 @@ class Verdict(commands.Cog):
 
     @verdict.command(name="top", with_app_command=False)
     async def verdict_top(self, ctx: commands.Context):
-        """This month's best crowd-readers."""
+        """This month's best crowd-readers, with their Acrophobia wins."""
+        conf = self.config.guild(ctx.guild)
         key = engine.month_key(time.time())
-        rows = engine.ranking((await self.config.guild(ctx.guild).months()).get(key, {}))
-        if not rows:
+        rows = engine.ranking((await conf.months()).get(key, {}))
+        wins = acro_engine.month_wins(await conf.acro_months(), key)
+        if not rows and not wins:
             await ctx.send("No scores yet this month.")
             return
-        lines = [f"`{i}.` <@{uid}> — {c}/{p} right" for i, (uid, c, p) in enumerate(rows, 1)]
+        show_acro = bool(wins) or await conf.acro_enabled()
+        lines = []
+        for i, (uid, c, p, w) in enumerate(acro_engine.merge_top(rows, wins), 1):
+            line = f"`{i}.` <@{uid}> — " + (f"{c}/{p} right" if p else "no crowd guesses yet")
+            lines.append(line + (f" · Acro wins: {w}" if show_acro else ""))
         await ctx.send("\N{BRAIN} **Mind Readers this month**\n" + "\n".join(lines),
                        allowed_mentions=discord.AllowedMentions.none())
 
@@ -722,7 +743,7 @@ class Verdict(commands.Cog):
 
     @verdict.command(name="settings", with_app_command=False)
     async def verdict_settings(self, ctx: commands.Context):
-        """Admins: open the settings panel. Mods: print the current settings."""
+        """Admins: open the settings panel. Mods: print the current settings, with the Acrophobia mod panel."""
         if not await self._require_staff(ctx):
             return
         perms = ctx.author.guild_permissions
@@ -736,4 +757,4 @@ class Verdict(commands.Cog):
             f"Channel: {ch(s['channel_id'])} · Review: {ch(s['review_channel_id'])} · Hour: {s['post_hour']}:00 PT\n"
             f"Queued: {len(s['queue'])} · Waiting approval: {len(s['pending'])} · Posted so far: {s['seq']}\n"
             f"Discussion threads: {'on' if s['threads_enabled'] else 'off'}",
-            allowed_mentions=discord.AllowedMentions.none())
+            allowed_mentions=discord.AllowedMentions.none(), **await self._acro_panel(ctx.guild, time.time()))

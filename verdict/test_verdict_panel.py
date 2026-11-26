@@ -123,9 +123,10 @@ def note(click):
 def test_specs_fit_discord_limits():
     specs = panel_mod.build_specs()
     keys = [s.key for s in specs]
-    assert len(keys) == len(set(keys)) == 8
+    assert len(keys) == len(set(keys)) == 14
     assert all(len(s.fields) <= 5 for s in specs)
-    assert {s.tab for s in specs} == {"Daily post", "Suggestions & title"}
+    assert {s.tab for s in specs} == {"Daily post", "Suggestions & title", "Acrophobia"}
+    assert sum(1 for s in specs if s.tab == "Acrophobia") == 6
 
 
 async def test_panel_shows_values_and_hour_modal_saves_and_rejects():

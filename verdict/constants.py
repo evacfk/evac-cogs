@@ -1,7 +1,7 @@
 """Config defaults and fixed values for verdict (Daily Verdict)."""
 from zoneinfo import ZoneInfo
 
-COG_VERSION = "1.5.0"
+COG_VERSION = "1.6.0"
 CONFIG_IDENTIFIER = 0x7E4D1C70
 HOME_TZ = ZoneInfo("America/Los_Angeles")
 
@@ -30,6 +30,35 @@ THREAD_NAME_LIMIT = 100
 
 TICK, CROSS = "\N{WHITE HEAVY CHECK MARK}", "\N{CROSS MARK}"
 
+# ---- Acrophobia (the second round type) ----
+ACRO_SUBMIT_SECONDS = 90
+ACRO_VOTE_SECONDS = 45
+ACRO_MIN_ENTRIES = 3          # fewer entries and the round is cancelled before voting
+ACRO_MAX_ENTRIES = 20         # 4 rows of 5 vote buttons; row 5 holds the mod button
+ACRO_MAX_ENTRY_LEN = 120
+ACRO_LETTER_COUNTS = (3, 4, 5)
+ACRO_THEME_CHANCE = 0.7       # share of rounds that get a theme (when the list isn't empty)
+ACRO_EARLIEST_HOUR = 9        # Pacific start hours an automatic round may use...
+ACRO_LATEST_HOUR = 18         # ...a round starting at 6pm is over well before 7pm
+ACRO_MIN_GAP_HOURS = 3        # automatic rounds are spread out
+ACRO_FALLBACK_HOURS = (12, 17)    # used when ServerPulse has no data yet
+ACRO_LATE_GRACE_SECONDS = 25 * 60   # a planned slot missed by this much (bot down, round busy) is skipped
+ACRO_PULSE_DAYS = 28
+ACRO_PULSE_MIN_SAMPLES = 3    # same-weekday samples needed before a weekday's own hour profile is trusted
+ACRO_HISTORY = 60
+ACRO_REVIEW_DAYS = 21
+ACRO_REVIEW_MIN_AVG = 4.0     # fewer entries per round than this at review time: propose retiring it
+ACRO_MAX_RATE = 4             # rounds per day, upper bound for the setting
+ACRO_MAX_PRIZE = 100_000
+DEFAULT_THEMES = [
+    "a pickup line", "a server rule we need", "a terrible excuse for being late", "a movie nobody asked for",
+    "what the mods are secretly thinking", "a bad slogan for Wonderland", "a villain's dating profile",
+    "the worst thing to say at a funeral", "a new game show", "the title of my autobiography",
+    "a warning label", "what the cat is plotting", "an unhelpful tip", "a headline from 2050",
+    "what my dog would say", "a conspiracy theory", "the secret ingredient", "a terrible band name",
+    "a question for the group", "my superpower",
+]
+
 DEFAULT_GUILD = {
     "enabled": False,
     "channel_id": None,           # where the daily question is posted (#cuddle)
@@ -51,6 +80,20 @@ DEFAULT_GUILD = {
     "threads_enabled": True,      # a voters-only private discussion thread per question
     "thread_cleanup": [],         # thread ids we failed to lock; retried on the next post
     "history": [],                # closed questions, newest last: who played, who read the crowd, lone wolves
+    # Acrophobia
+    "acro_enabled": False,
+    "acro_rounds_per_day": 2,
+    "acro_prize": 2000,           # wondercoin to the winner (shared on a tie)
+    "acro_daily_cap": 4000,       # most wondercoin the faucet pays out per Pacific day, manual rounds included
+    "acro_themes": list(DEFAULT_THEMES),
+    "acro_current": {},           # the open round; {} = none
+    "acro_plan": {},              # today's automatic slots: {date, slots: [ts], done: [ts], hours, source}
+    "acro_paid": {"date": "", "amount": 0},
+    "acro_seq": 0,
+    "acro_launch_ts": 0.0,        # first time it was switched on; the 3-week review counts from here
+    "acro_history": [],           # one counts-only record per round (no entries, no authors)
+    "acro_months": {},            # "YYYY-MM" -> {uid: wins}
+    "acro_total_paid": 0,
 }
 
 DEFAULT_MEMBER = {
@@ -60,4 +103,6 @@ DEFAULT_MEMBER = {
     "played": 0,
     "correct": 0,
     "last_suggest_ts": 0.0,
+    "acro_wins": 0,
+    "acro_rounds": 0,             # rounds they put an entry in
 }

@@ -21,14 +21,14 @@ def ts(y, mo, d, h=10, mi=0):
 def mod(monkeypatch):
     tk.install(monkeypatch)
     tk.install_ui(monkeypatch)
-    for name in ("verdict.verdict", "verdict.embeds"):
+    for name in ("verdict.verdict", "verdict.embeds", "verdict.acro", "verdict.acro_embeds"):
         monkeypatch.delitem(sys.modules, name, raising=False)
     import discord
     if not hasattr(discord.ui, "Button") or not hasattr(discord.ui.Button, "__init__"):
         pass
     cog = importlib.import_module("verdict.verdict")
     yield cog
-    for name in ("verdict.verdict", "verdict.embeds"):
+    for name in ("verdict.verdict", "verdict.embeds", "verdict.acro", "verdict.acro_embeds"):
         sys.modules.pop(name, None)
 
 
@@ -668,7 +668,8 @@ async def test_settings_opens_the_panel_for_admins_and_prints_for_mods(env, monk
     admin_ctx.author.guild_permissions = types.SimpleNamespace(administrator=False, manage_guild=True)
     await cmd(env, "verdict_settings")(env.cog, admin_ctx)
     assert opened == [("Daily Verdict", ["enabled", "channel", "hour", "ping_role", "threads", "review_channel",
-                                         "approvers", "mind_reader_role"])]
+                                         "approvers", "mind_reader_role", "acro_enabled", "acro_rate", "acro_prize",
+                                         "acro_themes", "acro_start", "acro_cancel"])]
     nobody = Ctx(env, Member(env.g, 63))
     await cmd(env, "verdict_settings")(env.cog, nobody)
     assert "Only Staff" in nobody.sent[-1] and len(opened) == 1

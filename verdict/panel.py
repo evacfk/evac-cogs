@@ -3,10 +3,11 @@
 Specs only; every change goes through the cog's `_apply_*` methods. `add`, `queue`, `remove` and `post`
 stay commands (staff), and `.verdict` itself shows a member's record.
 """
+from .constants import ACRO_MAX_ENTRIES, ACRO_MAX_RATE
 from .settings_panel import Field, Spec
 
 INTRO = ("Pick a section, then a setting. Changes save as soon as you choose. Staff keep `.verdict add`, `queue`, "
-         "`remove` and `post` as commands.")
+         "`remove` and `post` as commands, and get an Acrophobia mod panel from `.verdict settings`.")
 
 
 def _conf(key):
@@ -50,6 +51,24 @@ def _approvers_fmt(value, guild):
     return "owner only" if not ids else "owner + " + ", ".join(f"<@{i}>" for i in ids)
 
 
+async def _acro_rate_get(cog, guild):
+    return {"rate": await cog.config.guild(guild).acro_rounds_per_day()}
+
+
+async def _acro_prize_get(cog, guild):
+    conf = cog.config.guild(guild)
+    return {"prize": await conf.acro_prize(), "cap": await conf.acro_daily_cap()}
+
+
+async def _acro_themes_get(cog, guild):
+    return {"themes": list(await cog.config.guild(guild).acro_themes())}
+
+
+def _acro_themes_fmt(v, g):
+    n = len((v or {}).get("themes") or [])
+    return f"{n} themes" if n else "none (no theme on any round)"
+
+
 def build_specs():
     return [
         Spec("enabled", "Daily question", "Daily post", "toggle", get=_conf("enabled"), apply=_apply("_apply_enabled"),
@@ -74,4 +93,28 @@ def build_specs():
         Spec("mind_reader_role", "Mind Reader role", "Suggestions & title", "role", get=_conf("mind_reader_role_id"),
              apply=_apply("_apply_mind_reader_role"), fmt=_role_fmt("title off"), clearable=True,
              help="Given to last month's best crowd-reader. Clear to turn the title off."),
+        Spec("acro_enabled", "Acrophobia", "Acrophobia", "toggle", get=_conf("acro_enabled"),
+             apply=_apply("_apply_acro_enabled"),
+             confirm="Acrophobia pays wondercoin: the prize on every win, up to the daily cap below. Switch it on?",
+             help="Quick acronym rounds in the daily question channel, at the busiest hours before 7pm Pacific."),
+        Spec("acro_rate", "Rounds a day", "Acrophobia", "modal", get=_acro_rate_get, apply=_apply("_apply_acro_rate"),
+             fmt=lambda v, g: f"{v['rate']} a day" if v else "?", button="Edit…",
+             fields=(Field("rate", f"Automatic rounds a day (1-{ACRO_MAX_RATE})", value=lambda v: str(v["rate"]), max_length=1),),
+             help="Spread over the hours ServerPulse says are busiest. Mods can still start extra rounds by hand."),
+        Spec("acro_prize", "Prize & daily cap", "Acrophobia", "modal", get=_acro_prize_get,
+             apply=_apply("_apply_acro_prize"),
+             fmt=lambda v, g: f"{v['prize']:,} per win · {v['cap']:,} a day at most" if v else "?", button="Edit…",
+             fields=(Field("prize", "Wondercoin for the winner (split on a tie)", value=lambda v: str(v["prize"]), max_length=7),
+                     Field("cap", "Most wondercoin paid per day, all rounds", value=lambda v: str(v["cap"]), max_length=8)),
+             help="The daily cap is the faucet: once it's used up, wins still count but pay nothing until tomorrow."),
+        Spec("acro_themes", "Themes", "Acrophobia", "modal", get=_acro_themes_get, apply=_apply("_apply_acro_themes"),
+             fmt=_acro_themes_fmt, button="Edit…",
+             fields=(Field("themes", "One theme per line", style="long", required=False,
+                           value=lambda v: "\n".join(v["themes"]), max_length=4000),),
+             help=f"Most rounds pick one at random as a prompt. Max {ACRO_MAX_ENTRIES} entries a round."),
+        Spec("acro_start", "Start a round now", "Acrophobia", "action", apply=_apply("_apply_acro_start"),
+             button="Start now", help="Needs Acrophobia switched on and no round already open."),
+        Spec("acro_cancel", "Cancel the open round", "Acrophobia", "action", apply=_apply("_apply_acro_cancel"),
+             button="Cancel round", confirm="Cancel the round that's open right now? Nothing is paid.",
+             help="Mods can also do this, and remove single entries, from the mod panel (Mod button on the round)."),
     ]
