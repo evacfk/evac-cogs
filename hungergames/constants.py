@@ -1,7 +1,7 @@
 """Config defaults and lookup tables for hungergames. No discord/redbot imports here."""
 from zoneinfo import ZoneInfo
 
-COG_VERSION = "1.1.0"
+COG_VERSION = "1.2.0"
 CONFIG_IDENTIFIER = 0x48474D31
 HOME_TZ = ZoneInfo("America/Los_Angeles")
 
@@ -12,9 +12,16 @@ STAFF_ROLE_IDS = (            # may open `.hg admin` (as may anyone with Manage 
 )
 
 TICK_SECONDS = 5              # the phase loop; also paces the live broadcast posts
-POST_GAP = (180, 300)         # seconds between two story lines in a scene (3 to 5 minutes)
+POST_GAP = (180, 300)         # fallback gap for a broadcast saved before adaptive pacing (1.1.0)
+BROADCAST_SECONDS = 1800       # a normal night runs about 30 minutes ...
+FEAST_SECONDS = 2700           # ... the Feast night about 45 ...
+FINALE_SECONDS = 1800         # ... and the Finale about 30 (a quiet one ends sooner: gaps stop at GAP_MAX)
+GAP_MIN, GAP_MAX = 45, 360    # seconds between two story lines, whatever the line count
 SCENE_GAP = (20, 40)          # a scene header to its first line, the last line to the cannons, the cannons to the Crowning
 TEST_POST_GAP = (2, 4)        # test runs post everything fast
+CANNON_BEAT = 4               # seconds between cannons when the fallen list is revealed one at a time
+CANNON_BUDGET = 20            # ... never more than this long in total
+BANNER_BASE = "https://raw.githubusercontent.com/evacfk/evac-cogs/main/hungergames/assets/banners"
 NEXT_FLAVOR = (
     "The cameras swing toward the next tribute.",
     "The Gamemakers confer.",

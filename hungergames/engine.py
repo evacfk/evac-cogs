@@ -16,7 +16,7 @@ from .constants import (
     HAZARD_BASE, HAZARD_SAVE, HAZARD_STAT_WEIGHT, HIDE_BONUS, HOME_TZ, HUNT_BONUS, ITEMS, MAX_ALLIANCE,
     MED_KIT_SAVE, PARACHUTES_PER_DAY, POWER_RANDOM, SCHEDULE, SOFT_CAP_CEILING, SOFT_CAP_FLOOR, SPEED_MAX,
     STEW_BONUS, TEST_SCHEDULE, TICKET_CAP, UNUSED_ITEM_FINALE_BONUS, ACCURACY_MAX, AGILITY_MISS_COST,
-    STRENGTH_ROUNDS, ENDURANCE_MAX, INTELLECT_PUZZLES,
+    STRENGTH_ROUNDS, ENDURANCE_MAX, INTELLECT_PUZZLES, GAP_MAX, GAP_MIN, SCENE_GAP,
 )
 
 ARENA_KINDS = ("fire", "mutt", "flood", "night", "poison", "rule_change")
@@ -389,6 +389,7 @@ class Arena:
         self.templates = pool["templates"]
         self.text = pool["lines"]
         self.last_before_finale = False
+        self.credit = None   # who sponsored the item consumed a moment ago; the next boost/save line names them
 
     # ---------- helpers ----------
 
@@ -398,11 +399,16 @@ class Arena:
     def say(self, text: str, names=(), kind: str = "calm"):
         """One arena line. `uids` is who it is about (the first is the one an avatar is shown for) and `kind`
         drives its icon: calm, death, save, boost, gift, find or victor. A later kill() upgrades the line to death."""
-        self.lines.append({"t": "line", "text": _render(text, [self.name(u) for u in names]),
-                           "uids": [str(u) for u in names], "kind": kind})
+        line = {"t": "line", "text": _render(text, [self.name(u) for u in names]),
+                "uids": [str(u) for u in names], "kind": kind}
+        if self.credit and kind in ("boost", "save"):
+            line["credit"] = self.credit
+        self.credit = None
+        self.lines.append(line)
 
-    def header(self, title: str, desc: str = "", scene: str = ""):
-        self.lines.append({"t": "header", "title": title, "desc": desc, "scene": scene})
+    def header(self, title: str, desc: str = "", scene: str = "", bn: int = 0):
+        """A scene header. `bn` is the broadcast number (1-4, 5 for the Finale) for the card's progress bar."""
+        self.lines.append({"t": "header", "title": title, "desc": desc, "scene": scene, "bn": bn})
 
     def pick_line(self, key: str, sub: str | None = None) -> str:
         src = self.text[key]
@@ -433,8 +439,18 @@ class Arena:
         cons = self.inv(uid)["consumables"]
         if item in cons:
             cons.remove(item)
+            self.credit = self.sponsor_of_use(uid, item)
             return True
         return False
+
+    def sponsor_of_use(self, uid: str, item: str):
+        """Items are interchangeable, so a sponsored one is always spent before a free one and its sponsor gets
+        the credit. Each ledger row is credited once."""
+        for row in self.ed["ledger"]:
+            if row["tribute"] == uid and row["item"] == item and not row.get("used"):
+                row["used"] = True
+                return row["sponsor"]
+        return None
 
     def stat(self, uid: str, key: str) -> float:
         return float(self.roster[uid]["stats"].get(key, 0) or 0)
@@ -803,7 +819,7 @@ class Arena:
         alive = len(self.alive())
         n = ed["broadcasts_done"] + 1
         if index == 1:
-            self.header("🔔 The Bloodbath", self.pick_line("bloodbath_intro"), "bloodbath")
+            self.header("🔔 The Bloodbath", self.pick_line("bloodbath_intro"), "bloodbath", 1)
             plan = [("bloodbath", bloodbath_quota(alive, self.rng))]
             budget = broadcast_budget(alive, BROADCASTS - index + 1, self.rng)
             plan.append(("night", max(0, min(budget - plan[0][1], 1))))
@@ -826,14 +842,14 @@ class Arena:
         carry = 0
         for p, quota in plan:
             if p == "day":
-                self.header(f"☀️ Day {n}", self.pick_line("day_intro"), "day")
+                self.header(f"☀️ Day {n}", self.pick_line("day_intro"), "day", n)
             elif p == "night":
-                self.header(f"🌙 Night {n}", self.pick_line("night_intro"), "night")
+                self.header(f"🌙 Night {n}", self.pick_line("night_intro"), "night", n)
             elif p == "feast":
-                self.header("🍖 The Feast", self.pick_line("feast_intro"), "feast")
+                self.header("🍖 The Feast", self.pick_line("feast_intro"), "feast", n)
             elif p == "arena":
                 kind = ed["arena_kind"]
-                self.header("⚠️ The Gamemakers intervene", self.pick_line("arena_intro", kind), "arena")
+                self.header("⚠️ The Gamemakers intervene", self.pick_line("arena_intro", kind), "arena", n)
                 if kind == "rule_change":
                     p = "day"
             if not gifted:   # the Capitol's gifts open the first scene, under its header (not loose above it)
@@ -848,7 +864,7 @@ class Arena:
 
     def finale(self) -> list:
         ed = self.ed
-        self.header("🏟️ The Finale", self.pick_line("finale_intro"), "finale")
+        self.header("🏟️ The Finale", self.pick_line("finale_intro"), "finale", 5)
         for uid in self.alive():
             cons = self.inv(uid)["consumables"]
             if cons:
@@ -889,6 +905,15 @@ class Arena:
                 self.say(self.pick_line("dq"), [uid])
                 self.kill(uid, (), "dq")
         return self.lines
+
+
+def line_gap(queue: list, target: int) -> int:
+    """Seconds between two story lines so the broadcast takes about `target` seconds, however many lines
+    it has. The quick hand-offs (header to first line, last line to the cannons) take about 30 s each."""
+    slow = sum(1 for k in range(1, len(queue)) if queue[k]["t"] == "line" and queue[k - 1]["t"] == "line")
+    short = max(0, len(queue) - 1 - slow)
+    budget = target - short * (sum(SCENE_GAP) / 2)
+    return int(min(GAP_MAX, max(GAP_MIN, budget / max(1, slow))))
 
 
 def pending_deaths(ed: dict) -> set:
@@ -1029,6 +1054,31 @@ def sponsors_of(ed: dict, tribute: str) -> list:
         if row["tribute"] == tribute and row["sponsor"] not in seen:
             seen.append(row["sponsor"])
     return seen
+
+
+def recap(ed: dict) -> dict:
+    """The Games in numbers, for the card after the Crowning. Pure and safe on any finished edition."""
+    roster = ed["roster"]
+    per_night: dict = {}
+    for t in roster.values():
+        if not t["alive"] and t.get("death"):
+            per_night[t["death"]["broadcast"]] = per_night.get(t["death"]["broadcast"], 0) + 1
+    deadliest = max(per_night.items(), key=lambda kv: (kv[1], -kv[0])) if per_night else None
+    scores = sorted(t["score"] for t in roster.values())
+    median = scores[len(scores) // 2] if scores else 0
+    underdog = None
+    for uid, t in roster.items():
+        lasted = 6 if t["alive"] else (t.get("death") or {}).get("broadcast", 0)
+        if t["score"] < median and lasted >= 3:
+            if underdog is None or (lasted, -t["score"]) > (underdog[1], -roster[underdog[0]]["score"]):
+                underdog = (uid, lasted)
+    return {
+        "tributes": len(roster), "cannons": sum(1 for t in roster.values() if not t["alive"]),
+        "kills": sum(t["kills"] for t in roster.values()), "deadliest": deadliest,
+        "underdog": underdog[0] if underdog else None,
+        "parachutes": len(ed["ledger"]), "sponsors": len({r["sponsor"] for r in ed["ledger"]}),
+        "spent": total_spend(ed),
+    }
 
 
 def edition_report(ed: dict) -> dict:

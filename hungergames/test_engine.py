@@ -433,3 +433,67 @@ def test_headers_carry_a_scene_and_gifts_sit_under_the_first_header():
             gift_pos = [k for k, i in enumerate(queue) if i["t"] == "line" and i["kind"] == "gift"]
             first_head = next(k for k, i in enumerate(queue) if i["t"] == "header")
             assert all(k > first_head for k in gift_pos), (seed, n)
+
+
+# ---------------------------------------------------------------- pacing, sponsor credit, progress, recap
+
+
+def test_line_gap_makes_a_broadcast_last_about_the_target_whatever_its_length():
+    for n_lines in (4, 8, 15, 25):
+        queue = [{"t": "header"}] + [{"t": "line"}] * n_lines + [{"t": "fallen"}]
+        gap = engine.line_gap(queue, 1800)
+        total = (n_lines - 1) * gap + 2 * 30            # the line gaps plus the header and cannon hand-offs
+        assert gap >= 45
+        assert 1800 * 0.85 <= total <= 1800 * 1.1 or gap in (45, 360), (n_lines, gap, total)
+    quiet = [{"t": "header"}] + [{"t": "line"}] * 3 + [{"t": "victor"}]
+    assert engine.line_gap(quiet, 1800) == 360          # a short Finale stops at the cap, it is never stretched
+    assert engine.line_gap([{"t": "line"}], 1800) == 360
+
+
+def _arena_with_sponsored(item="burn_cream", sponsor="99"):
+    ed, rng = make_edition(4, 1, items=False)
+    ed["roster"]["0"]["inventory"]["consumables"] += [item, item]
+    ed["ledger"].append({"sponsor": sponsor, "tribute": "0", "item": item, "price": 1500, "day": "d", "ts": 0})
+    return ed, engine.Arena(ed, POOL, rng)
+
+
+def test_a_sponsored_item_credits_its_sponsor_once_and_free_copies_do_not():
+    ed, arena = _arena_with_sponsored()
+    assert arena.try_save("0", "fire")                   # the sponsored copy goes first; the save line names them
+    assert arena.lines[-1]["kind"] == "save" and arena.lines[-1]["credit"] == "99"
+    assert ed["ledger"][0]["used"] is True
+    assert arena.try_save("0", "fire")                   # the second copy is free: no credit this time
+    assert arena.lines[-1]["kind"] == "save" and "credit" not in arena.lines[-1]
+
+
+def test_credit_never_leaks_onto_an_unrelated_line():
+    ed, arena = _arena_with_sponsored()
+    arena.consume("0", "burn_cream")
+    arena.say("**T1** wanders about.", ["1"])             # not a boost or a save
+    arena.say("**T1** is saved.", ["1"], "save")
+    assert all("credit" not in line for line in arena.lines)
+
+
+def test_credit_shows_in_the_card_and_progress_bar_counts_broadcasts():
+    from hungergames import embeds
+    line = {"t": "line", "text": "**T0** is saved.", "kind": "save", "uids": ["0"], "credit": "99"}
+    assert "from <@99>" in embeds.scene_line(line)
+    assert "from <@" not in embeds.scene_line({"t": "line", "text": "x", "kind": "save", "uids": ["0"]})
+    assert embeds.progress_text(2) == "Broadcast 2 of 4  ▰▰▱▱▱"
+    assert embeds.progress_text(5).startswith("The Finale") and embeds.progress_text(0) == ""
+    ed, rng = make_edition(12, 3)
+    queue = engine.run_broadcast(ed, POOL, rng)
+    assert all(h["bn"] == 1 for h in queue if h["t"] == "header")
+
+
+def test_recap_counts_cannons_kills_and_names_an_underdog():
+    ed, rng = make_edition(12, 5)
+    for _ in range(5):
+        engine.run_broadcast(ed, POOL, rng)
+    r = engine.recap(ed)
+    assert r["tributes"] == 12 and r["cannons"] == 11
+    assert r["kills"] == sum(t["kills"] for t in ed["roster"].values())
+    night, n = r["deadliest"]
+    assert 1 <= night <= 5 and n >= 1
+    assert r["underdog"] is None or ed["roster"][r["underdog"]]["score"] < sorted(
+        t["score"] for t in ed["roster"].values())[6]

@@ -36,6 +36,7 @@ def mod(monkeypatch, tmp_path):
         monkeypatch.delitem(sys.modules, name, raising=False)
     m = importlib.import_module("hungergames.hungergames")
     m._bank = bank
+    monkeypatch.setattr(m, "CANNON_BEAT", 0)                     # no real waiting between cannons in tests
     yield m
     for name in ("hungergames.hungergames", "hungergames.views", "hungergames.embeds", "hungergames.panel",
                  "hungergames.settings_panel"):
@@ -363,8 +364,8 @@ async def test_reaping_post_says_done_instead_of_counting_up_and_closes_at_the_l
     assert last["view"] is None and "closed" in last["embed"].description
 
 
-async def test_crowning_shows_the_victors_avatar_and_total_wins(mod):
-    import types
+async def test_crowning_shows_the_victors_avatar_and_total_wins(mod, monkeypatch):
+    monkeypatch.setattr(mod, "arena_art", None)                  # text card: the avatar is the thumbnail
     cog, guild, people, _ = world(mod, members=20)
     for p in people:
         p.display_avatar = types.SimpleNamespace(url=f"https://cdn.example/{p.id}.png")
@@ -575,3 +576,110 @@ async def test_status_does_not_spoil_deaths_from_a_broadcast_still_posting(mod):
     ed["broadcast"]["pos"] = len(ed["broadcast"]["queue"])       # the broadcast finished posting
     assert eng.pending_deaths(ed) == set()
     assert "💀" in emb.status_embed(ed, [], t, None, False).fields[0].value
+
+
+async def _drain_broadcast(cog, guild, t, hours=3, step=5):
+    """Tick until the first broadcast has posted everything; returns (seconds taken, queue, the board of the night)."""
+    queue = None
+    done_at = None
+    for k in range(0, hours * H, step):
+        await cog._tick(guild, now=t + k)
+        b = (await cog.config.guild(guild).current()).get("broadcast")
+        if b:
+            queue = b["queue"]
+            if b["pos"] >= len(queue) and done_at is None:
+                done_at = k
+    return done_at, queue
+
+
+async def test_a_night_lasts_about_thirty_minutes_whatever_the_line_count(mod):
+    cog, guild, people, t = await _first_broadcast(mod)
+    done_at, queue = await _drain_broadcast(cog, guild, t, hours=2)
+    assert done_at is not None and queue
+    assert 18 * 60 <= done_at <= 40 * 60, done_at / 60
+
+
+async def test_the_feast_night_is_allowed_to_run_longer(mod):
+    cog, guild, people, t = await _first_broadcast(mod)
+    await cog._tick(guild, now=t)
+    ed = await cog.config.guild(guild).current()
+    assert ed["broadcast"]["gap"] >= 45
+    from hungergames.constants import BROADCAST_SECONDS, FEAST_SECONDS, FINALE_SECONDS
+    assert FEAST_SECONDS > BROADCAST_SECONDS and FINALE_SECONDS == BROADCAST_SECONDS
+
+
+async def test_a_fresh_board_goes_at_the_bottom_each_night_and_the_old_one_is_removed(mod):
+    cog, guild, people, t = await _first_broadcast(mod)
+    start = len(ch(guild).sent)
+    await _drain_broadcast(cog, guild, t, hours=2)
+    boards = [m for m in ch(guild).sent[start:] if m.embed is not None and "The Arena" in (m.embed.title or "")]
+    assert len(boards) == 1 and boards[0].pinned and boards[0].view is not None
+    assert ch(guild).sent[-1] is boards[0]                      # the last thing in the channel
+    assert "Still standing" in boards[0].embed.fields[0].name
+    # the next night: a new board, the old one deleted
+    t2 = t + 24 * H
+    await _drain_broadcast(cog, guild, t2, hours=2)
+    boards = [m for m in ch(guild).sent if m.embed is not None and "The Arena" in (m.embed.title or "")]
+    assert len(boards) == 2 and boards[0].deleted and not boards[1].deleted and boards[1].pinned
+    assert ch(guild).sent[-1] is boards[1]
+
+
+async def test_the_cannons_sound_one_at_a_time_and_the_fallen_wall_is_attached(mod, monkeypatch):
+    monkeypatch.setattr(mod, "CANNON_BEAT", 0.001)
+    cog, guild, people, t = await _first_broadcast(mod)
+    start = len(ch(guild).sent)
+    await _drain_broadcast(cog, guild, t, hours=2)
+    fallen = next(m for m in ch(guild).sent[start:] if m.embed is not None and "The fallen" in (m.embed.title or ""))
+    assert len(fallen.edits) >= 2                               # revealed in steps, then the wall
+    final = fallen.embed
+    assert "remain" in final.description and final.image.url == "attachment://fallen.png"
+    assert fallen.edits[-1]["attachments"][0].filename == "fallen.png"
+    assert fallen.view is None                                  # the Sponsor button lives on the board now
+
+
+async def test_the_crowning_has_a_victor_banner_a_recap_and_falls_back_to_text(mod, monkeypatch):
+    cog, guild, people, _ = world(mod, members=20)
+    await enable(cog, guild)
+    await full_week_to_scores(cog, guild, people)
+    await cog._tick(guild, now=SUNDAY + 38 * H)
+    await cog._tick(guild, now=SUNDAY + 50 * H)
+    await run_until(cog, guild, SUNDAY + 57 * H, SUNDAY + 6 * 24 * H + 12 * H, step=45)
+    sent = ch(guild).sent
+    crown = next(m for m in sent if m.embed is not None and "Victor of" in (m.embed.title or ""))
+    assert crown.embed.image.url == "attachment://victor.png" and crown.kw["file"].filename == "victor.png"
+    assert "<@&" in (crown.content or "")                       # the Hunger Games role is pinged at the Crowning
+    recap = next(m for m in sent if m.embed is not None and "in numbers" in (m.embed.title or ""))
+    assert sent.index(recap) > sent.index(crown) and recap.embed.fields[0].name == "The arena"
+    assert not any(m.embed is not None and "The Arena" in (m.embed.title or "") and not m.deleted for m in sent)
+
+    # Attach Files refused: the card still goes out as text
+    cog2, guild2, people2, _ = world(mod, members=20)
+    await enable(cog2, guild2)
+    real = ch(guild2).send
+
+    async def no_files(content=None, **kw):
+        if kw.get("file") is not None:
+            raise mod.discord.Forbidden(types.SimpleNamespace(status=403, reason="x"), "no")
+        return await real(content, **kw)
+    ch(guild2).send = no_files
+    await full_week_to_scores(cog2, guild2, people2)
+    await cog2._tick(guild2, now=SUNDAY + 38 * H)
+    await cog2._tick(guild2, now=SUNDAY + 50 * H)
+    await run_until(cog2, guild2, SUNDAY + 57 * H, SUNDAY + 6 * 24 * H + 12 * H, step=45)
+    crown2 = next(m for m in ch(guild2).sent if m.embed is not None and "Victor of" in (m.embed.title or ""))
+    assert crown2.embed.image.url is None and "file" not in crown2.kw
+
+
+async def test_each_broadcast_gets_its_own_time_target_normal_feast_and_finale(mod, monkeypatch):
+    from hungergames.constants import BROADCAST_SECONDS, FEAST_SECONDS, FINALE_SECONDS
+    targets = []
+    real = mod.engine.line_gap
+    monkeypatch.setattr(mod.engine, "line_gap", lambda queue, target: targets.append(target) or real(queue, target))
+    cog, guild, people, _ = world(mod, members=20)
+    await enable(cog, guild)
+    await full_week_to_scores(cog, guild, people)
+    await cog._tick(guild, now=SUNDAY + 38 * H)
+    await cog._tick(guild, now=SUNDAY + 50 * H)
+    await run_until(cog, guild, SUNDAY + 57 * H, SUNDAY + 6 * 24 * H + 12 * H, step=45)
+    assert len(targets) == 5 and targets[-1] == FINALE_SECONDS      # four nights and the Finale
+    assert targets.count(FEAST_SECONDS) == 1 and set(targets) <= {BROADCAST_SECONDS, FEAST_SECONDS, FINALE_SECONDS}

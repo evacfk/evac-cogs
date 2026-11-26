@@ -15,7 +15,7 @@ Use it to answer "does a cog already cover this?" and "what depends on this cog?
 - **celebrations** 1.2.1: Birthdays (hoisted role, wondercoin gift, posts), join-anniversary shout-outs and year club roles.
 - **duel** 1.2.0: 1v1 best-of-3 wagered duels
 - **gamble** 1.4.0: Per-user gambling threads plus the Wondercasino hub menu.
-- **hungergames** 1.1.0: A weekly Hunger Games: Reaping, training challenges, live arena broadcasts and Wondercoin sponsorship.
+- **hungergames** 1.2.0: A weekly Hunger Games: Reaping, training challenges, live arena broadcasts and Wondercoin sponsorship.
 - **lurker** 2.7.0: Auto-hide inactive members behind a Lurker role.
 - **minigamehub** 1.2.0: Unified, config-driven minigame spawner (pet/mathdrop/hunt/lootdrop/reacttowin/boss).
 - **puzzle** 1.8.1: Image-reveal puzzle game with an auto-rotating image pool.
@@ -92,11 +92,11 @@ Links: none
 Needs: no extra pip packages · Config scopes: guild
 
 ### hungergames
-v1.1.0 · HungerGames · 3806 lines · 71 tests
+v1.2.0 · HungerGames · 4216 lines · 87 tests
 Commands:
 - `.hg|hungergames`: admin, version
 Links: calls lurker, serverpulse
-Needs: no extra pip packages · Config scopes: guild, member
+Needs: Pillow · Config scopes: guild, member
 Data: This cog stores, per member, Hunger Games totals (editions played, wins, kills, falls, best score, times drafted or volunteered, parachutes sent and coins spent) and whe…
 
 ### lurker

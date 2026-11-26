@@ -6,7 +6,7 @@ import time
 import discord
 
 from . import engine
-from .constants import CHALLENGE_LABEL, CHALLENGES, ITEMS, MAX_TRIBUTES, PHASE_LABEL, STRATEGIES
+from .constants import BANNER_BASE, CHALLENGE_LABEL, CHALLENGES, ITEMS, MAX_TRIBUTES, PHASE_LABEL, STRATEGIES
 
 GOLD = 0xD4A017
 RED = 0xB22222
@@ -80,7 +80,7 @@ def signup_embed(reaping_ts: float) -> "discord.Embed":
         "🙋 Sun: the Reaping (volunteer or get drafted)\n"
         "🏋️ Mon: training challenges\n"
         "💰 Tue: scores and sponsorship open\n"
-        "📺 Tue-Fri from 7 PM PT: live arena broadcasts (about an hour each)\n"
+        "📺 Tue-Fri from 7 PM PT: live arena broadcasts (about 30 minutes each)\n"
         "👑 Sat, 7 PM PT: the Finale and the Crowning\n\n"
         "🔔 **Hunger Games pings** gets you a ping for the Reaping, the broadcasts and the Crowning. Press it again to turn them off.\n"
         "🚫 Hana drafts a few active members each week. Press **Never draft me** to opt out of the draft (you can still "
@@ -140,7 +140,16 @@ def header_embed(item: dict) -> "discord.Embed":
 
 
 def scene_line(item: dict) -> str:
-    return f"{LINE_ICON.get(item.get('kind'), '▫️')} {item['text']}"
+    credit = f" *(🪂 from <@{item['credit']}>)*" if item.get("credit") else ""
+    return f"{LINE_ICON.get(item.get('kind'), '▫️')} {item['text']}{credit}"
+
+
+def progress_text(bn: int) -> str:
+    """"Broadcast 2 of 4 ▰▰▱▱▱" for the footer of a scene card; the Finale is the fifth segment."""
+    if not bn:
+        return ""
+    bar = "▰" * bn + "▱" * (5 - bn)
+    return f"The Finale  {bar}" if bn > 4 else f"Broadcast {bn} of 4  {bar}"
 
 
 def scene_embed(head: dict, lines: list, avatar_for=None, next_ts: float | None = None, flavor: str = "") -> "discord.Embed":
@@ -151,6 +160,10 @@ def scene_embed(head: dict, lines: list, avatar_for=None, next_ts: float | None 
     body = "\n".join(scene_line(i) for i in lines)
     e = _embed(head["title"], f"*{desc}*\n\n{body}" if desc and body else (f"*{desc}*" if desc else body),
                SCENE_COLOR.get(head.get("scene"), GREY))
+    if head.get("scene") in SCENE_COLOR:
+        e.set_image(url=f"{BANNER_BASE}/{head['scene']}.png")
+    if head.get("bn"):
+        e.set_footer(text=progress_text(head["bn"]))
     if next_ts is not None:
         e.description = (e.description or "") + f"\n\n⏳ *{flavor or 'The broadcast continues.'}* Next update {ts(next_ts)}"
     if avatar_for is not None:
@@ -167,7 +180,9 @@ def scene_text_len(head: dict, lines: list) -> int:
     return len(head.get("desc", "")) + sum(len(scene_line(i)) + 1 for i in lines)
 
 
-def fallen_embed(ed: dict, item: dict, avatar_for=None) -> "discord.Embed":
+def fallen_embed(ed: dict, item: dict, avatar_for=None, shown: int | None = None, image: str = "") -> "discord.Embed":
+    """The cannons. `shown` reveals them one at a time (the cog edits the card as each one sounds); None shows all.
+    `image` is an attachment:// URL for the Fallen wall."""
     names = [ed["roster"][u]["name"] for u in item["uids"] if u in ed["roster"]]
     if item.get("night") is None:
         title = "💥 The final cannons"
@@ -175,24 +190,79 @@ def fallen_embed(ed: dict, item: dict, avatar_for=None) -> "discord.Embed":
         title = f"💥 The fallen — night {item['night']}"
     if not names:
         return _embed(title, "No cannons tonight. The Gamemakers are *not* pleased.", RED)
-    alive = len(engine.alive_ids(ed))
-    desc = "\n".join(f"💥 {n}" for n in names) + f"\n\n{len(names)} cannon{'s' if len(names) != 1 else ''}. {alive} remain."
+    total = len(names)
+    k = total if shown is None else max(1, min(shown, total))
+    desc = "\n".join(f"💥 *BOOM.* **{n}**" for n in names[:k])
+    if k == total:
+        alive = len(engine.alive_ids(ed))
+        desc += f"\n\n{total} cannon{'s' if total != 1 else ''}. **{alive}** remain."
+    else:
+        desc += "\n\n*…and the sky is not quiet yet.*"
     e = _embed(title, desc, RED)
     if avatar_for is not None:
-        for u in item["uids"]:
+        for u in item["uids"][:k]:
             url = avatar_for(u)
             if url:
                 e.set_thumbnail(url=url)
                 break
+    if image and k == total:
+        e.set_image(url=image)
     return e
 
 
-def crowning_embed(ed: dict, guild, prize: int, currency: str, awards: dict, wins: int | None = None) -> "discord.Embed":
+def board_embed(ed: dict, now: float | None = None) -> "discord.Embed":
+    """The arena board, posted fresh at the bottom of the channel after each night's cannons."""
+    n = ed.get("broadcasts_done", 0)
+    e = _embed(f"🏟️ The Arena — after night {n}", "", GOLD)
+    roster = ed["roster"]
+    alive = [u for u in roster if roster[u]["alive"]]
+    alive.sort(key=lambda u: (-roster[u]["kills"], -roster[u]["parachutes"], roster[u]["name"].lower()))
+    fallen = [u for u in roster if not roster[u]["alive"]]
+    fallen.sort(key=lambda u: -(roster[u].get("death") or {}).get("broadcast", 0))
+    rows = [f"🟢 **{roster[u]['name']}** · 🗡️{roster[u]['kills']} · 🪂{roster[u]['parachutes']} · score {roster[u]['score']}"
+            for u in alive]
+    e.add_field(name=f"Still standing ({len(alive)})", value="\n".join(rows) or "—", inline=False)
+    if fallen:
+        out = [f"💀 {roster[u]['name']} · night {(roster[u].get('death') or {}).get('broadcast', '?')}" for u in fallen]
+        e.add_field(name=f"Fallen ({len(fallen)})", value="\n".join(out), inline=False)
+    nxt = ""
+    if ed["step"] < len(ed["schedule"]):
+        name, at = ed["schedule"][ed["step"]]
+        nxt = f"\nNext: **{PHASE_LABEL.get(name, name)}** {ts(at)}"
+    e.description = "Sponsorship is **open**: tap **🪂 Sponsor** to send a parachute." + nxt
+    return e
+
+
+def recap_embed(ed: dict, r: dict, currency: str, burned: int = 0, *, test: bool = False) -> "discord.Embed":
+    """The Games in numbers, posted after the Crowning."""
+    roster = ed["roster"]
+    e = _embed(f"📊 {engine.edition_title(ed)} — in numbers", "", GOLD)
+    rows = [f"💥 **{r['cannons']}** cannons across **{r['tributes']}** tributes", f"🗡️ **{r['kills']}** kills"]
+    if r["deadliest"]:
+        night, n = r["deadliest"]
+        rows.append(f"☠️ Deadliest: {'the Finale' if night > 4 else f'night {night}'} ({n} fell)")
+    e.add_field(name="The arena", value="\n".join(rows), inline=False)
+    if r["underdog"] in roster:
+        u = roster[r["underdog"]]
+        e.add_field(name="🐺 Underdog", value=f"**{u['name']}** (training score {u['score']}) outlasted the odds", inline=False)
+    if r["parachutes"]:
+        value = f"🪂 **{r['parachutes']}** parachutes from **{r['sponsors']}** sponsors"
+        if not test:
+            value += f"\n💰 {r['spent']:,} {currency} spent, {burned:,} burned"
+        e.add_field(name="The Capitol", value=value, inline=False)
+    e.set_footer(text="See you at the next Reaping, Sunday 10 AM PT.")
+    return e
+
+
+def crowning_embed(ed: dict, guild, prize: int, currency: str, awards: dict, wins: int | None = None,
+                   image: str = "") -> "discord.Embed":
     uid = ed["victor"]
     t = ed["roster"][uid]
     e = _embed(f"🏆 Victor of {engine.edition_title(ed)}", f"## {t['name']}", GOLD)
     member = guild.get_member(int(uid)) if not t.get("fake") and uid.isdigit() else None
-    if member is not None and getattr(member, "display_avatar", None) is not None:
+    if image:   # the Victor banner already carries their avatar
+        e.set_image(url=image)
+    elif member is not None and getattr(member, "display_avatar", None) is not None:
         e.set_thumbnail(url=member.display_avatar.url)
     sponsors = engine.sponsors_of(ed, uid)
     e.add_field(name="Training Score", value=str(t["score"]), inline=True)

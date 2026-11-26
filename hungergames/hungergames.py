@@ -11,6 +11,7 @@ during a restart is lost (it scores 0); that is the accepted risk.
 from __future__ import annotations
 
 import asyncio
+import io
 import logging
 import random
 import time
@@ -23,11 +24,17 @@ from . import content, embeds, engine
 from . import panel as panel_specs
 from . import views as ui
 from .constants import (
-    CHALLENGES, COG_VERSION, CONFIG_IDENTIFIER, DEFAULT_GUILD, DEFAULT_MEMBER, DRAW_AT_REAPING, ITEMS, MAX_TRIBUTES,
-    MIN_MESSAGES_7D, MIN_TRIBUTES, NEXT_FLAVOR, POST_GAP, REPORTS_KEPT, SCENE_GAP, STAFF_ROLE_IDS, STRATEGIES,
-    TEST_POST_GAP, TICK_SECONDS, TOPUP_TARGET,
+    BROADCAST_SECONDS, CANNON_BEAT, CANNON_BUDGET, CHALLENGES, COG_VERSION, CONFIG_IDENTIFIER, DEFAULT_GUILD,
+    DEFAULT_MEMBER, DRAW_AT_REAPING, FEAST_SECONDS, FINALE_SECONDS, ITEMS, MAX_TRIBUTES, MIN_MESSAGES_7D, MIN_TRIBUTES,
+    NEXT_FLAVOR, POST_GAP, REPORTS_KEPT, SCENE_GAP, STAFF_ROLE_IDS, STRATEGIES, TEST_POST_GAP, TICK_SECONDS,
+    TOPUP_TARGET,
 )
 from .settings_panel import PanelError, open_panel
+
+try:   # the images need Pillow; without it the cog posts text cards only
+    from . import arena_art
+except ImportError:   # pragma: no cover
+    arena_art = None
 
 log = logging.getLogger("red.evac-cogs.hungergames")
 _DISCORD_ERRORS = (discord.Forbidden, discord.NotFound, discord.HTTPException)
@@ -295,7 +302,14 @@ class HungerGames(commands.Cog):
                     b["pos"] += 1
                     nxt = b["queue"][b["pos"]] if b["pos"] < len(b["queue"]) else None
                     slow = item["t"] == "line" and nxt is not None and nxt["t"] == "line"
-                    gap = TEST_POST_GAP if ed.get("test") else (POST_GAP if slow else SCENE_GAP)
+                    if ed.get("test"):
+                        gap = TEST_POST_GAP
+                    elif not slow:
+                        gap = SCENE_GAP
+                    elif b.get("gap"):
+                        gap = (b["gap"] * 0.8, b["gap"] * 1.2)
+                    else:
+                        gap = POST_GAP
                     b["next_ts"] = now + self.rng.uniform(*gap)
                     await gconf.current.set(ed)   # mark it posted first: never double-post after a crash
                     await self._post_item(guild, s, ed, item)
@@ -473,7 +487,9 @@ class HungerGames(commands.Cog):
                 if t["alive"] and not t.get("fake") and guild.get_member(int(u)) is None]
         number = ed["broadcasts_done"] + 1
         queue = engine.run_broadcast(ed, self.pool, self.rng, gone=gone)
-        ed["broadcast"] = {"queue": queue, "pos": 0, "next_ts": now + 5}
+        target = (FINALE_SECONDS if number > 4 else FEAST_SECONDS if number == ed["feast_broadcast"]
+                  else BROADCAST_SECONDS)
+        ed["broadcast"] = {"queue": queue, "pos": 0, "next_ts": now + 5, "gap": engine.line_gap(queue, target)}
         prefix, mentions = self._pings(s, ed, [])
         if number > 4:
             text = f"{prefix}🏟️ **The Finale of {engine.edition_title(ed)} is starting now!** Only one walks out."
@@ -559,12 +575,80 @@ class HungerGames(commands.Cog):
             await self._post_scene_line(guild, channel, ed, item)
         elif kind == "fallen":
             b["card"] = None
-            final = item.get("night") is None
-            await self._send(channel, embed=embeds.fallen_embed(ed, item, self._avatar_for(guild, ed)),
-                             view=None if final else ui.ArenaView(self))
+            await self._post_fallen(guild, channel, ed, item)
+            if item.get("night") is not None:   # the Finale goes straight on to the Crowning
+                await self._post_board(channel, ed)
         elif kind == "victor":
             b["card"] = None
             await self._crown(guild, s, ed)
+
+    async def _art(self, fn, *args):
+        """Run a Pillow render off the event loop. None if Pillow is missing or the render fails."""
+        if arena_art is None:
+            return None
+        try:
+            return await asyncio.get_running_loop().run_in_executor(None, fn, *args)
+        except Exception:
+            log.exception("hungergames: could not render an image")
+            return None
+
+    async def _avatar_bytes(self, guild, ed, uid):
+        t = ed["roster"].get(str(uid))
+        if not t or t.get("fake") or not str(uid).isdigit():
+            return None
+        member = guild.get_member(int(uid))
+        avatar = getattr(member, "display_avatar", None)
+        if avatar is None or not hasattr(avatar, "replace"):
+            return None
+        try:
+            return await avatar.replace(size=256, format="png").read()
+        except Exception:
+            return None
+
+    async def _post_fallen(self, guild, channel, ed, item):
+        """The cannons, one at a time (a beat between each), then the Fallen wall once they have all sounded."""
+        avatar = self._avatar_for(guild, ed)
+        uids = [u for u in item["uids"] if u in ed["roster"]]
+        beat = 0 if ed.get("test") else min(CANNON_BEAT, CANNON_BUDGET / max(1, len(uids)))
+        reveal = len(uids) > 1 and beat > 0
+        msg = await self._send(channel, embed=embeds.fallen_embed(ed, item, avatar, shown=1 if reveal else None))
+        if msg is None or not uids:
+            return
+        if reveal:
+            for k in range(2, len(uids) + 1):
+                await asyncio.sleep(beat)
+                try:
+                    await msg.edit(embed=embeds.fallen_embed(ed, item, avatar, shown=None if k == len(uids) else k))
+                except _DISCORD_ERRORS:
+                    log.debug("hungergames: could not reveal a cannon", exc_info=True)
+        entries = [(ed["roster"][u]["name"], await self._avatar_bytes(guild, ed, u)) for u in uids]
+        png = await self._art(arena_art.render_fallen, entries, item.get("night"), len(engine.alive_ids(ed))) \
+            if arena_art is not None else None
+        if png:
+            try:
+                await msg.edit(embed=embeds.fallen_embed(ed, item, avatar, image="attachment://fallen.png"),
+                               attachments=[discord.File(io.BytesIO(png), filename="fallen.png")])
+            except _DISCORD_ERRORS:
+                log.warning("hungergames: could not attach the Fallen wall (needs Attach Files)", exc_info=True)
+
+    async def _post_board(self, channel, ed):
+        """A fresh arena board at the bottom of the channel after each night: it is always the last thing there.
+        The previous night's board is deleted and the new one pinned."""
+        old = ed["messages"].get("board")
+        msg = await self._send(channel, embed=embeds.board_embed(ed), view=ui.ArenaView(self))
+        if msg is None:
+            return
+        ed["messages"]["board"] = msg.id
+        await self._pin(channel, msg, ed)
+        await self._delete_message(channel, old)
+
+    async def _delete_message(self, channel, message_id):
+        if channel is None or not message_id:
+            return
+        try:
+            await channel.get_partial_message(message_id).delete()
+        except _DISCORD_ERRORS:
+            log.debug("hungergames: could not delete message %s", message_id, exc_info=True)
 
     async def _crown(self, guild, s, ed):
         channel = self._channel(guild, s, ed)
@@ -598,9 +682,25 @@ class HungerGames(commands.Cog):
             wins = (await self.config.member_from_ids(guild.id, int(uid)).wins()) + 1   # counting this one
         awards = engine.awards(ed)
         prefix, mentions = self._pings(s, ed, [uid])
-        msg = await self._send(channel, f"{prefix}🏆 {self._mention(ed, uid)} is the Victor of **{engine.edition_title(ed)}**!",
-                               embed=embeds.crowning_embed(ed, guild, prize, currency, awards, wins), allowed_mentions=mentions)
+        text = f"{prefix}🏆 {self._mention(ed, uid)} is the Victor of **{engine.edition_title(ed)}**!"
+        t = ed["roster"][uid]
+        png = await self._art(
+            arena_art.render_victor, t["name"], engine.edition_title(ed),
+            [("score", t["score"]), ("kills", t["kills"]), ("parachutes", t["parachutes"]),
+             ("sponsors", len(engine.sponsors_of(ed, uid)))], await self._avatar_bytes(guild, ed, uid),
+            f"Prize {prize:,} {currency}" if prize else "") if arena_art is not None else None
+        msg = None
+        if png:
+            msg = await self._send(channel, text, embed=embeds.crowning_embed(
+                ed, guild, prize, currency, awards, wins, image="attachment://victor.png"),
+                file=discord.File(io.BytesIO(png), filename="victor.png"), allowed_mentions=mentions)
+        if msg is None:   # no Pillow, or the upload was refused (needs Attach Files): the text card still goes out
+            msg = await self._send(channel, text, embed=embeds.crowning_embed(ed, guild, prize, currency, awards, wins),
+                                   allowed_mentions=mentions)
         await self._pin(channel, msg, ed)
+        report = engine.edition_report(ed)
+        await self._send(channel, embed=embeds.recap_embed(ed, engine.recap(ed), currency, report["burned"],
+                                                           test=bool(ed.get("test"))))
         await self._teaser(guild, s, ed, f"🏆 {self._mention(ed, uid)} won **{engine.edition_title(ed)}**! "
                                          f"See the Crowning in {channel.mention if channel else 'the Hunger Games channel'}.")
         if ed.get("test"):
@@ -627,6 +727,7 @@ class HungerGames(commands.Cog):
         reports.append(engine.edition_report(ed))
         await gconf.reports.set(reports)
         await self._cleanup_threads(guild, ed)
+        await self._delete_message(self._channel(guild, s, ed), ed["messages"].get("board"))
         if not ed.get("test"):
             await gconf.last_tributes.set([u for u in ed["roster"] if u.isdigit()])
             await gconf.last_puzzles.set(ed["puzzles_used"])
