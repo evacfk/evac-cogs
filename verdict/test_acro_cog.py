@@ -503,56 +503,76 @@ async def test_staff_settings_readout_carries_the_mod_panel(acro):
 # ---------------------------------------------------------------- the schedule
 
 
-async def test_scheduler_runs_rounds_in_planned_slots_only_and_never_stale_ones(acro):
+async def test_one_round_a_day_opens_at_the_daily_post_hour_with_hours_long_phases(acro):
     env = acro
-    await env.cog._acro_tick(env.g, ts(2026, 11, 26, 8, 0))
-    plan = await env.conf.acro_plan()
-    assert plan["date"] == "2026-11-26" and plan["source"] == "fallback" and len(plan["slots"]) == 2
-    hours = [datetime.fromtimestamp(s, LA).hour for s in plan["slots"]]
-    assert hours == [12, 17] and all(constants.ACRO_EARLIEST_HOUR <= h <= constants.ACRO_LATEST_HOUR for h in hours)
-    assert env.chan.sent == []
-    first, second = plan["slots"]
-    env.clock.t = first - 60
-    await env.cog._acro_tick(env.g, first - 60)
-    assert env.chan.sent == []
-    env.clock.t = first + 30
-    await env.cog._acro_tick(env.g, first + 30)
+    nine = ts(2026, 11, 26, 9, 0)
+    env.clock.t = nine - 60
+    await env.cog._acro_tick(env.g, nine - 60)
+    assert env.chan.sent == []                                                        # before 9am: nothing
+    env.clock.t = nine + 20
+    await env.cog._acro_tick(env.g, nine + 20)
     assert len(env.chan.sent) == 1 and (await cur(env))["manual"] is False
     c = await cur(env)
-    await env.cog.acro_cancel(env.g, first + 40)
-    await env.cog._acro_tick(env.g, first + 100)                                     # same slot never runs twice
+    assert c["submit_ends_ts"] - nine - 20 == 5 * 3600                                # submit until 2pm
+    assert "2:00" in env.chan.sent[0].embed.fields[1].value or "<t:" in env.chan.sent[0].embed.fields[1].value
+    await env.cog.acro_cancel(env.g, nine + 40)
+    await env.cog._acro_tick(env.g, nine + 100)                                       # never twice the same day
     assert len(env.chan.sent) == 1 and await cur(env) == {}
-    late = second + constants.ACRO_LATE_GRACE_SECONDS + 600                          # bot was away: slot is written off
+    tomorrow = ts(2026, 11, 27, 9, 5)
+    env.clock.t = tomorrow
+    await env.cog._acro_tick(env.g, tomorrow)
+    assert len(env.chan.sent) == 2
+
+
+async def test_the_day_is_skipped_when_the_bot_is_far_too_late(acro):
+    env = acro
+    late = ts(2026, 11, 26, 12, 0)
     env.clock.t = late
     await env.cog._acro_tick(env.g, late)
-    assert len(env.chan.sent) == 1 and second in (await env.conf.acro_plan())["done"]
+    assert env.chan.sent == []
+
+
+async def test_the_daily_round_follows_the_daily_post_hour_setting(acro):
+    env = acro
+    await env.conf.post_hour.set(7)
+    t = ts(2026, 11, 26, 7, 10)
+    env.clock.t = t
+    await env.cog._acro_tick(env.g, t)
+    assert len(env.chan.sent) == 1
+
+
+async def test_phases_last_hours_and_close_on_the_clock(acro):
+    env = acro
+    nine = ts(2026, 11, 26, 9, 0)
+    c = await start(env, now=nine)
+    for i in range(3):
+        await enter(env, Member(env.g, 900 + i))
+    env.clock.t = nine + 4 * 3600
+    await env.cog._acro_tick(env.g, env.clock.t)
+    assert (await cur(env))["phase"] == "submit"                                      # still open at 1pm
+    env.clock.t = nine + 5 * 3600 + 1
+    await env.cog._acro_tick(env.g, env.clock.t)
+    c = await cur(env)
+    assert c["phase"] == "vote" and c["vote_ends_ts"] - env.clock.t == 4 * 3600
+    env.clock.t = c["vote_ends_ts"] - 60
+    await env.cog._acro_tick(env.g, env.clock.t)
+    assert (await cur(env))["phase"] == "vote"
+    env.clock.t = c["vote_ends_ts"] + 1
+    await env.cog._acro_tick(env.g, env.clock.t)
+    assert await cur(env) == {} and "results" in env.chan.sent[-1].embed.title
+
 
 
 async def test_scheduler_does_nothing_when_off_or_without_a_channel(acro):
     env = acro
     await env.conf.acro_enabled.set(False)
-    await env.cog._acro_tick(env.g, ts(2026, 11, 26, 12, 20))
-    assert env.chan.sent == [] and await env.conf.acro_plan() == {}
+    await env.cog._acro_tick(env.g, ts(2026, 11, 26, 9, 20))
+    assert env.chan.sent == [] and await env.conf.acro_auto_date() == ""
     await env.conf.acro_enabled.set(True)
     await env.conf.channel_id.set(None)
-    await env.cog._acro_tick(env.g, ts(2026, 11, 26, 12, 20))
+    await env.cog._acro_tick(env.g, ts(2026, 11, 26, 9, 20))
     assert env.chan.sent == []
 
-
-async def test_changing_rounds_per_day_replans_without_repeating_a_started_hour(acro):
-    env = acro
-    await env.cog._acro_tick(env.g, ts(2026, 11, 26, 8, 0))
-    first = (await env.conf.acro_plan())["slots"][0]
-    env.clock.t = first + 20
-    await env.cog._acro_tick(env.g, first + 20)
-    await env.cog.acro_cancel(env.g, first + 30)
-    await env.cog._apply_acro_rate(env.g, None, {"rate": "3"})
-    await env.cog._acro_tick(env.g, first + 60)
-    plan = await env.conf.acro_plan()
-    assert plan["rate"] == 3 and first in plan["started"] and len(plan["slots"]) == 3
-    hrs = sorted(datetime.fromtimestamp(s, LA).hour for s in plan["slots"])
-    assert all(b - a >= constants.ACRO_MIN_GAP_HOURS for a, b in zip(hrs, hrs[1:]))
-    assert len(env.chan.sent) == 1
 
 
 async def test_a_restart_in_the_middle_of_a_round_picks_up_where_it_was(acro):
@@ -593,55 +613,6 @@ async def test_posting_failure_does_not_leave_a_stuck_round(acro):
 # ---------------------------------------------------------------- serverpulse hours
 
 
-async def test_busiest_hours_come_from_serverpulse_with_the_real_engine(acro):
-    from datetime import date
-    from serverpulse import engine as pe, _testdata as td
-    docs, cov, end = td.traffic(date(2026, 10, 20), 28, peak_hour=14, scale=8.0)
-    now = ts(2026, 11, 17, 8, 0)
-
-    class FakePulse:
-        pass
-    FakePulse.__module__ = "serverpulse.serverpulse"
-
-    async def prepare(guild):
-        return types.SimpleNamespace(has_data=True, coverage_start=cov, now_ts=end, today=date(2026, 11, 16))
-
-    async def days(guild_id, start, stop):
-        return docs
-
-    pulse = FakePulse()
-    pulse._prepare = prepare
-    pulse._window = lambda prep, n: (date(2026, 10, 20), date(2026, 11, 16), "x")
-    pulse._days = days
-    pulse._slots = lambda prep, d, start, stop: pe.build_slots(d, start, stop, end, cov)
-    env = acro
-    env.cog.bot._cogs["ServerPulse"] = pulse
-    profile, source = await env.cog._acro_hour_profile(env.g, now)
-    assert source == "serverpulse" and max(profile, key=profile.get) == 14
-    await env.cog._acro_tick(env.g, now)
-    plan = await env.conf.acro_plan()
-    hours = [datetime.fromtimestamp(s, LA).hour for s in plan["slots"]]
-    assert plan["source"] == "serverpulse" and 14 in hours and len(hours) == 2
-    assert all(9 <= h <= 18 for h in hours) and abs(hours[0] - hours[1]) >= constants.ACRO_MIN_GAP_HOURS
-
-
-async def test_missing_or_broken_serverpulse_falls_back_to_default_hours(acro):
-    env = acro
-    assert await env.cog._acro_hour_profile(env.g, T0) == ({}, "fallback")
-
-    class Broken:
-        async def _prepare(self, guild):
-            raise RuntimeError("no")
-        _window = _days = _slots = lambda *a, **k: None
-    env.cog.bot._cogs["ServerPulse"] = Broken()
-    assert await env.cog._acro_hour_profile(env.g, T0) == ({}, "fallback")
-
-    class Empty:
-        async def _prepare(self, guild):
-            return types.SimpleNamespace(has_data=False)
-        _window = _days = _slots = lambda *a, **k: None
-    env.cog.bot._cogs["ServerPulse"] = Empty()
-    assert await env.cog._acro_hour_profile(env.g, T0) == ({}, "fallback")
 
 
 # ---------------------------------------------------------------- stats, top, settings
@@ -717,12 +688,6 @@ async def test_settings_validate_and_save(acro):
     await env.conf.channel_id.set(env.chan.id)
     await env.cog._apply_acro_enabled(env.g, None, True)
     assert await env.conf.acro_enabled() is True
-
-    for bad in ("0", "5", "x", ""):
-        with pytest.raises(PanelError):
-            await env.cog._apply_acro_rate(env.g, None, {"rate": bad})
-    await env.cog._apply_acro_rate(env.g, None, {"rate": "1"})
-    assert await env.conf.acro_rounds_per_day() == 1
 
     await env.cog._apply_acro_prize(env.g, None, {"prize": "1,500", "cap": "6000"})
     assert (await env.conf.acro_prize(), await env.conf.acro_daily_cap()) == (1500, 6000)
@@ -823,7 +788,7 @@ async def test_acrophobia_tab_shows_values_and_the_modals_save_and_reject(acro):
     await p.refresh_data()
     p.rebuild()
     text = p.build_embed().description
-    assert "2 a day" in text and "2,000 per win" in text and "4,000 a day at most" in text and "20 themes" in text
+    assert "2,000 per win" in text and "4,000 a day at most" in text and "20 themes" in text
     await p._on_setting(PClick(admin, ["acro_prize"]))
     click = PClick(admin)
     await p._on_edit_modal(click)

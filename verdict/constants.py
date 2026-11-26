@@ -1,7 +1,7 @@
 """Config defaults and fixed values for verdict (Daily Verdict)."""
 from zoneinfo import ZoneInfo
 
-COG_VERSION = "1.6.2"
+COG_VERSION = "1.7.0"
 CONFIG_IDENTIFIER = 0x7E4D1C70
 HOME_TZ = ZoneInfo("America/Los_Angeles")
 
@@ -13,7 +13,7 @@ STAFF_ROLE_IDS = (            # may add/queue/remove questions (config stays adm
 
 TICK_SECONDS = 60
 EARLY_MANUAL_HOURS = 6        # a manual post this many hours (or more) before the posting hour does not use up the day
-DEFAULT_POST_HOUR = 10        # Pacific; before chat dies for Europe, after the US wakes up
+DEFAULT_POST_HOUR = 9         # Pacific; before chat dies for Europe, after the US wakes up
 MIN_OPTIONS, MAX_OPTIONS = 2, 4
 MAX_QUESTION_LEN, MAX_OPTION_LEN = 200, 40
 MAX_PENDING_PER_USER = 3
@@ -31,24 +31,17 @@ THREAD_NAME_LIMIT = 100
 TICK, CROSS = "\N{WHITE HEAVY CHECK MARK}", "\N{CROSS MARK}"
 
 # ---- Acrophobia (the second round type) ----
-ACRO_SUBMIT_SECONDS = 90
-ACRO_VOTE_SECONDS = 45
+ACRO_SUBMIT_SECONDS = 5 * 3600   # opens with the daily question (9am PT), submissions close ~2pm
+ACRO_VOTE_SECONDS = 4 * 3600     # voting runs to ~6pm, before chat dies
 ACRO_MIN_ENTRIES = 3          # fewer entries and the round is cancelled before voting
 ACRO_MAX_ENTRIES = 20         # 4 rows of 5 vote buttons; row 5 holds the mod button
 ACRO_MAX_ENTRY_LEN = 120
 ACRO_LETTER_COUNTS = (3, 4, 5)
 ACRO_THEME_CHANCE = 0.7       # share of rounds that get a theme (when the list isn't empty)
-ACRO_EARLIEST_HOUR = 9        # Pacific start hours an automatic round may use...
-ACRO_LATEST_HOUR = 18         # ...a round starting at 6pm is over well before 7pm
-ACRO_MIN_GAP_HOURS = 3        # automatic rounds are spread out
-ACRO_FALLBACK_HOURS = (12, 17)    # used when ServerPulse has no data yet
-ACRO_LATE_GRACE_SECONDS = 25 * 60   # a planned slot missed by this much (bot down, round busy) is skipped
-ACRO_PULSE_DAYS = 28
-ACRO_PULSE_MIN_SAMPLES = 3    # same-weekday samples needed before a weekday's own hour profile is trusted
+ACRO_START_GRACE_SECONDS = 2 * 3600   # the daily round is skipped if the bot is this late to start it
 ACRO_HISTORY = 60
 ACRO_REVIEW_DAYS = 21
 ACRO_REVIEW_MIN_AVG = 4.0     # fewer entries per round than this at review time: propose retiring it
-ACRO_MAX_RATE = 4             # rounds per day, upper bound for the setting
 ACRO_MAX_PRIZE = 100_000
 DEFAULT_THEMES = [
     "a pickup line", "a server rule we need", "a terrible excuse for being late", "a movie nobody asked for",
@@ -82,12 +75,11 @@ DEFAULT_GUILD = {
     "history": [],                # closed questions, newest last: who played, who read the crowd, lone wolves
     # Acrophobia
     "acro_enabled": False,
-    "acro_rounds_per_day": 2,
     "acro_prize": 2000,           # wondercoin to the winner (shared on a tie)
     "acro_daily_cap": 4000,       # most wondercoin the faucet pays out per Pacific day, manual rounds included
     "acro_themes": list(DEFAULT_THEMES),
     "acro_current": {},           # the open round; {} = none
-    "acro_plan": {},              # today's automatic slots: {date, slots: [ts], done: [ts], hours, source}
+    "acro_auto_date": "",         # Pacific date the daily round was last started automatically
     "acro_paid": {"date": "", "amount": 0},
     "acro_seq": 0,
     "acro_launch_ts": 0.0,        # first time it was switched on; the 3-week review counts from here

@@ -3,7 +3,7 @@
 Specs only; every change goes through the cog's `_apply_*` methods. `add`, `queue`, `remove` and `post`
 stay commands (staff), and `.verdict` itself shows a member's record.
 """
-from .constants import ACRO_MAX_ENTRIES, ACRO_MAX_RATE
+from .constants import ACRO_MAX_ENTRIES
 from .settings_panel import Field, Spec
 
 INTRO = ("Pick a section, then a setting. Changes save as soon as you choose. Staff keep `.verdict add`, `queue`, "
@@ -51,10 +51,6 @@ def _approvers_fmt(value, guild):
     return "owner only" if not ids else "owner + " + ", ".join(f"<@{i}>" for i in ids)
 
 
-async def _acro_rate_get(cog, guild):
-    return {"rate": await cog.config.guild(guild).acro_rounds_per_day()}
-
-
 async def _acro_prize_get(cog, guild):
     conf = cog.config.guild(guild)
     return {"prize": await conf.acro_prize(), "cap": await conf.acro_daily_cap()}
@@ -96,11 +92,7 @@ def build_specs():
         Spec("acro_enabled", "Acrophobia", "Acrophobia", "toggle", get=_conf("acro_enabled"),
              apply=_apply("_apply_acro_enabled"),
              confirm="Acrophobia pays wondercoin: the prize on every win, up to the daily cap below. Switch it on?",
-             help="Quick acronym rounds in the daily question channel, at the busiest hours before 7pm Pacific."),
-        Spec("acro_rate", "Rounds a day", "Acrophobia", "modal", get=_acro_rate_get, apply=_apply("_apply_acro_rate"),
-             fmt=lambda v, g: f"{v['rate']} a day" if v else "?", button="Edit…",
-             fields=(Field("rate", f"Automatic rounds a day (1-{ACRO_MAX_RATE})", value=lambda v: str(v["rate"]), max_length=1),),
-             help="Spread over the hours ServerPulse says are busiest. Mods can still start extra rounds by hand."),
+             help="A daily acronym game in the daily question channel: submit until ~2pm, vote until ~6pm Pacific, opens with the question."),
         Spec("acro_prize", "Prize & daily cap", "Acrophobia", "modal", get=_acro_prize_get,
              apply=_apply("_apply_acro_prize"),
              fmt=lambda v, g: f"{v['prize']:,} per win · {v['cap']:,} a day at most" if v else "?", button="Edit…",

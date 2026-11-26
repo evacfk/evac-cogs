@@ -103,9 +103,9 @@ async def play(env, user, a, p):
 
 
 async def test_tick_posts_once_a_day_at_the_right_hour(env):
-    await env.cog._tick(env.g, ts(2026, 10, 5, 9))
-    assert not env.chan.sent  # before 10am Pacific
-    await env.cog._tick(env.g, ts(2026, 10, 5, 10, 5))
+    await env.cog._tick(env.g, ts(2026, 10, 5, 8))
+    assert not env.chan.sent  # before 9am Pacific
+    await env.cog._tick(env.g, ts(2026, 10, 5, 9, 5))
     assert len(env.chan.sent) == 1
     await env.cog._tick(env.g, ts(2026, 10, 5, 18))
     assert len(env.chan.sent) == 1  # once per day
@@ -379,8 +379,8 @@ async def test_settings_command_works_while_a_question_is_open(env):
     assert "Daily Verdict" in mod.sent[-1]
 
 
-async def test_manual_post_after_midnight_does_not_block_the_10am_post(env):
-    """Regression: a .verdict post at 12:36am used up the day, so the 10am tick never fired."""
+async def test_manual_post_after_midnight_does_not_block_the_9am_post(env):
+    """Regression: a .verdict post at 12:36am used up the day, so the 9am tick never fired."""
     await env.cog.post_daily(env.g, ts(2026, 10, 4, 0, 36))
     assert len(env.chan.sent) == 1
     await env.cog._tick(env.g, ts(2026, 10, 4, 10, 5))
@@ -434,7 +434,7 @@ async def test_question_embed_explains_the_two_taps_scoring_and_public_results(e
     how = fields["How to play (2 taps)"]
     assert "your own answer" in how and "most people" in how and "Tap any answer again" in how
     assert "Mind Reader" in fields["Scoring"] and "streak" in fields["Scoring"]
-    assert "who picked what" in fields["Results"] and "10am" in fields["Results"]
+    assert "who picked what" in fields["Results"] and "9am" in fields["Results"]
 
 
 async def test_step_two_prompt_says_how_the_guess_scores(env):
@@ -669,7 +669,7 @@ async def test_settings_opens_the_panel_for_admins_and_prints_for_mods(env, monk
     admin_ctx.author.guild_permissions = types.SimpleNamespace(administrator=False, manage_guild=True)
     await cmd(env, "verdict_settings")(env.cog, admin_ctx)
     assert opened == [("Daily Verdict", ["enabled", "channel", "hour", "ping_role", "threads", "review_channel",
-                                         "approvers", "mind_reader_role", "acro_enabled", "acro_rate", "acro_prize",
+                                         "approvers", "mind_reader_role", "acro_enabled", "acro_prize",
                                          "acro_themes", "acro_start", "acro_cancel"])]
     nobody = Ctx(env, Member(env.g, 63))
     await cmd(env, "verdict_settings")(env.cog, nobody)

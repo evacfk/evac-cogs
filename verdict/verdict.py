@@ -1,6 +1,6 @@
 """Daily Verdict: one crowd question a day, "your answer" plus "guess the crowd".
 
-- posts one question a day in the chat channel (default 10am Pacific) with 2-4 buttons;
+- posts one question a day in the chat channel (default 9am Pacific) with 2-4 buttons;
 - each member taps their own answer, then guesses what most people will pick;
 - the next day's post carries yesterday's result, and the old post becomes the final tally listing who picked what;
 - each question gets a private discussion thread; the bot adds a member to it only once both their taps are in,
@@ -8,7 +8,7 @@
   (Discord cannot turn a private thread public);
 - streaks, a monthly Mind Reader role, member-submitted questions that wait for the owner's
   tick or cross in a private channel;
-- Acrophobia, a second round type (see acro.py): a quick acronym game that runs twice a day at the busiest hours.
+- Acrophobia, a second round type (see acro.py): a daily acronym game (submit until ~2pm, vote until ~6pm Pacific).
 """
 from __future__ import annotations
 
@@ -133,8 +133,8 @@ class Verdict(AcroMixin, commands.Cog):
                     raise
                 except Exception:
                     log.exception("verdict: Acrophobia tick failed for guild %s", guild.id)
-            # an open Acrophobia round has 45-90 second phases, so look more often while one is running
-            await asyncio.sleep(2 if self._acro_active else TICK_SECONDS)
+            # an open Acrophobia round ends its phases on the clock, so check a bit more often while one is open
+            await asyncio.sleep(15 if self._acro_active else TICK_SECONDS)
 
     async def _tick(self, guild, now_ts: float | None = None) -> None:
         now_ts = now_ts or time.time()

@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import random
-from datetime import date, datetime, time as dtime
+from datetime import datetime, time as dtime
 from typing import Iterable, Optional, Sequence
 
 from .constants import (
@@ -87,39 +87,12 @@ def escape(text: str) -> str:
     return "".join("\\" + c if c in _MD_CHARS else c for c in text)
 
 
-def pick_hours(avg_by_hour: dict, count: int, earliest: int, latest: int, min_gap: int,
-               taken: Sequence[int] = ()) -> list[int]:
-    """The `count` busiest hours inside [earliest, latest], at least `min_gap` hours apart (and apart from the
-    `taken` hours, which already had a round), in clock order. Ties go to the earlier hour. Fewer hours come
-    back when the gap rule leaves no room."""
-    ranked = sorted((h for h in range(earliest, latest + 1)), key=lambda h: (-float(avg_by_hour.get(h, 0.0)), h))
-    chosen: list[int] = []
-    for h in ranked:
-        if len(chosen) >= count:
-            break
-        if all(abs(h - c) >= min_gap for c in [*chosen, *taken]):
-            chosen.append(h)
-    return sorted(chosen)
-
-
-def plan_slots(day: date, hours: Iterable[int], rng: Optional[random.Random] = None) -> list[float]:
-    """Timestamps for today's rounds: somewhere in the first 40 minutes of each chosen hour (not on :00 sharp,
-    so it doesn't land on the same minute as other bots' posts)."""
-    rng = rng or random
-    out = []
-    for h in hours:
-        minute = rng.randint(5, 40)
-        out.append(datetime.combine(day, dtime(h, minute), tzinfo=HOME_TZ).timestamp())
-    return sorted(out)
-
-
-def due_slot(plan: dict, now_ts: float, grace: float) -> tuple[Optional[float], list[float]]:
-    """(slot to run now or None, slots that are too late to run and should be written off)."""
-    done = set(plan.get("done") or [])
-    todo = [s for s in plan.get("slots") or [] if s not in done]
-    late = [s for s in todo if now_ts - s > grace]
-    ready = [s for s in todo if 0 <= now_ts - s <= grace]
-    return (ready[0] if ready else None), late
+def start_due(now_ts: float, post_hour: int, last_date: str, grace: float) -> bool:
+    """True when today's automatic round should start now: it's past the daily post hour, within `grace` of it,
+    and today's round hasn't been started yet. A bot that was down for longer skips the day."""
+    now = datetime.fromtimestamp(now_ts, HOME_TZ)
+    start = datetime.combine(now.date(), dtime(post_hour, 0), tzinfo=HOME_TZ).timestamp()
+    return last_date != now.date().isoformat() and 0 <= now_ts - start <= grace
 
 
 def tally(votes: dict, entries: dict, removed: Iterable) -> dict:

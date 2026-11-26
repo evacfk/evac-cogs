@@ -1,6 +1,6 @@
 """Pure rules for Acrophobia: letters, entry validation, hour picking, voting, payout, stats."""
 import random
-from datetime import date, datetime
+from datetime import datetime
 from zoneinfo import ZoneInfo
 
 import pytest
@@ -88,36 +88,17 @@ def test_escape_stops_markdown_tricks():
 
 # ---- scheduling
 
-def test_pick_hours_takes_the_busiest_with_a_gap_inside_the_window():
-    avg = {10: 5, 11: 90, 12: 80, 15: 70, 17: 60, 21: 999, 3: 999}
-    assert ae.pick_hours(avg, 2, 9, 18, 3) == [11, 15]       # 12 is too close to 11; 21 and 3 are outside the window
+def _la(h, m=0, d=26):
+    return datetime(2026, 11, d, h, m, tzinfo=LA).timestamp()
 
 
-def test_pick_hours_respects_taken_hours_and_runs_out_of_room():
-    avg = {11: 90, 12: 80, 15: 70}
-    assert ae.pick_hours(avg, 2, 9, 18, 3, taken=[11]) == [15, 18]   # 11 already ran; 12 is too close to it
-    assert ae.pick_hours({}, 4, 9, 11, 3) == [9]               # only one hour fits a 3-hour window
-    assert ae.pick_hours(avg, 0, 9, 18, 3) == []
-
-
-def test_pick_hours_ties_go_to_the_earlier_hour():
-    assert ae.pick_hours({}, 1, 9, 18, 3) == [9]
-
-
-def test_plan_slots_land_inside_the_chosen_hours_and_off_the_hour():
-    slots = ae.plan_slots(date(2026, 11, 26), [11, 15], random.Random(2))
-    assert len(slots) == 2
-    for ts, h in zip(slots, [11, 15]):
-        t = datetime.fromtimestamp(ts, LA)
-        assert t.hour == h and 5 <= t.minute <= 40 and t.date() == date(2026, 11, 26)
-
-
-def test_due_slot_runs_a_fresh_slot_and_writes_off_stale_ones():
-    plan = {"slots": [1000.0, 5000.0, 9000.0], "done": [5000.0]}
-    assert ae.due_slot(plan, 999.0, 600) == (None, [])                    # not yet
-    assert ae.due_slot(plan, 1100.0, 600) == (1000.0, [])
-    assert ae.due_slot(plan, 1700.0, 600) == (None, [1000.0])             # too late: skipped, not run
-    assert ae.due_slot(plan, 9100.0, 600) == (9000.0, [1000.0])
+def test_daily_round_starts_at_the_post_hour_once_a_day():
+    assert not ae.start_due(_la(8, 59), 9, "", 7200)                  # before 9am
+    assert ae.start_due(_la(9, 0), 9, "", 7200)
+    assert ae.start_due(_la(10, 30), 9, "2026-11-25", 7200)           # yesterday's date doesn't block today
+    assert not ae.start_due(_la(9, 30), 9, "2026-11-26", 7200)        # already started today
+    assert not ae.start_due(_la(11, 1), 9, "", 7200)                  # bot was down too long: skip the day
+    assert ae.start_due(_la(7, 5), 7, "", 7200)                       # follows the Daily Verdict post hour
 
 
 # ---- voting and prize

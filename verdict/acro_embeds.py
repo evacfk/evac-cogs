@@ -4,7 +4,7 @@ from __future__ import annotations
 import discord
 
 from . import acro_engine as ae
-from .constants import ACRO_MAX_ENTRIES, ACRO_MAX_ENTRY_LEN, ACRO_MIN_ENTRIES
+from .constants import ACRO_MAX_ENTRIES, ACRO_MAX_ENTRY_LEN, ACRO_MIN_ENTRIES, ACRO_VOTE_SECONDS
 
 COLOR_SUBMIT = 0xE67E22
 COLOR_VOTE = 0x5865F2
@@ -38,8 +38,9 @@ def submit_embed(cur: dict) -> discord.Embed:
     e.add_field(name="How to play", value=(
         f"Tap **Submit** and write {n} words, one for each letter, **in order**: "
         f"each word starts with its letter. Make it funny.\n"
-        f"You can change your entry until time's up. Entries are anonymous while everyone votes."), inline=False)
-    e.add_field(name="Time", value=f"Submissions close {_when(cur['submit_ends_ts'])}", inline=False)
+        f"You can change your entry until submissions close. Entries stay anonymous while everyone votes."), inline=False)
+    e.add_field(name="Time", value=(f"Submissions close <t:{int(cur['submit_ends_ts'])}:t> ({_when(cur['submit_ends_ts'])}). "
+                                    f"Voting then runs until <t:{int(cur['submit_ends_ts'] + ACRO_VOTE_SECONDS)}:t>."), inline=False)
     e.set_footer(text=f"Needs {ACRO_MIN_ENTRIES}+ entries to go to a vote · max {ACRO_MAX_ENTRIES} entries")
     return e
 
@@ -55,7 +56,7 @@ def cancelled_embed(cur: dict, n_entries: int) -> discord.Embed:
     return discord.Embed(
         title=f"\N{INPUT SYMBOL FOR LATIN CAPITAL LETTERS} Acrophobia #{cur['seq']}: not this time",
         description=(f"Only {n_entries} {'entry' if n_entries == 1 else 'entries'} came in and it takes {ACRO_MIN_ENTRIES} "
-                     "to make a vote. Nobody loses anything. The next round starts soon, so keep an eye out!"),
+                     "to make a vote. Nobody loses anything. A new round opens tomorrow with the daily question, so keep an eye out!"),
         color=discord.Color(COLOR_CANCEL))
 
 
@@ -75,8 +76,8 @@ def vote_embed(cur: dict) -> discord.Embed:
     desc = f"{' '.join(cur['letters'])}{theme}\n\n" + "\n".join(_entry_lines(cur))
     e = discord.Embed(title=f"\N{BALLOT BOX WITH BALLOT} Acrophobia #{cur['seq']}: vote!",
                       description=_clip(desc, 4000), color=discord.Color(COLOR_VOTE))
-    e.add_field(name="Vote", value=(f"Tap the number of your favourite. You can change your vote until time's up; "
-                                    f"you can't vote for your own. Voting closes {_when(cur['vote_ends_ts'])}."), inline=False)
+    e.add_field(name="Vote", value=(f"Tap the number of your favourite. You can change your vote until voting closes; "
+                                    f"you can't vote for your own. Voting closes <t:{int(cur['vote_ends_ts'])}:t> ({_when(cur['vote_ends_ts'])})."), inline=False)
     return e
 
 

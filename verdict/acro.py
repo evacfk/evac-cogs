@@ -1,8 +1,9 @@
 """Acrophobia: the second Verdict round type, a quick acronym game.
 
-The bot posts 3-5 random letters in the daily question channel. Members tap Submit and write one word per letter
-(each starting with its letter, in order), anonymously. After 90 seconds the entries go up numbered for a 45 second
-vote (one vote each, never for your own). The winner gets wondercoin from a capped daily faucet.
+Once a day, when the daily question posts (9am Pacific), the bot posts 3-5 random letters in the same channel.
+Members tap Submit and write one word per letter (each starting with its letter, in order), anonymously. After 5 hours
+the entries go up numbered for a 4 hour vote (one vote each, never for your own). The winner gets wondercoin from a
+capped daily faucet.
 
 All state lives in Config (`acro_current`), so a restart resumes the round. Clicks and modals are handled in
 `Verdict.on_interaction` by custom id (`verdict:acro:<round>:<action>`), like the daily question's buttons.
@@ -12,9 +13,7 @@ from __future__ import annotations
 
 import logging
 import random
-import sys
 import time
-from datetime import datetime
 
 import discord
 try:
@@ -26,10 +25,8 @@ from . import acro_embeds as ui
 from . import acro_engine as ae
 from . import engine
 from .constants import (
-    ACRO_EARLIEST_HOUR, ACRO_FALLBACK_HOURS, ACRO_HISTORY, ACRO_LATE_GRACE_SECONDS, ACRO_LATEST_HOUR,
-    ACRO_MAX_ENTRIES, ACRO_MAX_PRIZE, ACRO_MAX_RATE, ACRO_MIN_ENTRIES, ACRO_MIN_GAP_HOURS, ACRO_PULSE_DAYS,
-    ACRO_PULSE_MIN_SAMPLES, ACRO_REVIEW_DAYS, ACRO_REVIEW_MIN_AVG, ACRO_SUBMIT_SECONDS, ACRO_VOTE_SECONDS,
-    HOME_TZ, KEEP_MONTHS,
+    ACRO_MAX_ENTRIES, ACRO_MAX_PRIZE, ACRO_MIN_ENTRIES, ACRO_REVIEW_DAYS, ACRO_REVIEW_MIN_AVG,
+    ACRO_START_GRACE_SECONDS, ACRO_SUBMIT_SECONDS, ACRO_VOTE_SECONDS, ACRO_HISTORY, KEEP_MONTHS,
 )
 from .settings_panel import PanelError
 
@@ -97,76 +94,15 @@ class AcroMixin:
             return
         await self._acro_schedule(guild, now_ts)
 
-    async def _acro_hour_profile(self, guild, now_ts: float) -> tuple[dict, str]:
-        """{pacific hour: average messages} from ServerPulse, using the weekday's own profile when it has enough
-        samples. ({}, "fallback") when ServerPulse isn't loaded or has no data yet."""
-        pulse = self.bot.get_cog("ServerPulse")
-        if pulse is None or not all(hasattr(pulse, n) for n in ("_prepare", "_window", "_days", "_slots")):
-            return {}, "fallback"
-        try:
-            pulse_engine = sys.modules.get(type(pulse).__module__.rsplit(".", 1)[0] + ".engine")
-            if pulse_engine is None:
-                return {}, "fallback"
-            prep = await pulse._prepare(guild)
-            if not prep.has_data:
-                return {}, "fallback"
-            start, end, _note = pulse._window(prep, ACRO_PULSE_DAYS)
-            slots = pulse._slots(prep, await pulse._days(guild.id, start, end), start, end)
-            weekday = datetime.fromtimestamp(now_ts, HOME_TZ).weekday()
-            overall = {r.hour: r for r in pulse_engine.hour_table(slots)}
-            mine = {r.hour: r for r in pulse_engine.hour_table(slots, weekday)}
-            avg = {}
-            for h in range(24):
-                own, every = mine.get(h), overall.get(h)
-                if own is not None and own.n >= ACRO_PULSE_MIN_SAMPLES:
-                    avg[h] = float(own.avg_msgs)
-                elif every is not None and every.n:
-                    avg[h] = float(every.avg_msgs)
-            if any(avg.values()):
-                return avg, "serverpulse"
-        except Exception:
-            log.warning("verdict: could not read ServerPulse hours for Acrophobia", exc_info=True)
-        return {}, "fallback"
-
-    async def _acro_make_plan(self, guild, now_ts: float, old: dict | None = None) -> dict:
-        """Today's automatic slots. Rounds already started today count against the daily number, and a re-plan
-        (the setting changed, or the bot came back) never reuses their hours."""
-        conf = self.config.guild(guild)
-        today = engine.pt_date(now_ts)
-        rate = await conf.acro_rounds_per_day()
-        started = list((old or {}).get("started") or []) if (old or {}).get("date") == today else []
-        done = list((old or {}).get("done") or []) if (old or {}).get("date") == today else []
-        profile, source = await self._acro_hour_profile(guild, now_ts)
-        if not profile:
-            profile = {h: 100.0 - i for i, h in enumerate(ACRO_FALLBACK_HOURS)}
-        taken = [datetime.fromtimestamp(t, HOME_TZ).hour for t in started]
-        hours = ae.pick_hours(profile, max(0, rate - len(started)), ACRO_EARLIEST_HOUR, ACRO_LATEST_HOUR,
-                              ACRO_MIN_GAP_HOURS, taken)
-        slots = ae.plan_slots(datetime.fromtimestamp(now_ts, HOME_TZ).date(), hours)
-        plan = {"date": today, "rate": rate, "hours": sorted(set(hours) | set(taken)), "slots": sorted(slots + started),
-                "done": sorted(set(done) | set(started)), "started": started, "source": source}
-        await conf.acro_plan.set(plan)
-        return plan
-
     async def _acro_schedule(self, guild, now_ts: float) -> None:
+        """One round a day, opening when the daily question does (the Daily Verdict post hour)."""
         conf = self.config.guild(guild)
-        plan = await conf.acro_plan()
-        if plan.get("date") != engine.pt_date(now_ts) or plan.get("rate") != await conf.acro_rounds_per_day():
-            plan = await self._acro_make_plan(guild, now_ts, plan)
-        slot, late = ae.due_slot(plan, now_ts, ACRO_LATE_GRACE_SECONDS)
-        if late:
-            plan["done"] = sorted(set(plan["done"]) | set(late))
-            await conf.acro_plan.set(plan)
-        if slot is None:
+        if not ae.start_due(now_ts, await conf.post_hour(), await conf.acro_auto_date(), ACRO_START_GRACE_SECONDS):
             return
-        plan["done"] = sorted(set(plan["done"]) | {slot})
-        await conf.acro_plan.set(plan)   # written off before posting, so a failure can't start it twice
+        await conf.acro_auto_date.set(engine.pt_date(now_ts))   # marked before posting, so a failure can't start it twice
         status = await self.acro_start(guild, now_ts, manual=False)
-        if status.startswith("Started"):
-            plan["started"] = sorted(set(plan.get("started") or []) | {slot})
-            await conf.acro_plan.set(plan)
-        else:
-            log.warning("verdict: automatic Acrophobia round not started: %s", status)
+        if not status.startswith("Started"):
+            log.warning("verdict: daily Acrophobia round not started: %s", status)
 
     # -- round lifecycle --------------------------------------------------------
 
@@ -505,13 +441,12 @@ class AcroMixin:
                      f"{len(cur['entries'])} entries, {len(cur['votes'])} votes.")
         else:
             state = "No round is open."
-        lines = [f"Acrophobia is **{'on' if s['acro_enabled'] else 'off'}** · {s['acro_rounds_per_day']} rounds a day · "
+        lines = [f"Acrophobia is **{'on' if s['acro_enabled'] else 'off'}** · one round a day · "
                  f"prize {s['acro_prize']:,} · daily cap {s['acro_daily_cap']:,}", state]
-        plan = s["acro_plan"] if s["acro_plan"].get("date") == engine.pt_date(now_ts) else {}
-        upcoming = [t for t in plan.get("slots") or [] if t not in (plan.get("done") or []) and t > now_ts]
-        if s["acro_enabled"] and upcoming:
-            lines.append("Next automatic: " + ", ".join(f"<t:{int(t)}:t>" for t in upcoming)
-                         + (" (ServerPulse's busiest hours)" if plan.get("source") == "serverpulse" else " (default hours: no ServerPulse data)"))
+        if s["acro_enabled"] and not cur and s["acro_auto_date"] != engine.pt_date(now_ts):
+            hour = s["post_hour"]
+            lines.append(f"Next automatic round: today at {hour % 12 or 12}{'am' if hour < 12 else 'pm'} PT if it's still ahead, "
+                         "otherwise tomorrow (with the daily question).")
         paid = s["acro_paid"]
         today_paid = paid["amount"] if paid.get("date") == engine.pt_date(now_ts) else 0
         lines.append(f"Paid today: {today_paid:,} of {s['acro_daily_cap']:,}")
@@ -597,17 +532,7 @@ class AcroMixin:
         await conf.acro_enabled.set(bool(on))
         if on and not await conf.acro_launch_ts():
             await conf.acro_launch_ts.set(time.time())
-        return "Acrophobia is on. Rounds run at the busiest hours." if on else "Acrophobia is off. An open round still finishes."
-
-    async def _apply_acro_rate(self, guild, member, values) -> str:
-        try:
-            n = int(float(values["rate"]))
-        except (KeyError, TypeError, ValueError):
-            raise PanelError(f"Enter a number from 1 to {ACRO_MAX_RATE}.")
-        if not 1 <= n <= ACRO_MAX_RATE:
-            raise PanelError(f"Pick 1 to {ACRO_MAX_RATE} rounds a day.")
-        await self.config.guild(guild).acro_rounds_per_day.set(n)
-        return f"{n} automatic round{'s' if n != 1 else ''} a day. Today's schedule updates on the next tick."
+        return "Acrophobia is on. A round opens every day with the daily question." if on else "Acrophobia is off. An open round still finishes."
 
     async def _apply_acro_prize(self, guild, member, values) -> str:
         try:

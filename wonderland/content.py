@@ -121,9 +121,9 @@ PAGES = (
         Entry(".event mytz", "set your timezone for event times", requires=("event mytz",)),
         Entry(".hg", "The Hunger Games: volunteer, sponsor a tribute, your stats and the Hall of Victors",
               requires=("hg",)),
-        Entry(".verdict top", "this month's best crowd-readers and Acrophobia wins. Acrophobia is a quick word game in #cuddle "
-              "a couple of times a day: tap Submit, write one word per letter in order, then vote for your favourite "
-              "(never your own). The winner takes the wondercoin prize", requires=("verdict top",)),
+        Entry(".verdict top", "this month's best crowd-readers and Acrophobia wins. Acrophobia is a daily word game in #qotd "
+              "that opens at 9am Pacific with the daily question: tap Submit before ~2pm and write one word per letter in "
+              "order, then vote for your favourite until ~6pm (never your own). The winner takes the wondercoin prize", requires=("verdict top",)),
         Entry("/verdict suggest <question> | <a> | <b>", "suggest a daily question, privately (2-4 options)", requires=("verdict suggest",)),
         Entry(".secrets [@user]", "the secrets someone has found", requires=("secrets",)),
         Entry(".bumpreward top", "top server bumpers", requires=("bumpreward top",)),
