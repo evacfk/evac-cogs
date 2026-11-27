@@ -69,8 +69,13 @@ def top_holders(balances: Dict[int, int], n: int = TOP_N) -> List[Tuple[int, int
 
 # ---- snapshots: aggregate numbers only, so a run can show the change since the last one ----
 
-def snapshot(stats: Dict, day: str, active: Optional[Dict] = None) -> Dict:
-    """`active` is summarize() of the members without the Lurker role (None when that is unknown)."""
+def snapshot(stats: Dict, day: str, active: Optional[Dict] = None, *,
+             supply: Optional[int] = None, ts: Optional[float] = None) -> Dict:
+    """`active` is summarize() of the members without the Lurker role (None when that is unknown).
+
+    `supply` is every non-bot account\x27s balance including people who left (`total` only counts members
+    still here), and `ts` the unix time the balances were read. Together they let the coin ledger check
+    that the change in supply between two snapshots equals the sum of the changes it recorded."""
     snap = {
         "date": day,
         "total": stats["total"],
@@ -79,6 +84,8 @@ def snapshot(stats: Dict, day: str, active: Optional[Dict] = None) -> Dict:
         "p90": stats["p90"],
         "top10_share": round(stats["top10_share"], 4),
     }
+    if supply is not None and ts is not None:
+        snap.update(supply=int(supply), ts=round(float(ts), 3))
     if active is not None:
         snap.update(
             active_total=active["total"],

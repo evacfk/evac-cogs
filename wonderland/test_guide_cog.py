@@ -1,6 +1,7 @@
 """The guide cog end to end against fakes (redbot faked, discord real)."""
 import importlib
 import sys
+import time
 import types
 
 import discord
@@ -705,7 +706,7 @@ def ledger_bank(monkeypatch, balances):
     return bank
 
 
-async def test_economy_reports_flows_house_result_reconciliation_and_member_history(mod, monkeypatch, tmp_path):
+async def test_economy_reports_flows_house_result_unattributed_gap_and_member_history(mod, monkeypatch, tmp_path):
     from wonderland import ledger
     ann = eco_member(1, "Ann")
     ann.guild = types.SimpleNamespace(id=1)
@@ -714,9 +715,14 @@ async def test_economy_reports_flows_house_result_reconciliation_and_member_hist
     bank = ledger_bank(monkeypatch, balances)
     cog = make(mod)
     cog.bot.extensions = {"casino": None}
-    assert cog._ledger_start(bank, ledger.LedgerStore(tmp_path / "l.sqlite3"), loop_task=False)
-    ctx = await run_economy(cog, guild)                        # first run: saves the supply for the check
-    assert "Run this again later" in fields(ctx.sent[1].kw["embed"])["Check"]
+    store = ledger.LedgerStore(tmp_path / "l.sqlite3")
+    store.meta_set("started_at", str(time.time() - 3 * 86400))
+    assert cog._ledger_start(bank, store, loop_task=False)
+    ctx = await run_economy(cog, guild)                        # nothing earlier to compare with: says so, saves a snapshot
+    assert "No earlier snapshot has a time" in fields(ctx.sent[1].kw["embed"])["Unattributed"]
+    snap = cog.config.data[guild.id]["economy"]["snapshots"][0]
+    assert snap["supply"] == 1_000 and snap["ts"] > 0           # the snapshot now carries what the check needs
+    snap["date"], snap["ts"] = "2000-01-01", time.time() - 86400   # pretend it was taken yesterday
 
     casino = types.ModuleType("casino.games")
     exec("async def play(self, ctx, bank, m):\n    await bank.set_balance(m, 900)\n", casino.__dict__)
@@ -728,8 +734,10 @@ async def test_economy_reports_flows_house_result_reconciliation_and_member_hist
     f = fields(ctx.sent[1].kw["embed"])
     assert f["Sinks, last 7 days"].startswith("**casino** -100 (in 0 / out 100) · mostly .casino blackjack")
     assert "**casino**: house up **100** (1 changes)" in f["House result, last 30 days"]
-    check = next(v for k, v in f.items() if k.startswith("Check since"))
-    assert "Supply -50 · ledger -100 · unaccounted +50" in check
+    first = next(iter(f))                                       # 50 of 950 is over 1%, so it leads the report
+    assert first == "⚠️ Unattributed, last 24h"
+    assert "Supply -50 · ledger -100" in f[first] and "**unattributed +50** (5.26% of the 950 in circulation)" in f[first]
+    assert "ExtendedEconomy" in f[first]
 
     ctx = FakeCtx(guild=guild)
     await cog.wonderland.subs["economy"].callback(cog, ctx, ann)

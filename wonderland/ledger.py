@@ -26,6 +26,8 @@ HISTORY_LIMIT = 25           # rows shown for one member
 MAX_FRAMES = 80              # how far up the stack attribution looks
 LEDGER_TZ = "America/Los_Angeles"   # day boundaries for rollups, same as the coin report's snapshots
 UNKNOWN = "unknown"
+UNATTRIBUTED_ALERT = 0.01   # a gap above this share of the supply is listed first in the report
+NOT_RUNNING_AFTER = 90      # seconds without a heartbeat before the ledger counts as having been off
 
 # Red 3.5.x: `async def set_balance(member, amount) -> int`.
 EXPECTED_SET_BALANCE_PARAMS = ("member", "amount")
@@ -207,6 +209,7 @@ CREATE TABLE IF NOT EXISTS daily (
     PRIMARY KEY (day, guild_id, cog, action)
 );
 CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS gaps (start REAL NOT NULL, end REAL NOT NULL);
 """
 
 Row = Tuple[float, int, int, int, int, int, str, str]  # ts, guild, user, old, new, delta, cog, action
@@ -271,11 +274,17 @@ class LedgerStore:
                 "coins_out = coins_out + excluded.coins_out, events = events + excluded.events",
                 [(*key, *vals) for key, vals in totals.items()])
             moved = con.execute("DELETE FROM changes WHERE ts < ?", (cutoff,)).rowcount
+            con.execute("DELETE FROM gaps WHERE end < ?", (cutoff,))
         return moved
 
     def delete_user(self, user_id: int) -> int:
         with self._lock, self._connect() as con:
             return con.execute("DELETE FROM changes WHERE user_id = ?", (int(user_id),)).rowcount
+
+    def gap_add(self, start: float, end: float) -> None:
+        """Record a stretch when the ledger was not running (cog unloaded, bot down)."""
+        with self._lock, self._connect() as con:
+            con.execute("INSERT INTO gaps (start, end) VALUES (?, ?)", (start, end))
 
     def meta_set(self, key: str, value: str) -> None:
         with self._lock, self._connect() as con:
@@ -336,9 +345,44 @@ class LedgerStore:
                 "SELECT ts, old_balance, new_balance, delta, cog, action FROM changes "
                 f"WHERE user_id = ?{where} ORDER BY ts DESC, id DESC LIMIT ?", (int(user_id), *args, limit)).fetchall()
 
+    def gaps_between(self, start: float, end: float) -> list:
+        """[(start, end)] of not-running stretches that overlap [start, end]."""
+        with self._connect() as con:
+            return con.execute("SELECT start, end FROM gaps WHERE end > ? AND start < ? ORDER BY start",
+                               (start, end)).fetchall()
+
     def count(self) -> int:
         with self._connect() as con:
             return con.execute("SELECT COUNT(*) FROM changes").fetchone()[0]
+
+
+# ------------------------------------------------------------------ reconciliation
+
+def reconcile(base: Optional[dict], supply: int, now: float, net: int, started_at: float,
+              keep_from: float, gaps=()) -> dict:
+    """Does the change in total supply since the `base` snapshot equal the ledger's net since then?
+
+    `base` is an economy snapshot with `ts` and `supply` (older snapshots have neither). `net` is the sum
+    of recorded deltas between base["ts"] and `now`; `supply` is the supply read at `now`. `keep_from` is
+    the oldest time individual rows are still kept. Result["status"]:
+      "no_baseline": no earlier snapshot carries a time and a supply yet,
+      "too_early":   the ledger started after the baseline, so it can't have seen the whole window,
+      "too_old":     the window starts before the kept rows, so its net can't be summed,
+      "ok":          gap = supply change - net. Positive means coins appeared that the ledger never saw.
+    """
+    if not base or base.get("ts") is None or base.get("supply") is None:
+        return {"status": "no_baseline"}
+    since = float(base["ts"])
+    if since < started_at:
+        return {"status": "too_early", "since": since, "started": started_at}
+    if since < keep_from:
+        return {"status": "too_old", "since": since}
+    change = int(supply) - int(base["supply"])
+    gap = change - int(net)
+    pct = abs(gap) / supply if supply > 0 else (0.0 if gap == 0 else 1.0)
+    off = sum(max(0.0, min(end, now) - max(start, since)) for start, end in gaps)
+    return {"status": "ok", "since": since, "hours": (now - since) / 3600, "supply": change, "ledger": int(net),
+            "gap": gap, "pct": pct, "alert": pct > UNATTRIBUTED_ALERT, "off_seconds": off}
 
 
 # ------------------------------------------------------------------ report maths

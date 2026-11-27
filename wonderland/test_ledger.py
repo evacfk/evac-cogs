@@ -325,15 +325,19 @@ def test_house_result_sign():
     assert result["lottery"] == (0, 0)
 
 
+def recon_ok(gap, supply_now=10_000, **extra):
+    pct = abs(gap) / supply_now
+    return {"status": "ok", "since": time.time() - 86400, "hours": 24.0, "supply": 600, "ledger": 600 - gap, "gap": gap,
+            "pct": pct, "alert": pct > ledger.UNATTRIBUTED_ALERT, "off_seconds": 0, "supply_now": supply_now, **extra}
+
+
 def test_ledger_embed_reads_right():
     from wonderland import embeds
-    e = embeds.ledger_embed("wondercoin", time.time() - 86400, FLOWS, FLOWS,
-                            {"since": time.time() - 3600, "supply": 600, "ledger": 550}, "Ledger on")
+    e = embeds.ledger_embed("wondercoin", time.time() - 86400, FLOWS, FLOWS, recon_ok(50), "Ledger on")
     f = {x.name: x.value for x in e.fields}
     assert f["Faucets, last 7 days (net +650)"].startswith("**heist** +800 (in 900 / out 100) · mostly .heist play")
     assert "**casino**: house up **400** (20 changes)" in f["House result, last 30 days"]
     assert "**heist**: house down **800**" in f["House result, last 30 days"]
-    assert "unaccounted +50" in next(v for k, v in f.items() if k.startswith("Check since"))
     assert len(e) < 6000
 
 
@@ -342,3 +346,209 @@ def test_member_embed_lists_changes():
     now = time.time()
     e = embeds.ledger_member_embed("wondercoin", "Ann", [(now, 100, 70, -30, "casino", ".casino blackjack")])
     assert "**-30** → 70 · casino · .casino blackjack" in e.description
+
+
+# ------------------------------------------------------------------ snapshots carry what the check needs
+
+def test_snapshots_carry_supply_and_time_only_when_given():
+    from wonderland import economy
+    stats = economy.summarize([100, 200])
+    with_both = economy.snapshot(stats, "2026-11-26", supply=1_234, ts=1_700_000_000.1234)
+    assert with_both["supply"] == 1_234 and with_both["ts"] == 1_700_000_000.123
+    assert "supply" not in economy.snapshot(stats, "2026-11-26")           # older callers and old snapshots: unchanged
+    assert economy.change(economy.snapshot(stats, "2026-11-25"), with_both)["total"] == 0
+
+
+# ------------------------------------------------------------------ reconciliation
+
+BASE = {"ts": 1_000.0, "supply": 10_000}
+DAY = 1_000.0 + 86_400
+
+
+def test_the_gap_is_the_change_in_supply_minus_the_ledgers_net():
+    r = ledger.reconcile(BASE, 10_500, DAY, net=300, started_at=0, keep_from=0)
+    assert (r["status"], r["supply"], r["ledger"], r["gap"]) == ("ok", 500, 300, 200)
+    assert r["hours"] == 24 and r["pct"] == pytest.approx(200 / 10_500) and r["alert"] is True
+
+
+def test_a_ledger_that_saw_everything_has_no_gap():
+    r = ledger.reconcile(BASE, 9_700, DAY, net=-300, started_at=0, keep_from=0)
+    assert r["gap"] == 0 and r["pct"] == 0 and r["alert"] is False
+
+
+def test_the_alert_is_strictly_more_than_one_percent_of_supply():
+    exactly = ledger.reconcile(BASE, 10_000, DAY, net=-100, started_at=0, keep_from=0)    # gap 100 = 1.00%
+    over = ledger.reconcile(BASE, 10_000, DAY, net=-101, started_at=0, keep_from=0)
+    assert exactly["pct"] == 0.01 and exactly["alert"] is False and over["alert"] is True
+    assert ledger.reconcile(BASE, 9_900, DAY, net=0, started_at=0, keep_from=0)["gap"] == -100   # coins vanished: negative
+
+
+def test_reconcile_will_not_report_a_gap_for_a_window_it_could_not_have_seen():
+    assert ledger.reconcile(None, 5, DAY, 0, 0, 0)["status"] == "no_baseline"
+    assert ledger.reconcile({"date": "2026-11-25", "total": 1}, 5, DAY, 0, 0, 0)["status"] == "no_baseline"   # old snapshot
+    assert ledger.reconcile(BASE, 5, DAY, 0, started_at=2_000.0, keep_from=0)["status"] == "too_early"
+    assert ledger.reconcile(BASE, 5, DAY, 0, started_at=0, keep_from=2_000.0)["status"] == "too_old"
+
+
+def test_reconcile_counts_time_the_ledger_was_not_running_inside_the_window():
+    r = ledger.reconcile(BASE, 10_000, 5_000.0, 0, 0, 0, gaps=[(500.0, 1_600.0), (2_000.0, 2_600.0), (4_900.0, 9_000.0)])
+    assert r["off_seconds"] == 600 + 600 + 100         # clipped to [1000, 5000]
+
+
+def test_gaps_are_listed_by_overlap_and_old_ones_are_pruned_by_the_rollup(tmp_path):
+    store = ledger.LedgerStore(tmp_path / "l.sqlite3")
+    now = time.time()
+    store.gap_add(now - 100 * 86400, now - 100 * 86400 + 60)
+    store.gap_add(now - 3600, now - 1800)
+    assert store.gaps_between(now - 7200, now) == [(now - 3600, now - 1800)]
+    assert len(store.gaps_between(0, now)) == 2
+    store.rollup(now)
+    assert store.gaps_between(0, now) == [(now - 3600, now - 1800)]
+
+
+def test_start_records_a_gap_after_a_long_silence_but_not_after_a_quick_reload(bank, tmp_path):
+    store = ledger.LedgerStore(tmp_path / "l.sqlite3")
+    store.meta_set("alive", str(time.time() - 3600))
+    first = Host()
+    first._ledger_start(bank, store, loop_task=False)
+    assert len(store.gaps_between(0, time.time() + 1)) == 1        # an hour with no heartbeat
+    first._ledger_stop()                                           # stamps the unload time
+    second = Host()
+    second._ledger_start(bank, store, loop_task=False)             # `.cog update true` a moment later
+    second._ledger_stop()
+    assert len(store.gaps_between(0, time.time() + 1)) == 1
+
+
+def test_a_clean_unload_stamps_the_time_so_a_stale_heartbeat_is_not_a_gap(bank, tmp_path):
+    store = ledger.LedgerStore(tmp_path / "l.sqlite3")
+    h = Host()
+    h._ledger_start(bank, store, loop_task=False)
+    store.meta_set("alive", str(time.time() - 100))                # last heartbeat looks 100 s old when the cog unloads
+    h._ledger_stop()
+    again = Host()
+    again._ledger_start(bank, store, loop_task=False)              # reloaded straight away
+    again._ledger_stop()
+    assert store.gaps_between(0, time.time() + 1) == []
+
+
+def test_the_first_ever_start_is_not_a_gap(bank, tmp_path):
+    store = ledger.LedgerStore(tmp_path / "l.sqlite3")
+    h = Host()
+    h._ledger_start(bank, store, loop_task=False)
+    assert store.gaps_between(0, time.time() + 1) == []
+    h._ledger_stop()
+
+
+# ------------------------------------------------------------------ the report leads with a big gap
+
+def test_unattributed_leads_the_report_only_when_over_one_percent():
+    from wonderland import embeds
+    when = time.time() - 86400
+    big = embeds.ledger_embed("wondercoin", when, FLOWS, FLOWS, recon_ok(250), "Ledger on")
+    assert big.fields[0].name == "⚠️ Unattributed, last 24h"
+    assert "**unattributed +250** (2.50% of the 10,000 in circulation)" in big.fields[0].value
+    assert "ExtendedEconomy auto-payday" in big.fields[0].value and len(big) < 6000
+    small = embeds.ledger_embed("wondercoin", when, FLOWS, FLOWS, recon_ok(40), "Ledger on")
+    assert small.fields[-1].name == "Unattributed, last 24h" and not any(f.name.startswith("⚠️") for f in small.fields)
+    assert "Small gaps are expected" in small.fields[-1].value
+    none = embeds.ledger_embed("wondercoin", when, FLOWS, FLOWS, recon_ok(0), "Ledger on")
+    assert "**unattributed +0**" in none.fields[-1].value and "Small gaps" not in none.fields[-1].value
+
+
+def test_unattributed_says_when_the_ledger_was_off_and_why_it_cannot_check():
+    from wonderland import embeds
+    when = time.time() - 86400
+    off = embeds.ledger_embed("wondercoin", when, FLOWS, FLOWS, recon_ok(250, off_seconds=900), "x")
+    assert "not running for 15 min" in off.fields[0].value
+    for status, text in (("no_baseline", "No earlier snapshot"), ("too_early", "ledger started"), ("too_old", "older than the 30 days")):
+        e = embeds.ledger_embed("wondercoin", when, FLOWS, FLOWS, {"status": status, "since": when, "started": when}, "x")
+        assert text in e.fields[-1].value and e.fields[-1].name == "Unattributed"
+
+
+# ------------------------------------------------------------------ modules that imported set_balance directly
+
+@pytest.fixture
+def red_bank():
+    """Named like Red's module, so its functions look like Red's own to the importer scan (not in sys.modules)."""
+    return load_module("redbot.core.bank", BANK_SRC)
+
+
+IMPORTER_SRC = """
+async def pay(member, amount):
+    return await set_balance(member, amount)
+"""
+
+
+def importer(monkeypatch, name, held):
+    """A stand-in for `from redbot.core.bank import set_balance` in a cog: its own reference to the function."""
+    mod = load_module(name, IMPORTER_SRC)
+    mod.set_balance = held
+    monkeypatch.setitem(sys.modules, name, mod)
+    return mod
+
+
+async def test_a_module_that_imported_set_balance_directly_is_covered_named_and_restored(red_bank, monkeypatch, tmp_path):
+    original = red_bank.set_balance
+    shop = importer(monkeypatch, "fakeshop.engine", original)
+    h = Host(("fakeshop",))
+    assert h._ledger_start(red_bank, ledger.LedgerStore(tmp_path / "l.sqlite3"), loop_task=False)
+    assert shop.set_balance is red_bank.set_balance and ledger_cog.is_ours(shop.set_balance)
+    await shop.pay(member(), 40)                                   # bypassed the bank attribute before the fix
+    assert rows(h) == [(1, 0, 40, 40, "fakeshop", "fn: pay")]
+    assert "also covering direct set_balance imports in fakeshop.engine.set_balance" in h._ledger_status_line()
+    h._ledger_stop()
+    assert shop.set_balance is original and red_bank.set_balance is original
+
+
+async def test_a_direct_import_of_the_true_original_is_covered_when_another_cog_overrides_the_bank(red_bank, monkeypatch, tmp_path):
+    """BankEvents-style: bank.set_balance is another cog's override, but a cog still holds Red's own function."""
+    true_original = red_bank.set_balance
+    override = load_module("fakeevents.overrides", "async def set_balance(member, amount):\n    return await orig(member, amount)\n")
+    override.orig = true_original
+    red_bank.set_balance = override.set_balance
+    monkeypatch.setitem(sys.modules, "fakeevents.overrides", override)
+    gafishing = importer(monkeypatch, "fakegaf.shop", true_original)
+    h = Host(("fakegaf", "fakeevents"))
+    h._ledger_start(red_bank, ledger.LedgerStore(tmp_path / "l.sqlite3"), loop_task=False)
+    assert gafishing.set_balance is red_bank.set_balance
+    assert override.set_balance is not red_bank.set_balance        # the override module is left alone entirely:
+    assert override.orig is true_original                           # swapping its saved original would make it call itself
+    await gafishing.pay(member(), 25)
+    assert rows(h) == [(1, 0, 25, 25, "fakegaf", "fn: pay")]
+    assert await red_bank.set_balance(member(uid=2), 5) == 5       # the override chain still works: no recursion
+    h._ledger_stop()
+    assert gafishing.set_balance is true_original
+
+
+def test_the_scan_survives_odd_modules_and_ignores_ones_that_hold_nothing(red_bank, monkeypatch):
+    monkeypatch.setitem(sys.modules, "fakeodd", object())          # no __dict__
+    plain = importer(monkeypatch, "fakeplain", lambda: None)       # holds some other function
+    assert ledger_cog.find_direct_importers(red_bank.set_balance, sys.modules) == []
+    assert plain.set_balance is not red_bank.set_balance
+
+
+async def test_unload_does_not_undo_a_swap_someone_else_made_since(red_bank, monkeypatch, tmp_path):
+    original = red_bank.set_balance
+    shop = importer(monkeypatch, "fakeshop.engine", original)
+    h = Host(("fakeshop",))
+    h._ledger_start(red_bank, ledger.LedgerStore(tmp_path / "l.sqlite3"), loop_task=False)
+
+    async def theirs(member, amount):
+        return amount
+    shop.set_balance = theirs
+    h._ledger_stop()
+    assert shop.set_balance is theirs
+
+
+async def test_a_wrapper_left_in_an_importer_by_a_load_that_never_unloaded_is_replaced(red_bank, monkeypatch, tmp_path):
+    original = red_bank.set_balance
+    shop = importer(monkeypatch, "fakeshop.engine", original)
+    first = Host(("fakeshop",))
+    first._ledger_start(red_bank, ledger.LedgerStore(tmp_path / "a.sqlite3"), loop_task=False)
+    stale = shop.set_balance                                       # the cog is replaced without cog_unload running
+    second = Host(("fakeshop",))
+    second._ledger_start(red_bank, ledger.LedgerStore(tmp_path / "b.sqlite3"), loop_task=False)
+    assert shop.set_balance is red_bank.set_balance and shop.set_balance is not stale
+    await shop.pay(member(), 15)
+    assert rows(second) == [(1, 0, 15, 15, "fakeshop", "fn: pay")] and rows(first) == []
+    second._ledger_stop()

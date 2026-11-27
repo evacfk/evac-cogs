@@ -156,7 +156,7 @@ PAGES = (
         Entry(".dailyquests", "daily quests: on/off switch, rewards, XP weekend, quest pool and usage counts",
               requires=("dailyquests",)),
         Entry(".wld economy [@member]", "wondercoin report: supply, spread, which cogs add or remove coins, "
-                                        "house results; with a member, their last 25 changes"),
+                                        "house results, and any coins moved outside the ledger; with a member, their last 25 changes"),
         Entry(".wld version", "version probe for this cog"),
     ), mod_only=True),
 )

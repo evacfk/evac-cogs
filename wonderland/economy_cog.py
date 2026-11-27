@@ -7,6 +7,7 @@ show the change.
 from __future__ import annotations
 
 import logging
+import time
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
@@ -32,12 +33,14 @@ class EconomyMixin:
             return None
 
     async def _eco_report(self, guild: discord.Guild):
-        """(report embed, currency name, supply) where supply is every non-bot account's balance,
-        leavers included, for the ledger's reconciliation."""
+        """(report embed, currency name, recon) for the report. `recon` is what the coin ledger needs to check
+        itself: {"ts", "supply", "base"}. `supply` is every non-bot account's balance, leavers included,
+        read at unix time `ts`; `base` is the previous day's snapshot (or None)."""
         from redbot.core import bank  # imported here: the dev test stub has no bank
 
         currency = await bank.get_currency_name(guild)
         # Red's own member filter for a global bank is not reliable, so ask for everyone and filter here.
+        read_at = time.time()   # taken before the read: a change landing during it is counted by the ledger either way
         accounts = await bank.get_leaderboard(positions=None, guild=None if await bank.is_global() else guild)
 
         lurker_role = await self._lurker_role_id(guild)
@@ -68,7 +71,8 @@ class EconomyMixin:
                 "lurker_total": sum(balances[uid] for uid in lurkers),
             }
         today = datetime.now(ZoneInfo(ECONOMY_TZ)).date().isoformat()
-        entry = economy.snapshot(stats, today, active["stats"] if active else None)
+        supply = stats["total"] + gone_total
+        entry = economy.snapshot(stats, today, active["stats"] if active else None, supply=supply, ts=read_at)
         async with self.config.guild(guild).economy() as saved:
             history = saved.get("snapshots", [])
             previous = economy.previous_snapshot(history, today)
@@ -76,4 +80,4 @@ class EconomyMixin:
         delta = economy.change(previous, entry) if previous else None
         top = [(names[uid], balance) for uid, balance in economy.top_holders(balances)]
         embed = embeds.economy_embed(currency, stats, top, gone_n, gone_total, delta, active)
-        return embed, currency, stats["total"] + gone_total
+        return embed, currency, {"ts": read_at, "supply": supply, "base": previous}

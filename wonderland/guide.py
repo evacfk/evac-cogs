@@ -323,9 +323,9 @@ class Wonderland(EconomyMixin, LedgerMixin, RoomPermsMixin, commands.Cog):
                 currency = await bank.get_currency_name(ctx.guild)
                 embed = await self._ledger_member(ctx.guild, member, currency)
                 return await ctx.send(embed=embed, ephemeral=True, allowed_mentions=discord.AllowedMentions.none())
-            embed, currency, supply = await self._eco_report(ctx.guild)
+            embed, currency, recon = await self._eco_report(ctx.guild)
             try:
-                flow = await self._ledger_report(ctx.guild, currency, supply)
+                flow = await self._ledger_report(ctx.guild, currency, recon)
             except Exception:
                 log.exception("wonderland: coin ledger report failed")
                 flow = None

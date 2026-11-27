@@ -166,14 +166,53 @@ def ledger_off_embed(status: str) -> discord.Embed:
     return _base("📒 Coin flow", "The coin ledger is not recording, so there is no flow data to show.", status)
 
 
-def ledger_embed(currency: str, started: float, week: dict, month: dict, recon, status: str) -> discord.Embed:
+def _unattributed_field(recon: dict):
+    """(name, lines) for the reconciliation, or None when there is nothing to say."""
+    status = recon.get("status")
+    if status == "no_baseline":
+        return ("Unattributed", ["No earlier snapshot has a time and a supply yet. This run saved one, so the next "
+                                 "`.wld economy` on a later day can check the ledger against it."])
+    if status == "too_early":
+        return ("Unattributed", [f"The ledger started (<t:{int(recon['started'])}:f>) after the last snapshot "
+                                 f"(<t:{int(recon['since'])}:f>), so it can't have seen that whole stretch. "
+                                 "The next run can check."])
+    if status == "too_old":
+        return ("Unattributed", [f"The last snapshot (<t:{int(recon['since'])}:f>) is older than the 30 days of "
+                                 "individual changes kept, so its window can't be summed. Run this again tomorrow."])
+    if status != "ok":
+        return None
+    hours = recon["hours"]
+    span = f"{hours:.0f}h" if hours >= 1.5 else f"{hours * 60:.0f} min"
+    gap = recon["gap"]
+    share = f"{recon['pct']:.2%} of the {recon['supply_now']:,} in circulation"
+    lines = [f"Supply {_signed(recon['supply'])} · ledger {_signed(recon['ledger'])} since <t:{int(recon['since'])}:f> "
+             f"({span} ago)",
+             f"**unattributed {_signed(gap)}** ({share})"]
+    if recon["off_seconds"] >= 60:
+        lines.append(f"The ledger was not running for {recon['off_seconds'] / 60:.0f} min of this window, "
+                     "which can account for some of it.")
+    if recon["alert"]:
+        lines.append("Over 1%: coins moved without going through Red's bank API. Usual suspects: ExtendedEconomy "
+                     "auto-payday, BankDecay on members who left, a bank backup restore, a bank wipe or prune.")
+    elif gap:
+        lines.append("Small gaps are expected: a new account's starting balance and changes in flight while the "
+                     "snapshot is read.")
+    name = ("⚠️ Unattributed" if recon["alert"] else "Unattributed") + f", last {span}"
+    return name, lines
+
+
+def ledger_embed(currency: str, started: float, week: dict, month: dict, recon: Optional[dict], status: str) -> discord.Embed:
     """Where coins came from and went. `week`/`month` are ledger.flows() results; `recon` is
-    {"since", "supply", "ledger"} or None. In/out/net are from the members' side: positive net is a faucet."""
+    ledger.reconcile()'s result (plus "supply_now") or None. In/out/net are from the members' side:
+    positive net is a faucet. A reconciliation gap over 1% of supply is listed first, otherwise last."""
     from . import ledger
     unit = currency or "coins"
     e = _base("📒 Coin flow by source",
               f"Every balance change since <t:{int(started)}:d>, grouped by the cog that made it. "
               f"Positive = {unit} into members (faucet), negative = out of members (sink).", status)
+    check = _unattributed_field(recon) if recon else None
+    if check and recon.get("alert"):
+        _field(e, check[0], check[1], "")
     for label, flows in (("7 days", week), ("30 days", month)):
         faucets, sinks = ledger.rank(flows, 6)
         _field(e, f"Faucets, last {label} (net {_signed(ledger.total_net(flows))})",
@@ -190,16 +229,8 @@ def ledger_embed(currency: str, started: float, week: dict, month: dict, recon, 
         else:
             lines.append(f"**{source}**: even ({events:,} changes)")
     _field(e, "House result, last 30 days", lines, "No gambling activity.")
-    if recon is not None:
-        gap = recon["supply"] - recon["ledger"]
-        _field(e, f"Check since <t:{int(recon['since'])}:f>",
-               [f"Supply {_signed(recon['supply'])} · ledger {_signed(recon['ledger'])} · "
-                f"unaccounted {_signed(gap)}",
-                "Unaccounted = changes that skip Red's bank API (direct writes such as ExtendedEconomy "
-                "auto-payday or backpay, bank wipes or prunes) plus new accounts' starting balance."],
-               "")
-    else:
-        _field(e, "Check", ["Run this again later to compare the change in supply with the ledger."], "")
+    if check and not recon.get("alert"):
+        _field(e, check[0], check[1], "")
     return e
 
 
