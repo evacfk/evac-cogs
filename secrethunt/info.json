@@ -1,0 +1,14 @@
+{
+    "name": "SecretHunt",
+    "short": "Retired Secret Hunt: a one-time command that unpins everything the hunt pinned.",
+    "description": "The Secret Hunt is retired. This build keeps only `.secrethunt cleanup`: a dry run, then `.secrethunt cleanup confirm`, which unpins the hunt's poems and hunt objects (recorded ones, plus any forgotten ones in the rooms it used; other bot pins are never touched). Unload and uninstall it afterwards.",
+    "end_user_data_statement": "This cog adds no new data. It reads what the retired Secret Hunt left behind: per member, their puzzle progress and last few button presses, and per puzzle the user IDs of solvers. All of it is deleted on a Red data-deletion request.",
+    "install_msg": "Run `.secrethunt cleanup` for a dry run, then `.secrethunt cleanup confirm` to unpin. Afterwards `.unload secrethunt` and `.cog uninstall secrethunt`.",
+    "author": ["evacfk"],
+    "requirements": [],
+    "tags": ["cleanup"],
+    "min_bot_version": "3.5.0",
+    "hidden": false,
+    "disabled": false,
+    "type": "COG"
+}
