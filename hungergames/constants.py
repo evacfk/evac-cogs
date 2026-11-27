@@ -1,7 +1,7 @@
 """Config defaults and lookup tables for hungergames. No discord/redbot imports here."""
 from zoneinfo import ZoneInfo
 
-COG_VERSION = "1.2.2"
+COG_VERSION = "1.2.3"
 CONFIG_IDENTIFIER = 0x48474D31
 HOME_TZ = ZoneInfo("America/Los_Angeles")
 
@@ -167,6 +167,7 @@ DEFAULT_GUILD = {
     "current": {},                    # the live edition, {} when none (Red can't merge a dict over a None default)
     "last_tributes": [],              # previous edition's tributes: never drafted twice in a row
     "last_puzzles": [],
+    "last_crown": {},                 # the pinned Victor card of the last real edition ({channel, message}); unpinned at the next Reaping
     "last_templates": [],
     "hall": [],                       # past victors
     "reports": [],                    # usage counts per finished edition (newest last, capped)

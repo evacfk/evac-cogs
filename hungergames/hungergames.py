@@ -199,6 +199,20 @@ class HungerGames(commands.Cog):
         except _DISCORD_ERRORS:
             log.warning("hungergames: could not pin (needs Manage Messages)")
 
+    async def _unpin_last_crown(self, guild):
+        """The last edition's Victor card stays pinned all week; the next Reaping takes its place."""
+        gconf = self.config.guild(guild)
+        last = await gconf.last_crown()
+        if not last:
+            return
+        channel = guild.get_channel(last.get("channel"))
+        if channel is not None:
+            try:
+                await channel.get_partial_message(last["message"]).unpin()
+            except _DISCORD_ERRORS:
+                log.debug("hungergames: could not unpin the last Victor card", exc_info=True)
+        await gconf.last_crown.set({})
+
     def _pings(self, s: dict, ed: dict, users=()) -> tuple:
         """(prefix text, allowed_mentions) for a ping of the HG role plus some tributes. Test runs never ping."""
         if ed.get("test"):
@@ -351,6 +365,8 @@ class HungerGames(commands.Cog):
         text = (f"{prefix}🎯 **{engine.edition_title(ed)}** begins! The Reaping is open.\n"
                 f"Hana reaches into the bowl and draws: {names}.\n"
                 "May the odds be ever in your favor. 🙋 Volunteers, the seats are open!")
+        if not test:
+            await self._unpin_last_crown(guild)
         msg = await self._send(channel, text, embed=embeds.reaping_embed(ed), view=ui.ReapingView(self),
                                allowed_mentions=mentions)
         if msg is not None:
@@ -696,6 +712,8 @@ class HungerGames(commands.Cog):
             msg = await self._send(channel, text, embed=embeds.crowning_embed(ed, guild, prize, currency, awards, wins),
                                    allowed_mentions=mentions)
         await self._pin(channel, msg, ed)
+        if msg is not None and channel is not None and not ed.get("test"):
+            await self.config.guild(guild).last_crown.set({"channel": channel.id, "message": msg.id})
         report = engine.edition_report(ed)
         await self._send(channel, embed=embeds.recap_embed(ed, engine.recap(ed), currency, report["burned"],
                                                            test=bool(ed.get("test"))))

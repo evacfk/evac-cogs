@@ -386,6 +386,23 @@ async def test_crowning_shows_the_victors_avatar_and_total_wins(mod, monkeypatch
     assert fields["Total wins"] == "3"                           # 2 before + this one
 
 
+async def test_victor_card_is_unpinned_when_the_next_reaping_opens(mod, monkeypatch):
+    monkeypatch.setattr(mod, "arena_art", None)
+    cog, guild, people, _ = world(mod, members=20)
+    await enable(cog, guild)
+    await full_week_to_scores(cog, guild, people)
+    await cog._tick(guild, now=SUNDAY + 38 * H)
+    await cog._tick(guild, now=SUNDAY + 50 * H)
+    await run_until(cog, guild, SUNDAY + 57 * H, SUNDAY + 6 * 24 * H + 12 * H, step=45)
+    crown = next(m for m in ch(guild).sent if m.embed is not None and "Victor of" in (m.embed.title or ""))
+    assert crown.pinned                                          # the winner stays on show all week
+    assert (await cog.config.guild(guild).last_crown())["message"] == crown.id
+    await cog._tick(guild, now=SUNDAY + 7 * 24 * H)              # the next Sunday: the Reaping opens
+    reaping = next(m for m in reversed(ch(guild).sent) if m.embed is not None and "Reaping" in (m.content or ""))
+    assert reaping.pinned and not crown.pinned                   # one pin replaces the other
+    assert not await cog.config.guild(guild).last_crown()
+
+
 async def test_signup_message_posts_pins_and_refreshes_in_place(mod):
     cog, guild, people, _ = world(mod, members=5)
     cog._now = lambda: SUNDAY - 2 * 24 * H                       # the Friday before

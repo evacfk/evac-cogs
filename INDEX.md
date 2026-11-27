@@ -16,7 +16,7 @@ Use it to answer "does a cog already cover this?" and "what depends on this cog?
 - **dailyquests** 1.2.0: Daily quests with streak badges, XP and weekly prizes
 - **duel** 1.2.1: 1v1 best-of-3 wagered duels
 - **gamble** 1.8.0: Per-user gambling threads plus the Wondercasino hub menu.
-- **hungergames** 1.2.2: A weekly Hunger Games: Reaping, training challenges, live arena broadcasts and Wondercoin sponsorship.
+- **hungergames** 1.2.3: A weekly Hunger Games: Reaping, training challenges, live arena broadcasts and Wondercoin sponsorship.
 - **lurker** 2.7.0: Auto-hide inactive members behind a Lurker role.
 - **minigamehub** 1.4.0: Unified, config-driven minigame spawner (pet/mathdrop/hunt/lootdrop/reacttowin/boss).
 - **puzzle** 1.8.2: Image-reveal puzzle game with an auto-rotating image pool.
@@ -101,7 +101,7 @@ Needs: Pillow · Config scopes: guild
 Data: The pixel canvas stores, per guild in the cog's data folder: every painted pixel (position, colour, the owner's user ID, price, time, and any text up to 100 characters),…
 
 ### hungergames
-v1.2.2 · HungerGames · 4208 lines · 87 tests
+v1.2.3 · HungerGames · 4227 lines · 88 tests
 Commands:
 - `.hg|hungergames`: admin, version
 Links: calls lurker, serverpulse
