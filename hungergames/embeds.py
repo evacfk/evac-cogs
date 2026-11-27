@@ -131,7 +131,6 @@ SCENE_COLOR = {
     "arena": 0x8E44AD, "finale": 0xD4A017,
 }
 LINE_ICON = {"death": "💀", "save": "🪂", "boost": "💪", "gift": "🎁", "find": "🎒", "victor": "👑"}
-SPOTLIGHT = ("death", "save", "gift", "victor")   # the kinds whose tribute gets the avatar
 CARD_LIMIT = 3600                                  # an embed description holds 4096; start a new card before it
 
 
@@ -152,10 +151,10 @@ def progress_text(bn: int) -> str:
     return f"The Finale  {bar}" if bn > 4 else f"Broadcast {bn} of 4  {bar}"
 
 
-def scene_embed(head: dict, lines: list, avatar_for=None, next_ts: float | None = None, flavor: str = "") -> "discord.Embed":
-    """One scene card: a phase header and the lines posted under it so far. The thumbnail is the avatar of the
-    tribute in the most recent big moment (a kill, a rescue, a gift, the Victor). Items from an older queue,
-    without a kind or uids, still render, just without icons or avatars."""
+def scene_embed(head: dict, lines: list, next_ts: float | None = None, flavor: str = "") -> "discord.Embed":
+    """One scene card: a phase header and the lines posted under it so far, with the scene banner at the bottom.
+    No thumbnail: member avatars belong on the Fallen wall and the Victor card. Items from an older queue,
+    without a kind, still render, just without icons."""
     desc = head.get("desc", "")
     body = "\n".join(scene_line(i) for i in lines)
     e = _embed(head["title"], f"*{desc}*\n\n{body}" if desc and body else (f"*{desc}*" if desc else body),
@@ -166,13 +165,6 @@ def scene_embed(head: dict, lines: list, avatar_for=None, next_ts: float | None 
         e.set_footer(text=progress_text(head["bn"]))
     if next_ts is not None:
         e.description = (e.description or "") + f"\n\n⏳ *{flavor or 'The broadcast continues.'}* Next update {ts(next_ts)}"
-    if avatar_for is not None:
-        for item in reversed(lines):
-            if item.get("kind") in SPOTLIGHT and item.get("uids"):
-                url = avatar_for(item["uids"][0])
-                if url:
-                    e.set_thumbnail(url=url)
-                break
     return e
 
 

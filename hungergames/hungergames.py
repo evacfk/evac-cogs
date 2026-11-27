@@ -535,14 +535,13 @@ class HungerGames(commands.Cog):
         queue = b["queue"]
         head = queue[card["head"]] if card["head"] is not None else {"title": "📺 Live from the arena", "scene": ""}
         lines = [i for i in queue[card["start"]:b["pos"] - 1] if i["t"] == "line"]
-        await self._edit_card(channel, card["id"], embeds.scene_embed(head, lines, self._avatar_for(guild, ed)))
+        await self._edit_card(channel, card["id"], embeds.scene_embed(head, lines))
 
     async def _post_scene_line(self, guild, channel, ed, item):
         """A broadcast line goes into the current scene card (one message per phase, edited as lines arrive).
         The card is rebuilt from the saved queue each time, so a restart or a deleted card never loses a line."""
         b = ed["broadcast"]
         queue, idx = b["queue"], b["pos"] - 1
-        avatar = self._avatar_for(guild, ed)
         card = b.get("card")
         if card is None:
             card = {"id": None, "start": idx, "head": None}
@@ -552,7 +551,7 @@ class HungerGames(commands.Cog):
             card = {"id": None, "start": idx, "head": card["head"]}   # full: carry on in a fresh card, same header
             head = queue[card["head"]] if card["head"] is not None else head
             lines = [item]
-        embed = embeds.scene_embed(head, lines, avatar, *self._next_update(b))
+        embed = embeds.scene_embed(head, lines, *self._next_update(b))
         if card["id"] and await self._edit_card(channel, card["id"], embed):
             b["card"] = card
             return
@@ -568,8 +567,7 @@ class HungerGames(commands.Cog):
         if kind != "line":
             await self._close_card(guild, channel, ed)
         if kind == "header":
-            avatar = self._avatar_for(guild, ed)
-            msg = await self._send(channel, embed=embeds.scene_embed(item, [], avatar, *self._next_update(b)))
+            msg = await self._send(channel, embed=embeds.scene_embed(item, [], *self._next_update(b)))
             b["card"] = {"id": msg.id if msg is not None else None, "start": b["pos"], "head": b["pos"] - 1}
         elif kind == "line":
             await self._post_scene_line(guild, channel, ed, item)

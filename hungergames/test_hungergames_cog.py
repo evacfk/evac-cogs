@@ -557,12 +557,13 @@ async def test_a_deleted_card_is_replaced_and_no_line_is_lost(mod):
     assert done and done[-1] in "".join(m.embed.description or "" for m in ch(guild).sent[before:] if m.embed)
 
 
-async def test_the_big_moments_show_the_tributes_avatar(mod):
+async def test_scene_cards_have_no_member_avatar_thumbnail(mod):
     cog, guild, people, t = await _first_broadcast(mod, avatars=True)
     await run_until(cog, guild, t, t + 6 * H, step=30)
-    thumbs = [m.embed.thumbnail.url for m in ch(guild).sent if m.embed is not None and getattr(m.embed, "thumbnail", None)
-              and m.embed.thumbnail.url]
-    assert thumbs and all(u.startswith("https://cdn.example/") for u in thumbs)
+    scenes = [m.embed for m in ch(guild).sent if m.embed is not None and m.embed.image and m.embed.image.url
+              and "/" in m.embed.image.url and m.embed.image.url.endswith(".png") and "attachment://" not in m.embed.image.url]
+    assert scenes                                                # the day/night banner cards were posted
+    assert all(not (getattr(e, "thumbnail", None) and e.thumbnail.url) for e in scenes)
 
 
 async def test_status_does_not_spoil_deaths_from_a_broadcast_still_posting(mod):
