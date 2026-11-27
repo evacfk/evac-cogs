@@ -74,7 +74,7 @@ QUESTS = (
     Quest("minigame", "Win a minigame in {#cuddle}", "Be first to a drop, a math question or a hunt when one pops up.",
           HOOK),
     Quest("chat", "Send {n} messages in {#cuddle}", "Say hi, reply to someone, join in.", CHAT, target=10),
-    Quest("fish", "Catch {n} fish", "Type `.fish` in {#bot-commands}.", COMMAND, target=3, command="fish"),
+    Quest("fish", "Catch {n} fish", "Create a table in {#wondercasino}, then type `.fish` in your table thread.", COMMAND, target=3, command="fish"),
     Quest("star", "Give someone a star", "Thank a good noodle with `.stars @them` in {#bot-commands}.", COMMAND,
           command="stars"),
     Quest("blackjack", "Play a hand of Wonderjack", "Pick **Wonderjack** in the More… menu in {#wondercasino} and bet.",
