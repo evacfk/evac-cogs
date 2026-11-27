@@ -553,6 +553,45 @@ def render_gallery(
     return buf
 
 
+def render_pool_grid(
+    entries: Sequence[Tuple[Card, Optional[bytes]]],
+    owned_ids: Sequence[int] = (),
+    columns: int = GALLERY_COLUMNS,
+) -> io.BytesIO:
+    """The picture view of `.card find`: one page of search results as a
+    numbered grid of card tiles, the same tiles the gallery uses. The number in
+    the corner is the card's place in the page's list (and dropdown); cards the
+    member doesn't own are dimmed so what they're missing stands out. A card
+    whose art file is missing or unreadable gets a plain grey tile instead of
+    breaking the page."""
+    if not entries:
+        raise ValueError("render_pool_grid needs at least one card")
+    owned = set(owned_ids)
+    tile_w, tile_h = GALLERY_TILE_SIZE
+    padding = 16
+    rows = -(-len(entries) // columns)
+    cols = min(columns, len(entries))
+    canvas = Image.new(
+        "RGBA", (cols * tile_w + (cols + 1) * padding, rows * tile_h + (rows + 1) * padding), (20, 20, 24, 255)
+    )
+    for i, (card, image_bytes) in enumerate(entries):
+        try:
+            tile = render_card(card, image_bytes, number=i + 1, size=(tile_w, tile_h), show_id=True)
+        except Exception:
+            blank = io.BytesIO()
+            Image.new("RGB", (tile_w, tile_h), (60, 63, 68)).save(blank, format="PNG")
+            tile = render_card(card, blank.getvalue(), number=i + 1, size=(tile_w, tile_h), show_id=True)
+        if card.card_id not in owned:
+            dimmed = Image.blend(tile, Image.new("RGBA", tile.size, (0, 0, 0, 255)), 0.5)
+            dimmed.putalpha(tile.getchannel("A"))
+            tile = dimmed
+        canvas.alpha_composite(tile, (padding + (i % columns) * (tile_w + padding), padding + (i // columns) * (tile_h + padding)))
+    buf = io.BytesIO()
+    canvas.convert("RGB").save(buf, format="PNG")
+    buf.seek(0)
+    return buf
+
+
 def _draw_showcase_star(tile: Image.Image, tile_h: int) -> None:
     """Stamp the "★ SHOWCASE" label onto an already-rendered card tile.
     Shared by render_gallery's header row and render_showcase, below."""

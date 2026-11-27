@@ -208,6 +208,14 @@ def diagnostics_embed(
                    f"Trades: **{stats.get('trades', 0)}** · Trade-ups: **{stats.get('trade_ups', 0)}**"),
             inline=False,
         )
+    if stats and stats.get("find_searches"):
+        searches = stats["find_searches"]
+        embed.add_field(
+            name="Card search",
+            value=(f"`.card find` searches: **{searches}** · Cards opened from results: **{stats.get('find_opens', 0)}** · "
+                   f"Switched to list view: **{stats.get('find_list_switches', 0)}**"),
+            inline=False,
+        )
     if stats and any(stats.get(k) for k in COIN_STAT_KEYS):
         sets, tokens = stats.get("coin_set_bonus", 0), stats.get("coin_token_sales", 0)
         packs, upgrades = stats.get("coin_packs", 0), stats.get("coin_upgrades", 0)

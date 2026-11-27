@@ -84,7 +84,7 @@ PAGES = (
         Entry(".card daily", "your free card for today, plus today's pack to open or gift (also the Daily Cards button in #wondercasino)", requires=("card daily",)),
         Entry(".card", "your collection, score, series sets and wishlist. Want a ping when a card drops? Press the 🔔 button under any drop",
               requires=("card",)),
-        Entry(".card find <name>", "open a card: wishlist it, upgrade it to Holo/Prismatic, see who has a spare",
+        Entry(".card find <name>", "search the pool with pictures (List view button for text): open a card to wishlist it, upgrade it to Holo/Prismatic, see who has a spare",
               requires=("card find",)),
         Entry(".card sell", "sell duplicate tokens, or trade 5 up a rarity", requires=("card sell",)),
         Entry(".card trade @user", "swap cards and wondercoin; you both accept", requires=("card trade",)),

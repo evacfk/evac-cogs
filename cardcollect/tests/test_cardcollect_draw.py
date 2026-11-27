@@ -1150,27 +1150,33 @@ async def test_find_results_are_paged_so_every_match_can_be_reached(cog):
     ids = await add_cards(cog, guild, admin, other, names, series="Genshin Impact")
     msg = await find(cog, asker, guild, other, "genshin")
     view = msg.view
-    assert "47 matches" in msg.embeds[0].title and "Page 1/3" in msg.embeds[0].footer.text
+    assert "47 matches" in msg.embeds[0].title and "Page 1/4" in msg.embeds[0].footer.text
     assert "Narrow the search" not in msg.embeds[0].description
-    assert len(view.opener.options) == 20 and view.prev_page.disabled and not view.next_page.disabled
+    assert len(view.opener.options) == 12 and view.prev_page.disabled and not view.next_page.disabled
     seen = {int(o.value) for o in view.opener.options}
     i2 = AdminInteraction(asker, guild, message=msg)
     await view._on_next_page(i2)
     seen |= {int(o.value) for o in view.opener.options}
-    assert "Page 2/3" in i2.original_edits[-1]["embed"].footer.text and not view.prev_page.disabled
+    assert "Page 2/4" in i2.original_edits[-1]["embed"].footer.text and not view.prev_page.disabled
     await view._on_next_page(AdminInteraction(asker, guild, message=msg))
     seen |= {int(o.value) for o in view.opener.options}
-    assert len(view.opener.options) == 7 and view.next_page.disabled
+    await view._on_next_page(AdminInteraction(asker, guild, message=msg))
+    seen |= {int(o.value) for o in view.opener.options}
+    assert len(view.opener.options) == 11 and view.next_page.disabled  # 47 matches, 12 a page in the picture view
     assert seen == set(ids), "every card is reachable through the pages"
     i3 = AdminInteraction(asker, guild, message=msg)
     await view._on_prev_page(i3)
-    assert "Page 2/3" in i3.original_edits[-1]["embed"].footer.text
+    assert "Page 3/4" in i3.original_edits[-1]["embed"].footer.text
     # opening a card from page 2 and coming back keeps the page
     view.opener._values = [view.opener.options[0].value]
     await view._on_open(AdminInteraction(asker, guild, message=msg))
     i4 = AdminInteraction(asker, guild, message=msg)
     await view._on_back(i4)
-    assert "Page 2/3" in i4.original_edits[-1]["embed"].footer.text
+    assert "Page 3/4" in i4.original_edits[-1]["embed"].footer.text
+    # the plain list view pages by 20
+    view.mode, view.page = "list", 0
+    await view.render()
+    assert len(view.opener.options) == 20 and view._page_count() == 3
     # a short list has no pager
     small = await find(cog, asker, guild, other, "Hero0")
     assert not hasattr(small.view, "prev_page")

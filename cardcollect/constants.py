@@ -147,10 +147,11 @@ GALLERY_FAVORITE_TILE_SIZE = (240, 336)
 GALLERY_COLUMNS = 4
 GALLERY_ROWS_PER_PAGE = 3  # keeps a page's image small enough to read on mobile
 GALLERY_PAGE_SIZE = GALLERY_COLUMNS * GALLERY_ROWS_PER_PAGE
+FIND_GRID_PAGE_SIZE = GALLERY_PAGE_SIZE  # `.card find` picture view: one 4x3 grid per page
 GALLERY_VIEW_TIMEOUT_SECONDS = 180  # a stale pager after this just stops responding
 
 # bumped on every deploy so `.card version` can confirm the new build is live
-COG_VERSION = "2.17.0"
+COG_VERSION = "2.18.0"
 
 UPLOAD_CANCELLED = "cancelled"  # what wait_for_upload returns when the admin backs out
 UPLOAD_CANCEL_WORDS = ("cancel", "stop", "nevermind", "never mind", "exit", "quit")

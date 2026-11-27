@@ -19,6 +19,7 @@ import discord
 from . import embeds, engine, import_characters, imagegen
 from .constants import (
     ART_UPLOAD_WAIT_SECONDS,
+    FIND_GRID_PAGE_SIZE,
     GALLERY_PAGE_SIZE,
     GALLERY_VIEW_TIMEOUT_SECONDS,
     MAX_DROP_SIZE,
@@ -40,7 +41,7 @@ from .constants import (
 
 log = logging.getLogger("red.evac-cogs.cardcollect")
 
-FIND_PAGE_SIZE = 20  # results per page in `.card find` (a dropdown holds 25 at most)
+FIND_PAGE_SIZE = 20  # results per page in `.card find`'s list view (a dropdown holds 25 at most)
 DRAW_OVER_TEXT = "This drop is over — its draw has already closed."
 
 
@@ -868,6 +869,9 @@ class FindView(_InvokerView):
         self._listening = False
         self.requests_open = False
         self.page = 0
+        self.mode = "grid"  # "grid": a picture of the page's cards above the list; "list": text only
+        self._grid_cache = {}  # (scope, page, owned on the page) -> PNG bytes, so flipping back is instant
+        self._owned = set()
 
     # -- opening ---------------------------------------------------------------
 
@@ -901,12 +905,27 @@ class FindView(_InvokerView):
             self._build_detail(quantity, state)
             return {"embed": embed, "file": file}
         embed = await self._list_embed()
+        file = await self._grid_file() if self.mode == "grid" and self.cards else None
+        if file is not None:
+            embed.set_image(url="attachment://pool.png")
         self._build_list()
-        return {"embed": embed, "file": None}
+        return {"embed": embed, "file": file}
+
+    async def _grid_file(self):
+        """The picture of this page's cards (4x3 at most), cached per page."""
+        cards = self._page_cards()
+        key = (self.scope, self.page, frozenset(c.card_id for c in cards if c.card_id in self._owned))
+        data = self._grid_cache.get(key)
+        if data is None:
+            data = await self.cog.pool_grid_png(self.member.guild, cards, self._owned)
+            self._grid_cache[key] = data
+        return discord.File(io.BytesIO(data), filename="pool.png")
 
     async def _list_embed(self) -> discord.Embed:
         state = await self.cog._member_state(self.member)
         owned = set(state.collection)
+        self._owned = owned
+        grid = self.mode == "grid"
         shown = discord.utils.escape_mentions(discord.utils.escape_markdown(self.query))[:60]
         scope = "your cards" if self.scope == "mine" else "the pool"
         embed = discord.Embed(color=embeds.EMBED_COLOR)
@@ -925,22 +944,30 @@ class FindView(_InvokerView):
         pages = self._page_count()
         self.page = min(self.page, pages - 1)
         lines = []
-        for c in self._page_cards():
+        for n, c in enumerate(self._page_cards(), 1):
             mark = "✅" if c.card_id in owned else ("★" if c.card_id in state.wishlist else "⬜")
             tail = " · retired" if c.retired else ""
-            lines.append(f"{mark} {embeds.RARITY_EMOJI.get(c.rarity, '')} **{_clip(discord.utils.escape_markdown(c.name), 60)}**"
+            number = f"`{n:>2}` " if grid else ""
+            lines.append(f"{number}{mark} {embeds.RARITY_EMOJI.get(c.rarity, '')} **{_clip(discord.utils.escape_markdown(c.name), 60)}**"
                          f" — {_clip(discord.utils.escape_markdown(c.display_series or '—'), 50)} `#{c.card_id}`{tail}")
         embed.description = "\n".join(lines)
         page_note = f"Page {self.page + 1}/{pages} · " if pages > 1 else ""
-        embed.set_footer(text=f"{page_note}✅ owned · ★ wishlisted · open one with the dropdown")
+        if grid:
+            embed.set_footer(text=f"{page_note}numbers match the picture, dim = not owned · ✅ owned · ★ wishlisted · open one with the dropdown")
+        else:
+            embed.set_footer(text=f"{page_note}✅ owned · ★ wishlisted · open one with the dropdown")
         return embed
 
+    @property
+    def _page_size(self) -> int:
+        return FIND_GRID_PAGE_SIZE if self.mode == "grid" else FIND_PAGE_SIZE
+
     def _page_count(self) -> int:
-        return max(1, -(-len(self.cards) // FIND_PAGE_SIZE))
+        return max(1, -(-len(self.cards) // self._page_size))
 
     def _page_cards(self):
-        start = self.page * FIND_PAGE_SIZE
-        return self.cards[start : start + FIND_PAGE_SIZE]
+        start = self.page * self._page_size
+        return self.cards[start : start + self._page_size]
 
     def _build_list(self):
         if self.cards:
@@ -948,10 +975,10 @@ class FindView(_InvokerView):
                 placeholder="Open a card…",
                 options=[
                     discord.SelectOption(
-                        label=_clip(c.name, 100), value=str(c.card_id), description=_clip(c.display_series, 100) or None,
-                        emoji=embeds.RARITY_EMOJI.get(c.rarity),
+                        label=_clip(f"{n}. {c.name}" if self.mode == "grid" else c.name, 100), value=str(c.card_id),
+                        description=_clip(c.display_series, 100) or None, emoji=embeds.RARITY_EMOJI.get(c.rarity),
                     )
-                    for c in self._page_cards()
+                    for n, c in enumerate(self._page_cards(), 1)
                 ],
             )
             self.opener.callback = self._on_open
@@ -970,6 +997,15 @@ class FindView(_InvokerView):
         )
         self.scope_button.callback = self._on_scope
         self.add_item(self.scope_button)
+        if self.cards:
+            self.mode_button = discord.ui.Button(
+                label="List view" if self.mode == "grid" else "Picture view",
+                emoji="📋" if self.mode == "grid" else "🖼️",
+                style=discord.ButtonStyle.secondary,
+                row=1,
+            )
+            self.mode_button.callback = self._on_mode
+            self.add_item(self.mode_button)
         if self.scope == "pool" and self.requests_open:
             label = "Request this" if not self.cards else "Not here? Request it"
             self.request_button = discord.ui.Button(label=label, style=discord.ButtonStyle.success, row=1)
@@ -1039,6 +1075,7 @@ class FindView(_InvokerView):
     async def _refresh(self, interaction: discord.Interaction, notice: str = None):
         """Re-render after a change and edit the message (and say what happened, privately)."""
         if self.card is not None:  # pick up the card's latest rarity / retired state
+            self._grid_cache.clear()  # its art or rarity may have changed
             fresh = await self.cog._card_by_id(self.member.guild, self.card.card_id)
             if fresh is not None:
                 self.card = fresh
@@ -1056,6 +1093,7 @@ class FindView(_InvokerView):
         wanted = int(self.opener.values[0])
         self.card = next((c for c in self.cards if c.card_id == wanted), None)
         self.from_list = True
+        await self.cog._bump_stats(self.member.guild, find_opens=1)
         await interaction.response.defer()
         await self._refresh(interaction)
 
@@ -1066,6 +1104,16 @@ class FindView(_InvokerView):
 
     async def _on_next_page(self, interaction: discord.Interaction):
         self.page = min(self._page_count() - 1, self.page + 1)
+        await interaction.response.defer()
+        await self._refresh(interaction)
+
+    async def _on_mode(self, interaction: discord.Interaction):
+        """Flip between the picture grid and the plain list, staying on the same cards."""
+        first = self.page * self._page_size
+        self.mode = "list" if self.mode == "grid" else "grid"
+        self.page = first // self._page_size
+        if self.mode == "list":
+            await self.cog._bump_stats(self.member.guild, find_list_switches=1)
         await interaction.response.defer()
         await self._refresh(interaction)
 
@@ -1196,6 +1244,7 @@ class FindView(_InvokerView):
             except KeyError:
                 await interaction.followup.send("That card is no longer in the pool.", ephemeral=True)
                 return
+            self._grid_cache.clear()
             payload = await self.render()
             if self.message is not None:
                 await self.message.edit(view=self, **self._for_edit(payload))

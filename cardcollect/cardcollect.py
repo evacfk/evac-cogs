@@ -1275,8 +1275,15 @@ class CardCollect(commands.Cog):
     @commands.guild_only()
     async def card_find(self, ctx: commands.Context, *, query: str):
         """Search the card pool by character name, series or ID. Open any result to see its art, rarity and owners, wishlist it, showcase it or (not in the pool?) request it. Switch between the whole pool and just your cards with the button."""
+        await self._bump_stats(ctx.guild, find_searches=1)
         view = views.FindView(self, ctx.author, query.strip())
         await view.start(ctx)
+
+    async def pool_grid_png(self, guild: discord.Guild, cards: List[Card], owned_ids) -> bytes:
+        """The picture view of a page of `.card find` results: a numbered grid of the cards' art, as PNG bytes."""
+        entries = await asyncio.to_thread(lambda: [(c, self._read_card_image(guild, c.card_id)) for c in cards])
+        buf = await asyncio.to_thread(imagegen.render_pool_grid, entries, list(owned_ids))
+        return buf.getvalue()
 
     # -- daily ------------------------------------------------------------
 

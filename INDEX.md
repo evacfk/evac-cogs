@@ -11,7 +11,7 @@ Use it to answer "does a cog already cover this?" and "what depends on this cog?
 - **afterdark** 1.9.1: Gated Rabbit Hole access: permanent rabbit button + invitations, interest opt-ins, inactivity cleanup, exclude list.
 - **blackjacktable** 1.1.2: Multiplayer blackjack table (.wonderjack)
 - **bumpreward** 1.1.0: Currency rewards, streaks, auto reminders and a daily board for Disboard bumps.
-- **cardcollect** 2.17.0: Ambient anime-character card collecting: pick the card you want from each drop and the draw decides.
+- **cardcollect** 2.18.0: Ambient anime-character card collecting: pick the card you want from each drop and the draw decides.
 - **celebrations** 1.2.1: Birthdays (hoisted role, wondercoin gift, posts), join-anniversary shout-outs and year club roles.
 - **dailyquests** 1.2.0: Daily quests with streak badges, XP and weekly prizes
 - **duel** 1.2.1: 1v1 best-of-3 wagered duels
@@ -58,7 +58,7 @@ Needs: no extra pip packages · Config scopes: guild, member
 Data: Stores per-member bump counts, streak and last bump date.
 
 ### cardcollect
-v2.17.0 · CardCollect · 7600 lines · 344 tests
+v2.18.0 · CardCollect · 7704 lines · 352 tests
 Commands:
 - `.card|cards`: addcard, daily, diagnostics, find, give, importseries, leaderboard, sell, settings, showcase, trade
 Links: called by dailyquests, minigamehub, wonderland
