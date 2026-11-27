@@ -552,3 +552,16 @@ async def test_a_wrapper_left_in_an_importer_by_a_load_that_never_unloaded_is_re
     await shop.pay(member(), 15)
     assert rows(second) == [(1, 0, 15, 15, "fakeshop", "fn: pay")] and rows(first) == []
     second._ledger_stop()
+
+
+def test_the_house_list_leaves_out_cogs_whose_coins_are_not_a_house():
+    """Live output showed `gamble` as "house up 102,000": those were pixel canvas purchases, a sink, not winnings."""
+    from wonderland import embeds
+    flows = {**FLOWS, "gamble": {"in": 0, "out": 102_000, "events": 3, "actions": {"button: Confirm": -102_000}},
+             "minigamehub": {"in": 22_500, "out": 445_000, "events": 9, "actions": {"fn: MinigameHub._run_game": -422_500}}}
+    assert "gamble" not in ledger.HOUSE_SOURCES and "minigamehub" not in ledger.HOUSE_SOURCES
+    e = embeds.ledger_embed("wondercoin", time.time() - 86400, flows, flows, None, "Ledger on")
+    house = next(f.value for f in e.fields if f.name.startswith("House result"))
+    assert "gamble" not in house and "minigamehub" not in house
+    sinks = next(f.value for f in e.fields if f.name == "Sinks, last 7 days")
+    assert "**gamble** -102,000" in sinks                              # still visible where it belongs

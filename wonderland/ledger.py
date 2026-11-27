@@ -33,8 +33,9 @@ NOT_RUNNING_AFTER = 90      # seconds without a heartbeat before the ledger coun
 EXPECTED_SET_BALANCE_PARAMS = ("member", "amount")
 
 # Sources where the members' loss is the house's gain. Names are cog package names (folder names).
-# `gamble` moves no coins itself (its threads host other cogs' games); kept so it shows if that changes.
-HOUSE_SOURCES = ("casino", "gamble", "blackjacktable", "duel", "minigames", "heist", "lottery")
+# Not `gamble`: its only coin movement is pixel canvas purchases, a sink that already shows under Sinks.
+# Not `minigamehub`: its coins are pacing rewards and member-to-member plant drops, not a house.
+HOUSE_SOURCES = ("casino", "blackjacktable", "duel", "minigames", "heist", "lottery")
 
 # Frames with these names are bank plumbing (Red's own, or another cog's wrapper), never the source.
 BANK_API_NAMES = frozenset({"set_balance", "deposit_credits", "withdraw_credits", "transfer_credits"})
