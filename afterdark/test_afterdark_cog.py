@@ -87,7 +87,7 @@ class FakeMember:
 
     async def send(self, content=None, embed=None, view=None):
         if not self.dm_open:
-            raise discord.Forbidden("closed")
+            raise discord.Forbidden(SimpleNamespace(status=403, reason="Forbidden"), "closed")
         self.dms.append({"content": content, "embed": embed, "view": view})
         return FakeMessage(900000 + len(self.dms), SimpleNamespace(id=555))
 
@@ -121,7 +121,7 @@ class FakeChannel:
 
     async def fetch_message(self, mid):
         if mid not in self.messages:
-            raise discord.NotFound("gone")
+            raise discord.NotFound(SimpleNamespace(status=404, reason="Not Found"), "gone")
         return self.messages[mid]
 
     mention = "#chan"

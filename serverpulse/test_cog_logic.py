@@ -491,7 +491,7 @@ class FakeChannel:
 
     async def history(self, limit=None, after=None, before=None, oldest_first=True):
         if self.forbidden:
-            raise discord.Forbidden()
+            raise discord.Forbidden(SimpleNamespace(status=403, reason="Forbidden"), "no perms")
         if self.gone:
             raise discord.NotFound.__new__(discord.NotFound)
         for m in sorted(self.messages, key=lambda m: m.created_at):

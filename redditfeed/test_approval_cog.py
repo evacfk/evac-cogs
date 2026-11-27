@@ -89,7 +89,7 @@ class Chan:
     async def fetch_message(self, mid):
         if mid not in self.messages:
             import discord
-            raise discord.NotFound("gone")
+            raise discord.NotFound(SimpleNamespace(status=404, reason="Not Found"), "gone")
         return self.messages[mid]
 
 
@@ -450,7 +450,7 @@ async def test_non_mod_x_does_nothing():
 async def test_x_on_an_already_deleted_message_still_works():
     import discord
     cog = make()
-    FEET_CH.delete_raises = discord.NotFound("gone")
+    FEET_CH.delete_raises = discord.NotFound(SimpleNamespace(status=404, reason="Not Found"), "gone")
     click = Click(Msg(FEET_CH))
     await cog.handle_feed_x(click)
     assert click.sent == ["Removed."]
@@ -911,7 +911,7 @@ async def test_redgifs_too_big_for_the_server_falls_back_to_the_link():
 async def test_redgifs_upload_rejected_by_discord_falls_back_to_the_link():
     import discord
     cog = make()
-    FEET_CH.reject_files = discord.HTTPException("413 too large")
+    FEET_CH.reject_files = discord.HTTPException(SimpleNamespace(status=413, reason="Too Large"), "413 too large")
     await cog._post_media_items(FEET_CH, RG_POST, rg_items(), "feet")
     assert [m.content for m in FEET_CH.sent] == [RG_POST["url"]]
 
@@ -919,7 +919,7 @@ async def test_redgifs_upload_rejected_by_discord_falls_back_to_the_link():
 async def test_redgifs_missing_permission_stops_posting():
     import discord
     cog = make()
-    FEET_CH.reject_files = discord.Forbidden("no")
+    FEET_CH.reject_files = discord.Forbidden(SimpleNamespace(status=403, reason="Forbidden"), "no")
     await cog._post_media_items(FEET_CH, RG_POST, rg_items(), "feet")
     assert FEET_CH.sent == []
 
@@ -986,7 +986,7 @@ async def test_queue_card_falls_back_to_the_link_when_the_download_fails():
 async def test_queue_card_falls_back_when_discord_rejects_the_upload():
     import discord
     cog = make({"feet": [rg_post()]})
-    QUEUE_CH.reject_files = discord.HTTPException("413")
+    QUEUE_CH.reject_files = discord.HTTPException(SimpleNamespace(status=413, reason="Too Large"), "413")
     await cog._run_poll_cycle()
     card = QUEUE_CH.sent[0]
     assert card.file is None and card.content == "https://www.redgifs.com/watch/clipr1"

@@ -46,7 +46,7 @@ class FakeChan:
 
     async def send(self, content=None, **kw):
         if self.forbidden:
-            raise discord.Forbidden()
+            raise discord.Forbidden(SimpleNamespace(status=403, reason="Forbidden"), "no perms")
         FakeChan._next += 1
         m = SentMessage(FakeChan._next, content, kw)
         self.sent.append(m)
@@ -55,7 +55,7 @@ class FakeChan:
     async def history(self, limit=None, after=None, before=None, oldest_first=True):
         self.history_calls += 1
         if self.no_read:
-            raise discord.Forbidden()
+            raise discord.Forbidden(SimpleNamespace(status=403, reason="Forbidden"), "no perms")
         for m in sorted(self.messages, key=lambda m: m.created_at):
             if after <= m.created_at < before:
                 yield m
